@@ -92,7 +92,7 @@ static int aspect_assign(char *destination, const char *value)
     } else ratio = width;
     while (isspace((unsigned char)*end)) ++end;
     if (*end) return 0;
-    if (ratio < 4.0 / 3.0) ratio = 4.0 / 3.0;
+    if (ratio < 0.5) ratio = 0.5;
     if (ratio > 4.0) ratio = 4.0;
     if (destination) snprintf(destination, sizeof ((MM3DisplaySettings *)0)->aspect, "%.9g", ratio);
     return 1;
@@ -166,7 +166,7 @@ void mm3_display_settings_defaults(MM3DisplaySettings *settings, const char *pro
     settings->fps_limit = atoi(profile->fps_limit);
     settings->show_fps = 1;
     settings->render_scale = (float)atof(profile->render_scale);
-    strcpy(settings->aspect, "16:10");
+    strcpy(settings->aspect, "auto");
     settings->msaa = atoi(profile->msaa);
     settings->aniso = atoi(profile->aniso);
     settings->draw_distance = (float)atof(profile->draw_distance);

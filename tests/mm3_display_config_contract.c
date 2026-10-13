@@ -213,6 +213,16 @@ static void precedence(void)
     assert(strcmp(loaded.aspect, "4") == 0);
 
     clear_environment();
+    environment("RECOMP_ASPECT", "3:4");
+    assert(mm3_display_settings_startup(&loaded, error, sizeof error));
+    assert(strcmp(loaded.aspect, "0.75") == 0);
+
+    clear_environment();
+    environment("RECOMP_ASPECT", "1:100");
+    assert(mm3_display_settings_startup(&loaded, error, sizeof error));
+    assert(strcmp(loaded.aspect, "0.5") == 0);
+
+    clear_environment();
     environment("RECOMP_WINDOW_SIZE", "1024x768junk");
     environment("RECOMP_FPS_LIMIT", "0");
     environment("RECOMP_RENDER_SCALE", "nan");
@@ -226,7 +236,7 @@ static void precedence(void)
     expected.render_scale = 2.5f;
     equal_settings(&loaded, &expected);
     assert(strcmp(getenv("RECOMP_FPS_LIMIT"), "45") == 0);
-    assert(strcmp(getenv("RECOMP_ASPECT"), "16:10") == 0);
+    assert(strcmp(getenv("RECOMP_ASPECT"), "auto") == 0);
     assert(strcmp(getenv("RECOMP_MSAA"), "4") == 0);
     assert(strcmp(getenv("RECOMP_FULLSCREEN"), "0") == 0);
 

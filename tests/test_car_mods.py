@@ -1,12 +1,14 @@
 """Offline tests of writable catalog assets and reversible archive installation."""
 
 import copy
+from contextlib import redirect_stdout
 import importlib.util
 import io
 import json
 from pathlib import Path
 import re
 import struct
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -359,9 +361,9 @@ class CarModsTest(unittest.TestCase):
                     self.assertEqual(output[name][payload:payload + info.file_size], after.read(info))
                 self.assertTrue(all(len(i.extra) == 36 for i in before.infolist()))
         with zipfile.ZipFile(io.BytesIO(output[MOD.ARCHIVES[0]])) as hd:
-            expected = [car["id"] for car in sorted(self.config["cars"],
-                key=lambda car: -sum(car["ratings"][key] for key in MOD.OVERALL_RATINGS))]
-            expected += [12, 8, 11, 15, 18]  # Every stock fixture has four one-point ratings.
+            expected = [12, 8, 11, 15, 18]
+            expected += [car["id"] for car in sorted(self.config["cars"],
+                key=lambda car: (car["ratings"]["TOPSPEED"], car["id"]))]
             self.assertEqual([int(line) for line in hd.read("Cars/Tweak/SortOrder").splitlines()], expected)
             text = hd.read("Cars/Tweak/Panoz.txt").decode()
             self.assertIn("ID\t\t9004", text)
@@ -407,10 +409,9 @@ class CarModsTest(unittest.TestCase):
                     self.assertEqual(len(mesh), len((self.game / f"Data/Shared/Cars/{car['donor']}{suffix}/body.cmp").read_bytes()))
             self.assertNotEqual(hd.read("Cars/McLaren_F1/materialSet00.omb"), hd.read("Cars/Ford_GTcar/materialSet00.omb"))
 
-    def test_catalog_ranking_uses_four_equal_weights_and_preserves_ties_and_unlocks(self):
-        # Each single high rating must contribute equally; a balanced original
-        # beats those four. The original order resolves ties, including stock
-        # cars missing from this fixture's deliberately partial SortOrder.
+    def test_catalog_order_keeps_originals_first_and_sorts_extras_by_speed(self):
+        # Originals retain retail order regardless of their ratings. DLC from
+        # the archive and added cars share the final speed-sorted group.
         ratings = {"mini": (9, 0, 0, 0), "MFastBack": (0, 9, 0, 0),
                    "Viper": (0, 0, 9, 0), "Koenigsegg": (0, 0, 0, 9),
                    "Lotus": (3, 3, 3, 3)}
@@ -419,20 +420,31 @@ class CarModsTest(unittest.TestCase):
         for donor, values in ratings.items():
             path = f"Cars/Tweak/{donor}.txt"
             files[path] = MOD.update_section(files[path].decode(), "CarInfo",
-                dict(zip(MOD.OVERALL_RATINGS, values))).encode()
+                dict(zip(MOD.CATALOG_RATINGS, values))).encode()
+        files["Cars/Tweak/car208.txt"] = MOD.update_section(
+            files["Cars/Tweak/mini.txt"].decode(), "CarInfo",
+            {"ID": 208, "TOPSPEED": 6}).encode()
         originals = {**self.originals, MOD.ARCHIVES[0]: zip_bytes(files)}
         config = copy.deepcopy(self.config)
+        for i, car in enumerate(config["cars"]):
+            car["ratings"]["TOPSPEED"] = (9, 3, 6)[i % 3]
+        config["cars"].reverse()  # ID breaks ties independently of manifest order.
         before = copy.deepcopy(config)
         with zipfile.ZipFile(io.BytesIO(originals[MOD.ARCHIVES[0]])) as archive:
             ranked = MOD.catalog_ranking(archive, config)
-            self.assertEqual([car["id"] for car in ranked[-5:]], [18, 12, 8, 11, 15])
-            self.assertEqual([car["score"] for car in ranked[-5:]], [12, 9, 9, 9, 9])
+            self.assertEqual([car["id"] for car in ranked[:5]], [12, 8, 11, 15, 18])
+            expected_extras = sorted([*config["cars"], {"id": 208, "ratings": {"TOPSPEED": 6}}],
+                                     key=lambda car: (car["ratings"]["TOPSPEED"], car["id"]))
+            self.assertEqual([car["id"] for car in ranked[5:]], [car["id"] for car in expected_extras])
+            self.assertEqual(config, before)  # Planning must not mutate settings.
             for car in config["cars"]:
-                car["ratings"]["MASS"] = 9 - car["ratings"]["MASS"]
+                for key in MOD.RATINGS - {"TOPSPEED"}:
+                    car["ratings"][key] = 9 - car["ratings"][key]
                 car["physics"]["TorqueScale"] = 1
-            self.assertEqual(MOD.catalog_ranking(archive, config), ranked)
+                car["speedometer"] = {"max_kmh": 800, "max_mph": 500}
+            self.assertEqual([car["id"] for car in MOD.catalog_ranking(archive, config)],
+                             [car["id"] for car in ranked])
         output, _ = MOD.build_plan(self.game, originals, before)
-        self.assertEqual(before, self.config)
         with zipfile.ZipFile(io.BytesIO(output[MOD.ARCHIVES[0]])) as archive:
             self.assertEqual([int(line) for line in archive.read("Cars/Tweak/SortOrder").splitlines()],
                              [car["id"] for car in ranked])
@@ -441,10 +453,39 @@ class CarModsTest(unittest.TestCase):
                 self.assertEqual(archive.read(path), files[path])
                 for rule in (b"LOCKED", b"HIDDEN", b"ADMITTANCE\t0 0 2"):
                     self.assertIn(rule, archive.read(path))
+            self.assertEqual(archive.read("Cars/Tweak/car208.txt"), files["Cars/Tweak/car208.txt"])
             for car in before["cars"]:
                 text = archive.read(f"Cars/Tweak/{car['alias']}.txt")
                 for rule in (b"LOCKED", b"HIDDEN", b"ADMITTANCE"):
                     self.assertNotIn(rule, text)
+
+    def test_extra_speed_edits_reorder_only_the_extra_group(self):
+        config = copy.deepcopy(self.config)
+        with zipfile.ZipFile(io.BytesIO(self.originals[MOD.ARCHIVES[0]])) as archive:
+            original = MOD.catalog_ranking(archive, config)
+            selected = config["cars"][-1]
+            selected["ratings"]["TOPSPEED"] = 0
+            slower = MOD.catalog_ranking(archive, config)
+            self.assertEqual([car["id"] for car in slower[:5]], [car["id"] for car in original[:5]])
+            self.assertEqual(slower[5]["id"], selected["id"])
+            selected["ratings"]["TOPSPEED"] = 9
+            faster = MOD.catalog_ranking(archive, config)
+            self.assertEqual(faster[-1]["id"], selected["id"])
+
+    def test_cli_dry_run_explains_speed_order_and_keeps_game_files_unchanged(self):
+        config_path = self.game / "preview.json"
+        config_path.write_text(json.dumps(self.config), encoding="utf-8")
+        stdout = io.StringIO()
+        with patch.object(sys, "argv", ["prepare.py", "--game-dir", str(self.game),
+                                      "--config", str(config_path)]), redirect_stdout(stdout):
+            self.assertEqual(MOD.main(), 0)
+        text = stdout.getvalue()
+        self.assertIn("original cars first; extras slow-to-fast by TOPSPEED (0-9), then ID", text)
+        self.assertIn("[12] speed 1/9", text)
+        self.assertNotIn("/36", text)
+        for relative, original in self.originals.items():
+            self.assertEqual((self.game / relative).read_bytes(), original)
+        self.assertFalse((self.game / MOD.STATE_DIR / "state.json").exists())
 
     def test_catalog_ranking_rejects_unknown_order_ids_and_missing_ratings(self):
         with zipfile.ZipFile(io.BytesIO(self.originals[MOD.ARCHIVES[0]])) as archive:

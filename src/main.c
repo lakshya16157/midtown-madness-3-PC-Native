@@ -290,10 +290,10 @@ int main(void)
         return 1;
     }
 
-    /* The profile pins internal resolution while the window changes size.
-     * Explicit aspect and auto settings take priority over the default. */
+    /* Keep the profile's render quality while fitting the gameplay view to
+     * the window. Saved or explicit aspect settings take priority. */
     if (!getenv("RECOMP_ASPECT") &&
-        _putenv_s("RECOMP_ASPECT", "16:10") != 0) {
+        _putenv_s("RECOMP_ASPECT", "auto") != 0) {
         fprintf(stderr, "cannot select MM3 display aspect\n");
         return 1;
     }

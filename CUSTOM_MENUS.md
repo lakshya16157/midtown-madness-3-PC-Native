@@ -1,5 +1,16 @@
 # Custom main-menu and pause-menu pages
 
+The native **Graphics Settings** entry is now implemented between Options and
+Profile on the frontend main menu. Display and Advanced Graphics open native
+choice pages for selecting exact values, with the current draft choice marked.
+They share saved display preferences and the retail function/WSidData
+interfaces. See
+[the resource generator](tools/native-menu/README.md),
+[the bindings](src/mm3_graphics_menu.c), and
+[the embedded resource stream](src/mm3_menu_resources.c). The original game
+archives remain unchanged. The investigation below is historical; additional
+custom and pause pages are still proposals.
+
 Read-only investigation, 2026-10-06. **Recommended approach: extend MM3's native
 Meme UI graphs**, retaining its rendering, controller focus, sounds and Back
 navigation. A separate Win32/ImGui panel would not become a native menu entry.

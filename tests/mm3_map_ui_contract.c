@@ -11,6 +11,8 @@ RECOMP_TLS uint32_t g_ebp, g_seh_ebp;
 RECOMP_TLS double g_fp_stack[8];
 RECOMP_TLS int g_fp_top, g_fp_cmp, g_df;
 RECOMP_TLS uint16_t g_fp_cc, g_fp_control_word;
+RECOMP_TLS uint32_t g_fs_base;
+RECOMP_TLS RecompXmm g_xmm0, g_xmm1, g_xmm2, g_xmm3, g_xmm4, g_xmm5, g_xmm6, g_xmm7;
 static unsigned char memory[0x440000];
 static int (*query)(uint32_t);
 static const uint32_t stack = 0x80000, context = 0x12000;
@@ -27,6 +29,8 @@ void nv2a_d3d_set_centered_ui_query(int (*callback)(void)) { (void)callback; }
 void nv2a_d3d_set_map_texture_query(int (*callback)(uint32_t)) { query = callback; }
 void sub_0025968E_original(void) { g_esp += 24; }
 void sub_001EEC53_original(void) { g_esp += 60; }
+void sub_000F4AC3(void) { g_esp += 20; }
+void sub_000F4BB1_original(void) { g_esp += 4; }
 #include "production_widescreen.c"
 
 static uint32_t data(unsigned group, unsigned part) {

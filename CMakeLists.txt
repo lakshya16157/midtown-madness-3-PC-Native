@@ -81,14 +81,22 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0016AEDB sub_000E1F49 sub_001D137B
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00198592 sub_001986B1)
 # Preserve same-chunk near-camera calls to the chase-distance adjustment.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001EEC53)
+# Refresh each active camera after a live display-aspect change.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000F4BB1)
 # Cache map texture ownership at native load/reconfiguration/destruction boundaries.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0011C742 sub_0011CAAC sub_0007CEC3)
 # Keep same-chunk calls directed to the recovered x87 helper definitions.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0009BC04 sub_0009BC35 sub_0009BC52)
 # Preserve same-chunk locale calls to the custom vehicle-name extension.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0011C194)
+# Native graphics pages retain the retail Meme parser and controller UI.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS
+    sub_00119AEE sub_00102168 sub_00102191 sub_001021B5 sub_0006EA22
+    sub_001C5E11 sub_0006B3EF sub_0011C650)
 # Preserve same-chunk catalog calls to the retired-car selection fallback.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001DDFC5)
+# Keep retail vehicles first and sort custom/DLC menu entries by top speed.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001DE752)
 # The CRT MMX probe must preserve the stack effects of PUSHFD/POPFD.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00093770)
 # The hot visibility leaf keeps its balanced x87 scratch stack in native locals.
@@ -245,10 +253,24 @@ foreach(distance_input IN LISTS distance_owners)
     list(APPEND RECOMP_GEN_SOURCES "${distance_output}")
 endforeach()
 
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(MM3_MENU_HEADER "${CMAKE_CURRENT_BINARY_DIR}/native_menu/mm3_menu_resources.h")
+add_custom_command(OUTPUT "${MM3_MENU_HEADER}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/native-menu/generate.py"
+        --archive "${CMAKE_CURRENT_SOURCE_DIR}/game_files/Data/Data_hd.zip"
+        --header "${MM3_MENU_HEADER}"
+    DEPENDS tools/native-menu/generate.py tools/native-menu/native_menu.py
+        "${CMAKE_CURRENT_SOURCE_DIR}/game_files/Data/Data_hd.zip"
+    COMMENT "Building native graphics menu resources from the installed game"
+    VERBATIM)
+
 add_executable(${PROJECT_NAME}
     src/main.c
     src/mm3_display_config.c
     src/mm3_display_settings.c
+    src/mm3_menu_resources.c
+    src/mm3_graphics_menu.c
+    "${MM3_MENU_HEADER}"
     src/mm3_asset_cache.c
     src/mm3_debug_features.c
  src/mm3_memory_compat.c
@@ -270,6 +292,7 @@ add_executable(${PROJECT_NAME}
  src/mm3_debug_teleport.c
  src/mm3_custom_car_names.c
  src/mm3_car_selection_compat.c
+ src/mm3_car_order.c
  src/mm3_speedometer.c
  src/mm3_factory_physics.c
  src/mm3_cpu_compat.c
@@ -297,6 +320,7 @@ endif()
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     src
+    "${CMAKE_CURRENT_BINARY_DIR}/native_menu"
     src/recomp
     ${RECOMP_GEN_DIR}
     ${XBOXRECOMP_DIR}/include)

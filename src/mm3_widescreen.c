@@ -1,15 +1,16 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "recomp_types.h"
 
-/* Widescreen (Hor+). MM3 has no 16:9 mode: every 3D camera builds its
+/* Adaptive gameplay view. MM3 has no 16:9 mode: every 3D camera builds its
  * projection through 0x25968E, D3DXMatrixPerspectiveFovLH(out, fovy, aspect,
  * zn, zf), with aspect read from the 4:3 constant at 0x385F20. Replacing that
- * argument with the display aspect keeps the vertical field of view and widens
- * the horizontal one, and the game culls against the same wider frustum, so
- * nothing pops in at the new screen edges. The renderer stretches display-
- * sized surfaces to that aspect and keeps 2D overlays at their own proportions
+ * argument with the display aspect preserves the vertical view on wider
+ * displays and the horizontal view on taller ones. Culling uses that same
+ * frustum, so nothing pops in at the new screen edges. The renderer sizes
+ * display surfaces to that aspect and keeps 2D overlays at their own proportions
  * (nv2a_d3d11.c). Other aspects (square environment maps) are left alone.
  * The 0x385F20 constant itself is also read as a 4/3 scale by unrelated code
  * (0x220B1E), which is why the argument is patched rather than the data. */
@@ -19,6 +20,86 @@ extern void nv2a_d3d_set_edge_hud(int on);
 extern void nv2a_d3d_set_hud_start(float x0, float y0, float x1, float y1);
 extern void nv2a_d3d_set_centered_ui_query(int (*query)(void));
 extern void nv2a_d3d_set_map_texture_query(int (*query)(uint32_t texture_addr));
+static float camera_fov_degrees(void);
+
+/* Identities only, used on the title thread. Never follow a cached pointer:
+ * refresh only the live camera supplied to its native per-frame view update.
+ * A menu projection using the same allocation retires its race identity. */
+enum { DISPLAY_CAMERA_COUNT = 16 };
+static uint32_t s_display_cameras[DISPLAY_CAMERA_COUNT];
+static unsigned s_display_camera_next;
+
+static int display_camera_slot(uint32_t camera)
+{
+    unsigned i;
+    for (i = 0; i < DISPLAY_CAMERA_COUNT; ++i)
+        if (s_display_cameras[i] == camera && camera) return (int)i;
+    return -1;
+}
+
+static void remember_display_camera(uint32_t camera)
+{
+    unsigned i;
+    if (!camera || display_camera_slot(camera) >= 0) return;
+    for (i = 0; i < DISPLAY_CAMERA_COUNT; ++i)
+        if (!s_display_cameras[i]) { s_display_cameras[i] = camera; return; }
+    /* Native split screen has at most four current display cameras. Reuse
+     * the oldest identity instead of keeping dead level allocations forever;
+     * cached identities are never dereferenced, including when evicted. */
+    s_display_cameras[s_display_camera_next++ % DISPLAY_CAMERA_COUNT] = camera;
+}
+
+extern void sub_000F4AC3(void);
+extern void sub_000F4BB1_original(void);
+
+void sub_000F4BB1(void)
+{
+    /* Camera view update, called before native visibility and GPU matrices
+     * are published. Rebuild via the retail setup so matrix, frustum planes,
+     * near/far state and device projection all agree after a live resize. */
+    uint32_t camera = g_edi;
+    if (display_camera_slot(camera) >= 0) {
+        float old_aspect = MEMF(camera + 0x1FA8);
+        float aspect = nv2a_d3d_display_aspect();
+        float fovy = MEMF(camera + 0x1FA4);
+        if (isfinite(old_aspect) && old_aspect > 0.0f && isfinite(fovy) &&
+            fovy > 0.0f && fovy < 3.14159265f && fabsf(aspect - old_aspect) > 1e-4f) {
+            uint32_t saved[] = {g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi,
+                                g_edi, g_ebp, g_seh_ebp};
+            double fp[8];
+            int top = g_fp_top, cmp = g_fp_cmp, df = g_df;
+            uint16_t cc = g_fp_cc, control = g_fp_control_word;
+            uint32_t fs = g_fs_base;
+            RecompXmm simd[8] = {g_xmm0, g_xmm1, g_xmm2, g_xmm3,
+                                  g_xmm4, g_xmm5, g_xmm6, g_xmm7};
+            float old_basis = fminf(old_aspect, 4.0f / 3.0f);
+            float new_basis = fminf(aspect, 4.0f / 3.0f);
+            /* The explicit FOV override retains its existing absolute
+             * horizontal-degree meaning; the stock view is Hor+/Vert+. */
+            if (camera_fov_degrees()) { old_basis = old_aspect; new_basis = aspect; }
+            fovy = 2.0f * atanf(tanf(fovy * 0.5f) * old_basis / new_basis);
+            memcpy(fp, g_fp_stack, sizeof fp);
+            PUSH32(g_esp, MEM32(camera + 0x1FB0));
+            PUSH32(g_esp, MEM32(camera + 0x1FAC));
+            PUSH32(g_esp, 0); MEMF(g_esp) = aspect;
+            PUSH32(g_esp, 0); MEMF(g_esp) = fovy;
+            PUSH32(g_esp, 0); /* host-owned call, no guest return address */
+            g_esi = camera;
+            g_df = 0;
+            sub_000F4AC3();
+            g_eax = saved[0]; g_ecx = saved[1]; g_edx = saved[2];
+            g_esp = saved[3]; g_ebx = saved[4]; g_esi = saved[5];
+            g_edi = saved[6]; g_ebp = saved[7]; g_seh_ebp = saved[8];
+            memcpy(g_fp_stack, fp, sizeof fp);
+            g_fp_top = top; g_fp_cmp = cmp; g_df = df;
+            g_fp_cc = cc; g_fp_control_word = control;
+            g_fs_base = fs;
+            g_xmm0 = simd[0]; g_xmm1 = simd[1]; g_xmm2 = simd[2]; g_xmm3 = simd[3];
+            g_xmm4 = simd[4]; g_xmm5 = simd[5]; g_xmm6 = simd[6]; g_xmm7 = simd[7];
+        }
+    }
+    sub_000F4BB1_original();
+}
 
 /* MmxGameMapNode owns separate map/icon textures, not the text/HUD atlas.
  * Cache only their Data addresses while the title owns the resources. The
@@ -186,8 +267,23 @@ void mm3_widescreen_init(void)
 void sub_0025968E(void)
 {
     float aspect = MEMF(g_esp + 0xC), wide = nv2a_d3d_display_aspect();
-    int race = MEM32(g_esp) == 0x000F4AF5u && MEM32(g_ebp + 4) == 0x00210E1Eu;
-    int patch = fabsf(aspect - 4.0f / 3.0f) < 1e-4f && fabsf(wide - aspect) > 1e-4f;
+    int camera_setup = MEM32(g_esp) == 0x000F4AF5u;
+    int race = camera_setup && MEM32(g_ebp + 4) == 0x00210E1Eu;
+    int menu = camera_setup && MEM32(g_ebp + 4) == 0x000E51EEu;
+    int patch = !menu && fabsf(aspect - 4.0f / 3.0f) < 1e-4f && fabsf(wide - aspect) > 1e-4f;
+    if (menu) {
+        memset(s_display_cameras, 0, sizeof s_display_cameras);
+        s_display_camera_next = 0;
+        /* Turntables retain their authored projection. The renderer places
+         * their 3D view and all menu artwork in the same fitted 4:3 area. */
+        MEMF(g_esp + 0xC) = MEMF(g_ebp + 0xC) = 4.0f / 3.0f;
+    }
+    else if (camera_setup && MEM32(g_ebp + 4) == 0x000F4D45u) {
+        /* The native constructor establishes a square placeholder before a
+         * camera is configured. A reused allocation is a new identity. */
+        int slot = display_camera_slot(g_esi);
+        if (slot >= 0) s_display_cameras[slot] = 0;
+    }
     if (patch)
         MEMF(g_esp + 0xC) = wide;
     /* Called from the camera's projection setup (0xF4AC3, returning to
@@ -205,12 +301,15 @@ void sub_0025968E(void)
      * the 4:3 one, for the matrix and for the copy stored for culling.
      * It is also how the renderer knows a race has started, so its HUD can
      * move out to the screen edges (nv2a_d3d11.c); the race camera builds its
-     * projection once per race, car select's (0xE51EE) every frame. */
+     * projection once per race, car select's (0xE51EE) every frame. The live
+     * view-update hook above rebuilds race projections after shape changes. */
     if (race) {
         /* The race HUD starts with the minimap's base quad; 2D drawn ahead of
          * it is the name tags over cars, positioned through this camera. */
         nv2a_d3d_set_hud_start(50.0f, 320.0f, 178.0f, 448.0f);
         nv2a_d3d_set_edge_hud(1);
+        if (fabsf(aspect - 4.0f / 3.0f) < 1e-4f || fabsf(aspect - wide) < 1e-4f)
+            remember_display_camera(g_esi);
     }
     else if (MEM32(g_esp) == 0x000F4AF5u && MEM32(g_ebp + 4) == 0x000E51EEu)
         nv2a_d3d_set_edge_hud(0);              /* car select's turntable */
@@ -225,8 +324,12 @@ void sub_0025968E(void)
                                      MEMF(g_esp + 0xC));
             MEMF(g_esp + 8) = fovy;
             MEMF(g_ebp + 8) = fovy;
-        } else if (fabsf(aspect - wide) < 1e-4f && fabsf(wide - 4.0f / 3.0f) > 1e-4f) {
-            float fovy = 2.0f * atanf(tanf(MEMF(g_esp + 8) * 0.5f) * wide * 0.75f);
+        } else if (fabsf(aspect - 4.0f / 3.0f) < 1e-4f || fabsf(aspect - wide) < 1e-4f) {
+            /* Undo the native horizontal-to-vertical conversion against its
+             * old stored aspect. Wider windows keep vertical coverage;
+             * taller windows keep horizontal coverage and reveal more sky. */
+            float fovy = 2.0f * atanf(tanf(MEMF(g_esp + 8) * 0.5f) * aspect /
+                                     fminf(wide, 4.0f / 3.0f));
             MEMF(g_esp + 8) = fovy;
             MEMF(g_ebp + 8) = fovy;
         }

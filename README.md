@@ -10,9 +10,10 @@ supported game disc with the instructions below. Recent quality-of-life updates
 add a square race map in the bottom-left corner, softly fading map edges, cleaner
 logs and safer crash reports.
 
-**Press F10 for graphics settings** while the game is running. Adjust resolution,
-fullscreen, maximum FPS, VSync and render quality, then click **Apply**. Your
+**Choose Graphics Settings in the main menu**, between Options and Profile.
+Adjust resolution, fullscreen, maximum FPS, VSync and render quality, then choose **Apply**. Your
 choices are saved, and settings that need a restart are clearly marked.
+F10 also opens the desktop settings panel while playing.
 
 **Credits:** This project builds on the original
 [mm3-recomp by Matt Graham (MattSG)](https://github.com/MattSG/mm3-recomp) and the
@@ -237,6 +238,10 @@ useful file/crash diagnostics, desktop shortcuts and icons, native tree
 physics/audio fixes, and car workshop improvements. The tested runtime remains
 pinned, with this fork's changes carried in the runtime patch.
 
+The October 14 update adds native graphics choice lists, original-first vehicle
+ordering with speed-sorted DLC/custom cars, and live aspect changes that expand
+the gameplay view while preserving menu proportions.
+
 The normal clone and setup instructions above include these updates. Run
 `scripts\setup.ps1 -Iso "<your supported disc image>"`, then
 `scripts\play.ps1 -Keyboard`. Game files and build output are not included.
@@ -381,6 +386,16 @@ saved setting, or the selected profile's cap when no setting has been saved:
 60 for Balanced/Quality or 30 for LowPower. Invalid, uncapped (`0`), or higher
 values use the saved setting or profile default, including direct executable launches.
 
+Choose **Graphics Settings** below **Options** and above **Profile** in the
+main menu. Select a setting to open its choice list, move to the exact value,
+and press **A/Enter** once to select it. The current choice is marked.
+**Advanced Graphics** contains aspect ratio,
+anti-aliasing, texture filtering and draw distance. **Apply** saves both pages;
+**Restore Defaults** changes the pending choices, and **B/Back** from the main
+graphics page discards changes made since the last Apply. Restart requirements
+appear in the help text. These pages use the game's original layout, font,
+sounds and navigation; the retail archives are left intact.
+
 Press **F10** to open **Display Settings** while the game is running. The same
 command appears in the game window's title-bar menu (Alt+Space). Choose the
 window resolution, windowed or borderless fullscreen mode, maximum FPS, VSync,
@@ -388,17 +403,24 @@ an FPS counter and rendering quality, then click **Apply**. These changes take
 effect immediately. Window resolution controls the window size; rendering
 quality controls the internal image resolution.
 
-Aspect ratio, MSAA, anisotropic filtering and draw distance are also available
-in the dialog. These changes are saved for the next launch, and the dialog
-shows when a restart is required. Settings are stored per Windows user in
+Aspect ratio takes effect immediately. **Automatic** follows the window's
+shape: wider views reveal more scenery horizontally, while taller views reveal
+more sky and road vertically. Frontend and pause menus keep their original
+proportions, and the gameplay HUD stays proportionate. An explicit aspect ratio
+fits inside the window with bars where needed. Saved explicit ratios remain
+available; choose Automatic to follow resolution changes.
+
+MSAA, anisotropic filtering and draw distance are also available in the dialog.
+These changes are saved for the next launch, and the dialog shows when a
+restart is required. Settings are stored per Windows user in
 `%LOCALAPPDATA%\MM3Recomp\display.ini`. Set `MM3_DISPLAY_CONFIG` to use another
 settings file, for example for a separate benchmark configuration. At launch,
 saved settings override profile defaults; explicit environment settings take
 priority over saved settings.
 
 F11 or Alt+Enter toggles fullscreen. The default **Balanced** profile renders at
-1536×960 with a 16:10 aspect and scales the image to the window or fullscreen
-size. The internal height stays fixed when you maximize the window. Profiles
+960 vertical pixels and an automatic aspect ratio that follows the window or
+fullscreen size. The internal height stays fixed when you maximize the window. Profiles
 provide these initial defaults when no display preferences have been saved.
 Choose a profile when launching:
 
@@ -523,6 +545,11 @@ The [model names, download sources and creator credits](tools/car-models/README.
 identify each imported exterior and its original conversion pack.
 The remaining slots retain their IDs. Profiles that remember a removed custom
 car use its original donor vehicle, without restoring the removed menu entry.
+
+Original cars appear first in their retail order. Added and DLC cars follow
+together, ordered from slowest to fastest by the game's top-speed rating;
+equal ratings use vehicle ID to keep the order consistent. This also applies
+to existing car-pack installations without reinstalling them.
 
 The supplied defaults use stock donor visuals. Workshop's **Model** tab can
 select prepared imported body, wheel, texture and menu-icon packages; reapplying
@@ -674,7 +701,7 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `RECOMP_VSYNC` | `0` | Present sync interval passed to DXGI. |
 | `RECOMP_FULLSCREEN` | off | Start fullscreen. |
 | `RECOMP_WINDOW_SIZE` | auto | Initial window client size, `WxH`. |
-| `RECOMP_ASPECT` | `16:10` | Pin the display aspect: `16:10`, `16:9`, `4:3`, or a number. `auto` follows the window. Widescreen UI follows it. |
+| `RECOMP_ASPECT` | `auto` | Follow the window, or pin `16:10`, `16:9`, `4:3`, or a numeric ratio (0.5–4). Gameplay adapts its view; menus retain their proportions. |
 | `MM3_FOV_DEGREES` | unset | Driving horizontal FOV at the display aspect, 60–110 degrees; unset or invalid values retain the existing widescreen FOV. Set with `scripts\play.ps1 -Fov 100`. |
 | `RECOMP_SUPERSAMPLE` | `2` | In auto resolution mode, render N×N pixels per window pixel (1–4). |
 | `RECOMP_RENDER_SCALE` | profile: `2.0` | Internal height as a multiple of 480 lines (0.5–8): Balanced 960, Quality 1440, LowPower 720; `2.25` = 1080. `auto` follows the window and uses supersampling. |

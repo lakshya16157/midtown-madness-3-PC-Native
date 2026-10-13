@@ -22,27 +22,29 @@ reference information.
 | Koenigsegg Regera | Koenigsegg |
 | Lamborghini Aventador | Koenigsegg |
 
-## Overall order and story progression
+## Vehicle order and story progression
 
-The installer orders the full catalog from best to worst by the sum of four
-menu ratings: **top speed + acceleration + handling + durability**, each from
-0 to 9. The maximum overall score is 36. Mass is excluded because more weight
-is not consistently better. Original ratings come from the pristine packaged
-car data; custom ratings come from the selected manifest. This is a comparison
-of the game's ratings, not a measured lap-time or real-world performance claim.
+Original cars come first in their retail order. Added cars and downloaded DLC
+cars follow together, sorted from slowest to fastest by the game's **TOPSPEED**
+menu rating (0 to 9). Equal ratings use vehicle ID as a deterministic tiebreaker.
+The two hidden retail bonus cars remain part of the original group. This order
+compares the game's displayed speed ratings; it is not a claim about measured
+or real-world maximum speed.
 
-Equal scores keep the originals' relative retail order, followed by custom
-cars in manifest order. Every apply recalculates `Cars/Tweak/SortOrder` for all
-44 cars without changing physics, ratings, IDs, or model selections. The preview
-prints each car's position and score; original cars use their archive aliases.
-Changing a custom menu rating can therefore change its position on the next
-apply, while editing physics alone does not change its rank.
+Every apply recalculates `Cars/Tweak/SortOrder` without changing physics,
+ratings, IDs or model selections. The native vehicle-menu hook also handles
+downloaded cars and older installations, so updating the executable fixes their
+order without reinstalling the car pack. The preview prints each packaged car's
+position and speed rating; original cars use their archive aliases. Changing an
+extra car's TOPSPEED rating changes its position on the next apply. Other ratings,
+physics edits and speedometer dial limits do not affect its order.
 
 The original 35 cars retain their original `LOCKED`, `HIDDEN`, and `ADMITTANCE`
 requirements byte for byte. With normal story progression enabled, the menu
-keeps its retail availability groups: available cars first, then visible locked
-cars, each in overall rating order. Hidden locked cars stay hidden. Custom cars
-remain available. Reapplying the pack does not reset saved progress.
+keeps the originals' retail availability groups: available original cars first,
+then visible locked original cars, followed by the extra cars. Hidden locked cars
+stay hidden, and race-class filters still apply. Custom cars remain available.
+Reapplying the pack does not reset saved progress or selected vehicle IDs.
 
 ## Visual editor
 
@@ -287,6 +289,7 @@ Run the editor/installer and native HUD checks without starting the game:
 . .\scripts\enter-env.ps1
 python -m unittest discover -s tests -p "test_car*.py"
 python tests/mm3_speedometer_regression.py
+python tests/mm3_car_order_regression.py
 python tests/mm3_speedometer_dial_regression.py
 ```
 

@@ -1,5 +1,6 @@
 #include <string.h>
 #include "recomp_types.h"
+#include "mm3_graphics_menu.h"
 
 extern void sub_0011C194_original(void);
 extern void sub_00016148(void);
@@ -49,12 +50,12 @@ void sub_0011C194(void)
     uint32_t entry_sp = g_esp;
     uint32_t output = MEM32(entry_sp + 4u);
     uint32_t key = MEM32(entry_sp + 8u);
-    const char *value = NULL;
+    const char *value = mm3_graphics_menu_label((const char *)XBOX_PTR(key));
     size_t i;
 
     /* The guest key is NUL-terminated by the existing locale API. Prefix
      * matching bounds every read to the exact custom key, including its NUL. */
-    for (i = 0; i < sizeof car_names / sizeof car_names[0]; ++i) {
+    for (i = 0; !value && i < sizeof car_names / sizeof car_names[0]; ++i) {
         size_t j, length = strlen(car_names[i].key);
         for (j = 0; j <= length; ++j)
             if (MEM8(key + (uint32_t)j) != (unsigned char)car_names[i].key[j])
@@ -79,8 +80,8 @@ void sub_0011C194(void)
         uint16_t cc = g_fp_cc, control = g_fp_control_word;
         RecompXmm xmm[] = {g_xmm0, g_xmm1, g_xmm2, g_xmm3,
                           g_xmm4, g_xmm5, g_xmm6, g_xmm7};
-        uint32_t text = entry_sp - 64u;
         size_t length = strlen(value);
+        uint32_t text = entry_sp - (length < 32u ? 64u : 1024u);
 
         memcpy(fp, g_fp_stack, sizeof fp);
         /* Reserve the text above the helper's argument/callee frames. */

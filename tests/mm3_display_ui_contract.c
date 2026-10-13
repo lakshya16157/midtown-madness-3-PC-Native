@@ -10,14 +10,17 @@
 static void (*settings_handler)(HWND);
 static int blocked, publishes, published_fps, published_vsync, published_width;
 static float published_scale;
+static float published_aspect;
 
 void xbox_FramebufferSetSettingsHandler(void (*handler)(HWND)) { settings_handler = handler; }
+HWND xbox_FramebufferWindowHandle(void) { return NULL; }
 int xbox_FramebufferSetDisplayMode(int width, int height, int borderless)
 { (void)height; (void)borderless; published_width = width; return 1; }
 void xbox_FramebufferSetShowFPS(int show) { (void)show; }
 int nv2a_d3d_set_present_options(int vsync, int fps)
 { ++publishes; published_fps = fps; published_vsync = vsync; return 1; }
 void nv2a_d3d_set_render_scale(float scale) { published_scale = scale; }
+void nv2a_d3d_set_display_aspect(float aspect) { published_aspect = aspect; }
 void xbox_InputSetBlocked(int value) { InterlockedExchange((LONG *)&blocked, value); }
 
 static HWND wait_dialog(void)
@@ -96,6 +99,7 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
         CHECK(combo_value(dialog, IDC_DISPLAY_ASPECT) == 5);
         CHECK(combo_float(dialog, IDC_DISPLAY_SCALE) == 5.f);
         SetDlgItemTextA(dialog, IDC_DISPLAY_FPS, "45");
+        combo_select(dialog, IDC_DISPLAY_ASPECT, 1); /* Live 4:3 selection. */
         combo_select(dialog, IDC_DISPLAY_MSAA, 2);
         combo_select(dialog, IDC_DISPLAY_SCALE, float_value(2.5f));
         CheckDlgButton(dialog, IDC_DISPLAY_VSYNC, BST_CHECKED);
@@ -107,13 +111,16 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
         CHECK(IsWindowEnabled(GetDlgItem(dialog, IDC_DISPLAY_RESOLUTION)));
         notify(dialog, IDC_DISPLAY_APPLY, BN_CLICKED);
         CHECK(published_fps == 45 && published_vsync == 1 && published_scale == 2.5f);
+        CHECK(fabsf(published_aspect - 4.f / 3.f) < 0.0001f);
         CHECK(published_width == 1280);
         GetDlgItemTextA(dialog, IDC_DISPLAY_STATUS, text, sizeof text);
         CHECK(strstr(text, "Saved.") && strstr(text, "Restart") && strstr(text, "anti-aliasing"));
+        CHECK(!strstr(text, "aspect ratio"));
     } else if (stage == 1) {
         GetDlgItemTextA(dialog, IDC_DISPLAY_FPS, text, sizeof text);
         CHECK(strcmp(text, "45") == 0);
         CHECK(combo_value(dialog, IDC_DISPLAY_MSAA) == 2);
+        CHECK(combo_value(dialog, IDC_DISPLAY_ASPECT) == 1);
         SetDlgItemTextA(dialog, IDC_DISPLAY_FPS, "999");
         notify(dialog, IDC_DISPLAY_FPS, CBN_EDITCHANGE);
         GetDlgItemTextA(dialog, IDC_DISPLAY_STATUS, text, sizeof text);
@@ -141,6 +148,7 @@ int main(int argc, char **argv)
     CHECK(_putenv_s("RECOMP_RENDER_SCALE", "5") == 0);
     mm3_display_settings_init();
     CHECK(settings_handler);
+    CHECK(fabsf(published_aspect - 1.77778f) < 0.0001f);
     owner = CreateWindowExA(0, "STATIC", "Display contract owner", WS_OVERLAPPEDWINDOW,
                             100, 100, 1296, 839, NULL, NULL, GetModuleHandleA(NULL), NULL);
     CHECK(owner);
@@ -157,7 +165,10 @@ int main(int argc, char **argv)
     CHECK(mm3_display_settings_load(&loaded, error, sizeof error));
     CHECK(loaded.fps_limit == 45 && loaded.msaa == 2 && loaded.vsync == 1);
     CHECK(loaded.render_scale == 2.5f && loaded.aniso == 3);
-    CHECK(strcmp(loaded.aspect, "1.77778") == 0);
+    CHECK(strcmp(loaded.aspect, "4:3") == 0);
+    strcpy(loaded.aspect, "auto");
+    CHECK(mm3_display_settings_commit(&loaded, error, sizeof error));
+    CHECK(published_aspect == 0.f && !strstr(error, "aspect ratio"));
     DestroyWindow(owner);
     puts("PASS: real Display Settings resource, custom values, Apply, restart notice, fullscreen controls, invalid FPS, Cancel, defaults, persistence and input capture");
     return 0;

@@ -11,10 +11,71 @@
 #include "mm3_display_settings_ids.h"
 #include "mm3_frame_limit.h"
 
-/* Only the framebuffer message thread edits these after startup. The renderer
- * receives live changes through its own synchronized publication APIs. */
+/* The native menu runs on the title thread; F10 runs on the window thread.
+ * Keep snapshots and commits synchronized across both entry points. */
 static MM3DisplaySettings s_current, s_boot;
 static HWND s_dialog;
+static SRWLOCK s_settings_lock = SRWLOCK_INIT;
+
+static float display_aspect(const char *value)
+{
+    float width, height;
+    if (!strcmp(value, "auto")) return 0.f;
+    if (sscanf(value, "%f:%f", &width, &height) == 2)
+        return width / height;
+    return strtof(value, NULL);
+}
+
+void mm3_display_settings_get(MM3DisplaySettings *settings)
+{
+    HWND window = xbox_FramebufferWindowHandle();
+    RECT client;
+    AcquireSRWLockShared(&s_settings_lock);
+    *settings = s_current;
+    ReleaseSRWLockShared(&s_settings_lock);
+    if (window) {
+        settings->fullscreen = !(GetWindowLongA(window, GWL_STYLE) & WS_OVERLAPPEDWINDOW);
+        if (!settings->fullscreen && GetClientRect(window, &client) &&
+            client.right >= 640 && client.right <= 7680 &&
+            client.bottom >= 480 && client.bottom <= 4320) {
+            settings->window_width = client.right;
+            settings->window_height = client.bottom;
+        }
+    }
+}
+
+int mm3_display_settings_commit(const MM3DisplaySettings *settings,
+                               char *status, size_t capacity)
+{
+    int mode_applied;
+    char changes[256] = "";
+    AcquireSRWLockExclusive(&s_settings_lock);
+    if (!mm3_display_settings_save(settings, status, capacity)) {
+        ReleaseSRWLockExclusive(&s_settings_lock);
+        return 0;
+    }
+    s_current = *settings;
+    nv2a_d3d_set_present_options(settings->vsync, settings->fps_limit);
+    nv2a_d3d_set_render_scale(settings->render_scale);
+    nv2a_d3d_set_display_aspect(display_aspect(settings->aspect));
+    xbox_FramebufferSetShowFPS(settings->show_fps);
+    mode_applied = xbox_FramebufferSetDisplayMode(settings->window_width,
+                                                 settings->window_height,
+                                                 settings->fullscreen);
+#define CHANGED(test, label) if (test) { if (*changes) strcat(changes, ", "); strcat(changes, label); }
+    CHANGED(!mode_applied, "window mode/resolution");
+    CHANGED(settings->msaa != s_boot.msaa, "anti-aliasing");
+    CHANGED(settings->aniso != s_boot.aniso, "texture filtering");
+    CHANGED(fabsf(settings->draw_distance - s_boot.draw_distance) > 0.0001f, "draw distance");
+#undef CHANGED
+    if (capacity)
+        snprintf(status, capacity, *changes ? "Saved. Restart to apply: %s." : "Saved. Display changes applied.", changes);
+    ReleaseSRWLockExclusive(&s_settings_lock);
+    fprintf(stderr, "[MM3_DISPLAY] saved window=%dx%d fullscreen=%d fps=%d vsync=%d scale=%.3g\n",
+            settings->window_width, settings->window_height, settings->fullscreen,
+            settings->fps_limit, settings->vsync, settings->render_scale);
+    return 1;
+}
 
 static void combo_add(HWND dialog, int id, const char *label, LPARAM value)
 {
@@ -167,7 +228,7 @@ static int read_controls(HWND dialog, MM3DisplaySettings *settings)
     long limit;
     LPARAM resolution = combo_value(dialog, IDC_DISPLAY_RESOLUTION);
     LPARAM aspect = combo_value(dialog, IDC_DISPLAY_ASPECT);
-    *settings = s_current;
+    mm3_display_settings_get(settings);
     GetDlgItemTextA(dialog, IDC_DISPLAY_FPS, fps, sizeof fps);
     limit = strtol(fps, &end, 10);
     while (*end == ' ') ++end;
@@ -196,7 +257,6 @@ static void update_status(HWND dialog, int saved)
         return;
     }
 #define CHANGED(test, label) if (test) { if (*changes) strcat(changes, ", "); strcat(changes, label); }
-    CHANGED(strcmp(pending.aspect, s_boot.aspect), "aspect ratio");
     CHANGED(pending.msaa != s_boot.msaa, "anti-aliasing");
     CHANGED(pending.aniso != s_boot.aniso, "texture filtering");
     CHANGED(fabsf(pending.draw_distance - s_boot.draw_distance) > 0.0001f, "draw distance");
@@ -219,23 +279,11 @@ static int apply(HWND dialog)
     }
     /* Commit the file before publishing live changes. If saving fails the
      * panel stays open and the user's current display is left intact. */
-    if (!mm3_display_settings_save(&settings, error, sizeof error)) {
+    if (!mm3_display_settings_commit(&settings, error, sizeof error)) {
         MessageBoxA(dialog, error, "Could not save Display Settings", MB_OK | MB_ICONERROR);
         return 0;
     }
-    s_current = settings;
-    nv2a_d3d_set_present_options(settings.vsync, settings.fps_limit);
-    nv2a_d3d_set_render_scale(settings.render_scale);
-    xbox_FramebufferSetShowFPS(settings.show_fps);
-    if (!xbox_FramebufferSetDisplayMode(settings.window_width, settings.window_height, settings.fullscreen)) {
-        SetDlgItemTextA(dialog, IDC_DISPLAY_STATUS,
-            "Settings saved. Restart the game to apply the window resolution and mode.");
-        return 0;
-    }
-    update_status(dialog, 1);
-    fprintf(stderr, "[MM3_DISPLAY] saved window=%dx%d fullscreen=%d fps=%d vsync=%d scale=%.3g\n",
-            settings.window_width, settings.window_height, settings.fullscreen,
-            settings.fps_limit, settings.vsync, settings.render_scale);
+    SetDlgItemTextA(dialog, IDC_DISPLAY_STATUS, error);
     return 1;
 }
 
@@ -247,7 +295,9 @@ static INT_PTR CALLBACK display_dialog(HWND dialog, UINT message, WPARAM wparam,
         RECT parent, bounds;
         MONITORINFO monitor = { sizeof monitor };
         s_dialog = dialog;
-        populate(dialog, &s_current);
+        MM3DisplaySettings current;
+        mm3_display_settings_get(&current);
+        populate(dialog, &current);
         update_status(dialog, 0);
         if (GetWindowRect(GetParent(dialog), &parent) && GetWindowRect(dialog, &bounds)) {
             int width = bounds.right - bounds.left, height = bounds.bottom - bounds.top;
@@ -305,12 +355,14 @@ static void open_settings(HWND window)
         return;
     }
     /* Reflect changes made with F11/Alt+Enter or dragging the game window. */
+    AcquireSRWLockExclusive(&s_settings_lock);
     s_current.fullscreen = !(GetWindowLongA(window, GWL_STYLE) & WS_OVERLAPPEDWINDOW);
     if (!s_current.fullscreen && GetClientRect(window, &client) &&
         client.right >= 640 && client.right <= 7680 && client.bottom >= 480 && client.bottom <= 4320) {
         s_current.window_width = client.right;
         s_current.window_height = client.bottom;
     }
+    ReleaseSRWLockExclusive(&s_settings_lock);
     xbox_InputSetBlocked(1);
     result = DialogBoxParamA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_DISPLAY_SETTINGS),
                             window, display_dialog, 0);
@@ -331,6 +383,7 @@ void mm3_display_settings_init(void)
     xbox_FramebufferSetShowFPS(s_current.show_fps);
     nv2a_d3d_set_present_options(s_current.vsync, s_current.fps_limit);
     nv2a_d3d_set_render_scale(s_current.render_scale);
+    nv2a_d3d_set_display_aspect(display_aspect(s_current.aspect));
     xbox_FramebufferSetSettingsHandler(open_settings);
     puts("Display Settings: press F10 (F11 toggles fullscreen).");
 }

@@ -12,12 +12,15 @@ RECOMP_TLS uint32_t g_ebp, g_seh_ebp;
 RECOMP_TLS double g_fp_stack[8];
 RECOMP_TLS int g_fp_top, g_fp_cmp, g_df;
 RECOMP_TLS uint16_t g_fp_cc, g_fp_control_word;
+RECOMP_TLS uint32_t g_fs_base;
+RECOMP_TLS RecompXmm g_xmm0, g_xmm1, g_xmm2, g_xmm3, g_xmm4, g_xmm5, g_xmm6, g_xmm7;
 static unsigned char memory[0x440000];
 static const uint32_t stack = 0x80000, camera = 0x10000, params = 0x14000;
 static uint32_t captured[14];
 static unsigned solver_calls, hud_calls, edge_calls;
 static int edge_value;
 static float display_aspect;
+static unsigned view_updates;
 
 float nv2a_d3d_display_aspect(void) { return display_aspect; }
 void nv2a_d3d_set_edge_hud(int on) { ++edge_calls; edge_value = on; }
@@ -29,12 +32,15 @@ void nv2a_d3d_set_map_texture_query(int (*query)(uint32_t)) { (void)query; }
 void sub_0011C742_original(void) { g_esp += 8; }
 void sub_0011CAAC_original(void) { g_esp += 12; }
 void sub_0007CEC3_original(void) { g_esp += 8; }
+void sub_000F4BB1_original(void) { ++view_updates; g_esp += 4; }
 void sub_001EEC53_original(void) {
     ++solver_calls;
     memcpy(captured, (const void *)XBOX_PTR(g_esp + 4), sizeof captured);
     g_esp += 60; /* Native RET 56. */
 }
+#define sub_000F4AC3 bridge_projection_setup
 #include "production_widescreen.c"
+#undef sub_000F4AC3
 
 #define eax g_eax
 #define ecx g_ecx
@@ -44,6 +50,15 @@ void sub_001EEC53_original(void) {
 #define esi g_esi
 #define edi g_edi
 #include "native_camera.inc"
+
+void bridge_projection_setup(void) {
+    RecompXmm zero = {0};
+    native_projection_setup();
+    /* Helpers reached by an injected guest call may clobber caller-saved
+     * SIMD registers and TLS context; the surrounding frame must retain all. */
+    g_fs_base=0; g_xmm0=zero; g_xmm1=zero; g_xmm2=zero; g_xmm3=zero;
+    g_xmm4=zero; g_xmm5=zero; g_xmm6=zero; g_xmm7=zero;
+}
 
 static void close_float(float got, float expected) {
     if (!isfinite(got) || fabsf(got - expected) > 0.00003f) {
@@ -111,7 +126,7 @@ static float vertical(float horizontal, float aspect) {
     return 2.0f * atanf(tanf(horizontal * (3.14159265358979323846f / 360.0f)) / aspect);
 }
 static void projection_contract(float override) {
-    static const float aspects[] = {4.0f / 3.0f, 1.6f, 16.0f / 9.0f, 21.0f / 9.0f};
+    static const float aspects[] = {0.75f, 1.0f, 4.0f / 3.0f, 1.6f, 16.0f / 9.0f, 21.0f / 9.0f};
     static const uint32_t callers[] = {0x00210E1E, 0x000E51EE, 0x001EC9C2, 0x001ECA3A, 0x12345678};
     unsigned a, pass, k;
     for (a = 0; a < sizeof aspects / sizeof aspects[0]; ++a) {
@@ -120,11 +135,11 @@ static void projection_contract(float override) {
             float input_aspect = pass == 0 ? 4.0f / 3.0f : (pass == 1 ? display_aspect : 1.0f);
             for (k = 0; k < sizeof callers / sizeof callers[0]; ++k) {
                 float input_fovy = vertical(65.0f, input_aspect);
-                float final_aspect = pass == 2 ? 1.0f : display_aspect;
+                float final_aspect = k == 1 ? 4.0f / 3.0f : pass == 2 ? 1.0f : display_aspect;
                 float expected_fovy = input_fovy;
                 int race = k == 0;
                 if (race && override) expected_fovy = vertical(override, final_aspect);
-                else if (race && pass == 1) expected_fovy = vertical(65.0f, 4.0f / 3.0f);
+                else if (race && pass < 2) expected_fovy = vertical(65.0f, fminf(display_aspect, 4.0f / 3.0f));
                 reset_call(); hud_calls = edge_calls = 0;
                 MEM32(stack) = callers[k];
                 MEMF(stack + 4) = input_fovy; MEMF(stack + 8) = input_aspect;
@@ -164,13 +179,66 @@ static void projection_contract(float override) {
     }
 }
 
+static void live_resize_contract(float override) {
+    static const float shapes[] = {16.0f / 9.0f, 1.0f, 21.0f / 9.0f, 0.75f, 4.0f / 3.0f};
+    unsigned repeat, i;
+    display_aspect = 4.0f / 3.0f;
+    reset_call();
+    MEM32(stack) = 0x00210E1E;
+    MEMF(stack + 4) = vertical(65, display_aspect); MEMF(stack + 8) = display_aspect;
+    MEMF(stack + 12) = MEMF(camera + 0x1FAC) = .2f;
+    MEMF(stack + 16) = MEMF(camera + 0x1FB0) = 1000;
+    native_projection_setup();
+    assert(display_camera_slot(camera) >= 0);
+    for (repeat = 0; repeat < 40; ++repeat) for (i = 0; i < sizeof shapes / sizeof shapes[0]; ++i) {
+        uint32_t saved[9]; double fp[8]; unsigned j, updates = view_updates;
+        RecompXmm simd[8], actual[8];
+        float expected;
+        display_aspect = shapes[i];
+        expected = vertical(override ? override : 65, override ? display_aspect : fminf(display_aspect, 4.0f / 3.0f));
+        reset_call(); g_edi = camera; g_seh_ebp = 0x23456;
+        g_fp_top = 3; g_fp_cmp = 1; g_fp_cc = 0x100; g_df = 1;
+        memset(simd,0xA5,sizeof simd); g_fs_base=0x12345678;
+        g_xmm0=simd[0]; g_xmm1=simd[1]; g_xmm2=simd[2]; g_xmm3=simd[3];
+        g_xmm4=simd[4]; g_xmm5=simd[5]; g_xmm6=simd[6]; g_xmm7=simd[7];
+        for (j = 0; j < 8; ++j) fp[j] = g_fp_stack[j] = (double)j + .25;
+        saved[0]=g_eax; saved[1]=g_ecx; saved[2]=g_edx; saved[3]=g_esp;
+        saved[4]=g_ebx; saved[5]=g_esi; saved[6]=g_edi; saved[7]=g_ebp; saved[8]=g_seh_ebp;
+        sub_000F4BB1();
+        assert(view_updates == updates + 1 && g_esp == saved[3] + 4);
+        assert(g_eax==saved[0] && g_ecx==saved[1] && g_edx==saved[2] && g_ebx==saved[4]);
+        assert(g_esi==saved[5] && g_edi==saved[6] && g_ebp==saved[7] && g_seh_ebp==saved[8]);
+        assert(g_fp_top==3 && g_fp_cmp==1 && g_fp_cc==0x100 && g_df==1 && g_fp_control_word==0x37F);
+        assert(!memcmp(fp,g_fp_stack,sizeof fp));
+        actual[0]=g_xmm0; actual[1]=g_xmm1; actual[2]=g_xmm2; actual[3]=g_xmm3;
+        actual[4]=g_xmm4; actual[5]=g_xmm5; actual[6]=g_xmm6; actual[7]=g_xmm7;
+        assert(g_fs_base==0x12345678 && !memcmp(simd,actual,sizeof simd));
+        close_float(MEMF(camera + 0x1FA4), expected);
+        close_float(MEMF(camera + 0x1FA8), display_aspect);
+        close_float(MEMF(camera + 0x1EE4), 1 / tanf(expected * .5f) / display_aspect);
+        close_float(MEMF(camera + 0x1EF8), 1 / tanf(expected * .5f));
+        close_float(MEMF(camera + 0x1FAC), .2f); close_float(MEMF(camera + 0x1FB0), 1000);
+    }
+    /* The same allocation becomes a menu turntable. Further resizes must
+     * leave its authored projection alone and retire its old race identity. */
+    reset_call(); MEM32(stack)=0x000E51EE;
+    MEMF(stack+4)=.7f; MEMF(stack+8)=4.0f/3.0f; MEMF(stack+12)=.2f; MEMF(stack+16)=1000;
+    native_projection_setup(); assert(display_camera_slot(camera)<0);
+    display_aspect=21.0f/9.0f; reset_call(); g_edi=camera; sub_000F4BB1();
+    close_float(MEMF(camera+0x1FA4),.7f); close_float(MEMF(camera+0x1FA8),4.0f/3.0f);
+    for (i=0;i<DISPLAY_CAMERA_COUNT*3;++i) {
+        uint32_t identity=0x15000+i*0x2400;
+        remember_display_camera(identity); assert(display_camera_slot(identity)>=0);
+    }
+}
+
 int main(int argc, char **argv) {
     float override;
     assert(argc == 2);
     override = strtof(argv[1], NULL);
     g_xbox_mem_offset = (ptrdiff_t)memory;
     native_constants();
-    chase_contract(); projection_contract(override);
-    printf("PASS camera: near-only +0.25m, native matrix/culling, FOV %.3g, four aspects, ABI guards\n", override);
+    chase_contract(); projection_contract(override); live_resize_contract(override);
+    printf("PASS camera: near-only +0.25m, native matrix/culling, FOV %.3g, six aspects, 200 live resizes, menu retirement and ABI guards\n", override);
     return 0;
 }

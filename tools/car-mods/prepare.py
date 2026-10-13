@@ -40,7 +40,14 @@ def default_config_path(directory: Path | None = None) -> Path:
 ARCHIVES = ("Data/Data_hd.zip", "Data/Data_dvd.zip")
 STATE_DIR = ".mm3-car-mods"
 RATINGS = {"TOPSPEED", "ACCELERATION", "MASS", "HANDLING", "DURABILITY"}
-OVERALL_RATINGS = ("TOPSPEED", "ACCELERATION", "HANDLING", "DURABILITY")
+CATALOG_RATINGS = ("TOPSPEED", "ACCELERATION", "HANDLING", "DURABILITY")
+# Pristine PAL retail IDs, including hidden bonus cars. Native menu ordering
+# uses the same IDs in src/mm3_car_order.c; DLC and other IDs are extras.
+ORIGINAL_CAR_IDS = (
+    106, 115, 103, 101, 105, 102, 6, 7, 50, 113, 104, 19, 111,
+    108, 110, 107, 109, 10, 21, 14, 23, 12, 1, 24, 9, 2, 16,
+    3, 8, 25, 18, 11, 15, 666, 667,
+)
 SPEEDOMETER = {"max_kmh": (100, 1200), "max_mph": (60, 750)}
 SPEEDOMETER_FILE = "Data/mm3_speedometers.ini"
 FACTORY_PHYSICS_FILE = "Data/mm3_factory_physics.ini"
@@ -435,12 +442,11 @@ def find_info(archive: zipfile.ZipFile, name: str) -> zipfile.ZipInfo:
 
 
 def catalog_ranking(archive: zipfile.ZipFile, config: dict) -> list[dict]:
-    """Rank the complete catalog without changing ratings or unlock rules.
+    """Keep original cars first, then order extras from slowest to fastest.
 
-    The four comparable 0..9 menu ratings have equal weight; mass is not a
-    measure of quality. Stable sorting preserves retail SortOrder among stock
-    ties, then manifest order among custom ties. Unlisted stock entries follow
-    the listed originals before custom entries.
+    Originals retain pristine SortOrder; unlisted originals follow listed ones.
+    DLC and custom entries use native TOPSPEED ratings, with ID as a deterministic
+    tiebreaker. Other ratings, physics and dial ranges do not affect this order.
     """
     stock = {}
     for info in archive.infolist():
@@ -451,7 +457,7 @@ def catalog_ranking(archive: zipfile.ZipFile, config: dict) -> list[dict]:
         if not section:
             raise ValueError(f"Missing CarInfo in catalog tweak: {info.filename}")
         values = {}
-        for key in ("ID", *OVERALL_RATINGS):
+        for key in ("ID", *CATALOG_RATINGS):
             matches = re.findall(r"^[ \t]*" + key + r"[ \t]+(\d+)[ \t]*\r?$", section[1], re.M)
             if len(matches) != 1:
                 raise ValueError(f"Expected one numeric {key} in {info.filename}")
@@ -460,7 +466,7 @@ def catalog_ranking(archive: zipfile.ZipFile, config: dict) -> list[dict]:
         if ident in stock or any(not 0 <= value <= 9 for value in values.values()):
             raise ValueError(f"Duplicate ID or invalid catalog rating in {info.filename}")
         stock[ident] = {"id": ident, "alias": Path(info.filename).stem,
-                        "ratings": values, "score": sum(values.values())}
+                        "ratings": values}
     order = [int(line) for line in archive.read(find_info(archive, "Cars/Tweak/SortOrder")).splitlines() if line.strip()]
     if len(order) != len(set(order)) or any(ident not in stock for ident in order):
         raise ValueError("Original SortOrder contains duplicate or unknown car IDs")
@@ -470,11 +476,13 @@ def catalog_ranking(archive: zipfile.ZipFile, config: dict) -> list[dict]:
     for car in config["cars"]:
         if car["id"] in stock:
             raise ValueError(f"Car ID already exists: {car['id']}")
-        values = {key: car["ratings"][key] for key in OVERALL_RATINGS}
+        values = {key: car["ratings"][key] for key in CATALOG_RATINGS}
         ranked.append({"id": car["id"], "alias": car["alias"],
-                       "display_name": car["display_name"], "ratings": values,
-                       "score": sum(values.values())})
-    return sorted(ranked, key=lambda car: -car["score"])
+                       "display_name": car["display_name"], "ratings": values})
+    original_ids = set(ORIGINAL_CAR_IDS)
+    originals = [car for car in ranked if car["id"] in original_ids]
+    extras = [car for car in ranked if car["id"] not in original_ids]
+    return originals + sorted(extras, key=lambda car: (car["ratings"]["TOPSPEED"], car["id"]))
 
 
 def build_plan(game_dir: Path, originals: dict[str, bytes], config: dict,
@@ -699,10 +707,10 @@ def main() -> int:
             print(f"{car['id']}: {car['display_name']} ({body}), ratings {car['ratings']}")
         with zipfile.ZipFile(io.BytesIO(originals[ARCHIVES[0]])) as archive:
             ranking = catalog_ranking(archive, config)
-        print("Overall order: speed + acceleration + handling + durability (0-36); mass excluded.")
+        print("Menu order: original cars first; extras slow-to-fast by TOPSPEED (0-9), then ID.")
         for place, car in enumerate(ranking, 1):
             print(f"{place:2}. {car['display_name'] if 'display_name' in car else car['alias']} "
-                  f"[{car['id']}] {car['score']}/36")
+                  f"[{car['id']}] speed {car['ratings']['TOPSPEED']}/9")
         print(f"Prepared {counts['archive_entries']} archive entries and {counts['loose_files']} loose assets.")
         if args.apply:
             changed = apply_plan(game_dir, state, originals, output, config)

@@ -1,0 +1,254 @@
+"""Generate native MM3 graphics menus without modifying the retail archive."""
+from pathlib import Path
+import argparse
+import json
+import struct
+import zipfile
+
+from native_menu import (Object, Reference, Resource, actions, call_function, clone,
+                         find_row, named_references, row_button, rows, sid, sid_text)
+
+MAIN = "main/screenMain"
+OPTIONS = "options/screenOptions"
+TITLE = "titles/titleOptions"
+MULTIPOP_TEMPLATE = "singlePlayer/career/mission/screenCareerSlides"
+DISPLAY = "graphics/screenGraphics"
+ADVANCED = "graphics/screenAdvanced"
+TITLE_DISPLAY = "titles/titleGraphics"
+TITLE_ADVANCED = "titles/titleGraphicsAdvanced"
+INFOBOX = "nodeInfoBox"
+INFO_WIDGET = "infoBox"
+GRAPHICS_INFOBOX = "graphics/nodeInfoBox"
+GRAPHICS_INFO_WIDGET = "graphics/infoBox"
+# Setting rows open native pickers rather than cycling the current value.
+DISPLAY_ROWS = [("RESOLUTION", None), ("MODE", None), ("FPS", None),
+                ("VSYNC", None), ("SCALE", None), ("SHOW_FPS", None),
+                ("ADVANCED", None), ("APPLY", "graphicsApply"), ("DEFAULTS", "graphicsDefaults")]
+ADVANCED_ROWS = [("ASPECT", None), ("MSAA", None), ("ANISO", None), ("DISTANCE", None),
+                 ("APPLY", "graphicsApply"), ("DEFAULTS", "graphicsDefaults")]
+PICKER_COUNTS = {"RESOLUTION": 12, "MODE": 2, "FPS": 7, "VSYNC": 2, "SCALE": 9,
+                 "SHOW_FPS": 2, "ASPECT": 5, "MSAA": 4, "ANISO": 5, "DISTANCE": 5}
+PICKERS = {key: "graphics/picker" + key for key in PICKER_COUNTS}
+PICKER_TITLES = {key: "titles/titleGraphics" + key for key in PICKER_COUNTS}
+RESOLUTION_OTHER = "graphics/pickerRESOLUTIONOther"
+# Put common 4:3 and 16:9 resolutions together, with the less common sizes one
+# selection away. Both pages keep the retail focus order and Back behavior.
+RESOLUTION_PRIMARY = (0, 2, 6, 7, 9, 11)
+RESOLUTION_SECONDARY = (1, 3, 4, 5, 8, 10)
+ROW_DESTINATIONS = {**PICKERS, "ADVANCED": ADVANCED, "MORE_RESOLUTIONS": RESOLUTION_OTHER}
+
+
+def picker_rows(key, choices=None):
+    return [(f"CHOICE_{key}_{index}", f"graphicsSelect{key}{index}")
+            for index in (range(PICKER_COUNTS[key]) if choices is None else choices)]
+
+
+def path_action(template, destination):
+    result = clone(template)
+    refs = result.object.references()
+    if result.object.kind != "PushPathAction" or len(refs) != 2 or refs[0].name != "pathMain":
+        raise ValueError("Retail PushPathAction schema changed")
+    refs[1].name = destination
+    return result
+
+
+def main_menu(retail):
+    resource = clone(retail)
+    options = find_row(resource, "strings/choiceOptions")
+    profile = find_row(resource, "strings/choiceProfiles")
+    if options.parts[0].object is not profile:
+        raise ValueError("Options/Profile retail sibling order changed")
+    button = row_button(options)
+    push = button.parts[3].object.references()[0]
+    graphics = clone(options)
+    graphics.parts[0] = options.parts[0]
+    graphics.parts[1] = struct.pack("<4f", 0, 120, 520, 30)
+    graphics_button = row_button(graphics)
+    graphics_button.parts[1] = Reference("graphics/choiceGraphics", sid("SID_MM3_GRAPHICS_TITLE"))
+    graphics_button.parts[3] = actions([call_function("graphicsBegin"), path_action(push, DISPLAY)])
+    options.parts[0] = Reference(object=graphics)
+    for obj in (profile, profile.parts[0].object):
+        x, y, width, height = struct.unpack("<4f", obj.parts[1])
+        obj.parts[1] = struct.pack("<4f", x, y + 30, width, height)
+    # Keep the existing help text aligned with the new controller focus order.
+    data = named_references(resource, "main/oftMain")[0].object
+    if data.kind != "DataListData" or len(data.parts) != 7:
+        raise ValueError("Retail main help list changed")
+    data.parts.insert(4, Reference(object=sid("SID_MM3_GRAPHICS_HELP")))
+    for ref in named_references(resource, "main/oftMainIndex"):
+        if ref.object and ref.object.kind == "IntData":
+            value, = struct.unpack("<i", ref.object.parts[0])
+            if value >= 4:
+                ref.object.parts[0] = struct.pack("<i", value + 1)
+    return resource
+
+
+def replace_object(resource, old, new):
+    refs = [ref for obj in resource.root.walk() for ref in obj.references() if ref.object is old]
+    if len(refs) != 1:
+        raise ValueError("Expected exactly one reference to a row chain")
+    refs[0].object = new
+
+
+def page(retail, row_specs, namespace, title, discard=False, pop_count=0, picker=False, multipop=None):
+    resource = clone(retail)
+    first = find_row(resource, "options/choiceGameSetup")
+    template = clone(first)
+    template.parts[0] = Reference()
+    push = row_button(template).parts[3]
+    back_lists = [obj for obj in resource.root.walk() if obj.kind == "ActionListAction" and
+                  any(ref.object and ref.object.kind == "PopPathAction" for ref in obj.references())]
+    if len(back_lists) != 1:
+        raise ValueError("Retail Back action changed")
+    pop = next(ref for ref in back_lists[0].references()
+               if ref.object and ref.object.kind == "PopPathAction")
+    if pop_count not in (0, 1, 2) or (pop_count == 2 and multipop is None):
+        raise ValueError("Picker return requires a proven native pop action")
+    selection_return = ([pop] if pop_count == 1 else [multipop] if pop_count == 2 else [])
+    next_row = Reference()
+    for index, (key, function) in reversed(list(enumerate(row_specs))):
+        row = clone(template)
+        row.parts[0] = next_row
+        row.parts[1] = struct.pack("<4f", 0, index * 26, 530, 26)
+        button = row_button(row)
+        button.parts[1] = Reference(namespace + "/choice" + key, sid("SID_MM3_GRAPHICS_" + key))
+        button.parts[3] = actions([call_function(function)] + [clone(item) for item in selection_return]
+                                  if function else [path_action(push, ROW_DESTINATIONS[key])])
+        next_row = Reference(object=row)
+    replace_object(resource, first, next_row.object)
+    # The stock page supplies title/background/help, transitions and native Back.
+    for ref in named_references(resource, "titles/titleOptions"):
+        ref.name = title
+    if len(row_specs) > 8:
+        # The nine-row primary page reaches y324. Give it a dedicated lower
+        # help box; other frontend screens retain the retail y300 rectangle.
+        for ref in named_references(resource, INFOBOX):
+            ref.name = GRAPHICS_INFOBOX
+        for ref in named_references(resource, INFO_WIDGET):
+            ref.name = GRAPHICS_INFO_WIDGET
+    for obj in resource.root.walk():
+        for ref in obj.references():
+            if ref.name.startswith("options/"):
+                ref.name = namespace + ref.name[len("options"):]
+    help_data = named_references(resource, namespace + "/oft")[0].object
+    if help_data.kind != "DataListData":
+        raise ValueError("Retail options help list changed")
+    help_data.parts = [Reference(object=sid("SID_MM3_GRAPHICS_" +
+                       ("PICKER_HELP" if picker else "HELP_" + key)))
+                       for key, _ in row_specs] + [Reference()]
+    for ref in named_references(resource, namespace + "/oftIndex"):
+        if ref.object and ref.object.kind == "IntData":
+            ref.object.parts = [struct.pack("<i", 0)]
+    # Only the original Back event discards on the primary page. Choice action
+    # lists also contain PopPathAction, so never identify Back by class alone.
+    back = back_lists[0]
+    back.parts = [ref for ref in back.parts
+                  if not (isinstance(ref, Reference) and ref.object and
+                          ref.object.kind == "CallFunctionAction")]
+    if discard:
+        back.parts.insert(0, call_function("graphicsDiscard"))
+    # Increase the content rectangle for nine rows, preserving the original origin.
+    for obj in resource.root.walk():
+        if obj.kind == "TransformNode" and len(obj.parts) == 3 and isinstance(obj.parts[1], bytes):
+            rect = struct.unpack("<4f", obj.parts[1])
+            if rect == (50.0, 90.0, 540.0, 210.0):
+                obj.parts[1] = struct.pack("<4f", 50, 90, 540, len(row_specs) * 26)
+    return resource
+
+
+def title_resource(retail, key):
+    resource = clone(retail)
+    matches = [obj for obj in resource.root.walk() if obj.kind == "WSidData" and sid_text(obj) == "SID_OPTIONS"]
+    if len(matches) != 1:
+        raise ValueError("Retail options title changed")
+    matches[0].parts = sid("SID_MM3_GRAPHICS_" + key).parts
+    return resource
+
+
+def info_box_resource(retail):
+    resource = clone(retail)
+    transforms = [obj for obj in resource.root.walk() if obj.kind == "TransformNode"]
+    if len(transforms) != 1 or len(transforms[0].parts) != 3:
+        raise ValueError("Retail information box transform changed")
+    transform = transforms[0]
+    if struct.unpack("<4f", transform.parts[1]) != (50, 300, 310, 110):
+        raise ValueError("Retail information box rectangle changed")
+    transform.parts[1] = struct.pack("<4f", 50, 340, 310, 65)
+    refs = named_references(resource, INFO_WIDGET)
+    if len(refs) != 1 or refs[0].object is not None:
+        raise ValueError("Retail information widget binding changed")
+    # Both page and positioned node resolve the standalone private widget.
+    refs[0].name = GRAPHICS_INFO_WIDGET
+    return resource
+
+
+def generate_resources(archive):
+    with zipfile.ZipFile(archive) as files:
+        original = {name: files.read("Menu/Frontend/" + name)
+                    for name in (MAIN, OPTIONS, TITLE, INFOBOX, INFO_WIDGET, MULTIPOP_TEMPLATE)}
+    decoded = {name: Resource.decode(data) for name, data in original.items()}
+    multipops = [obj for obj in decoded[MULTIPOP_TEMPLATE].root.walk() if obj.kind == "MultiPopPathAction"]
+    if len(multipops) != 1 or len(multipops[0].parts) != 2:
+        raise ValueError("Retail career multi-pop action changed")
+    multipop = multipops[0]
+    if (multipop.parts[0].name != "pathMain" or not isinstance(multipop.parts[1], bytes) or
+            len(multipop.parts[1]) != 21 or struct.unpack_from("<I", multipop.parts[1], 17)[0] != 2):
+        raise ValueError("Retail career multi-pop count changed")
+    resources = {MAIN: main_menu(decoded[MAIN]),
+                 DISPLAY: page(decoded[OPTIONS], DISPLAY_ROWS, "graphics/display", TITLE_DISPLAY, True),
+                 ADVANCED: page(decoded[OPTIONS], ADVANCED_ROWS, "graphics/advanced", TITLE_ADVANCED, False),
+                 TITLE_DISPLAY: title_resource(decoded[TITLE], "TITLE"),
+                 TITLE_ADVANCED: title_resource(decoded[TITLE], "ADVANCED"),
+                 GRAPHICS_INFOBOX: info_box_resource(decoded[INFOBOX]),
+                 GRAPHICS_INFO_WIDGET: clone(decoded[INFO_WIDGET])}
+    for key in PICKER_COUNTS:
+        specs = picker_rows(key, RESOLUTION_PRIMARY if key == "RESOLUTION" else None)
+        if key == "RESOLUTION":
+            specs.append(("MORE_RESOLUTIONS", None))
+        resources[PICKERS[key]] = page(decoded[OPTIONS], specs, "graphics/select" + key,
+                                       PICKER_TITLES[key], pop_count=1, picker=True)
+        resources[PICKER_TITLES[key]] = title_resource(decoded[TITLE], "PICKER_" + key)
+    resources[RESOLUTION_OTHER] = page(decoded[OPTIONS], picker_rows("RESOLUTION", RESOLUTION_SECONDARY),
+                                       "graphics/selectRESOLUTIONOther", PICKER_TITLES["RESOLUTION"],
+                                       pop_count=2, picker=True, multipop=Reference(object=clone(multipop)))
+    return {name: resource.encode() for name, resource in resources.items()}
+
+
+def write_header(resources, destination):
+    lines = ["/* Generated by tools/native-menu/generate.py; retail assets remain unchanged. */",
+             "#ifndef MM3_MENU_RESOURCES_H", "#define MM3_MENU_RESOURCES_H",
+             "typedef struct MM3MenuResource { const char *name; const unsigned char *data; unsigned size; } MM3MenuResource;"]
+    for index, (name, data) in enumerate(resources.items()):
+        lines.append(f"static const unsigned char mm3_menu_resource_{index}[] = {{")
+        lines.extend("    " + ",".join(f"0x{x:02X}" for x in data[pos:pos + 24]) + ","
+                     for pos in range(0, len(data), 24))
+        lines.append("};")
+    lines.append("static const MM3MenuResource mm3_menu_resources[] = {")
+    for index, (name, data) in enumerate(resources.items()):
+        lines.append(f'    {{ "{name}", mm3_menu_resource_{index}, {len(data)}u }},')
+    lines.extend(["};", "#define MM3_MENU_RESOURCE_COUNT (sizeof(mm3_menu_resources) / sizeof(mm3_menu_resources[0]))", "#endif", ""])
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("\n".join(lines), encoding="ascii")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--archive", type=Path, required=True)
+    parser.add_argument("--header", type=Path, required=True)
+    parser.add_argument("--resources-dir", type=Path)
+    args = parser.parse_args()
+    resources = generate_resources(args.archive)
+    write_header(resources, args.header)
+    output = args.resources_dir or args.header.parent
+    for name, data in resources.items():
+        path = output / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    manifest = {name: {"size": len(data), "rows": [label for label, _, _ in rows(Resource.decode(data))]}
+                for name, data in resources.items()}
+    (args.header.parent / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    print(f"Generated {len(resources)} native Meme resources and {args.header}")
+
+
+if __name__ == "__main__":
+    main()

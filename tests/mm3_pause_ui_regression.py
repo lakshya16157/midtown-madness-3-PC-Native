@@ -59,6 +59,11 @@ def main():
 ptrdiff_t g_xbox_mem_offset;
 RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi, g_edi;
 RECOMP_TLS uint32_t g_ebp, g_seh_ebp;
+RECOMP_TLS double g_fp_stack[8];
+RECOMP_TLS int g_fp_top, g_fp_cmp, g_df;
+RECOMP_TLS uint16_t g_fp_cc, g_fp_control_word;
+RECOMP_TLS uint32_t g_fs_base;
+RECOMP_TLS RecompXmm g_xmm0, g_xmm1, g_xmm2, g_xmm3, g_xmm4, g_xmm5, g_xmm6, g_xmm7;
 static unsigned char memory[0x440000];
 static int (*registered_query)(void);
 static unsigned registrations;
@@ -73,6 +78,8 @@ void nv2a_d3d_set_hud_start(float a, float b, float c, float d) {
 }
 void sub_0025968E_original(void) { g_esp += 24; }
 void sub_001EEC53_original(void) { g_esp += 60; }
+void sub_000F4AC3(void) { g_esp += 20; }
+void sub_000F4BB1_original(void) { g_esp += 4; }
 void nv2a_d3d_set_map_texture_query(int (*query)(uint32_t)) { (void)query; }
 void sub_0011C742_original(void) { g_esp += 8; }
 void sub_0011CAAC_original(void) { g_esp += 12; }

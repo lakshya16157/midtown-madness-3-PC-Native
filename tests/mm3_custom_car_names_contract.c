@@ -17,6 +17,11 @@ static unsigned char memory[0x10000];
 static unsigned original_calls, constructor_calls;
 static const uint32_t stack = 0xD000, output = 0x1000, key = 0x2000;
 static const uint32_t heap_text = 0x3000;
+static const char graphics_help[] =
+    "Choose a setting, then select an exact value. Apply saves your settings and updates the display.";
+
+const char *mm3_graphics_menu_label(const char *key_text)
+{ return strcmp(key_text, "SID_MM3_GRAPHICS_STATUS") == 0 ? graphics_help : NULL; }
 
 static void clobber_state(void)
 {
@@ -53,7 +58,7 @@ void sub_00016148(void)
     size_t i;
     assert(g_eax == output);
     assert(MEM32(g_esp) == 0x0011C1BEu);
-    assert(source == stack - 64 && source > g_esp);
+    assert(source < stack && source > g_esp);
     ++constructor_calls;
     /* The real guest constructor copies text into guest-owned storage.
      * The seam fixture models that copy, preventing a stack-pointer result. */
@@ -153,6 +158,15 @@ int main(void)
         assert(g_ecx == 0xBAD && g_ebx == 0xBAD && g_fp_top == 7);
         assert(MEM32(output) == 0x12345678);
     }
-    puts("PASS: 27 custom car labels, RET 8, guest string ownership, full register state and exact stock passthrough");
+    initialize("SID_MM3_GRAPHICS_STATUS");
+    sub_0011C194();
+    assert(original_calls == 0 && constructor_calls == 1);
+    assert(g_esp == stack + 12 && g_eax == output && g_ecx == 0x102);
+    assert(MEM32(stack) == 0x1044D3 && MEM32(stack + 4) == output);
+    assert(MEM32(stack + 8) == key && MEM32(output + 4) == heap_text);
+    memset((void *)XBOX_PTR(stack - 1024), 0xCC, 1024);
+    for (j = 0; j <= strlen(graphics_help); ++j)
+        assert(MEM16(heap_text + (uint32_t)j * 2u) == (unsigned char)graphics_help[j]);
+    puts("PASS: 27 car labels and long graphics help, RET 8, guest string ownership, full register state and exact stock passthrough");
     return 0;
 }
