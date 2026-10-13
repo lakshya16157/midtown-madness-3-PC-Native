@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SHELL = shutil.which("pwsh") or shutil.which("powershell")
 KEYS = ("MM3_PERFORMANCE_PROFILE", "RECOMP_RENDER_SCALE", "RECOMP_MSAA",
         "RECOMP_DRAW_DISTANCE", "RECOMP_ANISO", "RECOMP_FPS_LIMIT",
+        "RECOMP_ASPECT",
         "RECOMP_PB_EXEC", "RECOMP_FB_WINDOW", "RECOMP_USB", "RECOMP_APU_DSP_ACK",
         "MM3_FOV_DEGREES", "MM3_BUILDING_TRACE", "RECOMP_TEXTURE_STREAM_TRACE",
         "RECOMP_ASYNC_WAIT_TRACE")
@@ -73,6 +74,8 @@ class LauncherProfileTest(unittest.TestCase):
         for row in result["during"]:
             # Graphics/FPS profile values are chosen by the shared C helper.
             self.assertIsNone(row["RECOMP_RENDER_SCALE"])
+            # The executable combines per-user preferences with these defaults.
+            self.assertIsNone(row["RECOMP_ASPECT"])
             self.assertEqual(row["RECOMP_PB_EXEC"], "1")
             self.assertEqual(row["RECOMP_APU_DSP_ACK"], "0x80458810")
             self.assertIsNone(row["MM3_BUILDING_TRACE"])

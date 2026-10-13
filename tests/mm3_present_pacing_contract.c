@@ -68,6 +68,10 @@ static char *test_getenv(const char *name)
 }
 
 static int64_t qpc(void) { return clock_ticks; }
+/* Live options and map placement are independent boundaries; the renderer
+ * display fixture checks option publication and runtime rate changes. */
+static uint32_t present_options(void) { return 60; }
+static void reset_map_placement(void) {}
 static int64_t hitch_trace_begin(void) { return 0; }
 static void hitch_trace_report(const char *phase, int64_t begin)
 { (void)phase; CHECK(begin == 0); }

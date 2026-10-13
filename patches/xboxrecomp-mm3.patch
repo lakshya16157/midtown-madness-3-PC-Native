@@ -280,13 +280,50 @@ index 012a67b..28dd8a0 100644
      assert((address & 0xFF000000) == 0);
      assert(address < DSP_PRAM_SIZE);
 diff --git a/src/input/xinput_device.c b/src/input/xinput_device.c
-index a91edbe..48cb153 100644
+index a91edbe..b608b0d 100644
 --- a/src/input/xinput_device.c
 +++ b/src/input/xinput_device.c
-@@ -14,6 +14,13 @@
+@@ -14,6 +14,50 @@
  #include <stdlib.h>
  #include <string.h>
  
++/* Retain original host/keyboard packets until the first modal dialog. After
++ * that, one per-port sequence covers neutral and normal reports, so a packet
++ * collision cannot hide the release on open or the held controls on close. */
++#if defined(_WIN32)
++static volatile LONG s_input_blocked, s_modal_input_used;
++static volatile LONG s_modal_packet[XBOX_MAX_CONTROLLERS];
++void xbox_InputSetBlocked(int blocked)
++{
++    if (blocked) InterlockedExchange(&s_modal_input_used, 1);
++    InterlockedExchange(&s_input_blocked, blocked != 0);
++}
++int xbox_InputIsBlocked(void) { return InterlockedCompareExchange(&s_input_blocked, 0, 0) != 0; }
++static DWORD input_packet(DWORD port, DWORD original)
++{
++    if (InterlockedCompareExchange(&s_modal_input_used, 0, 0))
++        return (DWORD)InterlockedIncrement(&s_modal_packet[port]);
++    InterlockedExchange(&s_modal_packet[port], (LONG)original);
++    return original;
++}
++#else
++#include <stdatomic.h>
++static atomic_int s_input_blocked, s_modal_input_used;
++static atomic_uint s_modal_packet[XBOX_MAX_CONTROLLERS];
++void xbox_InputSetBlocked(int blocked)
++{
++    if (blocked) atomic_store(&s_modal_input_used, 1);
++    atomic_store(&s_input_blocked, blocked != 0);
++}
++int xbox_InputIsBlocked(void) { return atomic_load(&s_input_blocked); }
++static DWORD input_packet(DWORD port, DWORD original)
++{
++    if (atomic_load(&s_modal_input_used)) return atomic_fetch_add(&s_modal_packet[port], 1) + 1;
++    atomic_store(&s_modal_packet[port], original);
++    return original;
++}
++#endif
++
 +static XBOX_KEYBOARD_DRIVING_PROBE s_keyboard_driving_probe;
 +
 +void xbox_InputSetKeyboardDrivingProbe(XBOX_KEYBOARD_DRIVING_PROBE probe)
@@ -297,7 +334,7 @@ index a91edbe..48cb153 100644
  /* ======================================================================== */
  #if defined(_WIN32)
  /* ====================  XInput backend  ================================== */
-@@ -45,6 +52,14 @@ static DWORD g_last_packet[XBOX_MAX_CONTROLLERS] = { 0 };
+@@ -45,6 +89,14 @@ static DWORD g_last_packet[XBOX_MAX_CONTROLLERS] = { 0 };
   *   Q E           white black       1 3        triggers
   *   numpad 8/2/4/6 left thumb       I/K/J/L    right thumb
   *
@@ -312,7 +349,7 @@ index a91edbe..48cb153 100644
   * Keys come from the framebuffer window, which only receives them while it
   * has the focus, so typing in another window does not drive the game.
   */
-@@ -58,6 +73,16 @@ static BOOL keyboard_enabled(void)
+@@ -58,6 +110,16 @@ static BOOL keyboard_enabled(void)
      return on ? TRUE : FALSE;
  }
  
@@ -329,7 +366,7 @@ index a91edbe..48cb153 100644
  /* The framebuffer window records what is held; see src/video/fb_present.c.
   *
   * GetAsyncKeyState was the first attempt and reads nothing here -- under
-@@ -87,15 +112,21 @@ static SHORT axis_from_keys(int negative, int positive)
+@@ -87,15 +149,21 @@ static SHORT axis_from_keys(int negative, int positive)
  static void keyboard_state(XBOX_INPUT_STATE *pState)
  {
      static DWORD packet;
@@ -356,7 +393,7 @@ index a91edbe..48cb153 100644
      if (key_down(VK_BACK))   b |= XBOX_GAMEPAD_BACK;
      if (key_down(VK_SHIFT))  b |= XBOX_GAMEPAD_LEFT_THUMB;
      if (key_down(VK_CONTROL))b |= XBOX_GAMEPAD_RIGHT_THUMB;
-@@ -103,18 +134,29 @@ static void keyboard_state(XBOX_INPUT_STATE *pState)
+@@ -103,18 +171,29 @@ static void keyboard_state(XBOX_INPUT_STATE *pState)
  
      /* Analog on the console, so a key is 255 rather than a flag -- a title
       * that reads these as a pressure never sees a press if they are 1. */
@@ -393,7 +430,31 @@ index a91edbe..48cb153 100644
      pState->Gamepad.sThumbLY = axis_from_keys(VK_NUMPAD2, VK_NUMPAD8);
      pState->Gamepad.sThumbRX = axis_from_keys('J', 'L');
      pState->Gamepad.sThumbRY = axis_from_keys('K', 'I');
-@@ -167,9 +209,9 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+@@ -145,7 +224,9 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+     if (result != ERROR_SUCCESS) {
+         g_controller_connected[dwPort] = FALSE;
+         if (dwPort == 0 && keyboard_enabled()) {
+-            keyboard_state(pState);
++            if (xbox_InputIsBlocked()) memset(pState, 0, sizeof *pState);
++            else keyboard_state(pState);
++            pState->dwPacketNumber = input_packet(dwPort, pState->dwPacketNumber);
+             return ERROR_SUCCESS;
+         }
+         return result;
+@@ -154,6 +235,12 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+     g_controller_connected[dwPort] = TRUE;
+     g_last_packet[dwPort] = xi_state.dwPacketNumber;
+ 
++    if (xbox_InputIsBlocked()) {
++        memset(pState, 0, sizeof *pState);
++        pState->dwPacketNumber = input_packet(dwPort, 0);
++        return ERROR_SUCCESS;
++    }
++
+     memset(pState, 0, sizeof(XBOX_INPUT_STATE));
+     pState->dwPacketNumber = xi_state.dwPacketNumber;
+     pState->Gamepad.wButtons = xi_state.Gamepad.wButtons & 0x00FF;
+@@ -167,9 +254,9 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
      pState->Gamepad.bAnalogButtons[XBOX_BUTTON_Y] =
          (xi_state.Gamepad.wButtons & XINPUT_GAMEPAD_Y) ? 255 : 0;
      pState->Gamepad.bAnalogButtons[XBOX_BUTTON_BLACK] =
@@ -405,7 +466,28 @@ index a91edbe..48cb153 100644
      pState->Gamepad.bAnalogButtons[XBOX_BUTTON_LTRIGGER] = xi_state.Gamepad.bLeftTrigger;
      pState->Gamepad.bAnalogButtons[XBOX_BUTTON_RTRIGGER] = xi_state.Gamepad.bRightTrigger;
  
-@@ -316,9 +358,9 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+@@ -207,6 +294,7 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+         pState->dwPacketNumber = kb.dwPacketNumber;
+     }
+ 
++    pState->dwPacketNumber = input_packet(dwPort, pState->dwPacketNumber);
+     return ERROR_SUCCESS;
+ }
+ 
+@@ -293,6 +381,12 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+     SDL_GameControllerUpdate();
+     g_controller_connected[dwPort] = TRUE;
+ 
++    if (xbox_InputIsBlocked()) {
++        memset(pState, 0, sizeof *pState);
++        pState->dwPacketNumber = input_packet(dwPort, 0);
++        return ERROR_SUCCESS;
++    }
++
+     memset(pState, 0, sizeof(XBOX_INPUT_STATE));
+     pState->dwPacketNumber = ++g_packet[dwPort];
+ 
+@@ -316,9 +410,9 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
      pState->Gamepad.bAnalogButtons[XBOX_BUTTON_Y] =
          SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_Y) ? 255 : 0;
      pState->Gamepad.bAnalogButtons[XBOX_BUTTON_BLACK] =
@@ -417,14 +499,28 @@ index a91edbe..48cb153 100644
  
      /* SDL trigger axes are 0..32767 -> Xbox analog button 0..255 */
      pState->Gamepad.bAnalogButtons[XBOX_BUTTON_LTRIGGER] =
+@@ -335,6 +429,7 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+     pState->Gamepad.sThumbRY =
+         (SHORT)(-1 - SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_RIGHTY));
+ 
++    pState->dwPacketNumber = input_packet(dwPort, pState->dwPacketNumber);
+     return ERROR_SUCCESS;
+ }
+ 
 diff --git a/src/input/xinput_xbox.h b/src/input/xinput_xbox.h
-index 4779275..07b2ffa 100644
+index 4779275..ad5669b 100644
 --- a/src/input/xinput_xbox.h
 +++ b/src/input/xinput_xbox.h
-@@ -88,6 +88,13 @@ typedef struct XBOX_INPUT_CAPABILITIES {
+@@ -88,6 +88,19 @@ typedef struct XBOX_INPUT_CAPABILITIES {
   */
  void xbox_InputInit(void);
  
++/* Thread-safe neutral input while a host settings dialog is open. Device
++ * presence is unchanged; keyboard, controllers and scripted USB reports are
++ * suppressed so adjusting settings cannot navigate or drive the title. */
++void xbox_InputSetBlocked(int blocked);
++int xbox_InputIsBlocked(void);
++
 +/* Configure before input polling starts. The optional probe runs on the
 + * input thread, so it must be fast and safe to call from that thread.
 + * For the MM3 keyboard layout, TRUE maps arrows to driving controls;
@@ -4770,10 +4866,28 @@ index 69f1bf6..5250ae8 100644
  int xbox_HeapReclaimEnabled(void);
  
 diff --git a/src/usb/usb_gamepad.c b/src/usb/usb_gamepad.c
-index bd00f3f..575b5f3 100644
+index bd00f3f..789b983 100644
 --- a/src/usb/usb_gamepad.c
 +++ b/src/usb/usb_gamepad.c
-@@ -592,14 +592,28 @@ int usb_gamepad_report(int pad, uint8_t *out, int max)
+@@ -560,7 +560,7 @@ int usb_gamepad_report(int pad, uint8_t *out, int max)
+ {
+     XBOX_INPUT_STATE state;
+     const XBOX_GAMEPAD *g;
+-    uint8_t synth = synthetic_buttons();
++    uint8_t synth;
+     int i;
+ 
+     if (max < 20)
+@@ -568,6 +568,8 @@ int usb_gamepad_report(int pad, uint8_t *out, int max)
+     memset(out, 0, 20);
+     out[0] = 0;
+     out[1] = 20;
++    if (xbox_InputIsBlocked()) return 20;
++    synth = synthetic_buttons();
+ 
+     /* A disconnected host pad is not an error here: the device is present on
+      * the bus either way, it just reports nothing pressed. */
+@@ -592,14 +594,28 @@ int usb_gamepad_report(int pad, uint8_t *out, int max)
              unsigned long now = (unsigned long)GetTickCount();
              if (now - last > 1000) {
                  XBOX_INPUT_STATE probe;
@@ -4807,32 +4921,146 @@ index bd00f3f..575b5f3 100644
              }
          }
 diff --git a/src/video/fb_present.c b/src/video/fb_present.c
-index b80ba0c..0d6b4c5 100644
+index b80ba0c..3fd122d 100644
 --- a/src/video/fb_present.c
 +++ b/src/video/fb_present.c
-@@ -31,6 +31,7 @@ extern bool nv2a_hook_pvideo_snapshot(uint32_t regs[0x1000 / 4]);
+@@ -31,7 +31,14 @@ extern bool nv2a_hook_pvideo_snapshot(uint32_t regs[0x1000 / 4]);
  extern void nv2a_hook_pvideo_consume(unsigned bank);
  
  static volatile LONG s_fb_running;
+-static volatile HWND s_hwnd;
 +static void (*s_close_handler)(void);
- static volatile HWND s_hwnd;
++static void (*s_settings_handler)(HWND);
++static HWND volatile s_hwnd;
++static SRWLOCK s_display_lock = SRWLOCK_INIT;
++static int s_display_width, s_display_height, s_display_borderless;
++static volatile LONG s_show_fps = 1;
++#define FB_DISPLAY_MESSAGE (WM_APP + 0x31)
++#define FB_SETTINGS_COMMAND 0x1E10
  static uint32_t      s_fb_va, s_fb_pitch;
  /* Set by the first flip: from then on flips decide what is shown, except for a
-@@ -61,6 +62,11 @@ HWND xbox_FramebufferWindowHandle(void)
-     return s_hwnd;
- }
+  * buffer the title points the display at and draws into with the CPU. */
+@@ -58,7 +65,36 @@ static DWORD         s_pvideo_next_capture_tick;
  
+ HWND xbox_FramebufferWindowHandle(void)
+ {
+-    return s_hwnd;
++    return (HWND)InterlockedCompareExchangePointer((PVOID volatile *)&s_hwnd, NULL, NULL);
++}
++
 +void xbox_FramebufferSetCloseHandler(void (*handler)(void))
 +{
 +    s_close_handler = handler;
 +}
 +
++void xbox_FramebufferSetSettingsHandler(void (*handler)(HWND))
++{
++    s_settings_handler = handler;
++}
++
++int xbox_FramebufferSetDisplayMode(int width, int height, int borderless)
++{
++    HWND window;
++    if (width < 640 || width > 7680 || height < 480 || height > 4320 ||
++        (borderless != 0 && borderless != 1)) return 0;
++    AcquireSRWLockExclusive(&s_display_lock);
++    s_display_width = width;
++    s_display_height = height;
++    s_display_borderless = borderless;
++    ReleaseSRWLockExclusive(&s_display_lock);
++    window = xbox_FramebufferWindowHandle();
++    return window ? PostMessageA(window, FB_DISPLAY_MESSAGE, 0, 0) != 0 : 1;
++}
++
++void xbox_FramebufferSetShowFPS(int show)
++{
++    InterlockedExchange(&s_show_fps, show != 0);
+ }
+ 
  /* Optional per-submission thumbnails for detecting corruption between
-  * screenshots: each record is a 160x120 BGRA image of the submitted frame.
-  * Keeping this disabled has no file IO; the capture never modifies guest
-@@ -369,6 +375,11 @@ static LRESULT CALLBACK fb_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
+@@ -342,13 +378,14 @@ int xbox_FramebufferKeyDown(int vk)
+  * borderless window rather than DXGI exclusive mode: no mode switch, no
+  * device loss, and alt-tab behaves. The renderer resizes its swap chain to
+  * whatever the client area becomes. */
+-static void fb_toggle_fullscreen(HWND h)
++static WINDOWPLACEMENT s_windowed_placement = { sizeof(WINDOWPLACEMENT) };
++
++static void fb_set_fullscreen(HWND h, int borderless)
+ {
+-    static WINDOWPLACEMENT saved = { sizeof(WINDOWPLACEMENT) };
+     LONG style = GetWindowLongA(h, GWL_STYLE);
+-    if (style & WS_OVERLAPPEDWINDOW) {
++    if (borderless && (style & WS_OVERLAPPEDWINDOW)) {
+         MONITORINFO mi = { sizeof mi };
+-        if (GetWindowPlacement(h, &saved) &&
++        if (GetWindowPlacement(h, &s_windowed_placement) &&
+             GetMonitorInfoA(MonitorFromWindow(h, MONITOR_DEFAULTTOPRIMARY), &mi)) {
+             SetWindowLongA(h, GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
+             SetWindowPos(h, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
+@@ -356,19 +393,70 @@ static void fb_toggle_fullscreen(HWND h)
+                          mi.rcMonitor.bottom - mi.rcMonitor.top,
+                          SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+         }
+-    } else {
++    } else if (!borderless && !(style & WS_OVERLAPPEDWINDOW)) {
+         SetWindowLongA(h, GWL_STYLE, style | WS_OVERLAPPEDWINDOW);
+-        SetWindowPlacement(h, &saved);
++        SetWindowPlacement(h, &s_windowed_placement);
+         SetWindowPos(h, NULL, 0, 0, 0, 0,
+                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                      SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+     }
+ }
+ 
++static void fb_toggle_fullscreen(HWND h)
++{
++    int borderless = (GetWindowLongA(h, GWL_STYLE) & WS_OVERLAPPEDWINDOW) != 0;
++    fb_set_fullscreen(h, borderless);
++    AcquireSRWLockExclusive(&s_display_lock);
++    s_display_borderless = borderless;
++    ReleaseSRWLockExclusive(&s_display_lock);
++}
++
++/* Only the message thread changes HWND styles or geometry. A posted request
++ * reads the latest complete configuration, so rapid Apply clicks coalesce. */
++static void fb_apply_display(HWND h)
++{
++    int width, height, borderless;
++    RECT rectangle = { 0, 0, 0, 0 };
++    AcquireSRWLockShared(&s_display_lock);
++    width = s_display_width;
++    height = s_display_height;
++    borderless = s_display_borderless;
++    ReleaseSRWLockShared(&s_display_lock);
++    if (!width || !height) return;
++    fb_set_fullscreen(h, borderless);
++    if (borderless) return;
++    rectangle.right = width;
++    rectangle.bottom = height;
++    if (!AdjustWindowRectExForDpi(&rectangle, (DWORD)GetWindowLongA(h, GWL_STYLE),
++                                 FALSE, (DWORD)GetWindowLongA(h, GWL_EXSTYLE),
++                                 GetDpiForWindow(h))) return;
++    if (IsZoomed(h) || IsIconic(h)) ShowWindow(h, SW_RESTORE);
++    SetWindowPos(h, NULL, 0, 0, rectangle.right - rectangle.left,
++                 rectangle.bottom - rectangle.top,
++                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOOWNERZORDER);
++}
++
+ static LRESULT CALLBACK fb_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
  {
      switch (m) {
++    case FB_DISPLAY_MESSAGE:
++        fb_apply_display(h);
++        return 0;
++
++    case WM_SYSCOMMAND:
++        if ((w & 0xFFF0) == FB_SETTINGS_COMMAND && s_settings_handler) {
++            memset((void *)s_key_down, 0, sizeof s_key_down);
++            s_settings_handler(h);
++            return 0;
++        }
++        break;
++
      case WM_CLOSE:
 +        if (s_close_handler)
 +            s_close_handler();
@@ -4842,7 +5070,49 @@ index b80ba0c..0d6b4c5 100644
      case WM_DESTROY:
          InterlockedExchange(&s_fb_running, 0);
          return 0;
-@@ -447,13 +458,20 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -378,6 +466,13 @@ static LRESULT CALLBACK fb_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
+ 
+     case WM_KEYDOWN:
+     case WM_SYSKEYDOWN:
++        if (w == VK_F10 && s_settings_handler) {
++            if (!(l & (1 << 30))) {
++                memset((void *)s_key_down, 0, sizeof s_key_down);
++                s_settings_handler(h);
++            }
++            return 0;
++        }
+         if ((w == VK_RETURN && (l & (1 << 29))) || w == VK_F11) {
+             if (!(l & (1 << 30)))       /* not auto-repeat */
+                 fb_toggle_fullscreen(h);
+@@ -400,6 +495,7 @@ static LRESULT CALLBACK fb_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
+ 
+     case WM_KEYUP:
+     case WM_SYSKEYUP:
++        if (w == VK_F10 && s_settings_handler) return 0;
+         if ((unsigned)w < 256)
+             s_key_down[w] = 0;
+         return m == WM_SYSKEYUP ? DefWindowProcA(h, m, w, l) : 0;
+@@ -420,6 +516,11 @@ static void fb_initial_size(int *w, int *h)
+ {
+     const char *e = getenv("RECOMP_WINDOW_SIZE");
+     RECT work;
++    AcquireSRWLockShared(&s_display_lock);
++    *w = s_display_width;
++    *h = s_display_height;
++    ReleaseSRWLockShared(&s_display_lock);
++    if (*w && *h) return;
+     if (e && sscanf(e, "%dx%d", w, h) == 2 && *w >= 64 && *h >= 48)
+         return;
+     if (!SystemParametersInfoA(SPI_GETWORKAREA, 0, &work, 0) ||
+@@ -440,20 +541,27 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+ {
+     HWND hwnd;
+     RECT r;
+-    int cw, ch;
++    int cw, ch, configured;
+ 
+     (void)unused;
+     /* Real pixels: without this a scaled desktop hands the swap chain a
       * smaller client area and stretches it back up blurred. */
      SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
      {
@@ -4865,22 +5135,95 @@ index b80ba0c..0d6b4c5 100644
      }
      fb_initial_size(&cw, &ch);
      r.left = 0; r.top = 0; r.right = cw; r.bottom = ch;
+@@ -467,9 +575,20 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+         InterlockedExchange(&s_fb_running, 0);
+         return 0;
+     }
+-    if (getenv("RECOMP_FULLSCREEN"))
+-        fb_toggle_fullscreen(hwnd);
+-    s_hwnd = hwnd;
++    AcquireSRWLockShared(&s_display_lock);
++    configured = s_display_width != 0;
++    ReleaseSRWLockShared(&s_display_lock);
++    if (!configured && getenv("RECOMP_FULLSCREEN") && atoi(getenv("RECOMP_FULLSCREEN")) != 0)
++        fb_set_fullscreen(hwnd, 1);
++    InterlockedExchangePointer((PVOID volatile *)&s_hwnd, hwnd);
++    fb_apply_display(hwnd);
++    if (s_settings_handler) {
++        HMENU menu = GetSystemMenu(hwnd, FALSE);
++        if (menu) {
++            AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
++            AppendMenuA(menu, MF_STRING, FB_SETTINGS_COMMAND, "Display settings... (F10)");
++        }
++    }
+     fprintf(stderr, "  [FBWIN] framebuffer window open (%dx%d client)\n", cw, ch);
+ 
+     while (InterlockedCompareExchange(&s_fb_running, 1, 1)) {
+@@ -487,9 +606,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+             if (now - t0 >= 1000) {
+                 LONG f = s_flips;
+                 wchar_t tb[128];
+-                _snwprintf(tb, 127, L"%ls | FPS: %.1f | draws: %ld", s_title,
+-                           t0 ? (f - f0) * 1000.0 / (now - t0) : 0.0,
+-                           (long)s_frame_draws);
++                if (InterlockedCompareExchange(&s_show_fps, 0, 0))
++                    _snwprintf(tb, 127, L"%ls | FPS: %.1f | draws: %ld | F10: Settings", s_title,
++                               t0 ? (f - f0) * 1000.0 / (now - t0) : 0.0,
++                               (long)s_frame_draws);
++                else
++                    _snwprintf(tb, 127, L"%ls | F10: Settings", s_title);
+                 tb[127] = 0;
+                 SetWindowTextW(hwnd, tb);
+                 t0 = now; f0 = f;
+@@ -497,7 +619,7 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+         }
+     }
+ 
+-    s_hwnd = NULL;
++    InterlockedExchangePointer((PVOID volatile *)&s_hwnd, NULL);
+     DestroyWindow(hwnd);
+     return 0;
+ }
+@@ -518,6 +640,8 @@ void xbox_FramebufferWindowStart(void)
+ }
+ 
+ #else
++int xbox_FramebufferSetDisplayMode(int w, int h, int b) { (void)w; (void)h; (void)b; return 0; }
++void xbox_FramebufferSetShowFPS(int show) { (void)show; }
+ void xbox_FramebufferWindowSet(uint32_t fb_va, uint32_t pitch) { (void)fb_va; (void)pitch; }
+ void xbox_FramebufferWindowPresent(uint32_t fb_va, uint32_t pitch) { (void)fb_va; (void)pitch; }
+ void xbox_FramebufferWindowScanout(uint32_t fb_va, uint32_t pitch) { (void)fb_va; (void)pitch; }
 diff --git a/src/video/fb_present.h b/src/video/fb_present.h
-index 9676e02..e867e4f 100644
+index 9676e02..16d21d5 100644
 --- a/src/video/fb_present.h
 +++ b/src/video/fb_present.h
-@@ -12,6 +12,9 @@
+@@ -12,8 +12,24 @@
  #include <windows.h>
  /* The window to present into, or NULL until it exists. */
  HWND xbox_FramebufferWindowHandle(void);
 +/* Register before window startup. Called on its message thread when the user
 + * closes the display; the title owns stopping its guest workers. */
 +void xbox_FramebufferSetCloseHandler(void (*handler)(void));
++/* Register before window startup. F10 and the window system menu invoke this
++ * on the window message thread; the title may open its modal settings UI. */
++void xbox_FramebufferSetSettingsHandler(void (*handler)(HWND));
  #endif
  
++/* Thread-safe host display controls. Valid sizes are 640..7680 x 480..4320.
++ * Windowed mode uses this client size; borderless uses the current monitor's
++ * desktop size and retains the requested window size for returning to it.
++ * Requests made before startup apply to the initial window. Returns zero for
++ * invalid input; accepted changes run asynchronously on the window thread. */
++int xbox_FramebufferSetDisplayMode(int width, int height, int borderless);
++/* Toggle the existing title-bar frame counter. The settings shortcut remains
++ * visible even when the counter is hidden. */
++void xbox_FramebufferSetShowFPS(int show);
++
  /* A buffer the display reads straight from guest memory because the title is
+  * not flipping into it (loading screens drawn by the CPU, the first frames
+  * before any flip). Returns 0 while flips are in charge. */
 diff --git a/src/video/nv2a_d3d11.c b/src/video/nv2a_d3d11.c
-index b9f3fa2..11540cc 100644
+index b9f3fa2..ccba2a1 100644
 --- a/src/video/nv2a_d3d11.c
 +++ b/src/video/nv2a_d3d11.c
 @@ -29,6 +29,9 @@
@@ -4893,7 +5236,52 @@ index b9f3fa2..11540cc 100644
  #include "fb_present.h"
  #include "platform/recomp_profile.h"
  #include "../d3d/d3d8_swizzle.h"
-@@ -83,6 +86,7 @@ static const char *const s_prof_name[PROF_COUNT] = {
+@@ -76,6 +79,44 @@ static HWND                 s_swap_hwnd;
+ static UINT                 s_swap_w, s_swap_h;
+ static int                  s_init_state;      /* 0 untried, 1 ok, -1 failed */
+ 
++/* Publishing one packed value prevents mixed FPS/VSync requests. D3D state,
++ * pacing deadlines and surface lifetime remain owned by the render thread. */
++static volatile LONG s_present_options = -1;
++static volatile LONG s_runtime_scale_bits = -1;
++
++int nv2a_d3d_set_present_options(int vsync, int max_fps)
++{
++    if ((vsync != 0 && vsync != 1) || max_fps < 1 || max_fps > 60) return 0;
++    InterlockedExchange(&s_present_options, (LONG)((vsync << 16) | max_fps));
++    return 1;
++}
++
++static LONG present_options(void)
++{
++    LONG options = InterlockedCompareExchange(&s_present_options, 0, 0);
++    if (options < 0) {
++        const char *e = getenv("RECOMP_FPS_LIMIT");
++        const char *v = getenv("RECOMP_VSYNC");
++        int limit = e ? atoi(e) : 60;
++        LONG configured;
++        /* Preserve unpaced diagnostic launches until the live API is used. */
++        if (limit < 0) limit = 0;
++        if (limit > 65535) limit = 65535;
++        configured = (LONG)(((v && atoi(v) != 0) << 16) | limit);
++        options = InterlockedCompareExchange(&s_present_options, configured, -1);
++        if (options < 0) options = configured;
++    }
++    return options;
++}
++
++void nv2a_d3d_set_render_scale(float scale)
++{
++    LONG bits;
++    if (!(scale == 0.0f || (scale >= 0.5f && scale <= 8.0f))) return;
++    memcpy(&bits, &scale, sizeof bits);
++    InterlockedExchange(&s_runtime_scale_bits, bits);
++}
++
+ /* RECOMP_D3D_PROFILE: per-frame cost of each stage, printed once a second. */
+ enum { PROF_VERTEX, PROF_TEXTURE, PROF_DRAW, PROF_SYNC, PROF_WRITEBACK,
+        PROF_PRESENT, PROF_PACE, PROF_EXEC, PROF_COUNT };
+@@ -83,6 +124,7 @@ static const char *const s_prof_name[PROF_COUNT] = {
      "vertex", "texture", "draw", "cpu-sync", "writeback", "present", "pace", "exec(all)" };
  static int64_t s_prof[PROF_COUNT];
  static uint64_t s_prof_verts, s_prof_draws;
@@ -4901,7 +5289,7 @@ index b9f3fa2..11540cc 100644
  static int s_prof_on = -1;
  
  static int64_t qpc(void)
-@@ -92,6 +96,58 @@ static int64_t qpc(void)
+@@ -92,6 +134,58 @@ static int64_t qpc(void)
      return t.QuadPart;
  }
  
@@ -4960,7 +5348,7 @@ index b9f3fa2..11540cc 100644
  void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
  {
      s_prof[slot] += ticks;
-@@ -123,40 +179,75 @@ static void prof_report(void)
+@@ -123,40 +217,75 @@ static void prof_report(void)
      for (i = 0; i < PROF_COUNT; i++)
          fprintf(stderr, " %s %.2f", s_prof_name[i],
                  s_prof[i] * 1000.0 / (double)freq.QuadPart / (double)frames);
@@ -5056,7 +5444,7 @@ index b9f3fa2..11540cc 100644
  }
  
  static uint32_t             s_frame = 1;
-@@ -188,6 +279,28 @@ static UINT s_msaa = 4, s_aniso = 16;
+@@ -188,6 +317,28 @@ static UINT s_msaa = 4, s_aniso = 16;
  static volatile LONG s_edge_hud;
  static uint32_t s_frame_bg_tex;     /* this frame's background image; reset at flip */
  static int s_frame_tag_window;      /* still in the frame's leading name tags */
@@ -5085,7 +5473,7 @@ index b9f3fa2..11540cc 100644
  
  /* Name tags over cars (world-anchored 2D) are the first 2D a race frame
   * draws, ahead of the HUD; the title names the HUD's first element by its
-@@ -225,9 +338,10 @@ static int world_tag_draw(float lo, float hi, float ylo, float yhi, uint32_t tex
+@@ -225,9 +376,10 @@ static int world_tag_draw(float lo, float hi, float ylo, float yhi, uint32_t tex
  
  void nv2a_d3d_set_edge_hud(int on)
  {
@@ -5098,7 +5486,7 @@ index b9f3fa2..11540cc 100644
          s_hud_tex_n = 0;                 /* a new level may load other textures */
  }
  
-@@ -319,6 +433,82 @@ static ID3D11BlendState *s_blend_opaque;
+@@ -319,6 +471,82 @@ static ID3D11BlendState *s_blend_opaque;
  static ID3D11RasterizerState *s_rs_plain;
  static ID3D11DepthStencilState *s_ds_off;
  
@@ -5181,7 +5569,7 @@ index b9f3fa2..11540cc 100644
  static void fail(const char *what, HRESULT hr)
  {
      fprintf(stderr, "[D3D11] %s failed: 0x%08lX\n", what, (unsigned long)hr);
-@@ -346,24 +536,7 @@ static uint32_t phys(uint32_t va)
+@@ -346,24 +574,7 @@ static uint32_t phys(uint32_t va)
      return va >= CONTIG_BASE ? va - CONTIG_BASE : va;
  }
  
@@ -5207,7 +5595,7 @@ index b9f3fa2..11540cc 100644
  
  /* ---------------------------------------------------------------- shaders */
  
-@@ -503,8 +676,13 @@ static const char s_hlsl[] =
+@@ -503,8 +714,13 @@ static const char s_hlsl[] =
   * water. A coordinate that truncates to that first centre is placed on the
   * target edge, as the hardware covers it; everything else is unchanged. */
  "  float py = P.y;\n"
@@ -5223,7 +5611,7 @@ index b9f3fa2..11540cc 100644
  "  /* NV2A clamps raster w away from zero and infinity (xemu clampAwayZeroInf),\n"
  "   * keeping its sign so geometry behind the eye still clips. oPos is screen\n"
  "   * space after the D3D epilogue's divide; multiplying back by w gives the\n"
-@@ -578,7 +756,20 @@ static const char s_hlsl[] =
+@@ -578,7 +794,20 @@ static const char s_hlsl[] =
  "  if (m == 3) return (x >= 128.0 ? x - 256.0 : x) / 127.0;\n"
  "  return c;\n"
  "}\n"
@@ -5244,7 +5632,7 @@ index b9f3fa2..11540cc 100644
  "  if (n == 0) return T2D0.Sample(S0, uv); if (n == 1) return T2D1.Sample(S1, uv);\n"
  "  if (n == 2) return T2D2.Sample(S2, uv); return T2D3.Sample(S3, uv);\n"
  "}\n"
-@@ -822,13 +1013,17 @@ static const char s_hlsl[] =
+@@ -822,13 +1051,17 @@ static const char s_hlsl[] =
   * rounding splits between the two (moire in the fog). Both texels hold
   * z[23:8]. ponytail: the low word (z[7:0]:stencil) is not readable this way;
   * keep it for even texels if a title ever reads stencil through Y16.
@@ -5264,7 +5652,7 @@ index b9f3fa2..11540cc 100644
  "  float s = ccol.x, k = ccol.y;\n"
  "  d = saturate(d);\n"
  "  if (s > 1.0) d = d * s <= k ? d * s : k + (d - k / s) * (1.0 - k) / (1.0 - k / s);\n"
-@@ -856,7 +1051,7 @@ typedef struct {
+@@ -856,7 +1089,7 @@ typedef struct {
      float map[4];                /* 2/w, 2/h, 1/zmax, squeeze */
      uint32_t fogi[4];
      float fogf[4];
@@ -5273,7 +5661,7 @@ index b9f3fa2..11540cc 100644
  } UbConsts;
  
  typedef struct {
-@@ -868,12 +1063,13 @@ typedef struct {
+@@ -868,12 +1101,13 @@ typedef struct {
  
  static void display_config(int now);
  
@@ -5290,7 +5678,7 @@ index b9f3fa2..11540cc 100644
      if (FAILED(hr)) {
          fprintf(stderr, "[D3D11] shader %s: %s\n", entry,
                  err ? (const char *)ID3D10Blob_GetBufferPointer(err) : "?");
-@@ -883,6 +1079,11 @@ static ID3DBlob *compile_def(const char *entry, const char *target, const D3D_SH
+@@ -883,6 +1117,11 @@ static ID3DBlob *compile_def(const char *entry, const char *target, const D3D_SH
      return SUCCEEDED(hr) ? code : NULL;
  }
  
@@ -5302,7 +5690,7 @@ index b9f3fa2..11540cc 100644
  static ID3DBlob *compile(const char *entry, const char *target)
  {
      return compile_def(entry, target, NULL);
-@@ -903,10 +1104,14 @@ typedef struct {
+@@ -903,10 +1142,14 @@ typedef struct {
      uint32_t tex_info[4][3];
  } PsKey;
  
@@ -5318,7 +5706,7 @@ index b9f3fa2..11540cc 100644
  } PsSpec;
  
  #define PS_SPEC_SLOTS 4096          /* power of two */
-@@ -914,9 +1119,162 @@ typedef struct {
+@@ -914,9 +1157,162 @@ typedef struct {
  static PsSpec *s_spec;
  static PsSpec *s_spec_q[PS_SPEC_QUEUE];
  static unsigned s_spec_head, s_spec_tail;  /* guarded by s_spec_cs */
@@ -5481,7 +5869,7 @@ index b9f3fa2..11540cc 100644
  
  static DWORD WINAPI spec_worker(LPVOID arg)
  {
-@@ -926,12 +1284,19 @@ static DWORD WINAPI spec_worker(LPVOID arg)
+@@ -926,12 +1322,19 @@ static DWORD WINAPI spec_worker(LPVOID arg)
          const PsKey *k;
          char decl[2048];
          ID3DBlob *b;
@@ -5505,7 +5893,7 @@ index b9f3fa2..11540cc 100644
          LeaveCriticalSection(&s_spec_cs);
          k = &e->key;
          snprintf(decl, sizeof decl,
-@@ -965,45 +1330,87 @@ static DWORD WINAPI spec_worker(LPVOID arg)
+@@ -965,45 +1368,87 @@ static DWORD WINAPI spec_worker(LPVOID arg)
          m[1].Name = "SPEC_DECL"; m[1].Definition = decl;
          m[2].Name = flat ? "FLATQ" : NULL; m[2].Definition = flat ? "nointerpolation" : NULL;
          m[3].Name = NULL; m[3].Definition = NULL;
@@ -5616,7 +6004,7 @@ index b9f3fa2..11540cc 100644
      memset(&k, 0, sizeof k);
      memcpy(k.c_icw, pc->c_icw, sizeof k.c_icw);
      memcpy(k.a_icw, pc->a_icw, sizeof k.a_icw);
-@@ -1017,23 +1424,7 @@ static ID3D11PixelShader *spec_ps(const PSConsts *pc, uint32_t variant)
+@@ -1017,23 +1462,7 @@ static ID3D11PixelShader *spec_ps(const PSConsts *pc, uint32_t variant)
          k.tex_info[i][0] = pc->tex_info[i][0]; k.tex_info[i][1] = pc->tex_info[i][1];
          k.tex_info[i][2] = pc->tex_info[i][2];
      }
@@ -5641,7 +6029,7 @@ index b9f3fa2..11540cc 100644
  }
  
  static ID3D11Buffer *make_buffer(UINT bytes, UINT bind)
-@@ -1050,14 +1441,37 @@ static ID3D11Buffer *make_buffer(UINT bytes, UINT bind)
+@@ -1050,14 +1479,37 @@ static ID3D11Buffer *make_buffer(UINT bytes, UINT bind)
      return b;
  }
  
@@ -5680,7 +6068,7 @@ index b9f3fa2..11540cc 100644
  }
  
  int nv2a_d3d_init(void)
-@@ -1217,6 +1631,8 @@ int nv2a_d3d_init(void)
+@@ -1217,6 +1669,8 @@ int nv2a_d3d_init(void)
          if (qc && qd) break;
      }
      if (s_msaa < 1) s_msaa = 1;
@@ -5689,7 +6077,7 @@ index b9f3fa2..11540cc 100644
      s_init_state = 1;
      fprintf(stderr, "[D3D11] renderer ready: %ux%u internal, display aspect %.3f, %ux MSAA, %ux AF\n",
              (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
-@@ -1256,6 +1672,7 @@ typedef struct {
+@@ -1256,6 +1710,7 @@ typedef struct {
      ID3D11ShaderResourceView *srv;
      uint8_t *shadow;                /* guest bytes as of the last sync */
      int gpu_dirty;                  /* drawn since guest memory was updated */
@@ -5697,7 +6085,7 @@ index b9f3fa2..11540cc 100644
      uint32_t synced_frame, used_frame;
      uint32_t seq;                   /* bind order; see surface_find */
  } Surface;
-@@ -1356,7 +1773,7 @@ static void unbind_textures(void)
+@@ -1356,7 +1811,7 @@ static void unbind_textures(void)
  
  /* Draw columns [u0, u1) of `srv` into columns [x0, x1) of `rtv` (fractions
   * of each width), full height. */
@@ -5706,7 +6094,7 @@ index b9f3fa2..11540cc 100644
                        ID3D11RenderTargetView *rtv, UINT dst_w, UINT dst_h, float alpha,
                        float x0, float x1, float u0, float u1)
  {
-@@ -1369,7 +1786,7 @@ static void blit_span(ID3D11ShaderResourceView *srv, ID3D11ShaderResourceView *m
+@@ -1369,7 +1824,7 @@ static void blit_span(ID3D11ShaderResourceView *srv, ID3D11ShaderResourceView *m
      pc.src_size[0] = pc.src_size[1] = pc.src_size[2] = pc.src_size[3] = 1;
      pc.force_alpha[0] = alpha;
      pc.ovl_flags[3] = mask ? 1 : 0;
@@ -5715,7 +6103,7 @@ index b9f3fa2..11540cc 100644
      unbind_textures();
      unbind_targets();
      ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &rtv, NULL);
-@@ -1379,20 +1796,20 @@ static void blit_span(ID3D11ShaderResourceView *srv, ID3D11ShaderResourceView *m
+@@ -1379,20 +1834,20 @@ static void blit_span(ID3D11ShaderResourceView *srv, ID3D11ShaderResourceView *m
      ID3D11DeviceContext_OMSetBlendState(s_ctx, s_blend_opaque, NULL, 0xFFFFFFFF);
      ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, s_ds_off, 0);
      ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -5741,7 +6129,7 @@ index b9f3fa2..11540cc 100644
  }
  
  static void blit(ID3D11ShaderResourceView *srv, ID3D11RenderTargetView *rtv,
-@@ -1413,13 +1830,13 @@ static void guest_span(const Surface *s, float *x0, float *x1)
+@@ -1413,13 +1868,13 @@ static void guest_span(const Surface *s, float *x0, float *x1)
  }
  
  /* Guest rows of a surface as BGRA, with the format's fixed alpha. */
@@ -5758,7 +6146,7 @@ index b9f3fa2..11540cc 100644
          uint32_t *dst = out + (size_t)y * s->w;
          if (s->bpp == 4) {
              memcpy(dst, row, (size_t)s->w * 4);
-@@ -1454,6 +1871,8 @@ static ID3D11ShaderResourceView *s_up_srv[2];
+@@ -1454,6 +1909,8 @@ static ID3D11ShaderResourceView *s_up_srv[2];
  static UINT s_up_w[2], s_up_h[2];
  static uint32_t *s_up_pixels, *s_mask_pixels;
  static size_t s_up_cap, s_mask_cap;
@@ -5767,7 +6155,7 @@ index b9f3fa2..11540cc 100644
  
  /* slot 0: image, slot 1: change mask */
  static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT w, UINT h)
-@@ -1465,10 +1884,12 @@ static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT
+@@ -1465,10 +1922,12 @@ static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT
          s_up_tex[k] = make_texture(w, h, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM,
                                     D3D11_BIND_SHADER_RESOURCE, 0);
          if (!s_up_tex[k]) return NULL;
@@ -5782,7 +6170,7 @@ index b9f3fa2..11540cc 100644
      ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)s_up_tex[k], 0,
                                            NULL, pixels, w * 4, 0);
      return s_up_srv[k];
-@@ -1489,6 +1910,31 @@ static uint32_t *scratch_pixels(size_t count)
+@@ -1489,6 +1948,31 @@ static uint32_t *scratch_pixels(size_t count)
      return s_up_pixels;
  }
  
@@ -5814,7 +6202,7 @@ index b9f3fa2..11540cc 100644
  /* Guest memory is the authority for what the CPU writes. A shadow copy of
   * each surface's guest bytes says which pixels the CPU changed since the last
   * look; only those replace what the GPU drew. A loading screen drawn by the
-@@ -1496,71 +1942,83 @@ static uint32_t *scratch_pixels(size_t count)
+@@ -1496,71 +1980,83 @@ static uint32_t *scratch_pixels(size_t count)
  static void surface_sync_impl(Surface *s, int force)
  {
      uint32_t rowb = s->w * s->bpp, y, x, x0 = 0xFFFFFFFFu, x1 = 0, y0 = 0xFFFFFFFFu, y1 = 0;
@@ -5952,7 +6340,7 @@ index b9f3fa2..11540cc 100644
  }
  
  static void surface_sync(Surface *s, int force)
-@@ -1572,8 +2030,11 @@ static void surface_sync(Surface *s, int force)
+@@ -1572,8 +2068,11 @@ static void surface_sync(Surface *s, int force)
      if (s_prof_on > 0) s_prof[PROF_SYNC] += qpc() - t0;
  }
  
@@ -5964,7 +6352,7 @@ index b9f3fa2..11540cc 100644
      if (s_cur_rt == s) unbind_targets();
      if (s->srv) ID3D11ShaderResourceView_Release(s->srv);
      if (s->rtv) ID3D11RenderTargetView_Release(s->rtv);
-@@ -1635,9 +2096,10 @@ static Surface *surface_get(uint32_t va, uint32_t pitch, uint32_t fmt,
+@@ -1635,9 +2134,10 @@ static Surface *surface_get(uint32_t va, uint32_t pitch, uint32_t fmt,
      } else {
          for (i = 0; i < MAX_SURFACES && !victim; i++)
              if (!s_surf[i].tex) victim = &s_surf[i];
@@ -5978,7 +6366,7 @@ index b9f3fa2..11540cc 100644
          if (!victim) victim = &s_surf[0];
      }
      surface_release(victim);
-@@ -1901,9 +2363,9 @@ static void yuv_pair(const uint8_t *g, int uyvy, uint32_t out[2])
+@@ -1901,9 +2401,9 @@ static void yuv_pair(const uint8_t *g, int uyvy, uint32_t out[2])
  }
  
  typedef struct TexEntry {
@@ -5990,7 +6378,7 @@ index b9f3fa2..11540cc 100644
      size_t bytes;
      ID3D11Texture2D *tex;
      ID3D11ShaderResourceView *srv;
-@@ -1922,6 +2384,58 @@ typedef struct {
+@@ -1922,6 +2422,58 @@ typedef struct {
      size_t face_stride, total;
  } TexLayout;
  
@@ -6049,7 +6437,7 @@ index b9f3fa2..11540cc 100644
  static int tex_layout(const NvD3DTexture *t, TexLayout *L)
  {
      uint32_t w = t->width, h = t->height, lv, maxlv = 1, m;
-@@ -1954,12 +2468,55 @@ static int tex_layout(const NvD3DTexture *t, TexLayout *L)
+@@ -1954,12 +2506,55 @@ static int tex_layout(const NvD3DTexture *t, TexLayout *L)
      return 1;
  }
  
@@ -6105,7 +6493,7 @@ index b9f3fa2..11540cc 100644
          for (by = 0; by < bh; by++)
              for (bx = 0; bx < bw; bx++) {
                  d3d8_dxt_decode_block(src + ((size_t)by * bw + bx) * L->bpp, t->color, px);
-@@ -1969,6 +2526,11 @@ static void decode_level(const NvD3DTexture *t, const TexLayout *L, const uint8_
+@@ -1969,6 +2564,11 @@ static void decode_level(const NvD3DTexture *t, const TexLayout *L, const uint8_
              }
          return;
      }
@@ -6117,7 +6505,7 @@ index b9f3fa2..11540cc 100644
      if (L->kind == K_LIN) {
          for (y = 0; y < h; y++) {
              const uint8_t *row = src + (size_t)y * t->pitch;
-@@ -2023,12 +2585,15 @@ static void tex_evict(void)
+@@ -2023,12 +2623,15 @@ static void tex_evict(void)
          {
              TexEntry *e = *best;
              *best = e->next;
@@ -6134,7 +6522,7 @@ index b9f3fa2..11540cc 100644
  static void halve_bgra(const uint32_t *src, uint32_t w, uint32_t h, uint32_t *dst)
  {
      uint32_t nw = w > 1 ? w / 2 : 1, nh = h > 1 ? h / 2 : 1, x, y, c;
-@@ -2057,22 +2622,63 @@ static int host_levels(const TexLayout *L, const NvD3DTexture *t)
+@@ -2057,22 +2660,63 @@ static int host_levels(const TexLayout *L, const NvD3DTexture *t)
      return n > L->levels ? n : L->levels;
  }
  
@@ -6184,12 +6572,12 @@ index b9f3fa2..11540cc 100644
 +    if (guest_levels) *guest_levels = 1;
 +    if (!tex_layout(t, &L)) {
 +        texture_trace_event(t, "invalid_layout", 0, 0, 0, 0, 0, 0);
-         return NULL;
++        return NULL;
 +    }
 +    if (guest_levels) *guest_levels = L.levels;
 +    if (!guest_ok(t->addr, L.total)) {
 +        texture_trace_event(t, "invalid_guest_span", L.total, L.levels, 0, 0, 0, 0);
-+        return NULL;
+         return NULL;
 +    }
      for (e = *head; e; e = e->next)
          if (e->phys == p && e->format == t->format && e->pitch == t->pitch &&
@@ -6205,7 +6593,7 @@ index b9f3fa2..11540cc 100644
          e->used = s_frame;
          return e->srv;
      }
-@@ -2082,21 +2688,40 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
+@@ -2082,21 +2726,40 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
          ph = hash_mem((const uint8_t *)pal, t->palette_len * 4);
      }
      if (e && e->hash == h && e->pal_hash == ph) {
@@ -6252,7 +6640,7 @@ index b9f3fa2..11540cc 100644
          if (L.faces == 6) {
              sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
              sd.TextureCube.MipLevels = (UINT)hl;
-@@ -2104,71 +2729,101 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
+@@ -2104,71 +2767,101 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
              sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
              sd.Texture2D.MipLevels = (UINT)hl;
          }
@@ -6386,7 +6774,7 @@ index b9f3fa2..11540cc 100644
  /* -------------------------------------------------------- state objects */
  
  typedef struct { uint64_t key; void *obj; } StateSlot;
-@@ -2346,12 +3001,29 @@ static D3D11_TEXTURE_ADDRESS_MODE addr_mode(uint32_t m)
+@@ -2346,12 +3039,29 @@ static D3D11_TEXTURE_ADDRESS_MODE addr_mode(uint32_t m)
      }
  }
  
@@ -6417,7 +6805,7 @@ index b9f3fa2..11540cc 100644
      if (bias13 & 0x1000) bias13 -= 0x2000;
      key = (uint64_t)minf | ((uint64_t)magf << 8) | ((uint64_t)(bias13 & 0x1FFF) << 12) |
            ((uint64_t)(levels & 15) << 25) | ((uint64_t)(reduce != 0) << 29) |
-@@ -2393,9 +3065,26 @@ static ID3D11SamplerState *sampler(const NvD3DTexture *t, int levels, int reduce
+@@ -2393,9 +3103,26 @@ static ID3D11SamplerState *sampler(const NvD3DTexture *t, int levels, int reduce
          }
          ID3D11Device_CreateSamplerState(s_dev, &d, (ID3D11SamplerState **)slot);
      }
@@ -6444,7 +6832,7 @@ index b9f3fa2..11540cc 100644
  /* ------------------------------------------------------------------- draw */
  
  static uint32_t mode_needs_texture(uint32_t mode)
-@@ -2468,6 +3157,82 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
+@@ -2468,6 +3195,82 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
   * stored widened (its image already spans the wide screen). */
  static int s_draw_textured, s_draw_reads_wide;
  static uint32_t s_draw_tex_addr;
@@ -6527,7 +6915,7 @@ index b9f3fa2..11540cc 100644
  
  /* A guest pass that reduces a render target (glare, luminance
   * or reflection downsamples) takes texel-exact taps: at the guest's
-@@ -2585,9 +3350,8 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
+@@ -2585,9 +3388,8 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
          ID3D11DeviceContext_OMSetBlendState(s_ctx, s_blend_opaque, NULL, 0xFFFFFFFF);
          ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, s_ds_off, 0);
          ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -6539,7 +6927,7 @@ index b9f3fa2..11540cc 100644
          ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, &src);
          ID3D11DeviceContext_Draw(s_ctx, 3, 0);
          unbind_targets();
-@@ -2622,13 +3386,13 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
+@@ -2622,13 +3424,13 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
          ID3D11DeviceContext_OMSetBlendState(s_ctx, s_blend_opaque, NULL, 0xFFFFFFFF);
          ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, s_ds_off, 0);
          ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -6556,7 +6944,7 @@ index b9f3fa2..11540cc 100644
              upload_cb(s_cb_clear, cc, sizeof cc);
              ID3D11DeviceContext_PSSetConstantBuffers(s_ctx, 0, 1, &s_cb_clear);
          }
-@@ -2640,6 +3404,43 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
+@@ -2640,6 +3442,43 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
      return d->y16_srv;
  }
  
@@ -6600,7 +6988,7 @@ index b9f3fa2..11540cc 100644
  static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                            uint32_t *out_gw, uint32_t *out_gh, uint32_t *out_zmax)
  {
-@@ -2649,10 +3450,11 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2649,10 +3488,11 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      PSConsts pc;
      ID3D11ShaderResourceView *srv[8] = { 0 };
      ID3D11SamplerState *smp[4] = { 0 };
@@ -6613,7 +7001,7 @@ index b9f3fa2..11540cc 100644
  
      {
          /* Bring-up switches: RECOMP_D3D_SKIP_CMASK / _SKIP_SFACTOR (hex) drop
-@@ -2686,13 +3488,19 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2686,13 +3526,19 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          rt = surface_find(phys(t->addr));
          if (rt && rt->bpp == 4) { surface_sync(rt, 0); surface_y16(rt); }
      }
@@ -6634,7 +7022,7 @@ index b9f3fa2..11540cc 100644
      for (n = 0; n < 4; n++) {
          const NvD3DTexture *t = &st->tex[n];
          uint32_t mode = (st->rc.stage_program >> (n * 5)) & 31;
-@@ -2707,7 +3515,11 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2707,7 +3553,11 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          if (!mode_needs_texture(mode) || !t->addr || !t->width || !t->height)
              continue;
          tex_format(t->color, &kind);
@@ -6647,7 +7035,7 @@ index b9f3fa2..11540cc 100644
          s_draw_textured = 1;
          if (!s_draw_tex_addr) s_draw_tex_addr = t->addr;
          if (rt && rt->sx > rt->sy * 1.001f) s_draw_reads_wide = 1;
-@@ -2742,9 +3554,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2742,9 +3592,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                  }
              }
          } else {
@@ -6659,7 +7047,7 @@ index b9f3fa2..11540cc 100644
              if (kind == K_LIN) {
                  pc.tex_scale[n][0] = 1.0f / (float)t->width;
                  pc.tex_scale[n][1] = 1.0f / (float)t->height;
-@@ -2758,7 +3569,17 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2758,7 +3607,17 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          }
          if (!view) continue;
          if (t->cube && !rt) srv[4 + n] = view; else srv[n] = view;
@@ -6678,7 +7066,7 @@ index b9f3fa2..11540cc 100644
          pc.tex_info[n][0] = (t->control0 >> 2) & 1;
          pc.tex_info[n][1] = t->filter >> 28;
          /* Point taps of an upscaled linear target average the guest pixel's
-@@ -2777,7 +3598,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2777,7 +3636,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      /* A sampled surface's CPU upload can blit and unbind this draw's
       * outputs. Restore targets and viewport before binding its textures. */
      if ((s != s_cur_rt || d != s_cur_ds) &&
@@ -6687,7 +7075,7 @@ index b9f3fa2..11540cc 100644
          return 0;
  
      /* Combiners. */
-@@ -2797,7 +3618,9 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2797,7 +3656,9 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      pc.stage_prog = st->rc_seen ? st->rc.stage_program : (st->tex_used & 1);
      pc.alpha_func = st->alpha_func;
      pc.alpha_ref = st->alpha_ref;
@@ -6698,7 +7086,7 @@ index b9f3fa2..11540cc 100644
      pc.other_input = st->other_stage_input;
      pc.dot_map = st->dot_rgb_mapping;
      /* SET_FOG_COLOR keeps red in the low byte. */
-@@ -2816,7 +3639,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2816,7 +3677,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          pc.zp1[0] = 1.0f / ((float)zm + 1.0f);
          pc.zp1[1] = (float)zm;
      }
@@ -6707,7 +7095,7 @@ index b9f3fa2..11540cc 100644
  
      if (st->poly_offset_fill && !(st->z_perspective && d)) {
          /* The slope term multiplies the depth change per pixel. At an
-@@ -2832,11 +3655,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2832,11 +3693,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      {
          uint32_t v = (st->flat_shade ? 1u : 0u) | (st->z_perspective && d ? 2u : 0u);
          ID3D11PixelShader *ps = spec_ps(&pc, v);
@@ -6721,7 +7109,7 @@ index b9f3fa2..11540cc 100644
      ID3D11DeviceContext_RSSetState(s_ctx, rs_state(cull == 3 ? 0 : cull,
                                                     st->front_face == 0x901, bias, slope));
      apply_scissor(st, gw, gh);
-@@ -2855,7 +3677,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2855,7 +3715,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          blend_state(st->blend_enable, st->blend_sfactor, st->blend_dfactor,
                      st->blend_equation, s ? write_mask(st, s) : 0), bf, 0xFFFFFFFF);
      ID3D11DeviceContext_OMSetDepthStencilState(s_ctx,
@@ -6731,7 +7119,7 @@ index b9f3fa2..11540cc 100644
                       st->stencil_test, st->stencil_func, st->stencil_func_mask,
                       st->stencil_write_mask, st->stencil_fail,
                       st->stencil_zfail, st->stencil_zpass) : s_ds_off,
-@@ -2908,8 +3731,38 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
+@@ -2908,8 +3769,38 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
   * (index - sub); fills dx with each vertex's x shift in guest pixels and
   * returns 0 when nothing moves, leaving only the shader's 4:3 squeeze. */
  #define HUD_GAP 24.0f
@@ -6771,7 +7159,7 @@ index b9f3fa2..11540cc 100644
  {
      static uint32_t *root, *piece, cap;
      static float (*box)[4];             /* per piece: x0 x1 y0 y1 */
-@@ -2929,13 +3782,15 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2929,13 +3820,15 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
  #define FIND(x) do { while (root[x] != x) x = root[x] = root[root[x]]; } while (0)
      /* pieces: vertices joined by primitives */
      for (i = 0; i < nv; i++) root[i] = i;
@@ -6788,7 +7176,7 @@ index b9f3fa2..11540cc 100644
      for (i = 0; i < nv; i++) {
          uint32_t r = i;
          FIND(r);
-@@ -2951,6 +3806,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2951,6 +3844,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
          FIND(r);
          n = piece[r];
          piece[i] = n;
@@ -6796,7 +7184,7 @@ index b9f3fa2..11540cc 100644
          if (pos[i][0] < box[n][0]) box[n][0] = pos[i][0];
          if (pos[i][0] > box[n][1]) box[n][1] = pos[i][0];
          if (pos[i][1] < box[n][2]) box[n][2] = pos[i][1];
-@@ -2977,6 +3833,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2977,6 +3871,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
          uint32_t c = piece[i];
          FIND(c);
          dx[i] = 0.0f;
@@ -6804,7 +7192,7 @@ index b9f3fa2..11540cc 100644
          if (follow) {
              /* keep the cluster's centre where the title projected it on
               * the full width; the shader squeezes it to 4:3 about there */
-@@ -3025,6 +3882,7 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3025,6 +3920,7 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
                        uint32_t lo, uint32_t hi, const float (*pos)[4])
  {
      static uint32_t s_prog_version, s_vconst_version;
@@ -6812,7 +7200,7 @@ index b9f3fa2..11540cc 100644
      static float *dx;
      static uint32_t dx_cap;
      struct { const uint8_t *base; uint32_t stride, span; } grp[16];
-@@ -3073,19 +3931,28 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3073,19 +3969,28 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      RECOMP_PROFILE_BEGIN("D3D11 draw");
      t_draw = s_prof_on > 0 ? qpc() : 0;
      s_prof_draws++;
@@ -6848,7 +7236,7 @@ index b9f3fa2..11540cc 100644
              if (v[0] < xlo) xlo = v[0];
              if (v[0] > xhi) xhi = v[0];
              if (v[1] < ylo) ylo = v[1];
-@@ -3093,28 +3960,76 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3093,28 +3998,76 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
          }
          if (flat) {
              float narrow = s->sy / s->sx;
@@ -6937,7 +7325,7 @@ index b9f3fa2..11540cc 100644
                  }
              }
          }
-@@ -3137,6 +4052,8 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3137,6 +4090,8 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
          for (i = 0; i < 16; i++)
              if (attr[i].enabled && uc.at[i][2] != 0xFF)
                  uc.at[i][0] += goff[gof[i]];
@@ -6946,7 +7334,7 @@ index b9f3fa2..11540cc 100644
      }
      uc.info[2] = 0xFFFFFFFFu;
      if (use_dx) {
-@@ -3158,13 +4075,25 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3158,13 +4113,25 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
          const uint32_t (*prog)[4] = nv2a_vsh_program(&start, &pver);
          const float (*consts)[4] = nv2a_vsh_constants(&cver);
          uc.info[0] = start;
@@ -6976,7 +7364,7 @@ index b9f3fa2..11540cc 100644
          }
      }
      uc.map[0] = 2.0f / (float)gw;
-@@ -3177,14 +4106,21 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3177,14 +4144,21 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      uc.fogf[1] = st->fog_param[1];
      uc.place[0] = shift;
      uc.place[1] = yscale;
@@ -7004,7 +7392,7 @@ index b9f3fa2..11540cc 100644
          ID3D11DeviceContext_DrawIndexed(s_ctx, ni, 0, 0);
      }
      s_raw_pos += (at + 255) & ~255u;
-@@ -3204,11 +4140,18 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3204,11 +4178,18 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      float cc[8];
      D3D11_RECT r;
      int zclear = (flags & 1) != 0, sclear = (flags & 2) != 0;
@@ -7025,7 +7413,7 @@ index b9f3fa2..11540cc 100644
      if (s) {
          if (flags & 0x10) mask |= D3D11_COLOR_WRITE_ENABLE_RED;
          if (flags & 0x20) mask |= D3D11_COLOR_WRITE_ENABLE_GREEN;
-@@ -3217,8 +4160,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3217,8 +4198,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
              mask |= D3D11_COLOR_WRITE_ENABLE_ALPHA;
      }
      if (!d) { zclear = sclear = 0; }
@@ -7037,7 +7425,7 @@ index b9f3fa2..11540cc 100644
      if (s && mask) s->gpu_dirty = 1;
      zf = (st->surface_format >> 4) & 0xF;
      unpack4(color, cc);
-@@ -3234,8 +4179,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3234,8 +4217,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      upload_cb(s_cb_clear, cc, sizeof cc);
      if (x1 >= gw) x1 = gw - 1;
      if (y1 >= gh) y1 = gh - 1;
@@ -7049,7 +7437,7 @@ index b9f3fa2..11540cc 100644
      r.left = (LONG)(x0 * s_aa_x * s_cur_sx + 0.5f);
      r.top = (LONG)(y0 * s_aa_y * s_cur_sy + 0.5f);
      r.right = (LONG)((x1 + 1) * s_aa_x * s_cur_sx + 0.5f);
-@@ -3247,12 +4194,12 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3247,12 +4232,12 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
          ds_state(zclear, 7, zclear, sclear, 7, 0xFF, 0xFF, 0x1E01, 0x1E01, 0x1E01),
          zf == 1 ? 0 : (zstencil & 0xFF));
      ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -7066,7 +7454,7 @@ index b9f3fa2..11540cc 100644
  }
  
  /* -------------------------------------------------------------- write-back */
-@@ -3270,6 +4217,27 @@ typedef struct {
+@@ -3270,6 +4255,27 @@ typedef struct {
      ID3D11RenderTargetView *down_rtv;
  } WbSlot;
  static WbSlot s_wb[MAX_SURFACES];
@@ -7094,7 +7482,7 @@ index b9f3fa2..11540cc 100644
  
  static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
  {
-@@ -3289,12 +4257,14 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
+@@ -3289,12 +4295,14 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
              return 0;
          k->w = w; k->h = h;
      }
@@ -7115,7 +7503,7 @@ index b9f3fa2..11540cc 100644
      }
      return 1;
  }
-@@ -3305,21 +4275,96 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
+@@ -3305,21 +4313,96 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
   * (nv2a_d3d_writeback_busy), holding back DMA_GET and fence releases until
   * then -- the title cannot learn the frame is finished before its pixels are
   * in guest memory. */
@@ -7214,7 +7602,7 @@ index b9f3fa2..11540cc 100644
      for (i = 0; i < MAX_SURFACES; i++) {
          Surface *s = &s_surf[i];
          WbSlot *k = &s_wb[i];
-@@ -3328,18 +4373,25 @@ static int writeback_finish(int wait)
+@@ -3328,18 +4411,25 @@ static int writeback_finish(int wait)
          uint32_t x, y, rowb;
          int amode, r565;
          HRESULT hr;
@@ -7241,7 +7629,7 @@ index b9f3fa2..11540cc 100644
          dst = (uint8_t *)guest(s->va);
          rowb = s->w * s->bpp;
          amode = surface_alpha_mode(s->color_fmt);
-@@ -3350,8 +4402,11 @@ static int writeback_finish(int wait)
+@@ -3350,8 +4440,11 @@ static int writeback_finish(int wait)
              /* A row the CPU changed since the executor last looked holds
               * writes made after this frame was submitted (the title runs
               * ahead): they win, and the next sync uploads them. */
@@ -7254,7 +7642,7 @@ index b9f3fa2..11540cc 100644
              if (s->bpp == 4) {
                  if (amode < 0) {
                      memcpy(row, src, rowb);
-@@ -3370,10 +4425,16 @@ static int writeback_finish(int wait)
+@@ -3370,10 +4463,16 @@ static int writeback_finish(int wait)
              }
              memcpy(s->shadow + (size_t)y * rowb, row, rowb);
          }
@@ -7271,7 +7659,7 @@ index b9f3fa2..11540cc 100644
      return !left;
  }
  
-@@ -3381,10 +4442,8 @@ int nv2a_d3d_writeback_busy(void)
+@@ -3381,10 +4480,8 @@ int nv2a_d3d_writeback_busy(void)
  {
      if (!s_wb_pending || writeback_finish(0))
          return 0;
@@ -7284,7 +7672,7 @@ index b9f3fa2..11540cc 100644
      return 1;
  }
  
-@@ -3420,10 +4479,20 @@ static void writeback_surfaces(void)
+@@ -3420,10 +4517,20 @@ static void writeback_surfaces(void)
          }
          s->gpu_dirty = 0;                        /* later draws dirty it again */
          k->pending = 1;
@@ -7306,7 +7694,7 @@ index b9f3fa2..11540cc 100644
      RECOMP_PROFILE_END();
  }
  
-@@ -3439,13 +4508,16 @@ static uint64_t s_zpass;
+@@ -3439,13 +4546,16 @@ static uint64_t s_zpass;
  static void zpass_collect(void)
  {
      UINT64 n = 0;
@@ -7323,7 +7711,7 @@ index b9f3fa2..11540cc 100644
  }
  
  void nv2a_d3d_zpass_enable(int on)
-@@ -3657,17 +4729,16 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3657,17 +4767,16 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
      ID3D11DeviceContext_OMSetBlendState(s_ctx, s_blend_opaque, NULL, 0xFFFFFFFF);
      ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, s_ds_off, 0);
      ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -7345,7 +7733,7 @@ index b9f3fa2..11540cc 100644
      ID3D11DeviceContext_Draw(s_ctx, 4, 0);
      unbind_targets();
      unbind_textures();
-@@ -3724,7 +4795,36 @@ static ID3D11Texture2D *s_cap_tex;
+@@ -3724,7 +4833,36 @@ static ID3D11Texture2D *s_cap_tex;
  static ID3D11RenderTargetView *s_cap_rtv;
  static UINT s_cap_w, s_cap_h;
  
@@ -7383,10 +7771,11 @@ index b9f3fa2..11540cc 100644
  {
      PresentConsts pc;
      s_last_present = GetTickCount();
-@@ -3755,12 +4855,29 @@ static void present_surface(Surface *s)
+@@ -3754,13 +4892,28 @@ static void present_surface(Surface *s)
+         ID3D11Texture2D *bb = NULL;
          ID3D11RenderTargetView *rtv = NULL;
          if (SUCCEEDED(IDXGISwapChain1_GetBuffer(s_swap, 0, &IID_ID3D11Texture2D, (void **)&bb))) {
-             static int vsync = -1;
+-            static int vsync = -1;
 -            ID3D11Device_CreateRenderTargetView(s_dev, (ID3D11Resource *)bb, NULL, &rtv);
 +            HRESULT present_hr;
 +            int64_t present_trace;
@@ -7399,14 +7788,14 @@ index b9f3fa2..11540cc 100644
              composite(rtv, s_swap_w, s_swap_h, s, &pc, 1);
              if (!getenv("RECOMP_CAPTURE_SURFACE"))
                  capture_backbuffer(bb);
-             if (vsync < 0) vsync = getenv("RECOMP_VSYNC") ? atoi(getenv("RECOMP_VSYNC")) : 0;
+-            if (vsync < 0) vsync = getenv("RECOMP_VSYNC") ? atoi(getenv("RECOMP_VSYNC")) : 0;
 -            IDXGISwapChain1_Present(s_swap, (UINT)vsync, 0);
 +            frame_csv_init();
 +            /* Composite and capture are complete; align the actual host
 +             * submission, without pacing tick/movie-only presentations. */
 +            if (pacing && !pace_after_present()) pace_flip(pacing);
 +            present_trace = hitch_trace_begin();
-+            present_hr = IDXGISwapChain1_Present(s_swap, (UINT)vsync, 0);
++            present_hr = IDXGISwapChain1_Present(s_swap, (UINT)((present_options() >> 16) & 1), 0);
 +            if (present_hr == S_OK)
 +                s->cpu_present_pending = 0;
 +            if (pacing && s_frame_csv_file)
@@ -7415,19 +7804,25 @@ index b9f3fa2..11540cc 100644
              ID3D11RenderTargetView_Release(rtv);
              ID3D11Texture2D_Release(bb);
          }
-@@ -3779,40 +4896,24 @@ static void pace_vblank(void)
+@@ -3779,40 +4932,27 @@ static void pace_vblank(void)
      static LARGE_INTEGER freq;
      static int64_t next;
      static HANDLE timer;
 -    int64_t now, period;
+-    if (limit < 0) {
+-        const char *e = getenv("RECOMP_FPS_LIMIT");
+-        limit = e ? atoi(e) : 60;
++    int requested = (int)(present_options() & 0xFFFF);
 +    int64_t now;
-     if (limit < 0) {
-         const char *e = getenv("RECOMP_FPS_LIMIT");
-         limit = e ? atoi(e) : 60;
++    if (!freq.QuadPart) {
          QueryPerformanceFrequency(&freq);
 -        timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
 -                                       TIMER_ALL_ACCESS);
 +        timer = nv_pacing_create_timer();
++    }
++    if (requested != limit) {
++        limit = requested;
++        next = 0;
      }
      if (limit <= 0)
          return;
@@ -7460,7 +7855,53 @@ index b9f3fa2..11540cc 100644
      }
  }
  
-@@ -3897,10 +4998,12 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
+@@ -3829,23 +4969,34 @@ static void display_config(int now)
+ {
+     static UINT seen_w, seen_h, done_w, done_h;
+     static DWORD seen_at;
++    static LONG done_scale_bits = -2;
++    LONG scale_bits = InterlockedCompareExchange(&s_runtime_scale_bits, 0, 0);
++    int scale_changed = scale_bits != done_scale_bits;
+     const char *e = getenv("RECOMP_RENDER_SCALE");
++    float requested_scale = 0.0f;
+     float scale, aspect = env_aspect();
+     UINT w, h;
+     int i, deferred;
++    if (scale_bits != -1) memcpy(&requested_scale, &scale_bits, sizeof requested_scale);
+     if (!client_size(&w, &h)) {
+         if (!now) return;
+         w = (UINT)(GUEST_H * nv2a_d3d_display_aspect()); h = GUEST_H;
+     }
+     if (!now) {
+-        if (w != seen_w || h != seen_h) { seen_w = w; seen_h = h; seen_at = GetTickCount(); return; }
+-        if ((w == done_w && h == done_h) || GetTickCount() - seen_at < RESIZE_SETTLE_MS) return;
++        if (w != seen_w || h != seen_h) {
++            seen_w = w; seen_h = h; seen_at = GetTickCount();
++            if (!scale_changed) return;
++        }
++        if (!scale_changed && ((w == done_w && h == done_h) ||
++                               GetTickCount() - seen_at < RESIZE_SETTLE_MS)) return;
+     }
+     if (!aspect) aspect = clamp_aspect((float)w / (float)h);
+     deferred = !now && s_aspect && fabsf(aspect - s_aspect) > 1e-4f &&
+                InterlockedCompareExchange(&s_edge_hud, 0, 0);
+     if (deferred) aspect = s_aspect;             /* retried every flip */
+-    if (e && atof(e) >= 0.5 && atof(e) <= 8.0) {
++    if (requested_scale > 0.0f) {
++        scale = requested_scale;
++    } else if (scale_bits == -1 && e && atof(e) >= 0.5 && atof(e) <= 8.0) {
+         scale = (float)atof(e);
+     } else {
+         /* RECOMP_SUPERSAMPLE=N (1..4) renders N x N host pixels per window
+@@ -3860,6 +5011,7 @@ static void display_config(int now)
+         if (scale < 1.0f) scale = 1.0f;
+         if (scale > 8.0f) scale = 8.0f;
+     }
++    done_scale_bits = scale_bits;
+     if (!deferred) { done_w = w; done_h = h; }
+     if (!now && fabsf(scale - s_scale) < 1e-3f && fabsf(aspect - s_aspect) < 1e-4f)
+         return;
+@@ -3897,10 +5049,12 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
  void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
  {
      Surface *s;
@@ -7473,7 +7914,7 @@ index b9f3fa2..11540cc 100644
      s = surface_find(phys(surface_addr));
      if (!s && pitch)
          s = scan_surface(surface_addr, pitch);
-@@ -3910,17 +5013,17 @@ void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
+@@ -3910,17 +5064,17 @@ void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
          int64_t t0 = s_prof_on > 0 ? qpc() : 0, t1;
          writeback_surfaces();
          t1 = s_prof_on > 0 ? qpc() : 0;
@@ -7498,7 +7939,7 @@ index b9f3fa2..11540cc 100644
      RECOMP_PROFILE_FRAME();
      prof_report();
      display_config(0);
-@@ -3940,15 +5043,27 @@ void nv2a_d3d_tick(void)
+@@ -3940,15 +5094,27 @@ void nv2a_d3d_tick(void)
          return;
      if (xbox_FramebufferScanSource(&va, &pitch)) {
          Surface *s = scan_surface(va, pitch);
@@ -7530,7 +7971,16 @@ index b9f3fa2..11540cc 100644
          else
              s_last_present = now;
      }
-@@ -3978,6 +5093,11 @@ void nv2a_d3d_zpass_clear(void) {}
+@@ -3958,6 +5124,8 @@ void nv2a_d3d_tick(void)
+ #include "nv2a_d3d11.h"
+ int  nv2a_d3d_init(void) { return 0; }
+ int  nv2a_d3d_active(void) { return 0; }
++int nv2a_d3d_set_present_options(int vsync, int fps) { (void)vsync; (void)fps; return 0; }
++void nv2a_d3d_set_render_scale(float scale) { (void)scale; }
+ int nv2a_d3d_writeback_busy(void) { return 0; }
+ int nv2a_d3d_prof_enabled(void) { return 0; }
+ void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
+@@ -3978,6 +5146,11 @@ void nv2a_d3d_zpass_clear(void) {}
  uint32_t nv2a_d3d_zpass_read(void) { return 0; }
  float nv2a_d3d_display_aspect(void) { return 4.0f / 3.0f; }
  void nv2a_d3d_set_edge_hud(int on) { (void)on; }
@@ -7543,7 +7993,7 @@ index b9f3fa2..11540cc 100644
  void nv2a_d3d_set_hud_start(float x0, float y0, float x1, float y1) { (void)x0; (void)y0; (void)x1; (void)y1; }
  #endif
 diff --git a/src/video/nv2a_d3d11.h b/src/video/nv2a_d3d11.h
-index 082f091..258596c 100644
+index 082f091..883ad0d 100644
 --- a/src/video/nv2a_d3d11.h
 +++ b/src/video/nv2a_d3d11.h
 @@ -2,12 +2,13 @@
@@ -7564,7 +8014,22 @@ index 082f091..258596c 100644
   *
   * Everything here runs on the one thread that executes the pushbuffer.
   */
-@@ -97,6 +98,30 @@ float nv2a_d3d_display_aspect(void);
+@@ -91,12 +92,45 @@ int nv2a_d3d_widescreen(void);
+ int  nv2a_d3d_init(void);
+ int  nv2a_d3d_active(void);
+ 
++/* Thread-safe live controls; the render thread consumes them between frames.
++ * VSync must be 0 or 1, and max_fps 1..60. Returns zero for invalid values.
++ * Existing environment defaults remain active until explicitly configured. */
++int nv2a_d3d_set_present_options(int vsync, int max_fps);
++/* Absolute internal resolution relative to the guest's 480 lines, matching
++ * RECOMP_RENDER_SCALE. Accepts .5..8; 0 returns to automatic window sizing.
++ * Surface recreation happens on the rendering thread, without a restart. */
++void nv2a_d3d_set_render_scale(float scale);
++
+ /* Width / height the image is presented at (widescreen). */
+ float nv2a_d3d_display_aspect(void);
+ /* The title turns this on when its in-game HUD's screen begins and off when
   * it leaves; while on (and the frame draws no full-screen background) the
   * HUD is placed at the screen edges instead of the centred 4:3 area. */
  void nv2a_d3d_set_edge_hud(int on);
@@ -20378,3 +20843,160 @@ index 0000000..0f3cc7c
 +}
 +
 +#endif
+diff --git a/tests/nv2a_display/CMakeLists.txt b/tests/nv2a_display/CMakeLists.txt
+new file mode 100644
+index 0000000..daee412
+--- /dev/null
++++ b/tests/nv2a_display/CMakeLists.txt
+@@ -0,0 +1,13 @@
++cmake_minimum_required(VERSION 3.20)
++project(nv2a_display C)
++if(NOT WIN32)
++    message(FATAL_ERROR "These runtime display contracts require Windows/D3D11.")
++endif()
++enable_testing()
++add_executable(nv2a_display test_display.c)
++target_include_directories(nv2a_display PRIVATE ../../src ../../src/video)
++target_compile_definitions(nv2a_display PRIVATE _CRT_SECURE_NO_WARNINGS)
++target_link_libraries(nv2a_display PRIVATE d3d11 dxgi dxguid d3dcompiler user32)
++foreach(case options pacing scale)
++    add_test(NAME nv2a_display_${case} COMMAND nv2a_display ${case})
++endforeach()
+diff --git a/tests/nv2a_display/test_display.c b/tests/nv2a_display/test_display.c
+new file mode 100644
+index 0000000..2667224
+--- /dev/null
++++ b/tests/nv2a_display/test_display.c
+@@ -0,0 +1,132 @@
++/* Run the actual live option consumer and surface recreation on the GPU. */
++#include "../../src/video/nv2a_d3d11.c"
++
++static uint8_t ram[0x400000];
++static HWND fixture_window;
++ptrdiff_t xbox_GetMemoryOffset(void) { return (ptrdiff_t)ram; }
++HWND xbox_FramebufferWindowHandle(void) { return fixture_window; }
++int xbox_FramebufferScanSource(uint32_t *va, uint32_t *pitch) { (void)va; (void)pitch; return 0; }
++int xbox_FramebufferOverlay(XboxOverlay *overlay) { (void)overlay; return 0; }
++void xbox_FramebufferNoteFlip(uint32_t draws) { (void)draws; }
++const uint32_t (*nv2a_vsh_program(uint32_t *start, uint32_t *version))[4]
++{ (void)start; (void)version; return NULL; }
++const float (*nv2a_vsh_constants(uint32_t *version))[4] { (void)version; return NULL; }
++
++#define CHECK(x) do { if (!(x)) { fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#x); exit(1); } } while (0)
++
++static volatile LONG writer_done;
++static DWORD WINAPI option_writer(LPVOID unused)
++{
++    unsigned i;
++    (void)unused;
++    for (i = 0; i < 100000; ++i) CHECK(nv2a_d3d_set_present_options(i & 1, (i & 1) ? 60 : 30));
++    InterlockedExchange(&writer_done, 1);
++    return 0;
++}
++
++static void test_options(void)
++{
++    LONG expected;
++    HANDLE writer;
++    CHECK(_putenv_s("RECOMP_FPS_LIMIT", "45") == 0);
++    CHECK(_putenv_s("RECOMP_VSYNC", "1") == 0);
++    CHECK(present_options() == ((1 << 16) | 45));
++    CHECK(nv2a_d3d_set_present_options(0, 1));
++    expected = present_options();
++    CHECK(expected == 1);
++    CHECK(!nv2a_d3d_set_present_options(2, 60));
++    CHECK(!nv2a_d3d_set_present_options(-1, 60));
++    CHECK(!nv2a_d3d_set_present_options(0, 0));
++    CHECK(!nv2a_d3d_set_present_options(0, 61));
++    CHECK(present_options() == expected);
++    CHECK(nv2a_d3d_set_present_options(0, 30));
++    writer = CreateThread(NULL, 0, option_writer, NULL, 0, NULL);
++    CHECK(writer);
++    do {
++        LONG actual = present_options();
++        CHECK(actual == 30 || actual == ((1 << 16) | 60));
++    } while (!InterlockedCompareExchange(&writer_done, 0, 0));
++    CHECK(WaitForSingleObject(writer, 5000) == WAIT_OBJECT_0);
++    CloseHandle(writer);
++    puts("PASS: live FPS/VSync bounds, launch defaults and 100000 atomic paired publications");
++}
++
++static double measured_period(int rate)
++{
++    LARGE_INTEGER frequency;
++    int64_t start;
++    unsigned i;
++    CHECK(QueryPerformanceFrequency(&frequency));
++    CHECK(nv2a_d3d_set_present_options(0, rate));
++    pace_vblank();
++    start = qpc();
++    for (i = 0; i < 5; ++i) pace_vblank();
++    return (qpc() - start) * 1000.0 / frequency.QuadPart / 5;
++}
++
++static void test_pacing(void)
++{
++    double at30 = measured_period(30), at60 = measured_period(60), back30 = measured_period(30);
++    CHECK(at30 > 25 && at30 < 60);
++    CHECK(at60 > 12 && at60 < 35);
++    CHECK(back30 > 25 && back30 < 60);
++    printf("PASS: native cadence switches 30 -> 60 -> 30 FPS without restart (%.2f / %.2f / %.2f ms)\n",
++        at30, at60, back30);
++}
++
++static void test_scale(void)
++{
++    RECT rectangle = { 0, 0, 960, 720 };
++    Surface *surface;
++    LONG before;
++    CHECK(_putenv_s("RECOMP_RENDER_SCALE", "1") == 0);
++    CHECK(_putenv_s("RECOMP_SUPERSAMPLE", "2") == 0);
++    CHECK(_putenv_s("RECOMP_ASPECT", "4:3") == 0);
++    CHECK(_putenv_s("RECOMP_MSAA", "1") == 0);
++    CHECK(_putenv_s("RECOMP_PS_SPEC", "0") == 0);
++    CHECK(_putenv_s("RECOMP_PS_PREWARM", "0") == 0);
++    CHECK(_putenv_s("RECOMP_SHADER_CACHE", "0") == 0);
++    SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
++    CHECK(AdjustWindowRect(&rectangle, WS_OVERLAPPEDWINDOW, FALSE));
++    fixture_window = CreateWindowExA(0, "STATIC", "Hidden render-scale contract",
++        WS_OVERLAPPEDWINDOW, 0, 0, rectangle.right - rectangle.left,
++        rectangle.bottom - rectangle.top, NULL, NULL, GetModuleHandleA(NULL), NULL);
++    CHECK(fixture_window && nv2a_d3d_init());
++    CHECK(fabsf(s_scale - 1.0f) < 0.001f);
++    surface = surface_get(0x1000u, 640 * 4, 5, 640, 480, 0);
++    CHECK(surface && surface->tex && surface->iw == 640 && surface->ih == 480);
++    nv2a_d3d_set_render_scale(2.0f);
++    display_config(0);
++    CHECK(fabsf(s_scale - 2.0f) < 0.001f && !surface->tex);
++    surface = surface_get(0x1000u, 640 * 4, 5, 640, 480, 0);
++    CHECK(surface && surface->tex && surface->iw == 1280 && surface->ih == 960);
++    before = InterlockedCompareExchange(&s_runtime_scale_bits, 0, 0);
++    nv2a_d3d_set_render_scale(0.49f);
++    nv2a_d3d_set_render_scale(8.01f);
++    nv2a_d3d_set_render_scale((float)NAN);
++    CHECK(InterlockedCompareExchange(&s_runtime_scale_bits, 0, 0) == before);
++    nv2a_d3d_set_render_scale(0.5f);
++    display_config(0);
++    CHECK(fabsf(s_scale - 0.5f) < 0.001f);
++    surface = surface_get(0x1000u, 640 * 4, 5, 640, 480, 0);
++    CHECK(surface && surface->iw == 320 && surface->ih == 240);
++    nv2a_d3d_set_render_scale(0.0f);
++    display_config(0);
++    CHECK(fabsf(s_scale - 3.0f) < 0.001f); /* 720-line window x 2, despite env scale 1. */
++    CHECK(!surface->tex);
++    nv2a_d3d_set_render_scale(8.0f);
++    display_config(0);
++    CHECK(fabsf(s_scale - 8.0f) < 0.001f);
++    CHECK(DestroyWindow(fixture_window));
++    puts("PASS: live render-scale changes recreate GPU surfaces at unchanged window size, bounds and automatic mode");
++}
++
++int main(int argc, char **argv)
++{
++    CHECK(argc == 2);
++    if (!strcmp(argv[1], "options")) test_options();
++    else if (!strcmp(argv[1], "pacing")) test_pacing();
++    else if (!strcmp(argv[1], "scale")) test_scale();
++    else CHECK(0);
++    return 0;
++}

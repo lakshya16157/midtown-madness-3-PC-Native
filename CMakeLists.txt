@@ -247,6 +247,8 @@ endforeach()
 
 add_executable(${PROJECT_NAME}
     src/main.c
+    src/mm3_display_config.c
+    src/mm3_display_settings.c
     src/mm3_asset_cache.c
     src/mm3_debug_features.c
  src/mm3_memory_compat.c

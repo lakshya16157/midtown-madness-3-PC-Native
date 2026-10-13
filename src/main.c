@@ -12,6 +12,7 @@
 #include "mm3_asset_cache.h"
 #include "mm3_frame_limit.h"
 #include "mm3_performance_profile.h"
+#include "mm3_display_settings.h"
 #include "mm3_crash_diagnostics.h"
 #include <xbox_host.h>
 #include <xinput_xbox.h>
@@ -252,6 +253,8 @@ int main(void)
     nv2a_d3d_set_bspline_blend(0x304u, 0x305u);
     SetConsoleCtrlHandler(mm3_console_control, TRUE);
     puts("MM3 static recompilation");
+
+    mm3_display_settings_init();
 
     const char *profile_error = mm3_apply_performance_defaults(getenv("MM3_PERFORMANCE_PROFILE"));
     if (profile_error) {

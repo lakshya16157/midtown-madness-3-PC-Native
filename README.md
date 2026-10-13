@@ -10,6 +10,10 @@ supported game disc with the instructions below. Recent quality-of-life updates
 add a square race map at the left screen edge, softly fading map edges, cleaner
 logs and safer crash reports.
 
+**Press F10 for graphics settings** while the game is running. Adjust resolution,
+fullscreen, maximum FPS, VSync and render quality, then click **Apply**. Your
+choices are saved, and settings that need a restart are clearly marked.
+
 **Credits:** This project builds on the original
 [mm3-recomp by Matt Graham (MattSG)](https://github.com/MattSG/mm3-recomp) and the
 [xboxrecomp toolkit](https://github.com/MattSG/xboxrecomp). Credit for that foundation
@@ -377,13 +381,30 @@ build\RelWithDebInfo\mm3_recomp.exe
 
 The game enforces a maximum of **60 FPS** for presentation and emulated vblank.
 `RECOMP_FPS_LIMIT` may select an integer limit from 1 to 60. When unset, it uses
-the selected profile's cap: 60 for Balanced/Quality or 30 for LowPower. Invalid,
-uncapped (`0`), or higher values use 60, including when launching the executable directly.
+saved setting, or the selected profile's cap when no setting has been saved:
+60 for Balanced/Quality or 30 for LowPower. Invalid, uncapped (`0`), or higher
+values use the saved setting or profile default, including direct executable launches.
+
+Press **F10** to open **Display Settings** while the game is running. The same
+command appears in the game window's title-bar menu (Alt+Space). Choose the
+window resolution, windowed or borderless fullscreen mode, maximum FPS, VSync,
+an FPS counter and rendering quality, then click **Apply**. These changes take
+effect immediately. Window resolution controls the window size; rendering
+quality controls the internal image resolution.
+
+Aspect ratio, MSAA, anisotropic filtering and draw distance are also available
+in the dialog. These changes are saved for the next launch, and the dialog
+shows when a restart is required. Settings are stored per Windows user in
+`%LOCALAPPDATA%\MM3Recomp\display.ini`. Set `MM3_DISPLAY_CONFIG` to use another
+settings file, for example for a separate benchmark configuration. At launch,
+saved settings override profile defaults; explicit environment settings take
+priority over saved settings.
 
 F11 or Alt+Enter toggles fullscreen. The default **Balanced** profile renders at
 1536×960 with a 16:10 aspect and scales the image to the window or fullscreen
-size. The internal height stays fixed when you maximize the window. Choose a
-profile when launching:
+size. The internal height stays fixed when you maximize the window. Profiles
+provide these initial defaults when no display preferences have been saved.
+Choose a profile when launching:
 
 ```powershell
 pwsh scripts\play.ps1 -Profile Balanced
@@ -648,10 +669,12 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `RECOMP_FB_WINDOW` | off | Open the game window. **Required.** |
 | `RECOMP_USB` | off | Emulate the USB controller ports so pads (XInput) reach the game. **Required** for input. |
 | `RECOMP_APU_DSP_ACK` | unset | DSP acknowledgement address(es) the audio needs; use `0x80458810`. |
+| `MM3_DISPLAY_CONFIG` | `%LOCALAPPDATA%\MM3Recomp\display.ini` | Override the saved display-settings file. F10 opens the settings dialog. |
+| `MM3_SHOW_FPS` | saved setting or `1` | Show the FPS counter in the window title; `0` hides it. Can also change live in Display Settings. |
 | `RECOMP_KEYBOARD` | off | `1`: keyboard as a pad (arrows drive/navigate, Z X A S = A B X Y, Enter = Start, Backspace = Back; MM3 layout also maps Escape to B/menu back). |
 | `RECOMP_KEYBOARD_LAYOUT` | `mm3` | Arrow driving controls; `legacy` restores the original D-pad-only arrows and 1/3 trigger keys. |
 | `MM3_PERFORMANCE_PROFILE` | `Balanced` | Shared rendering defaults for launcher and direct executable; `Quality` uses 1440 lines and 8× MSAA, `LowPower` uses 720 lines and a 30 FPS cap. Individual settings override it. |
-| `RECOMP_FPS_LIMIT` | profile: `60` or `30` | Presentation and emulated-vblank cap, 1–60. Uncapped, invalid, or higher values use 60. |
+| `RECOMP_FPS_LIMIT` | saved setting or profile: `60` or `30` | Presentation and emulated-vblank cap, 1–60. Uncapped, invalid, or higher values use the saved setting or profile default. |
 | `RECOMP_VSYNC` | `0` | Present sync interval passed to DXGI. |
 | `RECOMP_FULLSCREEN` | off | Start fullscreen. |
 | `RECOMP_WINDOW_SIZE` | auto | Initial window client size, `WxH`. |
