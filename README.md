@@ -229,23 +229,19 @@ install CMake and Ninja in the venv (`python -m pip install "cmake>=3.20,<4" nin
 setup uses Ninja Multi-Config and keeps the same `build\<Config>` output paths.
 Run these commands from the repository directory, not its parent folder.
 
-### Get the quality-of-life updates
+### Current version on main
 
-The [quality-of-life-map-logging branch](https://github.com/lakshya16157/midtown-madness-3-PC-Native/tree/quality-of-life-map-logging)
+The default [main branch](https://github.com/lakshya16157/midtown-madness-3-PC-Native/tree/main)
 contains the square bottom-left race map, aligned corner routes and markers,
 useful file/crash diagnostics, desktop shortcuts and icons, native tree
 physics/audio fixes, and car workshop improvements. The tested runtime remains
 pinned, with this fork's changes carried in the runtime patch.
 
-```powershell
-git clone --branch quality-of-life-map-logging --recurse-submodules https://github.com/lakshya16157/midtown-madness-3-PC-Native.git mm3-pc-native
-cd mm3-pc-native
-```
+The normal clone and setup instructions above include these updates. Run
+`scripts\setup.ps1 -Iso "<your supported disc image>"`, then
+`scripts\play.ps1 -Keyboard`. Game files and build output are not included.
 
-Run `scripts\setup.ps1 -Iso "<your supported disc image>"` as described above,
-then `scripts\play.ps1 -Keyboard`. Game files and build output are not included.
-
-### Reproduce the improved version (`v2026.10.12.3`)
+### Reproduce an earlier version (`v2026.10.12.3`)
 
 The tag **[v2026.10.12.3](https://github.com/lakshya16157/midtown-madness-3-PC-Native/tree/v2026.10.12.3)**
 pins this fork's gameplay improvements at that snapshot: race/menu loading and heap fixes, building
