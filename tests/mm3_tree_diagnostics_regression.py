@@ -31,9 +31,10 @@ static void trace_log(const char *format,...){
 #define MM3_TREE_CLOCK clock_now
 #define MM3_TREE_LOG trace_log
 #define MM3_TREE_FLUSH() (++flushes)
+#define MM3_TREE_TEST_HELPERS
 #include "mm3_tree_diagnostics.c"
 ptrdiff_t g_xbox_mem_offset;
-RECOMP_TLS uint32_t g_eax,g_ecx,g_edx,g_esp,g_ebx,g_esi,g_edi,g_ebp,g_seh_ebp,g_fs_base;
+RECOMP_TLS uint32_t g_eax,g_ecx,g_edx,g_esp,g_ebx,g_esi,g_edi,g_ebp,g_seh_ebp,g_fs_base,g_eflags;
 RECOMP_TLS int g_fp_top,g_df,g_fp_cmp;
 RECOMP_TLS uint16_t g_fp_control_word,g_fp_cc;
 RECOMP_TLS double g_fp_stack[8];

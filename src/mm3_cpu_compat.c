@@ -1,5 +1,9 @@
 #include "recomp_types.h"
 
+/* Supply the flags register declared by the runtime header so native gameplay
+ * helpers can preserve the complete guest state around temporary calls. */
+RECOMP_TLS uint32_t g_eflags = 0x202u;
+
 /* This CRT helper tests EFLAGS.ID, then CPUID.1:EDX.MMX. Both are supported
  * by the Xbox processor. Recover that result without the untranslated flag
  * instructions or querying the host processor.

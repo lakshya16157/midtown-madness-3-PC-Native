@@ -1,5 +1,5 @@
 # Select the struck tree before the native speed/hop gate. Its first impact
-# still uses native solid resistance/effects; the wrapper retires its instance.
+# uses native solid resistance/effects; the wrapper creates a native rigid body.
 function(mm3_add_tree_contacts source_variable)
     set(content "${${source_variable}}")
     set(original [=[    MEM32(ebp + 0x64) = ecx;
@@ -34,6 +34,41 @@ function(mm3_add_tree_contacts source_variable)
         string(REPLACE "\n" "\r\n" declaration "${declaration}")
     endif()
     set(${source_variable} "${declaration}${content}" PARENT_SCOPE)
+endfunction()
+
+# Native geometry factories assume their 0x27C allocation succeeded. A detached
+# tree reserves that allocation before entry; regular callers keep the retail
+# allocator. Guard exact allocation boundaries in both static instance classes.
+function(mm3_add_tree_geometry source_variable owner)
+    set(content "${${source_variable}}")
+    if(owner STREQUAL "sub_0015CD35")
+        set(return_address "0015CD97")
+    elseif(owner STREQUAL "sub_0015B9AB")
+        set(return_address "0015BA0E")
+    else()
+        message(FATAL_ERROR "MM3 tree geometry: unknown owner ${owner}")
+    endif()
+    set(original "    PUSH32(esp, 0x${return_address}u); RECOMP_ABI_CALL(0x0016FF04u, sub_0016FF04); /* call 0x0016FF04 */")
+    set(replacement "    PUSH32(esp, 0x${return_address}u); if (!mm3_tree_body_geometry_allocation()) RECOMP_ABI_CALL(0x0016FF04u, sub_0016FF04); /* call 0x0016FF04 */")
+    string(FIND "${content}" "${original}" position)
+    string(FIND "${content}" "0x${return_address}u); if (!mm3_tree_body_geometry_allocation())" already)
+    if(position LESS 0 OR NOT already LESS 0)
+        message(FATAL_ERROR "MM3 tree geometry: ${owner} allocation boundary changed or already patched")
+    endif()
+    string(LENGTH "${original}" length)
+    math(EXPR after "${position} + ${length}")
+    string(SUBSTRING "${content}" ${after} -1 tail)
+    string(FIND "${tail}" "${original}" duplicate)
+    if(NOT duplicate LESS 0)
+        message(FATAL_ERROR "MM3 tree geometry: duplicate ${owner} allocation boundary")
+    endif()
+    string(REPLACE "${original}" "${replacement}" content "${content}")
+    set(declaration "extern int mm3_tree_body_geometry_allocation(void);\n")
+    string(FIND "${content}" "${declaration}" declared)
+    if(declared LESS 0)
+        set(content "${declaration}${content}")
+    endif()
+    set(${source_variable} "${content}" PARENT_SCOPE)
 endfunction()
 
 # The tree billboard builds upright vertices from the transform's translation,
@@ -72,53 +107,4 @@ loc_0016B075: ;]=])
     endif()
     string(REPLACE "${original}" "${replacement}" content "${content}")
     set(${source_variable} "extern int mm3_tree_fall_drawing(void);\n${content}" PARENT_SCOPE)
-endfunction()
-
-# Only the two static-piece RENDER loops may see fallen pieces after collision
-# retirement. The native availability bits and all collision producers remain
-# untouched. Match complete labelled boundaries so regeneration fails closed.
-function(mm3_add_tree_render source_variable owner)
-    set(content "${${source_variable}}")
-    if(owner STREQUAL "sub_0015BF5A")
-        set(original [=[loc_0015BF9D: ;
-    eax = MEM32(ebp + -16);
-    _fa = (uint32_t)(MEM32(edi + 0xC)) & 0xFFFFFFFFu; _fb = (uint32_t)(eax) & 0xFFFFFFFFu;]=])
-        set(replacement [=[loc_0015BF9D: ;
-    eax = MEM32(ebp + -16);
-    _fa = mm3_tree_render_mask(edi, MEM32(edi + 0xC), 1u); _fb = (uint32_t)(eax) & 0xFFFFFFFFu;]=])
-    elseif(owner STREQUAL "sub_0015D2DD")
-        set(original [=[loc_0015E417: ;
-    eax = MEM32(ebp + -4);
-    ecx = MEM32(ebp + -20);
-    _fa = (uint32_t)(MEM32(eax + 8)) & 0xFFFFFFFFu; _fb = (uint32_t)(ecx) & 0xFFFFFFFFu;]=])
-        set(replacement [=[loc_0015E417: ;
-    eax = MEM32(ebp + -4);
-    ecx = MEM32(ebp + -20);
-    _fa = mm3_tree_render_mask(eax, MEM32(eax + 8), 0u); _fb = (uint32_t)(ecx) & 0xFFFFFFFFu;]=])
-    else()
-        message(FATAL_ERROR "MM3 tree render: unknown owner ${owner}")
-    endif()
-    string(FIND "${content}" "\r\n" crlf)
-    if(NOT crlf LESS 0)
-        string(REPLACE "\n" "\r\n" original "${original}")
-        string(REPLACE "\n" "\r\n" replacement "${replacement}")
-    endif()
-    string(FIND "${content}" "${original}" position)
-    if(position LESS 0)
-        message(FATAL_ERROR "MM3 tree render: ${owner} availability boundary changed or already patched")
-    endif()
-    string(LENGTH "${original}" length)
-    math(EXPR after "${position} + ${length}")
-    string(SUBSTRING "${content}" ${after} -1 tail)
-    string(FIND "${tail}" "${original}" duplicate)
-    if(NOT duplicate LESS 0)
-        message(FATAL_ERROR "MM3 tree render: duplicate ${owner} availability boundary")
-    endif()
-    string(REPLACE "${original}" "${replacement}" content "${content}")
-    set(declaration "extern uint32_t mm3_tree_render_mask(uint32_t, uint32_t, unsigned);\n")
-    string(FIND "${content}" "${declaration}" already_declared)
-    if(already_declared LESS 0)
-        set(content "#include <stdint.h>\n${declaration}${content}")
-    endif()
-    set(${source_variable} "${content}" PARENT_SCOPE)
 endfunction()

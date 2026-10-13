@@ -278,7 +278,7 @@ def main():
           for(unsigned i=0;i<8;i++)g_fp_stack[i]=-25.5-i;
           memset(&g_xmm0,0,sizeof g_xmm0);memset(&g_xmm7,0,sizeof g_xmm7);
         }''', corrected, count=1)
-        corrected += f'#include "{(ROOT / "src/mm3_tree_diagnostics.c").as_posix()}"\n'
+        corrected += f'#define MM3_TREE_TEST_HELPERS\n#include "{(ROOT / "src/mm3_tree_diagnostics.c").as_posix()}"\n'
         classify = r'''if (strtoul(argv[2],0,0) == 0x600105) {
           g_eax=tree_expire_contacts(g_eax,MEM32(0x790104),0x7C0000);g_esp+=4;
         } else if (strtoul(argv[2],0,0) >= 0x600100 && strtoul(argv[2],0,0) <= 0x600104) {

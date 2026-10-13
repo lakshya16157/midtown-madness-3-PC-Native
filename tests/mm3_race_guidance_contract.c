@@ -213,6 +213,7 @@ static void native_contract(void) {
         MEMF(node + 0xB4) = large ? 3.0f : 1.0f;
         MEMF(node + 0xAC) = pulse * .25f;
         MEMF(layout + 8) = large ? 256.0f : 128.0f;
+        MEMF(layout + 12) = MEMF(layout + 8);
         for (i = 0; i < 4; ++i) {
             MEMF(markers + i * 24) = points[order[i]][0];
             MEMF(markers + i * 24 + 8) = points[order[i]][1];
@@ -260,9 +261,17 @@ static void clipping_and_state_contract(void) {
     mm3_race_guidance_end(0); active_player = 0; marker_count = 0;
     MEMF(node + 0x4C) = 0; MEMF(node + 0x50) = 1;
     MEMF(layout + 8) = 128; MEMF(node + 0xB4) = 1;
+    MEMF(layout + 12) = 128;
     abi_start(0); sub_0011CAE8(); abi_end(); assert(draw_count == 1);
     near(.5f * (draws[0].xy[0][0] + draws[0].xy[3][0]), MEMF(node + 0x94) + 56);
     near(.5f * (draws[0].xy[1][0] + draws[0].xy[2][0]), MEMF(node + 0x94) - 56);
+    /* Exercise the production layout-height lookup through the actual map
+     * caller: turn that same street vertically in a shorter split panel. */
+    MEMF(layout + 12) = 96; MEMF(node + 0x4C) = 1.5707963268f;
+    abi_start(0); sub_0011CAE8(); abi_end(); assert(draw_count == 1);
+    near(.5f * (draws[0].xy[0][1] + draws[0].xy[3][1]), MEMF(node + 0x98) - 40);
+    near(.5f * (draws[0].xy[1][1] + draws[0].xy[2][1]), MEMF(node + 0x98) + 40);
+    MEMF(layout + 12) = 128; MEMF(node + 0x4C) = 0;
     fixture_roads();
     /* No current target must not make an otherwise valid course disappear. */
     mm3_race_guidance_begin(0);
@@ -294,6 +303,7 @@ static void course_closure_and_revisit_contract(void) {
     MEMF(node + 0x4C) = 0; MEMF(node + 0x50) = 1;
     MEMF(node + 0x54) = 0; MEMF(node + 0x58) = 1024;
     MEMF(layout + 8) = 256; MEMF(node + 0xB4) = 1;
+    MEMF(layout + 12) = 256;
     MEM32(0x407C1C) = 2; publish(0, 4);
     abi_start(0); sub_0011CAE8(); abi_end(); assert(draw_count == 3);
     MEM32(0x407C1C) = 3; publish(0, 4);
@@ -350,6 +360,7 @@ static void native_publication_lifecycle_contract(void) {
     MEMF(node + 0x4C) = 0; MEMF(node + 0x50) = 1;
     MEMF(node + 0x54) = 0; MEMF(node + 0x58) = 1024;
     MEMF(layout + 8) = 256; MEMF(node + 0xB4) = 1;
+    MEMF(layout + 12) = 256;
     hud_players = 1; active_player = 0; marker_count = 0;
     for (pass = 0; pass < 5; ++pass) {
         float player_x = pass * 3.0f, player_z = pass * -2.0f;
@@ -537,6 +548,7 @@ static void road_navigation_contract(void) {
     MEMF(node + 0x4C) = 0; MEMF(node + 0x50) = 1;
     MEMF(node + 0x54) = 0; MEMF(node + 0x58) = 1024;
     MEMF(layout + 8) = 512; MEMF(node + 0xB4) = 1;
+    MEMF(layout + 12) = 512;
     MEMF(origin) = -60; MEMF(origin + 4) = 0; MEMF(origin + 8) = -20;
     mm3_race_guidance_begin(0);
     for (i = 0; i < 2; ++i) {
@@ -562,7 +574,7 @@ static void road_navigation_contract(void) {
 
 static void draw_test_polyline(const RoadPoint *polyline, unsigned count, float radius) {
     abi_start(0);
-    route_polyline(0x25000, 0, polyline, count, (RoadPoint){0}, 1, 1, 0, radius, 0, 0, .8f);
+    route_polyline(0x25000, 0, polyline, count, (RoadPoint){0}, 1, 1, 0, radius, radius, 0, 0, .8f);
     assert(g_esp == stack && g_fp_top == 0);
     assert(g_ebx == 0x11223344 && g_esi == 0x22334455 && g_edi == 0x33445566);
 }
@@ -584,13 +596,13 @@ static void route_draw_simplification_contract(void) {
     const RoadPoint long_chord[2] = {{-100000,0,0}, {100000,0,0}};
     unsigned i, j, curved_draws;
     /* A 758-point straight street needs one native submission. Clipping
-     * still finds the circle crossings with both retained ends outside. */
+     * still finds square crossings with both retained ends outside. */
     for (i = 0; i < 758; ++i) dense[i] = (RoadPoint){-200 + 400.0f*i/757,0,0};
     draw_test_polyline(dense, 758, 56); assert(draw_count == 1);
     near(.5f*(draws[0].xy[0][0]+draws[0].xy[3][0]), 56);
     near(.5f*(draws[0].xy[1][0]+draws[0].xy[2][0]), -56);
-    /* Coalesced chords can be much longer than one road sample. Circle
-     * intersections must not suffer float cancellation and escape its rim. */
+    /* Coalesced chords can be much longer than one road sample. Square
+     * intersections must remain inside the inset at both ends. */
     draw_test_polyline(long_chord, 2, 56); assert(draw_count == 1);
     near(.5f*(draws[0].xy[0][0]+draws[0].xy[3][0]), 56);
     near(.5f*(draws[0].xy[1][0]+draws[0].xy[2][0]), -56);
@@ -634,7 +646,52 @@ static void route_draw_simplification_contract(void) {
         s_route_draw.points[i] = (RoutePoint){.01f*i, (float)(i & 1)};
     route_simplify(COURSE_POINTS);
     for (i = 0; i < COURSE_POINTS; ++i) assert(s_route_draw.keep[i]);
-    printf("PASS route draw simplification: 758 straight samples -> 1 quad; 201 curved samples -> %u quads, <=0.25px error; sharp turns/reversal/closed loop/circle clipping/maximum-capacity zigzag\n", curved_draws);
+    printf("PASS route draw simplification: 758 straight samples -> 1 quad; 201 curved samples -> %u quads, <=0.25px error; sharp turns/reversal/closed loop/square clipping/maximum-capacity zigzag\n", curved_draws);
+}
+
+static void square_route_clipping_contract(void) {
+    const RoadPoint corner_edge[2] = {{-80,0,50}, {80,0,50}};
+    const RoadPoint beyond_edge[2] = {{-80,0,57}, {80,0,57}};
+    const RoadPoint corner_crossing[2] = {{-200,0,-200}, {200,0,200}};
+    const RoadPoint tangent[2] = {{-100,0,12}, {-12,0,100}};
+    const RoadPoint street[2] = {{-200,0,0}, {200,0,0}};
+    const RoadPoint vertical[2] = {{-50,0,-80}, {-50,0,80}};
+    float diagonal = sqrtf(.5f);
+    draw_test_polyline(corner_edge, 2, 56); assert(draw_count == 1);
+    near(.5f*(draws[0].xy[0][0]+draws[0].xy[3][0]), 56);
+    near(.5f*(draws[0].xy[1][0]+draws[0].xy[2][0]), -56);
+    near(.5f*(draws[0].xy[0][1]+draws[0].xy[3][1]), 50);
+    near(.5f*(draws[0].xy[1][1]+draws[0].xy[2][1]), 50);
+    draw_test_polyline(beyond_edge, 2, 56); assert(draw_count == 0);
+    draw_test_polyline(corner_crossing, 2, 56); assert(draw_count == 1);
+    near(.5f*(draws[0].xy[0][0]+draws[0].xy[3][0]), 56);
+    near(.5f*(draws[0].xy[0][1]+draws[0].xy[3][1]), -56);
+    near(.5f*(draws[0].xy[1][0]+draws[0].xy[2][0]), -56);
+    near(.5f*(draws[0].xy[1][1]+draws[0].xy[2][1]), 56);
+    draw_test_polyline(tangent, 2, 56); assert(draw_count == 0);
+    /* Clip after projection, including diagonal headings. The source street
+     * is unchanged; the visible diagonal reaches both square corners. */
+    abi_start(0);
+    route_polyline(0x25000, 0, street, 2, (RoadPoint){0}, 1,
+                   diagonal, diagonal, 56, 56, 128, 96, .8f);
+    assert(draw_count == 1);
+    near(.5f*(draws[0].xy[0][0]+draws[0].xy[3][0]), 184);
+    near(.5f*(draws[0].xy[0][1]+draws[0].xy[3][1]), 40);
+    near(.5f*(draws[0].xy[1][0]+draws[0].xy[2][0]), 72);
+    near(.5f*(draws[0].xy[1][1]+draws[0].xy[2][1]), 152);
+    assert(g_esp == stack && g_fp_top == 0);
+    assert(g_ebx == 0x11223344 && g_esi == 0x22334455 && g_edi == 0x33445566);
+    /* A split/expanded map can be rectangular. Preserve independent native
+     * width/height insets rather than letting a tall route escape its panel. */
+    abi_start(0);
+    route_polyline(0x25000, 0, vertical, 2, (RoadPoint){0}, 1,
+                   1, 0, 56, 40, 128, 96, .8f);
+    assert(draw_count == 1);
+    near(.5f*(draws[0].xy[0][0]+draws[0].xy[3][0]), 178);
+    near(.5f*(draws[0].xy[0][1]+draws[0].xy[3][1]), 56);
+    near(.5f*(draws[0].xy[1][0]+draws[0].xy[2][0]), 178);
+    near(.5f*(draws[0].xy[1][1]+draws[0].xy[2][1]), 136);
+    puts("PASS square route: corner coverage, outside crossings, outside rejection, tangent rejection, rotated/rectangular axes, native inset/placement and ABI");
 }
 
 static void retail_road_contract(const char *filename) {
@@ -715,6 +772,7 @@ int main(int argc, char **argv) {
     native_gpu_format_contract();
     road_navigation_contract();
     route_draw_simplification_contract();
+    square_route_clipping_contract();
     for (i = 1; i < (unsigned)argc; ++i) retail_road_contract(argv[i]);
     puts("PASS race guidance: native small/expanded/split/rotated maps, checkpoint styles/pulses, persistent course/HUD lifecycle, connected street detours, overpass snapping, live reroutes, city teardown, quad clipping/packing/batch identity, shader/PB format and guest ABI");
     return 0;

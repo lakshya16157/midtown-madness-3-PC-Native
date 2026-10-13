@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(mm3_recomp C)
+if(WIN32)
+    enable_language(RC)
+endif()
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -73,8 +76,9 @@ set(MM3_DEFINITION_ONLY_FUNCTIONS ${MM3_DISTANCE_FUNCTIONS})
 set(MM3_BUILDING_FUNCTIONS sub_00168A77 sub_001C7B15 sub_001A67BA sub_00166E01
     sub_001681FB sub_00167DA5 sub_00166B3E sub_00162F75)
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS ${MM3_BUILDING_FUNCTIONS})
-# Retire struck tree collisions and animate their native models while falling.
+# Detach struck trees into the native rigid-body street-prop controller.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0016AEDB sub_000E1F49 sub_001D137B)
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00198592 sub_001986B1)
 # Preserve same-chunk near-camera calls to the chase-distance adjustment.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001EEC53)
 # Cache map texture ownership at native load/reconfiguration/destruction boundaries.
@@ -111,7 +115,7 @@ list(APPEND MM3_SEAM_FUNCTIONS sub_00201BCA sub_0011CAE8 sub_00120091 sub_001165
 list(REMOVE_DUPLICATES MM3_SEAM_FUNCTIONS)
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_race_guidance_seam.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_tree_contact_seam.cmake")
-list(APPEND MM3_SEAM_FUNCTIONS sub_0015BF5A sub_0015D2DD)
+list(APPEND MM3_SEAM_FUNCTIONS sub_0015CD35 sub_0015B9AB)
 if(MM3_NATIVE_FENCE_WAIT)
     list(APPEND MM3_SEAM_FUNCTIONS sub_00344640)
     include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_fence_wait_seam.cmake")
@@ -206,7 +210,7 @@ foreach(distance_input IN LISTS distance_owners)
     if(owner_sub_0023F09B STREQUAL distance_input)
         mm3_add_speedometer_readout(distance_content)
     endif()
-    foreach(map_owner sub_0011CA25 sub_0011D1E8 sub_0011D808 sub_0011CAE8)
+    foreach(map_owner sub_0011CA25 sub_0011D1E8 sub_0011D808 sub_0011CAE8 sub_00116535)
         if(owner_${map_owner} STREQUAL distance_input)
             mm3_add_map_zoom(distance_content ${map_owner})
         endif()
@@ -225,9 +229,9 @@ foreach(distance_input IN LISTS distance_owners)
     if(owner_sub_0016AEDB STREQUAL distance_input)
         mm3_add_tree_mesh(distance_content)
     endif()
-    foreach(tree_owner sub_0015BF5A sub_0015D2DD)
-        if(owner_${tree_owner} STREQUAL distance_input)
-            mm3_add_tree_render(distance_content ${tree_owner})
+    foreach(tree_geometry_owner sub_0015CD35 sub_0015B9AB)
+        if(owner_${tree_geometry_owner} STREQUAL distance_input)
+            mm3_add_tree_geometry(distance_content ${tree_geometry_owner})
         endif()
     endforeach()
     file(CONFIGURE OUTPUT "${distance_output}" CONTENT "${distance_content}" @ONLY)
@@ -258,6 +262,8 @@ add_executable(${PROJECT_NAME}
  src/mm3_facade_capacity.c
  src/mm3_building_diagnostics.c
  src/mm3_tree_diagnostics.c
+ src/mm3_tree_body.c
+ src/mm3_tree_audio.c
  src/mm3_visibility.c
  src/mm3_debug_teleport.c
  src/mm3_custom_car_names.c
@@ -267,6 +273,10 @@ add_executable(${PROJECT_NAME}
  src/mm3_cpu_compat.c
  src/recomp_trace_probe.c
  ${RECOMP_GEN_SOURCES})
+
+if(WIN32)
+    target_sources(${PROJECT_NAME} PRIVATE src/mm3.rc)
+endif()
 
 set_property(SOURCE src/recomp_manual.c APPEND PROPERTY COMPILE_DEFINITIONS
     "recomp_lookup_manual=recomp_lookup_manual_base" "sub_00083A6C=sub_00083A6C_original")

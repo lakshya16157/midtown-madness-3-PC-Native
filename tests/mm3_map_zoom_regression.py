@@ -14,14 +14,22 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SEAMS = ("sub_0011CA25", "sub_0011D1E8", "sub_0011D808", "sub_0011CAE8")
+PRODUCER = "sub_00116535"
+EMITTER_SITES = ("001169A2", "00116A7F", "00116B4A", "00116BDE", "00116C78", "00116D0E", "00116D9D", "00116E2F", "00116EBE")
 MATH = ("sub_0002DC95", "sub_0006ACC3", "sub_000C6ADC",
         "sub_0006AC61", "sub_0006AE0C", "sub_0006AEE2", "sub_0001259E",
         "sub_0006AD9F", "sub_0006AE60")
+SQUARE_ORIGINAL = "    PUSH32(esp, 0x0011DB57u); RECOMP_ABI_CALL(0x000C6ADCu, sub_000C6ADC); /* call 0x000C6ADC */"
+SQUARE_REPLACEMENT = "    mm3_map_square_geometry(eax, ecx, MEMF(esp));\n    esp += 4; /* Inverse city-UV rotation consumes the native angle argument. */"
+BORDER_ORIGINAL = "    PUSH32(esp, 0x0011DBB1u); RECOMP_ABI_CALL(0x001C1585u, sub_001C1585); /* call 0x001C1585 */"
+BORDER_REPLACEMENT = "    esp += 8; /* Square soft-edge map replaces only the MapCircle border draw. */"
+MARKER_ORIGINAL = "    fp_top() = RECOMP_FP_PC(sqrt(fp_top())); /* fsqrt */"
+MARKER_REPLACEMENT = "    fp_top() = RECOMP_FP_PC(mm3_map_square_marker_distance(ebx, eax, MEMF(ebp + 0x4C), MEMF(ebp + 0x3C)));"
 
 
 def generated():
     found = {}
-    names = SEAMS + MATH
+    names = SEAMS + (PRODUCER,) + MATH
     for path in sorted((ROOT / "src/recomp/gen").glob("recomp_*.c")):
         source = path.read_text()
         for name in names:
@@ -61,7 +69,7 @@ def main():
     for group in re.findall(r"list\(APPEND MM3_SEAM_FUNCTIONS\s+([^)]+)\)", cmake):
         registered.update(group.split())
     assert set(SEAMS) <= registered
-    assert "foreach(map_owner " + " ".join(SEAMS) + ")" in cmake
+    assert "foreach(map_owner " + " ".join(SEAMS + (PRODUCER,)) + ")" in cmake
     assert 'include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_map_zoom_seam.cmake")' in cmake
     assert "mm3_add_map_zoom(distance_content ${map_owner})" in cmake
     assert "src/mm3_map_zoom.c" in cmake
@@ -72,13 +80,21 @@ def main():
         script = folder / "seam.cmake"
         script.write_text(
             f'include("{(ROOT / "scripts/mm3_map_zoom_seam.cmake").as_posix()}")\n'
+            f'include("{(ROOT / "scripts/mm3_race_guidance_seam.cmake").as_posix()}")\n'
             'file(READ "${INPUT}" content)\n'
-            'mm3_add_map_zoom(content "${HOOKED}")\n'
+            'foreach(stage IN LISTS PIPELINE)\n'
+            '  if(stage STREQUAL "map")\n'
+            '    mm3_add_map_zoom(content "${HOOKED}")\n'
+            '  else()\n'
+            '    mm3_add_race_guidance(content "${HOOKED}")\n'
+            '  endif()\n'
+            'endforeach()\n'
             'file(WRITE "${OUTPUT}" "${content}")\n')
-        def transform(source, name, reject=False):
+        def transform(source, name, reject=False, order=("map",)):
             original_path.write_bytes(source.encode())
             result = subprocess.run(["cmake", f"-DINPUT={original_path}",
                                      f"-DOUTPUT={modified_path}", f"-DHOOKED={name}",
+                                     "-DPIPELINE=" + ";".join(order),
                                      "-P", str(script)], capture_output=True, text=True)
             if reject:
                 assert result.returncode and "MM3 map zoom" in result.stderr, result
@@ -106,6 +122,18 @@ def main():
             assert transform(native[name].replace("\n", "\r\n"), name) == modified[name]
             assert modified[name].count(calls[name]) == 1
             restored = modified[name].replace(calls[name], "")
+            if name == "sub_0011D808":
+                for original, replacement in ((SQUARE_ORIGINAL, SQUARE_REPLACEMENT),
+                                              (BORDER_ORIGINAL, BORDER_REPLACEMENT)):
+                    assert modified[name].count(replacement) == 1, (name, replacement)
+                    assert original not in modified[name]
+                    restored = restored.replace(replacement, original)
+                    transform(native[name].replace(original, "    /* missing native call */"), name, True)
+                    transform(native[name].replace(original, original + "\n" + original), name, True)
+            if name == "sub_0011CAE8":
+                assert restored.count(MARKER_REPLACEMENT) == 1
+                restored = restored.replace(MARKER_REPLACEMENT, MARKER_ORIGINAL)
+                transform(native[name].replace(MARKER_ORIGINAL, "    /* missing marker distance */"), name, True)
             assert restored[restored.index("void " + name):] == native[name]
             transform(native[name].replace(labels[name] + ": ;", labels[name] + "BAD: ;"), name, True)
             transform(native[name] + "\n" + native[name], name, True)
@@ -117,10 +145,53 @@ def main():
             assert separate.endswith(unrelated)
             assert separate.count(calls[name]) == 1
             transform(modified[name], name, True)
+        producer = transform(native[PRODUCER], PRODUCER)
+        assert transform(native[PRODUCER].replace("\n", "\r\n"), PRODUCER) == producer
+        begin = "    uint32_t mm3_square_map = mm3_map_square_begin(ecx, MEM32(esp + 8));\n"
+        city_uv = "    if (mm3_square_map) mm3_map_square_city_uv(ebx, esp);\n"
+        assert producer.count(begin) == 1 and producer.count(city_uv) == len(EMITTER_SITES)
+        restored = producer.replace(begin, "").replace(city_uv, "")
+        assert restored[restored.index("void " + PRODUCER):] == native[PRODUCER]
+        transform(native[PRODUCER] + "\n" + native[PRODUCER], PRODUCER, True)
+        transform(producer, PRODUCER, True)
+        entry = "    PUSH32(esp, ebp);\n    ebp = esp + -116;"
+        transform(native[PRODUCER].replace(entry, "    PUSH32(esp, ebp);\n    ebp = esp + -120;"), PRODUCER, True)
+        transform(native[PRODUCER].replace(entry, entry + "\n" + entry), PRODUCER, True)
+        for site in EMITTER_SITES:
+            emitter = f"    PUSH32(esp, 0x{site}u); RECOMP_ABI_CALL(0x00069807u, sub_00069807); /* call 0x00069807 */"
+            assert city_uv + emitter in producer
+            transform(native[PRODUCER].replace(emitter, "    /* missing vertex */"), PRODUCER, True)
+            transform(native[PRODUCER].replace(emitter, emitter + "\n" + emitter), PRODUCER, True)
+        unrelated = "\nvoid unrelated(void)\n{\nloc_00116535: ;\n    PUSH32(esp, ebp);\n}\n"
+        assert transform(native[PRODUCER] + unrelated, PRODUCER).endswith(unrelated)
+        route_begin = "    uint32_t mm3_route_tag = mm3_race_route_quad_tagged(ecx, MEM32(esp + 4));\n"
+        route_pack = "    if (mm3_route_tag) mm3_race_route_tag_packed(esi);\n"
+        composed_bodies = []
+        for order in (("map", "race"), ("race", "map")):
+            composed = transform(native[PRODUCER], PRODUCER, order=order)
+            assert transform(native[PRODUCER].replace("\n", "\r\n"), PRODUCER, order=order) == composed
+            owner_body = composed[composed.index("void " + PRODUCER):]
+            assert owner_body.count(begin) == owner_body.count(route_begin) == 1
+            assert owner_body.count(city_uv) == 9 and owner_body.count(route_pack) == 3
+            restored = owner_body.replace(begin, "").replace(route_begin, "").replace(city_uv, "").replace(route_pack, "")
+            assert restored == native[PRODUCER]
+            assert route_begin + "    PUSH32(esp, ebp);\n" + begin in owner_body
+            composed_bodies.append(owner_body)
+        assert composed_bodies[0] == composed_bodies[1]
         body = "\n".join(native[name] for name in MATH)
         for name, title in zip(SEAMS, ("reset", "update", "draw", "marker")):
             body += "\n" + native[name].replace("void " + name, "void retail_" + title, 1)
             body += "\n" + modified[name].replace("void " + name, "void zoom_" + title, 1)
+        # Execute the literal native first textured vertex producer, including
+        # resource UV scales/offsets, ARGB packing, independent mask UVs, the
+        # square seam before the return push, and the real emitter argument ABI.
+        prelude = producer[producer.index("{\n") + 2:producer.index("loc_00116535: ;")]
+        begin_code = producer[producer.index("loc_00116535: ;"):producer.index("    ebp = esp + -116;")]
+        begin_code += "    g_eax = mm3_square_map;\n    POP32(esp, ebp);\n"
+        body += "\nvoid city_begin(void)\n{\n" + prelude + begin_code + producer[producer.rindex("    #undef fp_push"):producer.rindex("}")] + "}\n"
+        first_vertex = producer[producer.index("loc_0011692B: ;"):producer.index("\nloc_001169A2: ;")]
+        cleanup = producer[producer.rindex("    #undef fp_push"):producer.rindex("}")]
+        body += "\nvoid city_first_vertex(void)\n{\n" + prelude + "    uint32_t mm3_square_map = 1;\n" + first_vertex + cleanup + "}\n"
         declarations = "\n".join("void " + name + "(void);" for name in MATH)
         (folder / "native_map_zoom.inc").write_text(declarations + "\n" + body + constants(body))
         shutil.copyfile(ROOT / "src/mm3_recomp_types.h", folder / "recomp_types.h")
@@ -145,6 +216,16 @@ def main():
                 "checkpoint zoom cancels speed zoom": production.replace(
                     "if (!s_map_zoom[slot].baseline) s_map_zoom[slot].baseline = scale;",
                     "s_map_zoom[slot].baseline = scale;"),
+                "square city turn has wrong sign": production.replace(
+                    "s_square_map.s = sinf(angle);", "s_square_map.s = -sinf(angle);"),
+                "square map corrupts native opacity/color": production.replace(
+                    "void mm3_map_square_geometry(uint32_t vertices, uint32_t center, float angle)\n{",
+                    "void mm3_map_square_geometry(uint32_t vertices, uint32_t center, float angle)\n{\n    MEMF(vertices + 0x20) = 0;"),
+                "city rotation corrupts independent mask UV": production.replace(
+                    "MEMF(arguments + 12) = u0 +", "MEMF(arguments + 20) = 0; MEMF(arguments + 12) = u0 +"),
+                "markers retain circular clipping": production.replace(
+                    "return fmaxf(fabsf(c * x + s * y), fabsf(c * y - s * x) * rx / ry);",
+                    "return hypotf(x, y);"),
             }
             for label, mutant in mutants.items():
                 assert mutant != production, label
@@ -153,7 +234,17 @@ def main():
                 result = subprocess.run([str(executable)], cwd=folder, capture_output=True, text=True)
                 assert result.returncode, "Regression failed to reject " + label
                 print("PASS negative control:", label)
-    print("PASS map zoom seams: unchanged native instructions, split owners, LF/CRLF and invalid anchors rejected")
+            (folder / "production_map_zoom.c").write_text(production)
+            for label, replacement, original in (("missing square geometry", SQUARE_REPLACEMENT, SQUARE_ORIGINAL),
+                                                 ("retained circular border", BORDER_REPLACEMENT, BORDER_ORIGINAL),
+                                                 ("missing native city UV seam", city_uv, "")):
+                assert body.count(replacement) == 1
+                (folder / "native_map_zoom.inc").write_text(declarations + "\n" + body.replace(replacement, original) + constants(body))
+                subprocess.run(command, check=True, cwd=folder, capture_output=True)
+                result = subprocess.run([str(executable)], cwd=folder, capture_output=True, text=True)
+                assert result.returncode, "Regression failed to reject " + label
+                print("PASS negative control:", label)
+    print("PASS map zoom/square seams: precise native calls, map/race composition in both orders, LF/CRLF and invalid anchors rejected")
 
 
 if __name__ == "__main__":

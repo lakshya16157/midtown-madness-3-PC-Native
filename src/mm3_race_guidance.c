@@ -561,9 +561,23 @@ static void route_simplify(unsigned count)
     }
 }
 
+static int route_clip_axis(double origin, double delta, double extent,
+                           double *lo, double *hi)
+{
+    double first, last;
+    if (delta == 0) return origin >= -extent && origin <= extent;
+    first = (-extent - origin) / delta;
+    last = (extent - origin) / delta;
+    if (first > last) { double swap = first; first = last; last = swap; }
+    if (first > *lo) *lo = first;
+    if (last < *hi) *hi = last;
+    return *lo < *hi;
+}
+
 static void route_polyline(uint32_t renderer, uint32_t clip, const RoadPoint *points,
                            unsigned count, RoadPoint origin, float factor,
-                           float cosine, float sine, float radius, float cx, float cy, float alpha)
+                            float cosine, float sine, float radius_x, float radius_y,
+                            float cx, float cy, float alpha)
 {
     unsigned i, previous = 0;
     if (count < 2 || count > COURSE_POINTS) return;
@@ -580,23 +594,19 @@ static void route_polyline(uint32_t renderer, uint32_t clip, const RoadPoint *po
     route_simplify(count);
     for (i = 1; i < count; ++i) {
         float ax, ay, bx, by;
-        double dx, dy, a, b, c, discriminant, lo, hi;
+        double dx, dy, lo = 0, hi = 1;
         if (!s_route_draw.keep[i]) continue;
         ax = s_route_draw.points[previous].x; ay = s_route_draw.points[previous].y;
         bx = s_route_draw.points[i].x; by = s_route_draw.points[i].y;
         previous = i;
         dx = (double)bx - ax; dy = (double)by - ay;
-        a = dx*dx + dy*dy; b = 2*(ax*dx + ay*dy);
-        c = (double)ax*ax + (double)ay*ay - (double)radius*radius;
-        /* Clip each retained segment to the native circle, including crossings
-         * whose endpoints both lie outside the map. */
-        if (a < .0001f) continue;
-        discriminant = b*b - 4*a*c;
-        if (discriminant < 0) continue;
-        lo = (-b - sqrt(discriminant)) / (2*a);
-        hi = (-b + sqrt(discriminant)) / (2*a);
-        if (lo < 0) lo = 0; if (hi > 1) hi = 1;
-        if (lo >= hi) continue;
+        /* Clip in the already rotated screen axes so corners remain useful
+         * at every heading. The native inset still leaves the route clear of
+         * the faded edge. Slab intervals retain outside-to-outside crossings
+         * without quadratic cancellation on very long coalesced streets. */
+        if (dx*dx + dy*dy < .0001f ||
+            !route_clip_axis(ax, dx, radius_x, &lo, &hi) ||
+            !route_clip_axis(ay, dy, radius_y, &lo, &hi)) continue;
         route_segment(renderer, clip, (float)((double)cx + ax + lo*dx), (float)((double)cy + ay + lo*dy),
                       (float)((double)cx + ax + hi*dx), (float)((double)cy + ay + hi*dy), alpha);
     }
@@ -606,16 +616,18 @@ void mm3_race_map_route(uint32_t node, uint32_t table,
                          uint32_t renderer, uint32_t clip, uint32_t layout)
 {
     unsigned player, i;
-    float scale, width, angle, cosine, sine, radius, cx, cy, factor;
+    float scale, width, angle, cosine, sine, radius_x, radius_y, cx, cy, factor;
     if (!node || !renderer || !layout || table < 0x407F78 ||
         table >= 0x407F78 + 0x10 * RACE_PLAYERS || ((table - 0x407F78) & 15)) return;
     player = (table - 0x407F78) / 0x10;
     if (!s_race[player].valid || s_race[player].count < 2 || !s_roads.edge_count) return;
     scale = MEMF(node + 0x50); width = MEMF(node + 0x58) - MEMF(node + 0x54);
     angle = MEMF(node + 0x4C); cx = MEMF(node + 0x94); cy = MEMF(node + 0x98);
-    radius = MEMF(layout + 8) * .5f - MEMF(node + 0xB4) * 8.0f;
+    radius_x = MEMF(layout + 8) * .5f - MEMF(node + 0xB4) * 8.0f;
+    radius_y = MEMF(layout + 12) * .5f - MEMF(node + 0xB4) * 8.0f;
     if (!isfinite(scale) || scale <= 0 || !isfinite(width) || width <= 0 ||
-        !isfinite(angle) || !isfinite(cx) || !isfinite(cy) || !isfinite(radius) || radius <= 0) return;
+        !isfinite(angle) || !isfinite(cx) || !isfinite(cy) ||
+        !isfinite(radius_x) || radius_x <= 0 || !isfinite(radius_y) || radius_y <= 0) return;
     factor = scale * 1024.0f / width; cosine = cosf(angle); sine = sinf(angle);
     if (!isfinite(factor)) return;
     race_paths_update(player);
@@ -626,8 +638,8 @@ void mm3_race_map_route(uint32_t node, uint32_t table,
         if (next == s_race[player].current && s_paths[player].active_count) continue;
         route_polyline(renderer, clip, s_paths[player].course + s_paths[player].starts[i],
                        s_paths[player].lengths[i], s_race[player].origin, factor,
-                       cosine, sine, radius, cx, cy, .8f);
+                       cosine, sine, radius_x, radius_y, cx, cy, .8f);
     }
     route_polyline(renderer, clip, s_paths[player].active, s_paths[player].active_count,
-                   s_race[player].origin, factor, cosine, sine, radius, cx, cy, .98f);
+                   s_race[player].origin, factor, cosine, sine, radius_x, radius_y, cx, cy, .98f);
 }

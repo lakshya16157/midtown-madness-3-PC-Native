@@ -23,9 +23,20 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+function Get-DefaultExecutable {
+    param([string]$Repository)
+    # A staged build can coexist with a game that is still running the normal
+    # executable. Subsequent normal builds take over when their timestamp wins.
+    @('build\RelWithDebInfo\mm3_recomp.exe', 'build\Release\mm3_recomp.exe',
+      'build\current\RelWithDebInfo\mm3_recomp.exe') |
+        ForEach-Object { Join-Path $Repository $_ } |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+        ForEach-Object { Get-Item -LiteralPath $_ } |
+        Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1 |
+        ForEach-Object { $_.FullName }
+}
 if (-not $Exe) {
-    $Exe = @('build\RelWithDebInfo\mm3_recomp.exe', 'build\Release\mm3_recomp.exe') |
-        ForEach-Object { Join-Path $repo $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
+    $Exe = Get-DefaultExecutable $repo
 }
 if (-not $Exe -or -not (Test-Path $Exe)) { throw 'No build found: run scripts\setup.ps1 first.' }
 $Exe = (Resolve-Path -LiteralPath $Exe).Path
@@ -60,14 +71,27 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 
 public sealed class MM3LoggedProcess : IDisposable {
     readonly object gate = new object();
     readonly Process process;
     readonly StreamWriter writer;
     string captureError;
+    long errorLineCount;
+    string lastErrorLine, lastErrorSource, lastErrorUtc;
+    // Count explicit runtime failure records, never words such as "error" in
+    // expected file probes or successful worker shutdown. A crash can emit
+    // several context lines; this is a diagnostic-line count, not incidents.
+    static readonly Regex ErrorRecord = new Regex(
+        @"^\s*(?:\[(?:FILE_ERROR|D3D11_MAP_ERROR|CRASH[A-Z0-9_]*|ICALL_FAIL|BUILDING_ALLOCATION_FAILURE)\]|\[ICALL\]\s+(?:Failed resolve VA|non-code target)\b)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
     public int Id { get { return process.Id; } }
     public string CaptureError { get { lock (gate) { return captureError; } } }
+    public long ErrorLineCount { get { lock (gate) { return errorLineCount; } } }
+    public string LastErrorLine { get { lock (gate) { return lastErrorLine; } } }
+    public string LastErrorSource { get { lock (gate) { return lastErrorSource; } } }
+    public string LastErrorUtc { get { lock (gate) { return lastErrorUtc; } } }
 
     static string Quote(string value) {
         var result = new StringBuilder("\"");
@@ -104,8 +128,15 @@ public sealed class MM3LoggedProcess : IDisposable {
     void Write(string source, string line) {
         if (line == null) return;
         lock (gate) {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            if (ErrorRecord.IsMatch(line)) {
+                ++errorLineCount;
+                lastErrorLine = line;
+                lastErrorSource = source;
+                lastErrorUtc = now.ToString("o");
+            }
             try {
-                writer.WriteLine("{0:o} [{1}] {2}", DateTimeOffset.UtcNow, source, line);
+                writer.WriteLine("{0:o} [{1}] {2}", now, source, line);
                 Console.WriteLine(line);
             } catch (Exception error) {
                 if (captureError == null) captureError = error.ToString();
@@ -237,14 +268,18 @@ try {
         build_context_at_launch = @{ cmake_cache = Get-LaunchFile $cachePath; cmake_options = $cmakeOptions
             source_files = @(@('CMakeLists.txt', 'src\mm3_render_distance.c', 'src\mm3_widescreen.c',
                 'src\mm3_performance_profile.h', 'src\mm3_building_diagnostics.c', 'src\mm3_facade_capacity.c', 'src\main.c',
-                'src\recomp_manual.c', 'tools\xboxrecomp\src\kernel\kernel_bridge.c',
-                'tools\xboxrecomp\src\video\nv2a_d3d11.c') | ForEach-Object { Get-LaunchFile (Join-Path $repo $_) } | Where-Object { $null -ne $_ }) }
+                'src\recomp_manual.c', 'src\mm3_crash_diagnostics.h', 'src\mm3_map_zoom.c',
+                'src\mm3_race_guidance.c', 'scripts\mm3_map_zoom_seam.cmake',
+                'tools\xboxrecomp\src\kernel\kernel_bridge.c', 'tools\xboxrecomp\src\kernel\kernel_file.c',
+                'tools\xboxrecomp\src\kernel\kernel_file_probe.h',
+                'tools\xboxrecomp\src\video\nv2a_d3d11.c', 'tools\xboxrecomp\src\video\nv2a_map_mask.h') | ForEach-Object { Get-LaunchFile (Join-Path $repo $_) } | Where-Object { $null -ne $_ }) }
         command = $command; arguments = $commandArguments
         launch_options = @{ profile = $Profile; keyboard = [bool]$Keyboard; fullscreen = [bool]$Fullscreen
             trace_buildings = [bool]$TraceBuildings; fps_limit = if ($PSBoundParameters.ContainsKey('FpsLimit')) { $FpsLimit } else { $null }
             fov = if ($PSBoundParameters.ContainsKey('Fov')) { $Fov } else { $null } }
         environment = $settings; profile_defaults_for_unset_settings = $profileDefaults
         configuration_files = $files; installed_car_configuration = $installedConfig
+        error_line_count = 0; last_error_line = $null; last_error_source = $null; last_error_utc = $null
     }
     Save-LaunchMetadata
     Write-Host "Game log: $logPath"
@@ -261,12 +296,23 @@ try {
     $launchExitCode = $loggedProcess.Wait()
     $metadata.state = 'exited'
     $metadata.exit_code = $launchExitCode
+    $metadata.exit_code_hex = '0x{0:X8}' -f [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$launchExitCode), 0)
     $metadata.finished_utc = [DateTime]::UtcNow.ToString('o')
+    $metadata.error_line_count = $loggedProcess.ErrorLineCount
+    $metadata.last_error_line = $loggedProcess.LastErrorLine
+    $metadata.last_error_source = $loggedProcess.LastErrorSource
+    $metadata.last_error_utc = $loggedProcess.LastErrorUtc
     if ($loggedProcess.CaptureError) {
         $metadata.capture_error = $loggedProcess.CaptureError
         Write-Warning "Game output could not be fully saved: $($loggedProcess.CaptureError)"
     }
     try { Save-LaunchMetadata } catch { Write-Warning "Cannot update launch metadata: $_" }
+    if ($metadata.error_line_count -gt 0) {
+        Write-Warning "Game emitted $($metadata.error_line_count) error diagnostic lines. Last: $($metadata.last_error_line)"
+    }
+    if ($launchExitCode -ne 0) {
+        Write-Warning "Game exited with status $($metadata.exit_code_hex) ($launchExitCode). Log: $logPath"
+    }
 } catch {
     if ($null -ne $metadata) {
         $metadata.state = 'launch_failed'

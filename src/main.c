@@ -12,6 +12,7 @@
 #include "mm3_asset_cache.h"
 #include "mm3_frame_limit.h"
 #include "mm3_performance_profile.h"
+#include "mm3_crash_diagnostics.h"
 #include <xbox_host.h>
 #include <xinput_xbox.h>
 #include <video/fb_present.h>
@@ -83,6 +84,26 @@ static LONG WINAPI mm3_crash_report(EXCEPTION_POINTERS *info)
     ULONG_PTR fault = record && record->NumberParameters > 1
         ? record->ExceptionInformation[1] : 0;
     uintptr_t module_base = (uintptr_t)GetModuleHandleW(NULL);
+    SYSTEMTIME now;
+    const char *access = "unavailable";
+    MM3CrashWord seh_object, fs_thread, manager, race;
+    uint8_t paused = 0;
+    int pause_read;
+    if (record && (record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION ||
+                   record->ExceptionCode == EXCEPTION_IN_PAGE_ERROR) &&
+        record->NumberParameters > 1) {
+        switch (record->ExceptionInformation[0]) {
+        case 0: access = "read"; break;
+        case 1: access = "write"; break;
+        case 8: access = "execute"; break;
+        default: access = "unknown"; break;
+        }
+    }
+    GetSystemTime(&now);
+    fprintf(stderr, "[CRASH] utc=%04u-%02u-%02uT%02u:%02u:%02u.%03uZ uptime_ms=%llu thread=%lu access=%s\n",
+            now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute,
+            now.wSecond, now.wMilliseconds, (unsigned long long)GetTickCount64(),
+            GetCurrentThreadId(), access);
     fprintf(stderr, "[CRASH] code=0x%08lX address=%p guest_esp=0x%08X eax=0x%08X\n",
             record ? record->ExceptionCode : 0,
             record ? record->ExceptionAddress : NULL,
@@ -98,36 +119,84 @@ static LONG WINAPI mm3_crash_report(EXCEPTION_POINTERS *info)
         USHORT count = CaptureStackBackTrace(0, 16, frames, NULL);
         USHORT i;
         for (i = 0; i < count; ++i)
-            fprintf(stderr, "[CRASH_NATIVE] frame=%u rva=0x%llX\n",
-                    (unsigned)i,
-                    (unsigned long long)((uintptr_t)frames[i] - module_base));
-        if (g_ebp >= 0x10000u && g_ebp < MM3_MEMORY_MAP_SIZE - 8u)
-            fprintf(stderr, "[CRASH_CALLER] frame=%08X parent=%08X return=%08X\n",
-                    g_ebp, MEM32(g_ebp), MEM32(g_ebp + 4u));
+        {
+            HMODULE frame_module = NULL;
+            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                              (LPCWSTR)frames[i], &frame_module);
+            fprintf(stderr, "[CRASH_NATIVE] frame=%u address=%p module=%p rva=0x%llX\n",
+                    (unsigned)i, frames[i], (void *)frame_module,
+                    frame_module ? (unsigned long long)((uintptr_t)frames[i] -
+                                                        (uintptr_t)frame_module) : 0);
+        }
     }
-   fprintf(stderr, "[CRASH] module=%p rip_rva=0x%llX\n",
+    fprintf(stderr, "[CRASH] module=%p rip_rva=0x%llX\n",
             (void *)module_base,
             context ? (unsigned long long)((uintptr_t)context->Rip - module_base) : 0);
     fprintf(stderr, "[CRASH] xbox_mem_offset=%lld memory_base=%p\n",
             (long long)g_xbox_mem_offset, xbox_GetMemoryBase());
     fprintf(stderr, "[CRASH] guest fs=0x%08X ebp=0x%08X seh_ebp=0x%08X ecx=0x%08X ebx=0x%08X esi=0x%08X edi=0x%08X\n",
             g_fs_base, g_ebp, g_seh_ebp, g_ecx, g_ebx, g_esi, g_edi);
-    fprintf(stderr, "[CRASH] frame+8=0x%08X frame+c=0x%08X frame+10=0x%08X obj+18=0x%08X obj+580=0x%08X callback=0x%08X fs+20=0x%08X fs20+250=0x%08X\n",
-            MEM32(g_seh_ebp + 8), MEM32(g_seh_ebp + 0x0C),
-            MEM32(g_seh_ebp + 0x10), MEM32(MEM32(g_seh_ebp + 8) + 0x18),
-            MEM32(MEM32(g_seh_ebp + 8) + 0x580),
-            MEM32(0x00362018),
-            MEM32(g_fs_base + 0x20), MEM32(MEM32(g_fs_base + 0x20) + 0x250));
-    fprintf(stderr, "[CRASH] stack=0x%08X +4=0x%08X +8=0x%08X\n",
-            MEM32(g_esp), MEM32(g_esp + 4), MEM32(g_esp + 8));
-    if (g_esi < MM3_MEMORY_MAP_SIZE - 0x580u) {
-        fprintf(stderr, "[CRASH] heap=0x%08X bucket=%u\n", g_esi, g_edi);
-        for (uint32_t i = 0; i < 5; ++i) {
-            uint32_t bucket = g_esi + 0x180u + i * 8u;
-            fprintf(stderr, "[CRASH] heap_bin[%u]=%08X/%08X\n",
-                    i, MEM32(bucket), MEM32(bucket + 4));
-        }
+    mm3_crash_guest_frames(stderr, g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE, g_ebp);
+    seh_object = mm3_crash_guest_word(stderr, g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
+                                     "seh_frame+8", (uint64_t)g_seh_ebp + 8u);
+    mm3_crash_guest_word(stderr, g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
+                         "seh_frame+c", (uint64_t)g_seh_ebp + 0xCu);
+    mm3_crash_guest_word(stderr, g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
+                         "seh_frame+10", (uint64_t)g_seh_ebp + 0x10u);
+    mm3_crash_guest_indirect(stderr, g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
+                             "seh_object+18", seh_object, 0x18u);
+    mm3_crash_guest_indirect(stderr, g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
+                             "seh_object+580", seh_object, 0x580u);
+    mm3_crash_guest_word(stderr, g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
+                         "callback", 0x00362018u);
+    fs_thread = mm3_crash_guest_word(stderr, g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
+                                    "fs+20", (uint64_t)g_fs_base + 0x20u);
+    mm3_crash_guest_indirect(stderr, g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
+                             "fs20+250", fs_thread, 0x250u);
+    for (uint32_t i = 0; i < 12u; ++i) {
+        char name[24];
+        snprintf(name, sizeof name, "stack+%02X", i * 4u);
+        mm3_crash_guest_word(stderr, g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
+                             name, (uint64_t)g_esp + i * 4u);
     }
+    fprintf(stderr, "[CRASH] heap_candidate=0x%08X bucket=%u\n", g_esi, g_edi);
+    for (uint32_t i = 0; i < 5u; ++i) {
+        char name[24];
+        snprintf(name, sizeof name, "heap_bin[%u].head", i);
+        mm3_crash_guest_word(stderr, g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
+                             name, (uint64_t)g_esi + 0x180u + i * 8u);
+        snprintf(name, sizeof name, "heap_bin[%u].tail", i);
+        mm3_crash_guest_word(stderr, g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
+                             name, (uint64_t)g_esi + 0x184u + i * 8u);
+    }
+    /* Reuse the verified pause/engine globals and player-manager chain from
+     * mm3_debug_teleport.c; snapshot them without calling into the game. */
+    pause_read = mm3_crash_guest_read(g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
+                                     0x00429DB2u, &paused, sizeof paused);
+    if (pause_read)
+        fprintf(stderr, "[CRASH_CONTEXT] pause_active=%u\n", (unsigned)paused);
+    else
+        fprintf(stderr, "[CRASH_CONTEXT] pause_active=unreadable\n");
+    mm3_crash_guest_word(stderr, g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
+                         "engine_mode", 0x00431610u);
+    manager = mm3_crash_guest_word(stderr, g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
+                                   "player_manager", 0x003C5CDCu);
+    race.value = 0;
+    race.readable = manager.readable && manager.value &&
+        mm3_crash_guest_read(g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
+                             (uint64_t)manager.value + 0x54u,
+                             &race.value, sizeof race.value);
+    if (manager.readable && !manager.value)
+        fprintf(stderr, "[CRASH_CONTEXT] race=absent: player_manager null\n");
+    else if (race.readable && !race.value)
+        fprintf(stderr, "[CRASH_CONTEXT] race=absent\n");
+    else if (race.readable)
+        fprintf(stderr, "[CRASH_CONTEXT] race=0x%08X\n", race.value);
+    else
+        fprintf(stderr, "[CRASH_CONTEXT] race=unreadable\n");
+    mm3_crash_guest_indirect(stderr, g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
+                             "primary_player", race, 0xD8u);
     fflush(stderr);
     return EXCEPTION_CONTINUE_SEARCH;
 }

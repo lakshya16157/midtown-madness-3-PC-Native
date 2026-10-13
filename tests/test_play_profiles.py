@@ -95,6 +95,68 @@ class LauncherProfileTest(unittest.TestCase):
             self.assertEqual(result["after"][key], value)
         self.assertTrue(result["location_restored"])
 
+    def test_default_executable_uses_newest_staged_or_normal_build(self):
+        # Invoke the actual selection function's AST, without launching any
+        # executable or interacting with a game already running on the machine.
+        candidates = [self.folder / path for path in (
+            "build/RelWithDebInfo/mm3_recomp.exe", "build/Release/mm3_recomp.exe",
+            "build/current/RelWithDebInfo/mm3_recomp.exe")]
+        for index, path in enumerate(candidates):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"selection fixture only")
+            os.utime(path, (100000 + index, 100000 + index))
+        script = (
+            "$tokens = $null; $parseErrors = $null; "
+            "$ast = [Management.Automation.Language.Parser]::ParseFile(" +
+            quoted(self.launcher) + ", [ref]$tokens, [ref]$parseErrors); "
+            "if ($parseErrors.Count) { throw 'launcher parse failed' }; "
+            "$selector = $ast.Find({ param($node) "
+            "$node -is [Management.Automation.Language.FunctionDefinitionAst] -and "
+            "$node.Name -eq 'Get-DefaultExecutable' }, $true).Body.GetScriptBlock(); "
+            "$selected = @(); $selected += & $selector " + quoted(self.folder) + "; "
+            "(Get-Item -LiteralPath " + quoted(candidates[0]) +
+            ").LastWriteTimeUtc = [DateTime]::UtcNow; "
+            "$selected += & $selector " + quoted(self.folder) + "; "
+            "(Get-Item -LiteralPath " + quoted(candidates[1]) +
+            ").LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(1); "
+            "$selected += & $selector " + quoted(self.folder) + "; "
+            "$selected | ConvertTo-Json -Compress")
+        result = subprocess.run([SHELL, "-NoProfile", "-Command", script], text=True,
+                                capture_output=True, env=self.environment, cwd=self.folder, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), [str(candidates[2]), str(candidates[0]), str(candidates[1])])
+        # Explicit helpers still take precedence despite all three native builds.
+        response = self.run_launcher([""])
+        self.assertEqual(len(response["during"]), 1)
+        metadata = json.loads(next((self.folder / "logs").glob("play-*.json")).read_text(encoding="utf-8"))
+        self.assertEqual(metadata["executable"]["path"], str(self.collector))
+
+    def test_error_metadata_counts_runtime_failures_and_ignores_probe_noise(self):
+        last = "[ICALL] non-code target 0x00000000 caller=0x00123456"
+        self.collector.write_text(
+            "[Console]::Error.WriteLine('[FILE_PROBE] candidate_miss count=128 err=3 ERROR_PATH_NOT_FOUND'); "
+            "[Console]::Error.WriteLine('  [KERNEL] PsTerminateSystemThread: status=0x00000000 (worker)'); "
+            "[Console]::Error.WriteLine('  [FILE] -> 0xC000003A NOT_FOUND (win32 err=3 ERROR_PATH_NOT_FOUND)'); "
+            "[Console]::Error.WriteLine('[FILE_ERROR] operation=NtReadFile status=0xC0000022 err=5'); "
+            "[Console]::Error.WriteLine('[CRASH] code=0xC0000005 guest_esp=0x00F70000'); "
+            "[Console]::Error.WriteLine('[CRASH_CONTEXT] pause_active=1 race=0x01000000'); "
+            "[Console]::Error.WriteLine('[ICALL_FAIL] unresolved target'); "
+            "[Console]::Error.WriteLine('[BUILDING_ALLOCATION_FAILURE] requested_quads=800'); "
+            "[Console]::Error.WriteLine('[D3D11_MAP_ERROR] square mask view failed hr=8007000E; keeping native mask'); "
+            "[Console]::Error.WriteLine('[ICALL] Failed resolve VA 0x00000000 caller=0x00123456'); "
+            "[Console]::Error.WriteLine(" + quoted(last) + "); "
+            "[Console]::Error.WriteLine('[ICALL_STATE] sample=1 ebp=00000000'); "
+            "[Console]::Error.WriteLine('[FILE_PROBE] candidate_miss count=256 err=3'); "
+            "exit 0", encoding="utf-8")
+        self.run_launcher([""])
+        metadata = json.loads(next((self.folder / "logs").glob("play-*.json")).read_text(encoding="utf-8"))
+        self.assertEqual(metadata["error_line_count"], 8)
+        self.assertEqual(metadata["last_error_line"], last)
+        self.assertEqual(metadata["last_error_source"], "stderr")
+        self.assertRegex(metadata["last_error_utc"], r"^\d{4}-\d\d-\d\dT")
+        self.assertEqual(metadata["exit_code"], 0)
+        self.assertEqual(metadata["exit_code_hex"], "0x00000000")
+
     def test_failed_entry_point_still_restores_added_settings_and_working_directory(self):
         self.collector.write_text("throw 'intentional fixture failure'", encoding="utf-8")
         result = self.run_launcher(["-Profile LowPower -FpsLimit 42 -Fov 105"], expect_failure=True)
@@ -228,6 +290,9 @@ class LauncherProfileTest(unittest.TestCase):
                     process.wait(timeout=30)
         metadata = json.loads(next((self.folder / "logs").glob("play-*.json")).read_text(encoding="utf-8"))
         self.assertEqual(metadata["exit_code"], 37)
+        self.assertEqual(metadata["exit_code_hex"], "0x00000025")
+        self.assertEqual(metadata["error_line_count"], 0)
+        self.assertIsNone(metadata["last_error_line"])
         self.assertEqual(metadata["state"], "exited")
         self.assertNotIn("capture_error", metadata)
         log = Path(metadata["log_path"]).read_text(encoding="utf-8")

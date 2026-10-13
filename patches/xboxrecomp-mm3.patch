@@ -436,7 +436,7 @@ index 4779275..07b2ffa 100644
   * Get the state of a controller.
   * Port: 0-3 (Xbox controller ports)
 diff --git a/src/kernel/kernel.h b/src/kernel/kernel.h
-index b9a02bc..845f30e 100644
+index b9a02bc..d5798bb 100644
 --- a/src/kernel/kernel.h
 +++ b/src/kernel/kernel.h
 @@ -124,6 +124,9 @@ enum {
@@ -471,7 +471,17 @@ index b9a02bc..845f30e 100644
  VOID    __stdcall xbox_RtlInitializeCriticalSection(PRTL_CRITICAL_SECTION CriticalSection);
  
  ULONG   __stdcall xbox_RtlNtStatusToDosError(NTSTATUS Status);
-@@ -793,6 +804,7 @@ KIRQL   __fastcall xbox_KfRaiseIrql(KIRQL NewIrql);
+@@ -650,6 +661,9 @@ NTSTATUS __stdcall xbox_NtQueryVirtualMemory(PVOID BaseAddress, PVOID MemoryInfo
+  * File I/O (kernel_file.c)
+  * ============================================================================ */
+ 
++uint32_t xbox_LastFileError(void);
++int xbox_LastFileFailureLogged(void);
++
+ NTSTATUS __stdcall xbox_NtCreateFile(
+     PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
+     PXBOX_OBJECT_ATTRIBUTES ObjectAttributes, PXBOX_IO_STATUS_BLOCK IoStatusBlock,
+@@ -793,6 +807,7 @@ KIRQL   __fastcall xbox_KfRaiseIrql(KIRQL NewIrql);
   * Device models ask before delivering an interrupt; raising IRQL masks the
   * line for the whole processor on hardware, not just for one thread. */
  int     xbox_IrqlBlocksInterrupts(void);
@@ -480,7 +490,7 @@ index b9a02bc..845f30e 100644
  int     xbox_IrqlEnterInterrupt(int level);     /* around host-run ISRs and DPCs */
  void    xbox_IrqlLeaveInterrupt(int saved);
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
-index ed7682a..5456b43 100644
+index ed7682a..34baad1 100644
 --- a/src/kernel/kernel_bridge.c
 +++ b/src/kernel/kernel_bridge.c
 @@ -38,6 +38,11 @@
@@ -1341,11 +1351,26 @@ index ed7682a..5456b43 100644
              return h;
          }
      }
-@@ -2947,16 +3307,20 @@ static int bridge_is_cdrom_device(const char *path)
+@@ -2947,26 +3307,47 @@ static int bridge_is_cdrom_device(const char *path)
  }
  
  /* Open a file by delegating to the ported xbox_NtCreateFile kernel HLE. */
-+extern uint32_t xbox_LastFileError(void);
++static void bridge_log_file_failure(NTSTATUS status, uint32_t error,
++                                     const char *guest_path)
++{
++    fprintf(stderr, "[%s] operation=NtCreateFile status=0x%08X guest_path=%s caller=%08X guest_esp=%08X thread=%lu tick_ms=%llu (win32 err=%u%s)%s\n",
++            error ? "FILE_CALLER" : "FILE_ERROR", (unsigned)status,
++            guest_path ? guest_path : "<invalid>",
++            g_xbox_kernel_caller, g_esp, (unsigned long)GetCurrentThreadId(),
++            (unsigned long long)GetTickCount64(), error,
++            error == 32u ? " ERROR_SHARING_VIOLATION"
++          : error == 5u ? " ERROR_ACCESS_DENIED"
++          : error == 2u ? " ERROR_FILE_NOT_FOUND"
++          : error == 3u ? " ERROR_PATH_NOT_FOUND" : "",
++            error ? "" : " reason=NO_HOST_ERROR; guest/path validation rejected the open before a host error was available");
++    fflush(stderr);
++}
++
  static NTSTATUS bridge_create_file_impl(
      uint32_t handle_va, ACCESS_MASK access, uint32_t obj_attrs_va,
      uint32_t iostatus_va, ULONG file_attrs, ULONG share,
@@ -1363,7 +1388,9 @@ index ed7682a..5456b43 100644
  
      bridge_build_oa(obj_attrs_va, &oa, &name);
      if (!name.Buffer) {
-@@ -2965,8 +3329,9 @@ static NTSTATUS bridge_create_file_impl(
+         bridge_write_iostatus(iostatus_va, STATUS_OBJECT_PATH_NOT_FOUND, 0);
++        bridge_log_file_failure(STATUS_OBJECT_PATH_NOT_FOUND, 0, NULL);
+         return STATUS_OBJECT_PATH_NOT_FOUND;
      }
  
      if (bridge_is_cdrom_device(name.Buffer)) {
@@ -1375,7 +1402,7 @@ index ed7682a..5456b43 100644
          if (handle_va)
              BRIDGE_MEM32(handle_va) = BRIDGE_CDROM_HANDLE;
          bridge_write_iostatus(iostatus_va, 0, 1 /* FILE_OPENED */);
-@@ -2977,6 +3342,7 @@ static NTSTATUS bridge_create_file_impl(
+@@ -2977,12 +3358,18 @@ static NTSTATUS bridge_create_file_impl(
  
      st = xbox_NtCreateFile(&h, access, &oa, &ios, NULL,
                             file_attrs, share, disposition, options);
@@ -1383,7 +1410,18 @@ index ed7682a..5456b43 100644
  
      if (NT_SUCCESS(st)) {
          bridge_write_handle(handle_va, h);
-@@ -3074,6 +3440,7 @@ static void bridge_NtCreateFile(void)
+         bridge_write_iostatus(iostatus_va, ios.Status, (uint32_t)ios.Information);
+     } else {
+         bridge_write_iostatus(iostatus_va, st, 0);
++        /* The backend already records the host path and reason. Add the
++         * issuing guest site for failures that were not a quiet search miss;
++         * this is also used by NtOpenFile, after the boot trace budget ends. */
++        if (xbox_LastFileFailureLogged() || !xbox_LastFileError())
++            bridge_log_file_failure(st, xbox_LastFileError(), name.Buffer);
+     }
+     return st;
+ }
+@@ -3074,6 +3461,7 @@ static void bridge_NtCreateFile(void)
      uint32_t share       = STACK_ARG(6);  /* ShareAccess */
      uint32_t disposition = STACK_ARG(7);  /* CreateDisposition */
      uint32_t options     = STACK_ARG(8);  /* CreateOptions */
@@ -1391,7 +1429,7 @@ index ed7682a..5456b43 100644
  
      /* The out-parameter addresses matter as much as the result: this bridge
       * hands them to a real Win32 call, so a bogus one has Windows itself write
-@@ -3081,7 +3448,7 @@ static void bridge_NtCreateFile(void)
+@@ -3081,7 +3469,7 @@ static void bridge_NtCreateFile(void)
       * ntdll and no recompiled frame to blame. */
      g_eax = (uint32_t)bridge_create_file_impl(
          handle_va, access, obj_attrs, iostatus,
@@ -1400,40 +1438,36 @@ index ed7682a..5456b43 100644
  
      /* FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT. Neither set
       * means the caller wants asynchronous completion on this handle. */
-@@ -3122,23 +3489,24 @@ static void bridge_NtCreateFile(void)
+@@ -3122,23 +3510,12 @@ static void bridge_NtCreateFile(void)
              xbox_VideoPlayFile(host);
      }
  
 -    /* Paired with the [PATH] line the translation just printed: that says what
 -     * was asked for, this says whether it opened. A failed open is not itself
-+    /* Paired with the optional path trace: that says what was asked for,
-+     * this says whether it opened. A failed open is not itself
-      * a bug -- a title probing the cache partition before the disc expects one
-      * -- so the status is what separates a probe from a real miss. */
+-     * a bug -- a title probing the cache partition before the disc expects one
+-     * -- so the status is what separates a probe from a real miss. */
 -    {
 -        extern uint32_t xbox_LastFileError(void);
 -        uint32_t _e = g_eax ? xbox_LastFileError() : 0u;
-+    if (g_eax || KERNEL_LOG_ON()) {
-+        uint32_t _e = g_eax ? host_error : 0u;
-         if (g_eax)
+-        if (g_eax)
 -            fprintf(stderr, "  [FILE] -> 0x%08X FAILED (win32 err=%u%s)\n",
 -                    g_eax, _e,
-+            fprintf(stderr, "  [FILE] -> 0x%08X %s (win32 err=%u%s)\n",
-+                    g_eax,
-+                    ((NTSTATUS)g_eax == STATUS_OBJECT_NAME_NOT_FOUND ||
-+                     (NTSTATUS)g_eax == STATUS_OBJECT_PATH_NOT_FOUND) ? "NOT_FOUND" : "FAILED", _e,
-                     _e == 32u ? " ERROR_SHARING_VIOLATION"
-                   : _e ==  2u ? " ERROR_FILE_NOT_FOUND"
-                   : _e ==  3u ? " ERROR_PATH_NOT_FOUND" : "");
-         else
-             fprintf(stderr, "  [FILE] -> 0x%08X\n", g_eax);
+-                    _e == 32u ? " ERROR_SHARING_VIOLATION"
+-                  : _e ==  2u ? " ERROR_FILE_NOT_FOUND"
+-                  : _e ==  3u ? " ERROR_PATH_NOT_FOUND" : "");
+-        else
+-            fprintf(stderr, "  [FILE] -> 0x%08X\n", g_eax);
++    /* Failures are logged once with host and guest context in the shared
++     * implementation; successful opens retain only the opt-in boot trace. */
++    if (!g_eax && KERNEL_LOG_ON()) {
++        fprintf(stderr, "  [FILE] -> 0x%08X\n", g_eax);
 +        fflush(stderr);
      }
 -    fflush(stderr);
  }
  
  /* ── NtOpenFile (ordinal 202, 6 args = 24 bytes) ──────── */
-@@ -3154,7 +3522,7 @@ static void bridge_NtOpenFile(void)
+@@ -3154,7 +3531,7 @@ static void bridge_NtOpenFile(void)
      /* NtOpenFile = NtCreateFile with FILE_OPEN disposition */
      g_eax = (uint32_t)bridge_create_file_impl(
          handle_va, access, obj_attrs, iostatus,
@@ -1442,7 +1476,7 @@ index ed7682a..5456b43 100644
  }
  
  /*
-@@ -3443,13 +3811,16 @@ static void bridge_NtReadFile(void)
+@@ -3443,13 +3820,16 @@ static void bridge_NtReadFile(void)
                  XBOX_TO_NATIVE(buffer_va), length, poff);
  
      if ((NTSTATUS)g_eax != STATUS_SUCCESS)
@@ -1462,7 +1496,7 @@ index ed7682a..5456b43 100644
          const uint8_t *p = (const uint8_t *)XBOX_TO_NATIVE(buffer_va);
          uint32_t got = (uint32_t)ios.Information;
          /* The offset matters as much as the length. A title streaming a pack
-@@ -3733,7 +4104,7 @@ static void bridge_IoCreateFile(void)
+@@ -3733,7 +4113,7 @@ static void bridge_IoCreateFile(void)
  
      g_eax = (uint32_t)bridge_create_file_impl(
          handle_va, access, obj_attrs, iostatus,
@@ -1471,7 +1505,7 @@ index ed7682a..5456b43 100644
  }
  
  /* -- NtDeviceIoControlFile (ordinal 196, 10 args = 40 bytes) ----
-@@ -3796,8 +4167,9 @@ static void bridge_NtDeviceIoControlFile(void)
+@@ -3796,8 +4176,9 @@ static void bridge_NtDeviceIoControlFile(void)
              uint32_t data_len = BRIDGE_MEM32(in_va + 12);
              uint32_t page     = BRIDGE_MEM8(in_va + 30) & 0x3F;
  
@@ -1483,7 +1517,7 @@ index ed7682a..5456b43 100644
  
              if (data_va && data_len) {
                  uint32_t i;
-@@ -3831,8 +4203,9 @@ static void bridge_NtDeviceIoControlFile(void)
+@@ -3831,8 +4212,9 @@ static void bridge_NtDeviceIoControlFile(void)
              return;
          }
  
@@ -1495,7 +1529,7 @@ index ed7682a..5456b43 100644
          if (out_va && out_len) {
              uint32_t i;
              for (i = 0; i < out_len; i++)
-@@ -5977,60 +6350,9 @@ static void bridge_RtlUshortByteSwap(void)
+@@ -5977,60 +6359,9 @@ static void bridge_RtlUshortByteSwap(void)
  /* ── Rtl Critical sections (ordinals 278, 295, 306) ─────────
   * 277/294 (plain Enter/Leave) are routed via the xbox_Rtl* wrappers already.
   *
@@ -1559,7 +1593,7 @@ index ed7682a..5456b43 100644
  
  /* 278: VOID RtlEnterCriticalSectionAndRegion(PRTL_CRITICAL_SECTION) */
  static void bridge_RtlEnterCriticalSectionAndRegion(void)
-@@ -6049,9 +6371,8 @@ static void bridge_RtlLeaveCriticalSectionAndRegion(void)
+@@ -6049,9 +6380,8 @@ static void bridge_RtlLeaveCriticalSectionAndRegion(void)
  /* 306: BOOLEAN RtlTryEnterCriticalSection(PRTL_CRITICAL_SECTION) */
  static void bridge_RtlTryEnterCriticalSection(void)
  {
@@ -1571,7 +1605,7 @@ index ed7682a..5456b43 100644
  }
  
  /* ── Rtl Misc stubs (ordinals 288, 297, 319, 321) ─────────── */
-@@ -6134,19 +6455,26 @@ static void bridge_RtlCaptureStackBackTrace(void)
+@@ -6134,19 +6464,26 @@ static void bridge_RtlCaptureStackBackTrace(void)
  
  /* --- Ke Object Shadow Table --- */
  #define KE_SHADOW_SIZE 4096
@@ -1606,7 +1640,7 @@ index ed7682a..5456b43 100644
  }
  
  /* Insert a mapping guest_va -> host HANDLE. Replaces any prior mapping for
-@@ -6168,6 +6496,8 @@ static void ke_shadow_insert(uint32_t guest_va, HANDLE host)
+@@ -6168,6 +6505,8 @@ static void ke_shadow_insert(uint32_t guest_va, HANDLE host)
              if (g_ke_shadow[i].host_handle && g_ke_shadow[i].host_handle != host)
                  CloseHandle(g_ke_shadow[i].host_handle);
              g_ke_shadow[i].host_handle = host;
@@ -1615,7 +1649,7 @@ index ed7682a..5456b43 100644
              LeaveCriticalSection(&g_ke_shadow_cs);
              return;
          }
-@@ -6193,7 +6523,7 @@ static void ke_shadow_insert(uint32_t guest_va, HANDLE host)
+@@ -6193,7 +6532,7 @@ static void ke_shadow_insert(uint32_t guest_va, HANDLE host)
  }
  
  /* Look up the host HANDLE for a guest object VA. Returns NULL if not found. */
@@ -1624,7 +1658,7 @@ index ed7682a..5456b43 100644
  {
      uint32_t i;
      HANDLE h = NULL;
-@@ -6205,7 +6535,8 @@ static HANDLE ke_shadow_lookup(uint32_t guest_va)
+@@ -6205,7 +6544,8 @@ static HANDLE ke_shadow_lookup(uint32_t guest_va)
  
      EnterCriticalSection(&g_ke_shadow_cs);
      for (i = 0; i < KE_SHADOW_SIZE; i++) {
@@ -1634,7 +1668,7 @@ index ed7682a..5456b43 100644
              h = g_ke_shadow[i].host_handle;
              break;
          }
-@@ -6214,6 +6545,18 @@ static HANDLE ke_shadow_lookup(uint32_t guest_va)
+@@ -6214,6 +6554,18 @@ static HANDLE ke_shadow_lookup(uint32_t guest_va)
      return h;
  }
  
@@ -1653,7 +1687,7 @@ index ed7682a..5456b43 100644
  /* Remove (and close) the mapping for a guest object VA. */
  static void ke_shadow_remove(uint32_t guest_va)
  {
-@@ -6257,52 +6600,122 @@ static void ke_shadow_remove(uint32_t guest_va)
+@@ -6257,52 +6609,122 @@ static void ke_shadow_remove(uint32_t guest_va)
   * Opt-in because it changes what every such wait does: a wait that failed at
   * once now blocks until the event is set, and on a title whose setter the
   * runtime does not model yet (a GPU interrupt, say) that turns a spin into a
@@ -1798,7 +1832,7 @@ index ed7682a..5456b43 100644
              fprintf(stderr, "  [KERNEL] event 0x%08X built by the title: host event created "
                              "(%s)\n", guest_va, *type ? "synchronization" : "notification");
      }
-@@ -7311,7 +7724,7 @@ static void bridge_KeInsertQueueApc(void)
+@@ -7311,7 +7733,7 @@ static void bridge_KeInsertQueueApc(void)
  /* --- KeIsExecutingDpc (ordinal 121, 0 args = 0 bytes) --- */
  static void bridge_KeIsExecutingDpc(void)
  {
@@ -1807,7 +1841,7 @@ index ed7682a..5456b43 100644
  }
  
  /* --- KeLeaveCriticalRegion (ordinal 122, 0 args = 0 bytes) --- */
-@@ -9477,9 +9890,7 @@ static void kernel_thunk_dispatch_body(void)
+@@ -9477,9 +9899,7 @@ static void kernel_thunk_dispatch_body(void)
      ordinal = g_slot_ordinals[slot];
      bridge = g_slot_bridges[slot];
  
@@ -1818,7 +1852,7 @@ index ed7682a..5456b43 100644
  
      if (KERNEL_LOG_ON()) {
          /* The guest return address sits at the top of the guest stack: the
-@@ -9488,46 +9899,11 @@ static void kernel_thunk_dispatch_body(void)
+@@ -9488,46 +9908,11 @@ static void kernel_thunk_dispatch_body(void)
           * difference between guessing and knowing when a title recurses. */
          fprintf(stderr,
                  "  [KERNEL] #%lld: ordinal %u (slot %d) esp=0x%08X ret=0x%08X\n",
@@ -1866,7 +1900,7 @@ index ed7682a..5456b43 100644
      /* Pop the dummy return address that PUSH32(esp, 0) pushed before RECOMP_ICALL.
       * On real x86, "call [thunk]" pushes a real return address and "ret" pops it.
       * In our model, the bridge is called directly (not via the simulated stack),
-@@ -9559,10 +9935,8 @@ static void kernel_thunk_dispatch_body(void)
+@@ -9559,10 +9944,8 @@ static void kernel_thunk_dispatch_body(void)
              static uint32_t seen = 0xDEADBEEFu;
              if (_watch_before != seen) {
                  seen = _watch_before;
@@ -1879,7 +1913,7 @@ index ed7682a..5456b43 100644
                  fflush(stderr);
              }
          }
-@@ -9572,7 +9946,7 @@ static void kernel_thunk_dispatch_body(void)
+@@ -9572,7 +9955,7 @@ static void kernel_thunk_dispatch_body(void)
          bridge();
      } else {
          /* No specific bridge - return 0. Warn once per ordinal rather than
@@ -1888,7 +1922,7 @@ index ed7682a..5456b43 100644
           * usually the reason a game misbehaves, so it must not be swallowed
           * by the general call-trace throttle. Bounded to one line per slot. */
          static uint8_t warned[XBOX_KERNEL_THUNK_TABLE_SIZE];
-@@ -9713,6 +10087,7 @@ void xbox_kernel_bridge_init(void)
+@@ -9713,6 +10096,7 @@ void xbox_kernel_bridge_init(void)
      int unbridged = 0;
      DWORD old_protect;
  
@@ -1897,7 +1931,7 @@ index ed7682a..5456b43 100644
      fprintf(stderr, "  Kernel thunk bridge: resolving %d entries at 0x%08X\n",
              g_thunk_table_count, g_thunk_table_base);
 diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
-index 1133eb5..22c6a78 100644
+index 1133eb5..8054391 100644
 --- a/src/kernel/kernel_file.c
 +++ b/src/kernel/kernel_file.c
 @@ -18,6 +18,8 @@
@@ -1909,7 +1943,7 @@ index 1133eb5..22c6a78 100644
  
  #if !defined(_WIN32)
  #include <fcntl.h>
-@@ -60,7 +62,9 @@ static const char* get_xbox_path(PXBOX_OBJECT_ATTRIBUTES ObjectAttributes)
+@@ -60,17 +62,327 @@ static const char* get_xbox_path(PXBOX_OBJECT_ATTRIBUTES ObjectAttributes)
   *
   * The POSIX backend does not populate this yet, so it reads 0 there; that is a
   * missing detail rather than a missing symbol, and it is visible here. */
@@ -1917,10 +1951,20 @@ index 1133eb5..22c6a78 100644
 +/* A bridge reads this after its host open returns. Streaming workers can open
 + * simultaneously, so another thread must not replace that call's reason. */
 +static XBOX_THREAD_LOCAL uint32_t g_xbox_last_file_error;
++static XBOX_THREAD_LOCAL int g_xbox_last_file_failure_logged;
  
  uint32_t xbox_LastFileError(void)
  {
-@@ -71,6 +75,273 @@ uint32_t xbox_LastFileError(void)
+     return g_xbox_last_file_error;
+ }
+ 
++int xbox_LastFileFailureLogged(void)
++{
++    return g_xbox_last_file_failure_logged;
++}
++
+ #if defined(_WIN32)
++#include "kernel_file_probe.h"
  /* ====================  Win32 backend  =================================== */
  /* ======================================================================== */
  
@@ -1943,6 +1987,10 @@ index 1133eb5..22c6a78 100644
 +static INIT_ONCE s_file_diag_once = INIT_ONCE_STATIC_INIT;
 +static volatile LONG s_file_diag_ready;
 +static int s_file_diag_enabled;
++static int s_file_probe_trace;
++static volatile LONG64 s_file_probe_misses;
++static SRWLOCK s_file_probe_lock = SRWLOCK_INIT;
++static uint64_t s_file_probe_seen[256];
 +static SRWLOCK s_file_diag_lock = SRWLOCK_INIT;
 +static XboxFileDiagOpen *s_file_diag_opens;
 +
@@ -1952,6 +2000,8 @@ index 1133eb5..22c6a78 100644
 +    const char *setting = getenv("RECOMP_FILE_DIAGNOSTICS");
 +    (void)once; (void)parameter; (void)context;
 +    s_file_diag_enabled = setting && *setting && strcmp(setting, "0") != 0;
++    setting = getenv("RECOMP_FILE_PROBE_TRACE");
++    s_file_probe_trace = setting && *setting && strcmp(setting, "0") != 0;
 +    InterlockedExchange(&s_file_diag_ready, 1);
 +    return TRUE;
 +}
@@ -1960,6 +2010,34 @@ index 1133eb5..22c6a78 100644
 +{
 +    if (!s_file_diag_ready)
 +        InitOnceExecuteOnce(&s_file_diag_once, file_diag_initialize, NULL, NULL);
++}
++
++/* Keep one example for each logical asset, across cache/disc/DLC searches.
++ * Fixed storage bounds diagnostics; a full table falls back to the periodic
++ * count. No path lookup, allocation or filesystem retry runs here. */
++static int file_probe_first(const WCHAR *asset)
++{
++    uint64_t hash = 14695981039346656037ull;
++    unsigned slot, i;
++    while (*asset) {
++        unsigned c = (unsigned)*asset++;
++        if (c == L'/') c = L'\\';
++        if (c >= L'A' && c <= L'Z') c += L'a' - L'A';
++        hash = (hash ^ c) * 1099511628211ull;
++    }
++    if (!hash) hash = 1;
++    slot = (unsigned)(hash & 255u);
++    AcquireSRWLockExclusive(&s_file_probe_lock);
++    for (i = 0; i < 256u; ++i, slot = (slot + 1) & 255u) {
++        if (s_file_probe_seen[slot] == hash) break;
++        if (!s_file_probe_seen[slot]) {
++            s_file_probe_seen[slot] = hash;
++            ReleaseSRWLockExclusive(&s_file_probe_lock);
++            return 1;
++        }
++    }
++    ReleaseSRWLockExclusive(&s_file_probe_lock);
++    return 0;
 +}
 +
 +static int file_diag_path(const WCHAR *path, WCHAR normalized[MAX_PATH])
@@ -2194,15 +2272,16 @@ index 1133eb5..22c6a78 100644
  /* Convert Xbox create disposition to Win32 */
  static DWORD xbox_disposition_to_win32(ULONG Disposition)
  {
-@@ -145,6 +416,7 @@ NTSTATUS __stdcall xbox_NtCreateFile(
+@@ -145,6 +457,8 @@ NTSTATUS __stdcall xbox_NtCreateFile(
      HANDLE h;
      DWORD flags_and_attrs = FILE_ATTRIBUTE_NORMAL;
      (void)AllocationSize;
 +    g_xbox_last_file_error = 0;
++    g_xbox_last_file_failure_logged = 0;
  
      if (!FileHandle || !ObjectAttributes)
          return STATUS_INVALID_PARAMETER;
-@@ -196,8 +468,14 @@ NTSTATUS __stdcall xbox_NtCreateFile(
+@@ -196,32 +510,71 @@ NTSTATUS __stdcall xbox_NtCreateFile(
  
      if (h == INVALID_HANDLE_VALUE) {
          DWORD err = GetLastError();
@@ -2210,21 +2289,17 @@ index 1133eb5..22c6a78 100644
 -                win_path, (unsigned long)err);
 +        NTSTATUS status;
 +        file_diag_failure(win_path, err);
-+        const char *result = (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND)
-+            ? "NOT_FOUND" : "FAILED";
-+        fprintf(stderr, "[NtCreateFile] %s path=%ls err=%lu access=0x%08X share=0x%X disposition=%u options=0x%X\n",
-+                result, win_path, (unsigned long)err, (unsigned)DesiredAccess,
-+                (unsigned)ShareAccess, (unsigned)CreateDisposition,
-+                (unsigned)CreateOptions);
          /* Kept for the caller's trace. An NTSTATUS says "it did not open";
           * only the Win32 error distinguishes a title probing for a file that
           * is genuinely absent from one it cannot open because this runtime
-@@ -208,20 +486,27 @@ NTSTATUS __stdcall xbox_NtCreateFile(
-          * silently decides a volume or asset is missing, and in a Release
-          * build that decision was invisible. */
-         xbox_log(XBOX_LOG_WARN, XBOX_LOG_FILE,
+          * already holds it open with a share mode the second open forbids --
+          * and those need opposite responses. */
+         g_xbox_last_file_error = (uint32_t)err;
+-        /* A warning, not a compiled-out trace: a failed open is how a title
+-         * silently decides a volume or asset is missing, and in a Release
+-         * build that decision was invisible. */
+-        xbox_log(XBOX_LOG_WARN, XBOX_LOG_FILE,
 -                 "NtCreateFile FAILED: %S (err=%u)", win_path, err);
-+                 "NtCreateFile %s: %S (err=%u)", result, win_path, err);
 +        switch (err) {
 +            case ERROR_FILE_NOT_FOUND: status = STATUS_OBJECT_NAME_NOT_FOUND; break;
 +            case ERROR_PATH_NOT_FOUND: status = STATUS_OBJECT_PATH_NOT_FOUND; break;
@@ -2235,6 +2310,43 @@ index 1133eb5..22c6a78 100644
 +             * conversion without weakening the requested share access. */
 +            case ERROR_SHARING_VIOLATION: status = STATUS_SHARING_VIOLATION; break;
 +            default:                   status = STATUS_UNSUCCESSFUL; break;
++        }
++        /* Loose resources are searched in multiple directories and archives.
++         * Record bounded progress instead of labeling every candidate a game
++         * failure. Never suppress missing archives, writes, or other reasons. */
++        if ((err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) &&
++            xbox_file_probe_path(win_path, DesiredAccess, CreateDisposition, CreateOptions)) {
++            LONG64 count = InterlockedIncrement64(&s_file_probe_misses);
++            const WCHAR *asset = xbox_file_probe_asset(win_path, DesiredAccess, CreateDisposition, CreateOptions);
++            int first = !s_file_probe_trace && file_probe_first(asset);
++            if (s_file_probe_trace || first || count == 1 || count % 1024 == 0) {
++                fprintf(stderr, "[FILE_PROBE] candidate_miss count=%lld path=%ls err=%lu thread=%lu tick_ms=%llu%s\n",
++                        (long long)count, win_path, (unsigned long)err,
++                        (unsigned long)GetCurrentThreadId(),
++                        (unsigned long long)GetTickCount64(),
++                        s_file_probe_trace ? "" : first
++                            ? " detail=first_candidate; other directories/archives may satisfy the request; RECOMP_FILE_PROBE_TRACE=1 logs each candidate"
++                            : " detail=summary; other directories/archives may satisfy the request; RECOMP_FILE_PROBE_TRACE=1 logs each candidate");
++                fflush(stderr);
++            }
++            g_xbox_last_file_failure_logged = s_file_probe_trace;
++        } else {
++            const char *reason = err == ERROR_SHARING_VIOLATION ? "ERROR_SHARING_VIOLATION"
++                : err == ERROR_ACCESS_DENIED ? "ERROR_ACCESS_DENIED"
++                : err == ERROR_FILE_NOT_FOUND ? "ERROR_FILE_NOT_FOUND"
++                : err == ERROR_PATH_NOT_FOUND ? "ERROR_PATH_NOT_FOUND"
++                : err == ERROR_ALREADY_EXISTS ? "ERROR_ALREADY_EXISTS" : "HOST_IO_FAILURE";
++            fprintf(stderr, "[FILE_ERROR] operation=NtCreateFile status=0x%08X err=%lu reason=%s path=%ls access=0x%08X share=0x%X disposition=%u options=0x%X thread=%lu tick_ms=%llu\n",
++                    (unsigned)status, (unsigned long)err, reason, win_path,
++                    (unsigned)DesiredAccess, (unsigned)ShareAccess,
++                    (unsigned)CreateDisposition, (unsigned)CreateOptions,
++                    (unsigned long)GetCurrentThreadId(),
++                    (unsigned long long)GetTickCount64());
++            xbox_log(XBOX_LOG_ERROR, XBOX_LOG_FILE,
++                     "NtCreateFile status=0x%08X %s: %S (err=%u)",
++                     (unsigned)status, reason, win_path, (unsigned)err);
++            fflush(stderr);
++            g_xbox_last_file_failure_logged = 1;
 +        }
          if (IoStatusBlock) {
 -            IoStatusBlock->Status = STATUS_OBJECT_NAME_NOT_FOUND;
@@ -2256,7 +2368,31 @@ index 1133eb5..22c6a78 100644
      *FileHandle = h;
      if (IoStatusBlock) {
          IoStatusBlock->Status = STATUS_SUCCESS;
-@@ -239,11 +524,15 @@ NTSTATUS __stdcall xbox_NtReadFile(
+@@ -231,6 +584,23 @@ NTSTATUS __stdcall xbox_NtCreateFile(
+     return STATUS_SUCCESS;
+ }
+ 
++static void file_io_failure(const char *operation, HANDLE handle, ULONG length,
++                             PLARGE_INTEGER offset, DWORD error)
++{
++    WCHAR path[MAX_PATH];
++    DWORD path_length = GetFinalPathNameByHandleW(handle, path, MAX_PATH,
++                                                 FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
++    if (!path_length || path_length >= MAX_PATH)
++        wcscpy_s(path, MAX_PATH, L"<unavailable>");
++    fprintf(stderr, "[FILE_ERROR] operation=%s status=0x%08X err=%lu path=%ls handle=%p length=%u offset=%lld thread=%lu tick_ms=%llu\n",
++            operation, (unsigned)STATUS_UNSUCCESSFUL, (unsigned long)error,
++            path, handle, (unsigned)length,
++            offset ? (long long)offset->QuadPart : -1LL,
++            (unsigned long)GetCurrentThreadId(), (unsigned long long)GetTickCount64());
++    fflush(stderr);
++    SetLastError(error);
++}
++
+ NTSTATUS __stdcall xbox_NtReadFile(
+     HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcRoutine, PVOID ApcContext,
+     PXBOX_IO_STATUS_BLOCK IoStatusBlock, PVOID Buffer, ULONG Length,
+@@ -239,11 +609,15 @@ NTSTATUS __stdcall xbox_NtReadFile(
      DWORD bytes_read = 0;
      BOOL result;
      OVERLAPPED ov;
@@ -2272,7 +2408,7 @@ index 1133eb5..22c6a78 100644
      if (ByteOffset && ByteOffset->QuadPart >= 0) {
          memset(&ov, 0, sizeof(ov));
          ov.Offset = ByteOffset->LowPart;
-@@ -252,8 +541,11 @@ NTSTATUS __stdcall xbox_NtReadFile(
+@@ -252,8 +626,11 @@ NTSTATUS __stdcall xbox_NtReadFile(
      } else {
          result = ReadFile(FileHandle, Buffer, Length, &bytes_read, NULL);
      }
@@ -2285,15 +2421,32 @@ index 1133eb5..22c6a78 100644
          IoStatusBlock->Information = bytes_read;
          if (bytes_read == 0 && Length > 0) {
              IoStatusBlock->Status = STATUS_END_OF_FILE;
-@@ -265,7 +557,6 @@ NTSTATUS __stdcall xbox_NtReadFile(
+@@ -264,13 +641,7 @@ NTSTATUS __stdcall xbox_NtReadFile(
+         return STATUS_SUCCESS;
      }
  
-     {
+-    {
 -        DWORD error = GetLastError();
-         fprintf(stderr, "[NtReadFile] FAILED handle=%p len=%u err=%lu\n",
-                 FileHandle, Length, (unsigned long)error);
-         XBOX_TRACE(XBOX_LOG_FILE, "NtReadFile(handle=%p, len=%u) failed err=%u",
-@@ -318,7 +609,7 @@ NTSTATUS __stdcall xbox_NtClose(HANDLE Handle)
+-        fprintf(stderr, "[NtReadFile] FAILED handle=%p len=%u err=%lu\n",
+-                FileHandle, Length, (unsigned long)error);
+-        XBOX_TRACE(XBOX_LOG_FILE, "NtReadFile(handle=%p, len=%u) failed err=%u",
+-                   FileHandle, Length, error);
+-    }
++    file_io_failure("NtReadFile", FileHandle, Length, ByteOffset, error);
+     IoStatusBlock->Status = STATUS_UNSUCCESSFUL;
+     IoStatusBlock->Information = 0;
+     return STATUS_UNSUCCESSFUL;
+@@ -305,8 +676,7 @@ NTSTATUS __stdcall xbox_NtWriteFile(
+         return STATUS_SUCCESS;
+     }
+ 
+-    XBOX_TRACE(XBOX_LOG_FILE, "NtWriteFile(handle=%p, len=%u) failed err=%u",
+-               FileHandle, Length, GetLastError());
++    file_io_failure("NtWriteFile", FileHandle, Length, ByteOffset, GetLastError());
+     IoStatusBlock->Status = STATUS_UNSUCCESSFUL;
+     IoStatusBlock->Information = 0;
+     return STATUS_UNSUCCESSFUL;
+@@ -318,7 +688,7 @@ NTSTATUS __stdcall xbox_NtClose(HANDLE Handle)
      XBOX_TRACE(XBOX_LOG_FILE, "NtClose(handle=%p)", Handle);
      if (Handle && Handle != INVALID_HANDLE_VALUE) {
          xbox_dir_context_drop(Handle);
@@ -2302,7 +2455,7 @@ index 1133eb5..22c6a78 100644
          return STATUS_SUCCESS;
      }
      return STATUS_INVALID_HANDLE;
-@@ -842,12 +1133,13 @@ NTSTATUS __stdcall xbox_NtCreateFile(
+@@ -842,12 +1212,13 @@ NTSTATUS __stdcall xbox_NtCreateFile(
  
      if (fd < 0) {
          int e = errno;
@@ -4689,6 +4842,29 @@ index b80ba0c..0d6b4c5 100644
      case WM_DESTROY:
          InterlockedExchange(&s_fb_running, 0);
          return 0;
+@@ -447,13 +458,20 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+      * smaller client area and stretches it back up blurred. */
+     SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+     {
+-        WNDCLASSA wc;
++        WNDCLASSEXA wc;
+         memset(&wc, 0, sizeof(wc));
++        wc.cbSize        = sizeof(wc);
+         wc.lpfnWndProc   = fb_wndproc;
+         wc.hInstance     = GetModuleHandleA(NULL);
+         wc.hCursor       = LoadCursorA(NULL, IDC_ARROW);
++        /* Titles may embed resource 1 for their window and taskbar icons.
++         * Shared handles belong to the executable for the process lifetime. */
++        wc.hIcon = (HICON)LoadImageA(wc.hInstance, MAKEINTRESOURCEA(1), IMAGE_ICON,
++            GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_SHARED);
++        wc.hIconSm = (HICON)LoadImageA(wc.hInstance, MAKEINTRESOURCEA(1), IMAGE_ICON,
++            GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED);
+         wc.lpszClassName = "XboxRecompFramebuffer";
+-        RegisterClassA(&wc);
++        RegisterClassExA(&wc);
+     }
+     fb_initial_size(&cw, &ch);
+     r.left = 0; r.top = 0; r.right = cw; r.bottom = ch;
 diff --git a/src/video/fb_present.h b/src/video/fb_present.h
 index 9676e02..e867e4f 100644
 --- a/src/video/fb_present.h
@@ -4704,19 +4880,20 @@ index 9676e02..e867e4f 100644
  
  /* A buffer the display reads straight from guest memory because the title is
 diff --git a/src/video/nv2a_d3d11.c b/src/video/nv2a_d3d11.c
-index b9f3fa2..25ccf28 100644
+index b9f3fa2..11540cc 100644
 --- a/src/video/nv2a_d3d11.c
 +++ b/src/video/nv2a_d3d11.c
-@@ -29,6 +29,8 @@
+@@ -29,6 +29,9 @@
  #include <string.h>
  
  #include "nv2a_d3d11.h"
 +#include "nv2a_shader_cache.h"
 +#include "nv2a_pacing.h"
++#include "nv2a_map_mask.h"
  #include "fb_present.h"
  #include "platform/recomp_profile.h"
  #include "../d3d/d3d8_swizzle.h"
-@@ -83,6 +85,7 @@ static const char *const s_prof_name[PROF_COUNT] = {
+@@ -83,6 +86,7 @@ static const char *const s_prof_name[PROF_COUNT] = {
      "vertex", "texture", "draw", "cpu-sync", "writeback", "present", "pace", "exec(all)" };
  static int64_t s_prof[PROF_COUNT];
  static uint64_t s_prof_verts, s_prof_draws;
@@ -4724,7 +4901,7 @@ index b9f3fa2..25ccf28 100644
  static int s_prof_on = -1;
  
  static int64_t qpc(void)
-@@ -92,6 +95,58 @@ static int64_t qpc(void)
+@@ -92,6 +96,58 @@ static int64_t qpc(void)
      return t.QuadPart;
  }
  
@@ -4783,7 +4960,7 @@ index b9f3fa2..25ccf28 100644
  void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
  {
      s_prof[slot] += ticks;
-@@ -123,40 +178,75 @@ static void prof_report(void)
+@@ -123,40 +179,75 @@ static void prof_report(void)
      for (i = 0; i < PROF_COUNT; i++)
          fprintf(stderr, " %s %.2f", s_prof_name[i],
                  s_prof[i] * 1000.0 / (double)freq.QuadPart / (double)frames);
@@ -4879,13 +5056,13 @@ index b9f3fa2..25ccf28 100644
  }
  
  static uint32_t             s_frame = 1;
-@@ -188,6 +278,28 @@ static UINT s_msaa = 4, s_aniso = 16;
+@@ -188,6 +279,28 @@ static UINT s_msaa = 4, s_aniso = 16;
  static volatile LONG s_edge_hud;
  static uint32_t s_frame_bg_tex;     /* this frame's background image; reset at flip */
  static int s_frame_tag_window;      /* still in the frame's leading name tags */
 +static int (*s_centered_ui_query)(void);
 +static int (*s_map_texture_query)(uint32_t texture_addr);
-+static int s_frame_map_anchor;       /* renderer thread only */
++static float s_frame_map_shift;     /* renderer thread only, shared by all map draws */
 +static volatile LONG s_frame_map_valid;
 +
 +static void reset_map_placement(void)
@@ -4908,7 +5085,7 @@ index b9f3fa2..25ccf28 100644
  
  /* Name tags over cars (world-anchored 2D) are the first 2D a race frame
   * draws, ahead of the HUD; the title names the HUD's first element by its
-@@ -225,9 +337,10 @@ static int world_tag_draw(float lo, float hi, float ylo, float yhi, uint32_t tex
+@@ -225,9 +338,10 @@ static int world_tag_draw(float lo, float hi, float ylo, float yhi, uint32_t tex
  
  void nv2a_d3d_set_edge_hud(int on)
  {
@@ -4921,7 +5098,7 @@ index b9f3fa2..25ccf28 100644
          s_hud_tex_n = 0;                 /* a new level may load other textures */
  }
  
-@@ -319,6 +432,82 @@ static ID3D11BlendState *s_blend_opaque;
+@@ -319,6 +433,82 @@ static ID3D11BlendState *s_blend_opaque;
  static ID3D11RasterizerState *s_rs_plain;
  static ID3D11DepthStencilState *s_ds_off;
  
@@ -5004,7 +5181,7 @@ index b9f3fa2..25ccf28 100644
  static void fail(const char *what, HRESULT hr)
  {
      fprintf(stderr, "[D3D11] %s failed: 0x%08lX\n", what, (unsigned long)hr);
-@@ -346,24 +535,7 @@ static uint32_t phys(uint32_t va)
+@@ -346,24 +536,7 @@ static uint32_t phys(uint32_t va)
      return va >= CONTIG_BASE ? va - CONTIG_BASE : va;
  }
  
@@ -5030,7 +5207,7 @@ index b9f3fa2..25ccf28 100644
  
  /* ---------------------------------------------------------------- shaders */
  
-@@ -503,8 +675,13 @@ static const char s_hlsl[] =
+@@ -503,8 +676,13 @@ static const char s_hlsl[] =
   * water. A coordinate that truncates to that first centre is placed on the
   * target edge, as the hardware covers it; everything else is unchanged. */
  "  float py = P.y;\n"
@@ -5046,7 +5223,7 @@ index b9f3fa2..25ccf28 100644
  "  /* NV2A clamps raster w away from zero and infinity (xemu clampAwayZeroInf),\n"
  "   * keeping its sign so geometry behind the eye still clips. oPos is screen\n"
  "   * space after the D3D epilogue's divide; multiplying back by w gives the\n"
-@@ -578,7 +755,20 @@ static const char s_hlsl[] =
+@@ -578,7 +756,20 @@ static const char s_hlsl[] =
  "  if (m == 3) return (x >= 128.0 ? x - 256.0 : x) / 127.0;\n"
  "  return c;\n"
  "}\n"
@@ -5067,7 +5244,7 @@ index b9f3fa2..25ccf28 100644
  "  if (n == 0) return T2D0.Sample(S0, uv); if (n == 1) return T2D1.Sample(S1, uv);\n"
  "  if (n == 2) return T2D2.Sample(S2, uv); return T2D3.Sample(S3, uv);\n"
  "}\n"
-@@ -822,13 +1012,17 @@ static const char s_hlsl[] =
+@@ -822,13 +1013,17 @@ static const char s_hlsl[] =
   * rounding splits between the two (moire in the fog). Both texels hold
   * z[23:8]. ponytail: the low word (z[7:0]:stencil) is not readable this way;
   * keep it for even texels if a title ever reads stencil through Y16.
@@ -5087,7 +5264,7 @@ index b9f3fa2..25ccf28 100644
  "  float s = ccol.x, k = ccol.y;\n"
  "  d = saturate(d);\n"
  "  if (s > 1.0) d = d * s <= k ? d * s : k + (d - k / s) * (1.0 - k) / (1.0 - k / s);\n"
-@@ -856,7 +1050,7 @@ typedef struct {
+@@ -856,7 +1051,7 @@ typedef struct {
      float map[4];                /* 2/w, 2/h, 1/zmax, squeeze */
      uint32_t fogi[4];
      float fogf[4];
@@ -5096,7 +5273,7 @@ index b9f3fa2..25ccf28 100644
  } UbConsts;
  
  typedef struct {
-@@ -868,12 +1062,13 @@ typedef struct {
+@@ -868,12 +1063,13 @@ typedef struct {
  
  static void display_config(int now);
  
@@ -5113,7 +5290,7 @@ index b9f3fa2..25ccf28 100644
      if (FAILED(hr)) {
          fprintf(stderr, "[D3D11] shader %s: %s\n", entry,
                  err ? (const char *)ID3D10Blob_GetBufferPointer(err) : "?");
-@@ -883,6 +1078,11 @@ static ID3DBlob *compile_def(const char *entry, const char *target, const D3D_SH
+@@ -883,6 +1079,11 @@ static ID3DBlob *compile_def(const char *entry, const char *target, const D3D_SH
      return SUCCEEDED(hr) ? code : NULL;
  }
  
@@ -5125,7 +5302,7 @@ index b9f3fa2..25ccf28 100644
  static ID3DBlob *compile(const char *entry, const char *target)
  {
      return compile_def(entry, target, NULL);
-@@ -903,10 +1103,14 @@ typedef struct {
+@@ -903,10 +1104,14 @@ typedef struct {
      uint32_t tex_info[4][3];
  } PsKey;
  
@@ -5141,7 +5318,7 @@ index b9f3fa2..25ccf28 100644
  } PsSpec;
  
  #define PS_SPEC_SLOTS 4096          /* power of two */
-@@ -914,9 +1118,162 @@ typedef struct {
+@@ -914,9 +1119,162 @@ typedef struct {
  static PsSpec *s_spec;
  static PsSpec *s_spec_q[PS_SPEC_QUEUE];
  static unsigned s_spec_head, s_spec_tail;  /* guarded by s_spec_cs */
@@ -5304,7 +5481,7 @@ index b9f3fa2..25ccf28 100644
  
  static DWORD WINAPI spec_worker(LPVOID arg)
  {
-@@ -926,12 +1283,19 @@ static DWORD WINAPI spec_worker(LPVOID arg)
+@@ -926,12 +1284,19 @@ static DWORD WINAPI spec_worker(LPVOID arg)
          const PsKey *k;
          char decl[2048];
          ID3DBlob *b;
@@ -5328,7 +5505,7 @@ index b9f3fa2..25ccf28 100644
          LeaveCriticalSection(&s_spec_cs);
          k = &e->key;
          snprintf(decl, sizeof decl,
-@@ -965,45 +1329,87 @@ static DWORD WINAPI spec_worker(LPVOID arg)
+@@ -965,45 +1330,87 @@ static DWORD WINAPI spec_worker(LPVOID arg)
          m[1].Name = "SPEC_DECL"; m[1].Definition = decl;
          m[2].Name = flat ? "FLATQ" : NULL; m[2].Definition = flat ? "nointerpolation" : NULL;
          m[3].Name = NULL; m[3].Definition = NULL;
@@ -5407,8 +5584,9 @@ index b9f3fa2..25ccf28 100644
 +                spec_remember(&k);
              }
 +            s_spec_saved = s_spec_dirty; /* Imported keys are already persistent. */
-+        }
-+    }
+         }
+     }
+-    if (!enabled) return NULL;
 +    /* Imports finish before threads or draw lookups can see the table. */
 +    for (i = 0; i < 2; i++) {
 +        HANDLE t = CreateThread(NULL, 0, spec_worker, NULL, CREATE_SUSPENDED, NULL);
@@ -5417,9 +5595,8 @@ index b9f3fa2..25ccf28 100644
 +            if (ResumeThread(t) != (DWORD)-1) workers++;
 +            else TerminateThread(t, 0); /* It has never executed user code. */
 +            CloseHandle(t);
-         }
-     }
--    if (!enabled) return NULL;
++        }
++    }
 +    if (!workers) {
 +        s_spec_enabled = 0;
 +        free(s_spec); s_spec = NULL;
@@ -5439,7 +5616,7 @@ index b9f3fa2..25ccf28 100644
      memset(&k, 0, sizeof k);
      memcpy(k.c_icw, pc->c_icw, sizeof k.c_icw);
      memcpy(k.a_icw, pc->a_icw, sizeof k.a_icw);
-@@ -1017,23 +1423,7 @@ static ID3D11PixelShader *spec_ps(const PSConsts *pc, uint32_t variant)
+@@ -1017,23 +1424,7 @@ static ID3D11PixelShader *spec_ps(const PSConsts *pc, uint32_t variant)
          k.tex_info[i][0] = pc->tex_info[i][0]; k.tex_info[i][1] = pc->tex_info[i][1];
          k.tex_info[i][2] = pc->tex_info[i][2];
      }
@@ -5464,7 +5641,7 @@ index b9f3fa2..25ccf28 100644
  }
  
  static ID3D11Buffer *make_buffer(UINT bytes, UINT bind)
-@@ -1050,14 +1440,37 @@ static ID3D11Buffer *make_buffer(UINT bytes, UINT bind)
+@@ -1050,14 +1441,37 @@ static ID3D11Buffer *make_buffer(UINT bytes, UINT bind)
      return b;
  }
  
@@ -5477,7 +5654,7 @@ index b9f3fa2..25ccf28 100644
          memcpy(m.pData, data, bytes);
          ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)b, 0);
 +        return 1;
-+    }
+     }
 +    return 0;
 +}
 +
@@ -5492,7 +5669,7 @@ index b9f3fa2..25ccf28 100644
 +    if (s_uploaded_pc_valid && !memcmp(&s_uploaded_pc, pc, sizeof *pc)) {
 +        if (s_prof_on > 0) s_prof_ps_reused++;
 +        return 1;
-     }
++    }
 +    if (upload_cb(s_cb_ps, pc, sizeof *pc)) {
 +        memcpy(&s_uploaded_pc, pc, sizeof *pc);
 +        s_uploaded_pc_valid = 1;
@@ -5503,7 +5680,7 @@ index b9f3fa2..25ccf28 100644
  }
  
  int nv2a_d3d_init(void)
-@@ -1217,6 +1630,8 @@ int nv2a_d3d_init(void)
+@@ -1217,6 +1631,8 @@ int nv2a_d3d_init(void)
          if (qc && qd) break;
      }
      if (s_msaa < 1) s_msaa = 1;
@@ -5512,7 +5689,7 @@ index b9f3fa2..25ccf28 100644
      s_init_state = 1;
      fprintf(stderr, "[D3D11] renderer ready: %ux%u internal, display aspect %.3f, %ux MSAA, %ux AF\n",
              (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
-@@ -1256,6 +1671,7 @@ typedef struct {
+@@ -1256,6 +1672,7 @@ typedef struct {
      ID3D11ShaderResourceView *srv;
      uint8_t *shadow;                /* guest bytes as of the last sync */
      int gpu_dirty;                  /* drawn since guest memory was updated */
@@ -5520,7 +5697,7 @@ index b9f3fa2..25ccf28 100644
      uint32_t synced_frame, used_frame;
      uint32_t seq;                   /* bind order; see surface_find */
  } Surface;
-@@ -1356,7 +1772,7 @@ static void unbind_textures(void)
+@@ -1356,7 +1773,7 @@ static void unbind_textures(void)
  
  /* Draw columns [u0, u1) of `srv` into columns [x0, x1) of `rtv` (fractions
   * of each width), full height. */
@@ -5529,7 +5706,7 @@ index b9f3fa2..25ccf28 100644
                        ID3D11RenderTargetView *rtv, UINT dst_w, UINT dst_h, float alpha,
                        float x0, float x1, float u0, float u1)
  {
-@@ -1369,7 +1785,7 @@ static void blit_span(ID3D11ShaderResourceView *srv, ID3D11ShaderResourceView *m
+@@ -1369,7 +1786,7 @@ static void blit_span(ID3D11ShaderResourceView *srv, ID3D11ShaderResourceView *m
      pc.src_size[0] = pc.src_size[1] = pc.src_size[2] = pc.src_size[3] = 1;
      pc.force_alpha[0] = alpha;
      pc.ovl_flags[3] = mask ? 1 : 0;
@@ -5538,7 +5715,7 @@ index b9f3fa2..25ccf28 100644
      unbind_textures();
      unbind_targets();
      ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &rtv, NULL);
-@@ -1379,20 +1795,20 @@ static void blit_span(ID3D11ShaderResourceView *srv, ID3D11ShaderResourceView *m
+@@ -1379,20 +1796,20 @@ static void blit_span(ID3D11ShaderResourceView *srv, ID3D11ShaderResourceView *m
      ID3D11DeviceContext_OMSetBlendState(s_ctx, s_blend_opaque, NULL, 0xFFFFFFFF);
      ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, s_ds_off, 0);
      ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -5564,7 +5741,7 @@ index b9f3fa2..25ccf28 100644
  }
  
  static void blit(ID3D11ShaderResourceView *srv, ID3D11RenderTargetView *rtv,
-@@ -1413,13 +1829,13 @@ static void guest_span(const Surface *s, float *x0, float *x1)
+@@ -1413,13 +1830,13 @@ static void guest_span(const Surface *s, float *x0, float *x1)
  }
  
  /* Guest rows of a surface as BGRA, with the format's fixed alpha. */
@@ -5581,7 +5758,7 @@ index b9f3fa2..25ccf28 100644
          uint32_t *dst = out + (size_t)y * s->w;
          if (s->bpp == 4) {
              memcpy(dst, row, (size_t)s->w * 4);
-@@ -1454,6 +1870,8 @@ static ID3D11ShaderResourceView *s_up_srv[2];
+@@ -1454,6 +1871,8 @@ static ID3D11ShaderResourceView *s_up_srv[2];
  static UINT s_up_w[2], s_up_h[2];
  static uint32_t *s_up_pixels, *s_mask_pixels;
  static size_t s_up_cap, s_mask_cap;
@@ -5590,7 +5767,7 @@ index b9f3fa2..25ccf28 100644
  
  /* slot 0: image, slot 1: change mask */
  static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT w, UINT h)
-@@ -1465,10 +1883,12 @@ static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT
+@@ -1465,10 +1884,12 @@ static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT
          s_up_tex[k] = make_texture(w, h, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM,
                                     D3D11_BIND_SHADER_RESOURCE, 0);
          if (!s_up_tex[k]) return NULL;
@@ -5605,7 +5782,7 @@ index b9f3fa2..25ccf28 100644
      ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)s_up_tex[k], 0,
                                            NULL, pixels, w * 4, 0);
      return s_up_srv[k];
-@@ -1489,6 +1909,31 @@ static uint32_t *scratch_pixels(size_t count)
+@@ -1489,6 +1910,31 @@ static uint32_t *scratch_pixels(size_t count)
      return s_up_pixels;
  }
  
@@ -5637,7 +5814,7 @@ index b9f3fa2..25ccf28 100644
  /* Guest memory is the authority for what the CPU writes. A shadow copy of
   * each surface's guest bytes says which pixels the CPU changed since the last
   * look; only those replace what the GPU drew. A loading screen drawn by the
-@@ -1496,71 +1941,83 @@ static uint32_t *scratch_pixels(size_t count)
+@@ -1496,71 +1942,83 @@ static uint32_t *scratch_pixels(size_t count)
  static void surface_sync_impl(Surface *s, int force)
  {
      uint32_t rowb = s->w * s->bpp, y, x, x0 = 0xFFFFFFFFu, x1 = 0, y0 = 0xFFFFFFFFu, y1 = 0;
@@ -5775,7 +5952,7 @@ index b9f3fa2..25ccf28 100644
  }
  
  static void surface_sync(Surface *s, int force)
-@@ -1572,8 +2029,11 @@ static void surface_sync(Surface *s, int force)
+@@ -1572,8 +2030,11 @@ static void surface_sync(Surface *s, int force)
      if (s_prof_on > 0) s_prof[PROF_SYNC] += qpc() - t0;
  }
  
@@ -5787,7 +5964,7 @@ index b9f3fa2..25ccf28 100644
      if (s_cur_rt == s) unbind_targets();
      if (s->srv) ID3D11ShaderResourceView_Release(s->srv);
      if (s->rtv) ID3D11RenderTargetView_Release(s->rtv);
-@@ -1635,9 +2095,10 @@ static Surface *surface_get(uint32_t va, uint32_t pitch, uint32_t fmt,
+@@ -1635,9 +2096,10 @@ static Surface *surface_get(uint32_t va, uint32_t pitch, uint32_t fmt,
      } else {
          for (i = 0; i < MAX_SURFACES && !victim; i++)
              if (!s_surf[i].tex) victim = &s_surf[i];
@@ -5801,7 +5978,7 @@ index b9f3fa2..25ccf28 100644
          if (!victim) victim = &s_surf[0];
      }
      surface_release(victim);
-@@ -1901,9 +2362,9 @@ static void yuv_pair(const uint8_t *g, int uyvy, uint32_t out[2])
+@@ -1901,9 +2363,9 @@ static void yuv_pair(const uint8_t *g, int uyvy, uint32_t out[2])
  }
  
  typedef struct TexEntry {
@@ -5813,7 +5990,7 @@ index b9f3fa2..25ccf28 100644
      size_t bytes;
      ID3D11Texture2D *tex;
      ID3D11ShaderResourceView *srv;
-@@ -1922,6 +2383,58 @@ typedef struct {
+@@ -1922,6 +2384,58 @@ typedef struct {
      size_t face_stride, total;
  } TexLayout;
  
@@ -5872,7 +6049,7 @@ index b9f3fa2..25ccf28 100644
  static int tex_layout(const NvD3DTexture *t, TexLayout *L)
  {
      uint32_t w = t->width, h = t->height, lv, maxlv = 1, m;
-@@ -1954,12 +2467,55 @@ static int tex_layout(const NvD3DTexture *t, TexLayout *L)
+@@ -1954,12 +2468,55 @@ static int tex_layout(const NvD3DTexture *t, TexLayout *L)
      return 1;
  }
  
@@ -5928,7 +6105,7 @@ index b9f3fa2..25ccf28 100644
          for (by = 0; by < bh; by++)
              for (bx = 0; bx < bw; bx++) {
                  d3d8_dxt_decode_block(src + ((size_t)by * bw + bx) * L->bpp, t->color, px);
-@@ -1969,6 +2525,11 @@ static void decode_level(const NvD3DTexture *t, const TexLayout *L, const uint8_
+@@ -1969,6 +2526,11 @@ static void decode_level(const NvD3DTexture *t, const TexLayout *L, const uint8_
              }
          return;
      }
@@ -5940,7 +6117,7 @@ index b9f3fa2..25ccf28 100644
      if (L->kind == K_LIN) {
          for (y = 0; y < h; y++) {
              const uint8_t *row = src + (size_t)y * t->pitch;
-@@ -2023,12 +2584,15 @@ static void tex_evict(void)
+@@ -2023,12 +2585,15 @@ static void tex_evict(void)
          {
              TexEntry *e = *best;
              *best = e->next;
@@ -5957,7 +6134,7 @@ index b9f3fa2..25ccf28 100644
  static void halve_bgra(const uint32_t *src, uint32_t w, uint32_t h, uint32_t *dst)
  {
      uint32_t nw = w > 1 ? w / 2 : 1, nh = h > 1 ? h / 2 : 1, x, y, c;
-@@ -2057,22 +2621,63 @@ static int host_levels(const TexLayout *L, const NvD3DTexture *t)
+@@ -2057,22 +2622,63 @@ static int host_levels(const TexLayout *L, const NvD3DTexture *t)
      return n > L->levels ? n : L->levels;
  }
  
@@ -6028,7 +6205,7 @@ index b9f3fa2..25ccf28 100644
          e->used = s_frame;
          return e->srv;
      }
-@@ -2082,21 +2687,40 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
+@@ -2082,21 +2688,40 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
          ph = hash_mem((const uint8_t *)pal, t->palette_len * 4);
      }
      if (e && e->hash == h && e->pal_hash == ph) {
@@ -6075,7 +6252,7 @@ index b9f3fa2..25ccf28 100644
          if (L.faces == 6) {
              sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
              sd.TextureCube.MipLevels = (UINT)hl;
-@@ -2104,71 +2728,101 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
+@@ -2104,71 +2729,101 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
              sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
              sd.Texture2D.MipLevels = (UINT)hl;
          }
@@ -6209,7 +6386,7 @@ index b9f3fa2..25ccf28 100644
  /* -------------------------------------------------------- state objects */
  
  typedef struct { uint64_t key; void *obj; } StateSlot;
-@@ -2346,12 +3000,29 @@ static D3D11_TEXTURE_ADDRESS_MODE addr_mode(uint32_t m)
+@@ -2346,12 +3001,29 @@ static D3D11_TEXTURE_ADDRESS_MODE addr_mode(uint32_t m)
      }
  }
  
@@ -6240,7 +6417,7 @@ index b9f3fa2..25ccf28 100644
      if (bias13 & 0x1000) bias13 -= 0x2000;
      key = (uint64_t)minf | ((uint64_t)magf << 8) | ((uint64_t)(bias13 & 0x1FFF) << 12) |
            ((uint64_t)(levels & 15) << 25) | ((uint64_t)(reduce != 0) << 29) |
-@@ -2393,9 +3064,26 @@ static ID3D11SamplerState *sampler(const NvD3DTexture *t, int levels, int reduce
+@@ -2393,9 +3065,26 @@ static ID3D11SamplerState *sampler(const NvD3DTexture *t, int levels, int reduce
          }
          ID3D11Device_CreateSamplerState(s_dev, &d, (ID3D11SamplerState **)slot);
      }
@@ -6267,7 +6444,7 @@ index b9f3fa2..25ccf28 100644
  /* ------------------------------------------------------------------- draw */
  
  static uint32_t mode_needs_texture(uint32_t mode)
-@@ -2468,6 +3156,82 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
+@@ -2468,6 +3157,82 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
   * stored widened (its image already spans the wide screen). */
  static int s_draw_textured, s_draw_reads_wide;
  static uint32_t s_draw_tex_addr;
@@ -6350,7 +6527,7 @@ index b9f3fa2..25ccf28 100644
  
  /* A guest pass that reduces a render target (glare, luminance
   * or reflection downsamples) takes texel-exact taps: at the guest's
-@@ -2585,9 +3349,8 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
+@@ -2585,9 +3350,8 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
          ID3D11DeviceContext_OMSetBlendState(s_ctx, s_blend_opaque, NULL, 0xFFFFFFFF);
          ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, s_ds_off, 0);
          ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -6362,7 +6539,7 @@ index b9f3fa2..25ccf28 100644
          ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, &src);
          ID3D11DeviceContext_Draw(s_ctx, 3, 0);
          unbind_targets();
-@@ -2622,13 +3385,13 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
+@@ -2622,13 +3386,13 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
          ID3D11DeviceContext_OMSetBlendState(s_ctx, s_blend_opaque, NULL, 0xFFFFFFFF);
          ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, s_ds_off, 0);
          ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -6379,12 +6556,56 @@ index b9f3fa2..25ccf28 100644
              upload_cb(s_cb_clear, cc, sizeof cc);
              ID3D11DeviceContext_PSSetConstantBuffers(s_ctx, 0, 1, &s_cb_clear);
          }
-@@ -2649,10 +3412,11 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2640,6 +3404,43 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
+     return d->y16_srv;
+ }
+ 
++static ID3D11ShaderResourceView *map_square_mask(const NvD3DTexture *t)
++{
++    static ID3D11ShaderResourceView *view;
++    static int attempted;
++    ID3D11Texture2D *texture;
++    uint32_t pixels[128 * 128];
++    unsigned x, y;
++    HRESULT hr;
++    if (t->cube || t->color != 0x0Fu || t->width != 128 || t->height != 128 ||
++        t->levels != 1 || !guest_ok(t->addr, 16384u) ||
++        !nv2a_map_mask_matches(guest(t->addr), 16384u))
++        return NULL;
++    if (view || attempted) return view;
++    attempted = 1;
++    for (y = 0; y < 128; ++y)
++        for (x = 0; x < 128; ++x)
++            pixels[y * 128 + x] = nv2a_map_mask_pixel(x, y);
++    texture = make_texture(128, 128, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM,
++                           D3D11_BIND_SHADER_RESOURCE, 0);
++    if (!texture) {
++        fprintf(stderr, "[D3D11_MAP_ERROR] square mask allocation failed; keeping native mask\n");
++        fflush(stderr);
++        return NULL;
++    }
++    ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)texture,
++                                         0, NULL, pixels, 128 * 4, 0);
++    hr = ID3D11Device_CreateShaderResourceView(s_dev, (ID3D11Resource *)texture, NULL, &view);
++    ID3D11Texture2D_Release(texture); /* The view owns the successful allocation. */
++    if (FAILED(hr)) {
++        view = NULL;
++        fprintf(stderr, "[D3D11_MAP_ERROR] square mask view failed hr=%08lX; keeping native mask\n", (unsigned long)hr);
++        fflush(stderr);
++    } else
++        fprintf(stderr, "[D3D11_MAP] square map enabled size=128 edge_fade=8 identity=retail_map_mask\n");
++    return view;
++}
++
+ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+                           uint32_t *out_gw, uint32_t *out_gh, uint32_t *out_zmax)
+ {
+@@ -2649,10 +3450,11 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      PSConsts pc;
      ID3D11ShaderResourceView *srv[8] = { 0 };
      ID3D11SamplerState *smp[4] = { 0 };
 -    int cull = 0, bias = 0;
-+    int cull = 0, bias = 0, flare_depth = flare_needs_depth(st);
++    int cull = 0, bias = 0, flare_depth = flare_needs_depth(st), map_base_draw = 0;
      float slope = 0, bf[4];
      s_draw_textured = s_draw_reads_wide = 0;
      s_draw_tex_addr = 0;
@@ -6392,7 +6613,7 @@ index b9f3fa2..25ccf28 100644
  
      {
          /* Bring-up switches: RECOMP_D3D_SKIP_CMASK / _SKIP_SFACTOR (hex) drop
-@@ -2686,7 +3450,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2686,13 +3488,19 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          rt = surface_find(phys(t->addr));
          if (rt && rt->bpp == 4) { surface_sync(rt, 0); surface_y16(rt); }
      }
@@ -6401,7 +6622,19 @@ index b9f3fa2..25ccf28 100644
          return 0;
      zf = (st->surface_format >> 4) & 0xF;
      if (s && write_mask(st, s)) s->gpu_dirty = 1;
-@@ -2707,7 +3471,11 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+ 
+     /* Textures first: a surface sampled here may need a copy. */
+     memset(&pc, 0, sizeof pc);
++    if (s_map_texture_query && nv2a_d3d_hud_active() && !st->depth_test)
++        for (n = 0; n < 4; ++n)
++            if (mode_needs_texture((st->rc.stage_program >> (n * 5)) & 31) &&
++                st->tex[n].addr && !st->tex[n].cube &&
++                s_map_texture_query(st->tex[n].addr) == 1)
++                map_base_draw = 1;
+     for (n = 0; n < 4; n++) {
+         const NvD3DTexture *t = &st->tex[n];
+         uint32_t mode = (st->rc.stage_program >> (n * 5)) & 31;
+@@ -2707,7 +3515,11 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          if (!mode_needs_texture(mode) || !t->addr || !t->width || !t->height)
              continue;
          tex_format(t->color, &kind);
@@ -6414,18 +6647,19 @@ index b9f3fa2..25ccf28 100644
          s_draw_textured = 1;
          if (!s_draw_tex_addr) s_draw_tex_addr = t->addr;
          if (rt && rt->sx > rt->sy * 1.001f) s_draw_reads_wide = 1;
-@@ -2742,9 +3510,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2742,9 +3554,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                  }
              }
          } else {
 -            TexLayout L;
 -            view = texture_get(t);
 -            if (tex_layout(t, &L)) levels = L.levels;
-+            view = texture_get_with_levels(t, &levels);
++            if (map_base_draw) view = map_square_mask(t);
++            if (!view) view = texture_get_with_levels(t, &levels);
              if (kind == K_LIN) {
                  pc.tex_scale[n][0] = 1.0f / (float)t->width;
                  pc.tex_scale[n][1] = 1.0f / (float)t->height;
-@@ -2758,7 +3524,17 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2758,7 +3569,17 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          }
          if (!view) continue;
          if (t->cube && !rt) srv[4 + n] = view; else srv[n] = view;
@@ -6444,7 +6678,7 @@ index b9f3fa2..25ccf28 100644
          pc.tex_info[n][0] = (t->control0 >> 2) & 1;
          pc.tex_info[n][1] = t->filter >> 28;
          /* Point taps of an upscaled linear target average the guest pixel's
-@@ -2777,7 +3553,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2777,7 +3598,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      /* A sampled surface's CPU upload can blit and unbind this draw's
       * outputs. Restore targets and viewport before binding its textures. */
      if ((s != s_cur_rt || d != s_cur_ds) &&
@@ -6453,7 +6687,7 @@ index b9f3fa2..25ccf28 100644
          return 0;
  
      /* Combiners. */
-@@ -2797,7 +3573,9 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2797,7 +3618,9 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      pc.stage_prog = st->rc_seen ? st->rc.stage_program : (st->tex_used & 1);
      pc.alpha_func = st->alpha_func;
      pc.alpha_ref = st->alpha_ref;
@@ -6464,7 +6698,7 @@ index b9f3fa2..25ccf28 100644
      pc.other_input = st->other_stage_input;
      pc.dot_map = st->dot_rgb_mapping;
      /* SET_FOG_COLOR keeps red in the low byte. */
-@@ -2816,7 +3594,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2816,7 +3639,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          pc.zp1[0] = 1.0f / ((float)zm + 1.0f);
          pc.zp1[1] = (float)zm;
      }
@@ -6473,7 +6707,7 @@ index b9f3fa2..25ccf28 100644
  
      if (st->poly_offset_fill && !(st->z_perspective && d)) {
          /* The slope term multiplies the depth change per pixel. At an
-@@ -2832,11 +3610,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2832,11 +3655,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      {
          uint32_t v = (st->flat_shade ? 1u : 0u) | (st->z_perspective && d ? 2u : 0u);
          ID3D11PixelShader *ps = spec_ps(&pc, v);
@@ -6487,7 +6721,7 @@ index b9f3fa2..25ccf28 100644
      ID3D11DeviceContext_RSSetState(s_ctx, rs_state(cull == 3 ? 0 : cull,
                                                     st->front_face == 0x901, bias, slope));
      apply_scissor(st, gw, gh);
-@@ -2855,7 +3632,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2855,7 +3677,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          blend_state(st->blend_enable, st->blend_sfactor, st->blend_dfactor,
                      st->blend_equation, s ? write_mask(st, s) : 0), bf, 0xFFFFFFFF);
      ID3D11DeviceContext_OMSetDepthStencilState(s_ctx,
@@ -6497,7 +6731,7 @@ index b9f3fa2..25ccf28 100644
                       st->stencil_test, st->stencil_func, st->stencil_func_mask,
                       st->stencil_write_mask, st->stencil_fail,
                       st->stencil_zfail, st->stencil_zpass) : s_ds_off,
-@@ -2908,8 +3686,38 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
+@@ -2908,8 +3731,38 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
   * (index - sub); fills dx with each vertex's x shift in guest pixels and
   * returns 0 when nothing moves, leaving only the shader's 4:3 squeeze. */
  #define HUD_GAP 24.0f
@@ -6537,7 +6771,7 @@ index b9f3fa2..25ccf28 100644
  {
      static uint32_t *root, *piece, cap;
      static float (*box)[4];             /* per piece: x0 x1 y0 y1 */
-@@ -2929,13 +3737,15 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2929,13 +3782,15 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
  #define FIND(x) do { while (root[x] != x) x = root[x] = root[root[x]]; } while (0)
      /* pieces: vertices joined by primitives */
      for (i = 0; i < nv; i++) root[i] = i;
@@ -6554,7 +6788,7 @@ index b9f3fa2..25ccf28 100644
      for (i = 0; i < nv; i++) {
          uint32_t r = i;
          FIND(r);
-@@ -2951,6 +3761,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2951,6 +3806,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
          FIND(r);
          n = piece[r];
          piece[i] = n;
@@ -6562,7 +6796,7 @@ index b9f3fa2..25ccf28 100644
          if (pos[i][0] < box[n][0]) box[n][0] = pos[i][0];
          if (pos[i][0] > box[n][1]) box[n][1] = pos[i][0];
          if (pos[i][1] < box[n][2]) box[n][2] = pos[i][1];
-@@ -2977,6 +3788,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2977,6 +3833,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
          uint32_t c = piece[i];
          FIND(c);
          dx[i] = 0.0f;
@@ -6570,7 +6804,7 @@ index b9f3fa2..25ccf28 100644
          if (follow) {
              /* keep the cluster's centre where the title projected it on
               * the full width; the shader squeezes it to 4:3 about there */
-@@ -3025,6 +3837,7 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3025,6 +3882,7 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
                        uint32_t lo, uint32_t hi, const float (*pos)[4])
  {
      static uint32_t s_prog_version, s_vconst_version;
@@ -6578,7 +6812,7 @@ index b9f3fa2..25ccf28 100644
      static float *dx;
      static uint32_t dx_cap;
      struct { const uint8_t *base; uint32_t stride, span; } grp[16];
-@@ -3073,19 +3886,27 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3073,19 +3931,28 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      RECOMP_PROFILE_BEGIN("D3D11 draw");
      t_draw = s_prof_on > 0 ? qpc() : 0;
      s_prof_draws++;
@@ -6594,9 +6828,11 @@ index b9f3fa2..25ccf28 100644
 +            return;
 +        }
      }
-     if (pos && s && s->sx > s->sy * 1.001f) {
+-    if (pos && s && s->sx > s->sy * 1.001f) {
 -        /* Menu artwork and controls span the display together. Only the
 -         * race HUD retains its proportions and edge placement. */
++    if (pos && s && (s->sx > s->sy * 1.001f ||
++                    (gw == GUEST_W && gh == GUEST_H && nv2a_d3d_hud_active() && s_map_texture_query))) {
 +        /* Menu artwork and controls span the display together. The race
 +         * HUD retains its proportions; a title-scoped overlay keeps one
 +         * centred 4:3 transform for controls split across multiple draws. */
@@ -6612,10 +6848,11 @@ index b9f3fa2..25ccf28 100644
              if (v[0] < xlo) xlo = v[0];
              if (v[0] > xhi) xhi = v[0];
              if (v[1] < ylo) ylo = v[1];
-@@ -3093,28 +3914,71 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3093,28 +3960,76 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
          }
          if (flat) {
              float narrow = s->sy / s->sx;
++            int widescreen = s->sx > s->sy * 1.001f;
 +            int centered_ui = -1;
              int wide_x = xlo <= 0.5f && xhi >= (float)gw - 0.5f;
              int tall = ylo <= 0.5f && yhi >= (float)gh - 0.5f;
@@ -6630,10 +6867,10 @@ index b9f3fa2..25ccf28 100644
              /* Remember the background only to exclude menus/loading screens
               * reached during a race from HUD placement. Do not zoom its art. */
 -            if (tall && wide_x && s_draw_textured && !s_draw_reads_wide && !s_frame_bg_tex)
-+            if (!map_part && !route_n && tall && wide_x && s_draw_textured && !s_draw_reads_wide && !s_frame_bg_tex)
++            if (widescreen && !map_part && !route_n && tall && wide_x && s_draw_textured && !s_draw_reads_wide && !s_frame_bg_tex)
                  s_frame_bg_tex = s_draw_tex_addr;
 -            if (nv2a_d3d_hud_active() && !(wide_x && (!s_draw_textured || s_draw_reads_wide))) {
-+            if (nv2a_d3d_hud_active() && (map_part || !(wide_x && (!s_draw_textured || s_draw_reads_wide || route_n)))) {
++            if (nv2a_d3d_hud_active() && (map_part || (widescreen && !(wide_x && (!s_draw_textured || s_draw_reads_wide || route_n))))) {
                  squeeze = narrow;
 -                if (nv2a_d3d_hud_active() && world_tag_draw(xlo, xhi, ylo, yhi, s_draw_tex_addr)) {
 -                    /* a name tag over a car: the title projected it
@@ -6652,19 +6889,23 @@ index b9f3fa2..25ccf28 100644
 +                if (!centered_ui) {
 +                    if (map_part) {
 +                        /* The title identifies this map's base and marker
-+                         * textures. Every piece shares the base's anchor:
++                         * textures. Every piece shares the base's translation:
 +                         * a checkpoint crossing the midpoint must not jump
 +                         * independently to another HUD edge. Classification
 +                         * happens in command order on the renderer thread,
 +                         * not in a transient CPU-side map-render scope. */
 +                        if (map_part == 1) {
-+                            s_frame_map_anchor = xhi <= (float)gw * 0.5f ? -1 :
-+                                                 xlo >= (float)gw * 0.5f ? 1 : 0;
++                            if (xhi <= (float)gw * 0.5f)
++                                /* Remove the authored inset as well as the
++                                 * widescreen margin: the left bound is zero. */
++                                s_frame_map_shift = narrow - 1.0f - 2.0f * xlo * narrow / (float)gw;
++                            else
++                                s_frame_map_shift = xlo >= (float)gw * 0.5f ? 1.0f - narrow : 0.0f;
 +                            InterlockedExchange(&s_frame_map_valid, 1);
 +                        }
 +                        s_frame_tag_window = 0;
 +                        if (InterlockedCompareExchange(&s_frame_map_valid, 0, 0))
-+                            shift = (float)s_frame_map_anchor * (1.0f - narrow);
++                            shift = s_frame_map_shift;
 +                    } else if (nv2a_d3d_hud_active() && world_tag_draw(xlo, xhi, ylo, yhi, s_draw_tex_addr)) {
 +                        /* a name tag over a car: the title projected it
 +                         * through the widened camera, keep that position */
@@ -6682,7 +6923,7 @@ index b9f3fa2..25ccf28 100644
 +                if (centered_ui < 0) centered_ui = s_centered_ui_query ? s_centered_ui_query() : 0;
 +                if (!centered_ui) {
 +                    float map_shift = InterlockedCompareExchange(&s_frame_map_valid, 0, 0) ?
-+                                      (float)s_frame_map_anchor * (1.0f - narrow) : 0.0f;
++                                      s_frame_map_shift : 0.0f;
 +                    if (!use_dx) memset(dx, 0, (size_t)count * sizeof *dx);
 +                    /* Native UI batches may contain a full-width dimmer or
 +                     * other edge HUD pieces alongside the route. Give only
@@ -6696,7 +6937,7 @@ index b9f3fa2..25ccf28 100644
                  }
              }
          }
-@@ -3137,6 +4001,8 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3137,6 +4052,8 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
          for (i = 0; i < 16; i++)
              if (attr[i].enabled && uc.at[i][2] != 0xFF)
                  uc.at[i][0] += goff[gof[i]];
@@ -6705,7 +6946,7 @@ index b9f3fa2..25ccf28 100644
      }
      uc.info[2] = 0xFFFFFFFFu;
      if (use_dx) {
-@@ -3158,13 +4024,25 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3158,13 +4075,25 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
          const uint32_t (*prog)[4] = nv2a_vsh_program(&start, &pver);
          const float (*consts)[4] = nv2a_vsh_constants(&cver);
          uc.info[0] = start;
@@ -6735,7 +6976,7 @@ index b9f3fa2..25ccf28 100644
          }
      }
      uc.map[0] = 2.0f / (float)gw;
-@@ -3177,14 +4055,21 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3177,14 +4106,21 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      uc.fogf[1] = st->fog_param[1];
      uc.place[0] = shift;
      uc.place[1] = yscale;
@@ -6763,7 +7004,7 @@ index b9f3fa2..25ccf28 100644
          ID3D11DeviceContext_DrawIndexed(s_ctx, ni, 0, 0);
      }
      s_raw_pos += (at + 255) & ~255u;
-@@ -3204,11 +4089,18 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3204,11 +4140,18 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      float cc[8];
      D3D11_RECT r;
      int zclear = (flags & 1) != 0, sclear = (flags & 2) != 0;
@@ -6784,7 +7025,7 @@ index b9f3fa2..25ccf28 100644
      if (s) {
          if (flags & 0x10) mask |= D3D11_COLOR_WRITE_ENABLE_RED;
          if (flags & 0x20) mask |= D3D11_COLOR_WRITE_ENABLE_GREEN;
-@@ -3217,8 +4109,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3217,8 +4160,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
              mask |= D3D11_COLOR_WRITE_ENABLE_ALPHA;
      }
      if (!d) { zclear = sclear = 0; }
@@ -6796,7 +7037,7 @@ index b9f3fa2..25ccf28 100644
      if (s && mask) s->gpu_dirty = 1;
      zf = (st->surface_format >> 4) & 0xF;
      unpack4(color, cc);
-@@ -3234,8 +4128,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3234,8 +4179,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      upload_cb(s_cb_clear, cc, sizeof cc);
      if (x1 >= gw) x1 = gw - 1;
      if (y1 >= gh) y1 = gh - 1;
@@ -6808,7 +7049,7 @@ index b9f3fa2..25ccf28 100644
      r.left = (LONG)(x0 * s_aa_x * s_cur_sx + 0.5f);
      r.top = (LONG)(y0 * s_aa_y * s_cur_sy + 0.5f);
      r.right = (LONG)((x1 + 1) * s_aa_x * s_cur_sx + 0.5f);
-@@ -3247,12 +4143,12 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3247,12 +4194,12 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
          ds_state(zclear, 7, zclear, sclear, 7, 0xFF, 0xFF, 0x1E01, 0x1E01, 0x1E01),
          zf == 1 ? 0 : (zstencil & 0xFF));
      ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -6825,7 +7066,7 @@ index b9f3fa2..25ccf28 100644
  }
  
  /* -------------------------------------------------------------- write-back */
-@@ -3270,6 +4166,27 @@ typedef struct {
+@@ -3270,6 +4217,27 @@ typedef struct {
      ID3D11RenderTargetView *down_rtv;
  } WbSlot;
  static WbSlot s_wb[MAX_SURFACES];
@@ -6853,7 +7094,7 @@ index b9f3fa2..25ccf28 100644
  
  static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
  {
-@@ -3289,12 +4206,14 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
+@@ -3289,12 +4257,14 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
              return 0;
          k->w = w; k->h = h;
      }
@@ -6874,7 +7115,7 @@ index b9f3fa2..25ccf28 100644
      }
      return 1;
  }
-@@ -3305,21 +4224,96 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
+@@ -3305,21 +4275,96 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
   * (nv2a_d3d_writeback_busy), holding back DMA_GET and fence releases until
   * then -- the title cannot learn the frame is finished before its pixels are
   * in guest memory. */
@@ -6973,7 +7214,7 @@ index b9f3fa2..25ccf28 100644
      for (i = 0; i < MAX_SURFACES; i++) {
          Surface *s = &s_surf[i];
          WbSlot *k = &s_wb[i];
-@@ -3328,18 +4322,25 @@ static int writeback_finish(int wait)
+@@ -3328,18 +4373,25 @@ static int writeback_finish(int wait)
          uint32_t x, y, rowb;
          int amode, r565;
          HRESULT hr;
@@ -7000,7 +7241,7 @@ index b9f3fa2..25ccf28 100644
          dst = (uint8_t *)guest(s->va);
          rowb = s->w * s->bpp;
          amode = surface_alpha_mode(s->color_fmt);
-@@ -3350,8 +4351,11 @@ static int writeback_finish(int wait)
+@@ -3350,8 +4402,11 @@ static int writeback_finish(int wait)
              /* A row the CPU changed since the executor last looked holds
               * writes made after this frame was submitted (the title runs
               * ahead): they win, and the next sync uploads them. */
@@ -7013,7 +7254,7 @@ index b9f3fa2..25ccf28 100644
              if (s->bpp == 4) {
                  if (amode < 0) {
                      memcpy(row, src, rowb);
-@@ -3370,10 +4374,16 @@ static int writeback_finish(int wait)
+@@ -3370,10 +4425,16 @@ static int writeback_finish(int wait)
              }
              memcpy(s->shadow + (size_t)y * rowb, row, rowb);
          }
@@ -7030,7 +7271,7 @@ index b9f3fa2..25ccf28 100644
      return !left;
  }
  
-@@ -3381,10 +4391,8 @@ int nv2a_d3d_writeback_busy(void)
+@@ -3381,10 +4442,8 @@ int nv2a_d3d_writeback_busy(void)
  {
      if (!s_wb_pending || writeback_finish(0))
          return 0;
@@ -7043,7 +7284,7 @@ index b9f3fa2..25ccf28 100644
      return 1;
  }
  
-@@ -3420,10 +4428,20 @@ static void writeback_surfaces(void)
+@@ -3420,10 +4479,20 @@ static void writeback_surfaces(void)
          }
          s->gpu_dirty = 0;                        /* later draws dirty it again */
          k->pending = 1;
@@ -7065,7 +7306,7 @@ index b9f3fa2..25ccf28 100644
      RECOMP_PROFILE_END();
  }
  
-@@ -3439,13 +4457,16 @@ static uint64_t s_zpass;
+@@ -3439,13 +4508,16 @@ static uint64_t s_zpass;
  static void zpass_collect(void)
  {
      UINT64 n = 0;
@@ -7082,7 +7323,7 @@ index b9f3fa2..25ccf28 100644
  }
  
  void nv2a_d3d_zpass_enable(int on)
-@@ -3657,17 +4678,16 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3657,17 +4729,16 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
      ID3D11DeviceContext_OMSetBlendState(s_ctx, s_blend_opaque, NULL, 0xFFFFFFFF);
      ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, s_ds_off, 0);
      ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -7104,7 +7345,7 @@ index b9f3fa2..25ccf28 100644
      ID3D11DeviceContext_Draw(s_ctx, 4, 0);
      unbind_targets();
      unbind_textures();
-@@ -3724,7 +4744,36 @@ static ID3D11Texture2D *s_cap_tex;
+@@ -3724,7 +4795,36 @@ static ID3D11Texture2D *s_cap_tex;
  static ID3D11RenderTargetView *s_cap_rtv;
  static UINT s_cap_w, s_cap_h;
  
@@ -7142,7 +7383,7 @@ index b9f3fa2..25ccf28 100644
  {
      PresentConsts pc;
      s_last_present = GetTickCount();
-@@ -3755,12 +4804,29 @@ static void present_surface(Surface *s)
+@@ -3755,12 +4855,29 @@ static void present_surface(Surface *s)
          ID3D11RenderTargetView *rtv = NULL;
          if (SUCCEEDED(IDXGISwapChain1_GetBuffer(s_swap, 0, &IID_ID3D11Texture2D, (void **)&bb))) {
              static int vsync = -1;
@@ -7174,7 +7415,7 @@ index b9f3fa2..25ccf28 100644
              ID3D11RenderTargetView_Release(rtv);
              ID3D11Texture2D_Release(bb);
          }
-@@ -3779,40 +4845,24 @@ static void pace_vblank(void)
+@@ -3779,40 +4896,24 @@ static void pace_vblank(void)
      static LARGE_INTEGER freq;
      static int64_t next;
      static HANDLE timer;
@@ -7219,7 +7460,7 @@ index b9f3fa2..25ccf28 100644
      }
  }
  
-@@ -3897,10 +4947,12 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
+@@ -3897,10 +4998,12 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
  void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
  {
      Surface *s;
@@ -7232,7 +7473,7 @@ index b9f3fa2..25ccf28 100644
      s = surface_find(phys(surface_addr));
      if (!s && pitch)
          s = scan_surface(surface_addr, pitch);
-@@ -3910,17 +4962,17 @@ void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
+@@ -3910,17 +5013,17 @@ void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
          int64_t t0 = s_prof_on > 0 ? qpc() : 0, t1;
          writeback_surfaces();
          t1 = s_prof_on > 0 ? qpc() : 0;
@@ -7257,7 +7498,7 @@ index b9f3fa2..25ccf28 100644
      RECOMP_PROFILE_FRAME();
      prof_report();
      display_config(0);
-@@ -3940,15 +4992,27 @@ void nv2a_d3d_tick(void)
+@@ -3940,15 +5043,27 @@ void nv2a_d3d_tick(void)
          return;
      if (xbox_FramebufferScanSource(&va, &pitch)) {
          Surface *s = scan_surface(va, pitch);
@@ -7289,7 +7530,7 @@ index b9f3fa2..25ccf28 100644
          else
              s_last_present = now;
      }
-@@ -3978,6 +5042,11 @@ void nv2a_d3d_zpass_clear(void) {}
+@@ -3978,6 +5093,11 @@ void nv2a_d3d_zpass_clear(void) {}
  uint32_t nv2a_d3d_zpass_read(void) { return 0; }
  float nv2a_d3d_display_aspect(void) { return 4.0f / 3.0f; }
  void nv2a_d3d_set_edge_hud(int on) { (void)on; }
@@ -7454,10 +7695,10 @@ index 6dafbeb..00f9c08 100644
      mcpx_apu_dsp_write(d, false, NV_PAPU_EPRST, 3, 4);
      for (unsigned i = 0; i < 7; i++)
 diff --git a/tests/kernel_dispatch/CMakeLists.txt b/tests/kernel_dispatch/CMakeLists.txt
-index a8e9688..5baf7d4 100644
+index a8e9688..448da6e 100644
 --- a/tests/kernel_dispatch/CMakeLists.txt
 +++ b/tests/kernel_dispatch/CMakeLists.txt
-@@ -7,5 +7,112 @@ add_subdirectory(../.. xboxrecomp)
+@@ -7,5 +7,117 @@ add_subdirectory(../.. xboxrecomp)
  add_executable(kernel-dispatch-thread-test kernel_dispatch_thread_test.c)
  target_include_directories(kernel-dispatch-thread-test PRIVATE ../../src/kernel)
  target_link_libraries(kernel-dispatch-thread-test PRIVATE xboxrecomp)
@@ -7470,6 +7711,9 @@ index a8e9688..5baf7d4 100644
 +add_executable(kernel-file-sharing-test kernel_file_sharing_test.c)
 +target_include_directories(kernel-file-sharing-test PRIVATE ../../src/kernel)
 +target_link_libraries(kernel-file-sharing-test PRIVATE xboxrecomp)
++add_executable(kernel-file-probe-test kernel_file_probe_test.c)
++target_include_directories(kernel-file-probe-test PRIVATE ../../src/kernel)
++target_link_libraries(kernel-file-probe-test PRIVATE xboxrecomp)
 +add_executable(kernel-cs-test kernel_cs_test.c)
 +target_include_directories(kernel-cs-test PRIVATE ../../src/kernel)
 +target_link_libraries(kernel-cs-test PRIVATE xboxrecomp)
@@ -7507,6 +7751,8 @@ index a8e9688..5baf7d4 100644
 +add_test(NAME kernel-log-budget COMMAND kernel-log-test budget)
 +add_test(NAME kernel-log-summary COMMAND kernel-log-test summary)
 +add_test(NAME kernel-file-sharing COMMAND kernel-file-sharing-test)
++add_test(NAME kernel-file-probe-quiet COMMAND kernel-file-probe-test)
++add_test(NAME kernel-file-probe-trace COMMAND kernel-file-probe-test trace)
 +add_test(NAME kernel-cs COMMAND kernel-cs-test)
 +add_test(NAME kernel-dpc-exclusion COMMAND kernel-dpc-exclusion-test)
 +add_test(NAME kernel-timer-exclusion COMMAND kernel-dpc-exclusion-test timer)
@@ -7571,10 +7817,10 @@ index a8e9688..5baf7d4 100644
 +    set_tests_properties(kernel-inline-event-callers-${case} PROPERTIES TIMEOUT 10)
 +endforeach()
 diff --git a/tests/kernel_dispatch/README.md b/tests/kernel_dispatch/README.md
-index dd7efb0..fe38480 100644
+index dd7efb0..b3be10e 100644
 --- a/tests/kernel_dispatch/README.md
 +++ b/tests/kernel_dispatch/README.md
-@@ -1,14 +1,189 @@
+@@ -1,14 +1,196 @@
 -# Kernel dispatch thread regression
 +# Kernel dispatch regressions
  
@@ -7754,6 +8000,13 @@ index dd7efb0..fe38480 100644
 +invalid headers and uncommitted/read-only pointers, repeated stack reuse with
 +event-type changes, full shadow-table behavior, host handle counts, and
 +concurrent first registration. No title assets or game process are required.
++
++The file-probe cases use temporary directories to verify bounded candidate
++logging and `RECOMP_FILE_PROBE_TRACE=1`, concurrent per-thread error provenance,
++and exact failure statuses. Missing archives and save files, write attempts,
++and failed reads/writes must retain error context. A successful open clears
++the previous failure. The sharing case also checks guest caller reporting
++and malformed-name error provenance after the boot trace budget.
 +
  On Windows with Visual Studio:
  
@@ -8468,20 +8721,56 @@ index 9ba2f39..9c5a4d3 100644
      return 0;
  }
 diff --git a/tests/test_menu_placement.py b/tests/test_menu_placement.py
-index a6b4477..912466b 100644
+index a6b4477..81a33bc 100644
 --- a/tests/test_menu_placement.py
 +++ b/tests/test_menu_placement.py
-@@ -1,41 +1,456 @@
+@@ -1,41 +1,469 @@
 -"""Run from an MSVC developer prompt: python tests/test_menu_placement.py."""
-+"""Exercise real HUD placement/clustering without a D3D device (MSVC prompt)."""
- from pathlib import Path
- import subprocess
- import tempfile
- 
+-from pathlib import Path
+-import subprocess
+-import tempfile
+-
 -source = (Path(__file__).resolve().parents[1] / "src/video/nv2a_d3d11.c").read_text()
 -start = source.index("            if (tall && wide_x && s_draw_textured")
 -end = source.index("\n        }\n    }\n\n    /* Vertex data", start)
 -placement = source[start:end]
+-harness = r"""
+-#include <assert.h>
+-#include <stdint.h>
+-static int s_frame_bg_tex, s_draw_textured, s_draw_reads_wide, s_draw_tex_addr=1, race;
+-static int nv2a_d3d_hud_active(void) { return race && !s_frame_bg_tex; }
+-static int world_tag_draw(float a,float b,float c,float d,int t) { return 0; }
+-static int hud_split(void *p,int c,void *i,int l,int n,int t,float w,float r,int f,void *d) { return 0; }
+-static void check(int in_race,int background,int wide,int textured,int reads,float left,float right,float expected,float offset) {
+-    float narrow=.75f, squeeze=1, shift=0, yscale=1, xlo=left,xhi=right,ylo=0,yhi=480;
+-    int tall=background,wide_x=wide,count=0,dx_cap=0,use_dx=0,lo=0,ni=0,topology=0,gw=640;
+-    void *pos=0,*idx=0,*dx=0;
+-    race=in_race; s_frame_bg_tex=background==2; s_draw_textured=textured; s_draw_reads_wide=reads;
+-""" + placement + r"""
+-    assert(squeeze==expected && shift==offset && yscale==1);
+-}
+-int main(void) {
+-    check(0,0,0,1,0,100,200,1,0); /* menu controls */
+-    check(0,1,1,1,0,0,640,1,0); /* background */
+-    check(0,2,0,1,0,0,100,1,0); /* edge collage */
+-    check(1,1,1,1,0,0,640,1,0); /* menu entered from race */
+-    check(1,2,0,1,0,100,200,1,0); /* its controls */
+-    check(1,0,0,1,0,0,100,.75f,-.25f); /* left HUD */
+-    check(1,0,0,1,0,500,640,.75f,.25f); /* right HUD */
+-    check(1,0,1,1,1,0,640,1,0); /* wide render-target copy */
+-}
+-"""
+-with tempfile.TemporaryDirectory() as folder:
+-    test = Path(folder) / "menu.c"
+-    test.write_text(harness)
+-    subprocess.run(["cl", "/nologo", str(test), "/Fe:" + str(Path(folder) / "menu.exe"), "/Fo:" + str(Path(folder) / "menu.obj")], check=True)
+-    subprocess.run([str(Path(folder) / "menu.exe")], check=True)
+-print("Menu and race HUD placement checks passed")
++"""Exercise real HUD placement/clustering without a D3D device (MSVC prompt)."""
++from pathlib import Path
++import subprocess
++import tempfile
++
 +source = (Path(__file__).resolve().parents[1] / "src/video/nv2a_d3d11.c").read_text(
 +    encoding="utf-8"
 +)
@@ -8502,7 +8791,7 @@ index a6b4477..912466b 100644
 +
 +state_start = source.index("static volatile LONG s_edge_hud;")
 +state_end = source.index("/* nv2a_d3d_set_depth_view_remap:", state_start)
-+placement_start = source.index("    if (pos && s && s->sx > s->sy * 1.001f)")
++placement_start = source.index("    if (pos && s && (s->sx > s->sy * 1.001f")
 +placement_end = source.index("\n    /* Vertex data", placement_start)
 +placement = source[placement_start:placement_end]
 +# Output checks below use the production shader's horizontal clip transform.
@@ -8511,19 +8800,10 @@ index a6b4477..912466b 100644
 +flip = function("nv2a_d3d_flip")
 +assert "reset_map_placement();" in flip
 +
- harness = r"""
- #include <assert.h>
++harness = r"""
++#include <assert.h>
 +#include <math.h>
- #include <stdint.h>
--static int s_frame_bg_tex, s_draw_textured, s_draw_reads_wide, s_draw_tex_addr=1, race;
--static int nv2a_d3d_hud_active(void) { return race && !s_frame_bg_tex; }
--static int world_tag_draw(float a,float b,float c,float d,int t) { return 0; }
--static int hud_split(void *p,int c,void *i,int l,int n,int t,float w,float r,int f,void *d) { return 0; }
--static void check(int in_race,int background,int wide,int textured,int reads,float left,float right,float expected,float offset) {
--    float narrow=.75f, squeeze=1, shift=0, yscale=1, xlo=left,xhi=right,ylo=0,yhi=480;
--    int tall=background,wide_x=wide,count=0,dx_cap=0,use_dx=0,lo=0,ni=0,topology=0,gw=640;
--    void *pos=0,*idx=0,*dx=0;
--    race=in_race; s_frame_bg_tex=background==2; s_draw_textured=textured; s_draw_reads_wide=reads;
++#include <stdint.h>
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
@@ -8541,6 +8821,8 @@ index a6b4477..912466b 100644
 +} NvD3DAttrib;
 +""" + source[state_start:state_end] + function("nv2a_d3d_hud_active") + r"""
 +#define HUD_GAP 24.0f
++#define GUEST_W 640u
++#define GUEST_H 480u
 +""" + function("map_route_vertex") + function("clear_map_route_tags") + function("hud_split") + r"""
 +static int s_draw_textured, s_draw_reads_wide;
 +static uint32_t s_draw_tex_addr;
@@ -8588,8 +8870,7 @@ index a6b4477..912466b 100644
 +    NvD3DAttrib attr[16] = {{0}};
 +    attr[2] = submitted_uv;
 +    s_draw_textured = textured; s_draw_reads_wide = reads_wide; s_draw_tex_addr = texture;
- """ + placement + r"""
--    assert(squeeze==expected && shift==offset && yscale==1);
++""" + placement + r"""
 +    assert(count <= 16);
 +    for (i = 0; i < count; i++) {
 +        float px = pos[i][0] + (use_dx ? dx[i] : 0.0f);
@@ -8849,11 +9130,22 @@ index a6b4477..912466b 100644
 +            }
 +            base = draw(p, 4, idx, 6, 0, aspect, scale, 1, 0, map_base);
 +            near(base.squeeze, narrow); assert(!s_frame_bg_tex);
++            {
++                float source_left = p[0][0], source_right = p[0][0], output_left = base.x[0];
++                for (i = 1; i < 4; ++i) {
++                    if (p[i][0] < source_left) source_left = p[i][0];
++                    if (p[i][0] > source_right) source_right = p[i][0];
++                    if (base.x[i] < output_left) output_left = base.x[i];
++                }
++                if (source_right <= 320.0f) near(output_left, 0.0f);
++                else if (source_left >= 320.0f) near(output_left, 640.0f - (640.0f - source_left) * narrow);
++                else near(output_left, centered_x(source_left, aspect));
++            }
 +            map_markers(aspect, scale, base, p[0][0]);
 +            map_routes(aspect, scale, base, p[0][0]);
 +            old_n = s_hud_tex_n; memcpy(old_tex, s_hud_tex, sizeof old_tex);
 +            assert(!base.use_dx);
-+            if (aspect > 1.334f) assert(s_frame_map_valid && !s_frame_tag_window);
++            assert(s_frame_map_valid && !s_frame_tag_window);
 +            assert(s_hud_tex_n == old_n && !memcmp(old_tex, s_hud_tex, sizeof old_tex));
 +            r = race_batch(aspect); /* Timer/counter remain normal edge HUD. */
 +            near(r.x[0], 20 * narrow); near(r.x[4], 640 - 80 * narrow);
@@ -8899,16 +9191,8 @@ index a6b4477..912466b 100644
 +    base = box(128, 512, 48, 432, aspect, scale, 1, 0, map_base);
 +    map_markers(aspect, scale, base, 128);
 +    nv2a_d3d_set_map_texture_query(NULL); assert(!s_frame_map_valid);
- }
- int main(void) {
--    check(0,0,0,1,0,100,200,1,0); /* menu controls */
--    check(0,1,1,1,0,0,640,1,0); /* background */
--    check(0,2,0,1,0,0,100,1,0); /* edge collage */
--    check(1,1,1,1,0,0,640,1,0); /* menu entered from race */
--    check(1,2,0,1,0,100,200,1,0); /* its controls */
--    check(1,0,0,1,0,0,100,.75f,-.25f); /* left HUD */
--    check(1,0,0,1,0,500,640,.75f,.25f); /* right HUD */
--    check(1,0,1,1,1,0,640,1,0); /* wide render-target copy */
++}
++int main(void) {
 +    const float aspects[] = {4.0f/3.0f, 16.0f/10.0f, 16.0f/9.0f, 21.0f/9.0f};
 +    int a, phase, scale;
 +    for (a = 0; a < 4; a++) {
@@ -8921,14 +9205,9 @@ index a6b4477..912466b 100644
 +    tag_upload();
 +    puts("Real HUD placement: 4 aspects, split controls, moving map markers/routes, mixed native batches, UV cleanup, rotation/zoom, lifecycle and HUD isolation passed");
 +    return 0;
- }
- """
- with tempfile.TemporaryDirectory() as folder:
--    test = Path(folder) / "menu.c"
--    test.write_text(harness)
--    subprocess.run(["cl", "/nologo", str(test), "/Fe:" + str(Path(folder) / "menu.exe"), "/Fo:" + str(Path(folder) / "menu.obj")], check=True)
--    subprocess.run([str(Path(folder) / "menu.exe")], check=True)
--print("Menu and race HUD placement checks passed")
++}
++"""
++with tempfile.TemporaryDirectory() as folder:
 +    gate = "                centered_ui = s_centered_ui_query ? s_centered_ui_query() : 0;\n                if (!centered_ui) {"
 +    assert harness.count(gate) == 1
 +    map_gate = "if (map_part) {"
@@ -11377,10 +11656,10 @@ index 0000000..3324b1e
 +}
 diff --git a/tests/kernel_dispatch/kernel_file_sharing_test.c b/tests/kernel_dispatch/kernel_file_sharing_test.c
 new file mode 100644
-index 0000000..b63e3bd
+index 0000000..601d4e6
 --- /dev/null
 +++ b/tests/kernel_dispatch/kernel_file_sharing_test.c
-@@ -0,0 +1,228 @@
+@@ -0,0 +1,230 @@
 +/* A real host sharing conflict must survive the Xbox error conversion. */
 +#include "kernel.h"
 +#include "xbox_memory_layout.h"
@@ -11461,6 +11740,8 @@ index 0000000..b63e3bd
 +         *(uint32_t *)(memory + 0x40600) == STATUS_OBJECT_PATH_NOT_FOUND &&
 +         *(uint32_t *)(memory + 0x40604) == 0 &&
 +         *(uint32_t *)(memory + 0x40500) == 0xA5A5A5A5 &&
++         strstr(output, "[FILE_ERROR]") && strstr(output, "caller=") &&
++         strstr(output, "reason=NO_HOST_ERROR") &&
 +         strstr(output, "win32 err=0") && !strstr(output, "ERROR_SHARING_VIOLATION");
 +    if (!ok) fprintf(stderr, "FAIL: malformed guest name inherited an unrelated host open error:\n%s", output);
 +    return ok;
@@ -19841,3 +20122,259 @@ index 0000000..6a37a7a
 +    if (!strcmp(argv[1], "benchmark_native_bc")) return benchmark_native_bc();
 +    CHECK(0);
 +}
+diff --git a/src/kernel/kernel_file_probe.h b/src/kernel/kernel_file_probe.h
+new file mode 100644
+index 0000000..28e6302
+--- /dev/null
++++ b/src/kernel/kernel_file_probe.h
+@@ -0,0 +1,48 @@
++/* Recognize loose asset search candidates, never required archives or writes. */
++#ifndef XBOX_KERNEL_FILE_PROBE_H
++#define XBOX_KERNEL_FILE_PROBE_H
++#include <wchar.h>
++
++static const wchar_t *xbox_file_probe_asset(const wchar_t *path, unsigned long access,
++                                           unsigned long disposition, unsigned long options)
++{
++    static const wchar_t *extensions[] = {
++        L".cmp", L".omb", L".cdds", L".ccol", L".mcs", L".dps", L".txt"
++    };
++    const wchar_t *cursor, *extension;
++    unsigned i;
++    const wchar_t *asset = NULL;
++    /* OPEN_EXISTING, read only, and a regular file. A missing output or
++     * directory, access denial or sharing conflict always remains an error. */
++    if (!path || disposition != 1 || (options & 1) ||
++        (access & (0x40000000ul | 0x10000000ul | 0x00000002ul |
++                   0x00000004ul | 0x00000010ul | 0x00000100ul |
++                   0x00010000ul | 0x00040000ul | 0x00080000ul))) return 0;
++    for (cursor = path; *cursor; ++cursor) {
++        if (cursor != path && cursor[-1] != L'\\' && cursor[-1] != L'/') continue;
++        if (!_wcsnicmp(cursor, L"Data\\Shared\\", 12) ||
++            !_wcsnicmp(cursor, L"Data/Shared/", 12)) asset = cursor + 12;
++        else if (!_wcsnicmp(cursor, L"Data\\XBox\\", 10) ||
++                 !_wcsnicmp(cursor, L"Data/XBox/", 10)) asset = cursor + 10;
++        else if (!_wcsnicmp(cursor, L"TDATA\\4d53002a\\$C\\", 18) ||
++                 !_wcsnicmp(cursor, L"TDATA/4d53002a/$C/", 18)) {
++            asset = cursor + 18;
++            while (*asset && *asset != L'\\' && *asset != L'/') ++asset;
++            if (*asset) ++asset; /* Skip the DLC package directory. */
++        }
++        if (asset) break;
++    }
++    if (!asset || !*asset) return NULL;
++    extension = wcsrchr(path, L'.');
++    if (!extension) return 0;
++    for (i = 0; i < sizeof extensions / sizeof extensions[0]; ++i)
++        if (!_wcsicmp(extension, extensions[i])) return asset;
++    return NULL;
++}
++
++static int xbox_file_probe_path(const wchar_t *path, unsigned long access,
++                                unsigned long disposition, unsigned long options)
++{
++    return xbox_file_probe_asset(path, access, disposition, options) != NULL;
++}
++#endif
+diff --git a/tests/kernel_dispatch/kernel_file_probe_test.c b/tests/kernel_dispatch/kernel_file_probe_test.c
+new file mode 100644
+index 0000000..fa230ed
+--- /dev/null
++++ b/tests/kernel_dispatch/kernel_file_probe_test.c
+@@ -0,0 +1,154 @@
++/* Real file opens and failures, isolated from game assets and saves. */
++#include "kernel.h"
++#include "kernel_file_probe.h"
++#include <io.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++void *recomp_lookup(ULONG address) { (void)address; abort(); }
++void *recomp_lookup_manual(ULONG address) { (void)address; abort(); }
++
++static HANDLE root;
++static int trace;
++
++static NTSTATUS open_name(const char *path, ULONG access, HANDLE *opened)
++{
++    XBOX_ANSI_STRING name = {0};
++    XBOX_OBJECT_ATTRIBUTES oa = {0};
++    XBOX_IO_STATUS_BLOCK ios = {0};
++    NTSTATUS status;
++    name.Buffer = (PCHAR)path;
++    name.Length = (USHORT)strlen(path);
++    name.MaximumLength = name.Length + 1;
++    oa.RootDirectory = root;
++    oa.ObjectName = &name;
++    status = xbox_NtCreateFile(opened, access, &oa, &ios, NULL, 0x80,
++        1, XBOX_FILE_OPEN, XBOX_FILE_NON_DIRECTORY_FILE);
++    if (ios.Status != status || (status && ios.Information)) abort();
++    return status;
++}
++
++static DWORD WINAPI probe_worker(void *unused)
++{
++    unsigned i;
++    (void)unused;
++    for (i = 0; i < 16; ++i) {
++        HANDLE opened = NULL;
++        if (open_name("Data\\Shared\\Cars\\absent\\body.cmp", XBOX_GENERIC_READ, &opened)
++                != STATUS_OBJECT_PATH_NOT_FOUND || opened ||
++            xbox_LastFileError() != ERROR_PATH_NOT_FOUND ||
++            xbox_LastFileFailureLogged() != trace) return 1;
++    }
++    return 0;
++}
++
++static unsigned occurrences(const char *text, const char *needle)
++{
++    unsigned n = 0;
++    while ((text = strstr(text, needle))) { ++n; text += strlen(needle); }
++    return n;
++}
++
++int main(int argc, char **argv)
++{
++    wchar_t temporary[MAX_PATH], folder[MAX_PATH], path[MAX_PATH];
++    char *output;
++    FILE *capture;
++    int saved, result = 1;
++    HANDLE opened = NULL, workers[2];
++    XBOX_IO_STATUS_BLOCK ios = {0};
++    char byte = 0;
++    unsigned i;
++    size_t length;
++    trace = argc == 2 && !strcmp(argv[1], "trace");
++    _putenv_s("RECOMP_FILE_PROBE_TRACE", trace ? "1" : "0");
++    if (!GetTempPathW(MAX_PATH, temporary) || !GetTempFileNameW(temporary, L"xfp", 0, folder)) return 10;
++    if (!DeleteFileW(folder) || !CreateDirectoryW(folder, NULL)) return 11;
++    swprintf_s(path, MAX_PATH, L"%s\\Data", folder);
++    if (!CreateDirectoryW(path, NULL)) return 12;
++    root = CreateFileW(folder, FILE_LIST_DIRECTORY,
++        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
++        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
++    if (root == INVALID_HANDLE_VALUE) return 13;
++    /* Close lookalikes, archives, save files, writes and directory operations
++     * must never enter the quiet candidate class. Match all observed roots. */
++    if (!xbox_file_probe_path(L"game_files\\Data\\Shared\\Cars\\car215\\body.cmp", 0x80100080, 1, 0x64) ||
++        !xbox_file_probe_path(L"C:/Cache//data/xbox/Cars/stock/body.cmp", 0x80100080, 1, 0x64) ||
++        !xbox_file_probe_path(L"game_files\\TDATA\\4d53002a\\$C\\00000005\\Cars\\car215\\body.cmp", 0x80100080, 1, 0x64) ||
++        xbox_file_probe_path(L"game_files\\Data\\Data_hd.zip", XBOX_GENERIC_READ, 1, 0x64) ||
++        xbox_file_probe_path(L"game_files\\Data\\Sharedish\\body.cmp", XBOX_GENERIC_READ, 1, 0x64) ||
++        xbox_file_probe_path(L"game_files\\UDATA\\profile.txt", XBOX_GENERIC_READ, 1, 0x64) ||
++        xbox_file_probe_path(L"Data\\Shared\\body.cmp", XBOX_GENERIC_WRITE, 1, 0x64) ||
++        xbox_file_probe_path(L"Data\\Shared\\body.cmp", XBOX_GENERIC_READ, 2, 0x64) ||
++        xbox_file_probe_path(L"Data\\Shared\\body.cmp", XBOX_GENERIC_READ, 1, 1)) abort();
++    fflush(stderr);
++    capture = tmpfile();
++    saved = _dup(_fileno(stderr));
++    if (!capture || saved < 0 || _dup2(_fileno(capture), _fileno(stderr))) abort();
++    for (i = 0; i < (trace ? 4u : 2048u); ++i) {
++        if (open_name("Data\\Shared\\Cars\\absent\\body.cmp", XBOX_GENERIC_READ, &opened)
++                != STATUS_OBJECT_PATH_NOT_FOUND || opened ||
++            xbox_LastFileFailureLogged() != trace) abort();
++    }
++    for (i = 0; i < 2; ++i) {
++        workers[i] = CreateThread(NULL, 0, probe_worker, NULL, 0, NULL);
++        if (!workers[i]) abort();
++    }
++    if (WaitForMultipleObjects(2, workers, TRUE, 5000) != WAIT_OBJECT_0) abort();
++    for (i = 0; i < 2; ++i) {
++        DWORD code = 1;
++        GetExitCodeThread(workers[i], &code);
++        CloseHandle(workers[i]);
++        if (code) abort();
++    }
++    if (open_name("Data\\Shared\\ParticleSystems\\required.dps", XBOX_GENERIC_READ, &opened)
++            != STATUS_OBJECT_PATH_NOT_FOUND || opened) abort();
++    if (open_name("Data\\Data_hd.zip", XBOX_GENERIC_READ, &opened) != STATUS_OBJECT_NAME_NOT_FOUND ||
++        xbox_LastFileError() != ERROR_FILE_NOT_FOUND || !xbox_LastFileFailureLogged()) abort();
++    if (open_name("UDATA\\profile.txt", XBOX_GENERIC_READ, &opened) != STATUS_OBJECT_PATH_NOT_FOUND ||
++        !xbox_LastFileFailureLogged()) abort();
++    if (open_name("Data\\Shared\\Cars\\absent\\body.cmp", XBOX_GENERIC_WRITE, &opened)
++            != STATUS_OBJECT_PATH_NOT_FOUND || !xbox_LastFileFailureLogged()) abort();
++    if (xbox_NtReadFile(INVALID_HANDLE_VALUE, NULL, NULL, NULL, &ios, &byte, 1, NULL)
++            != STATUS_UNSUCCESSFUL || GetLastError() != ERROR_INVALID_HANDLE) abort();
++    swprintf_s(path, MAX_PATH, L"%s\\read-only.bin", folder);
++    opened = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, CREATE_NEW,
++                         FILE_ATTRIBUTE_NORMAL, NULL);
++    if (opened == INVALID_HANDLE_VALUE) abort();
++    if (xbox_NtWriteFile(opened, NULL, NULL, NULL, &ios, &byte, 1, NULL)
++            != STATUS_UNSUCCESSFUL || GetLastError() != ERROR_ACCESS_DENIED) abort();
++    xbox_NtClose(opened);
++    opened = NULL;
++    /* Success clears a prior failure without changing the returned handle. */
++    if (open_name("read-only.bin", XBOX_GENERIC_READ, &opened) != STATUS_SUCCESS ||
++        !opened || xbox_LastFileError() || xbox_LastFileFailureLogged()) abort();
++    xbox_NtClose(opened);
++    fflush(stderr);
++    _dup2(saved, _fileno(stderr));
++    _close(saved);
++    fseek(capture, 0, SEEK_END);
++    length = (size_t)ftell(capture);
++    output = malloc(length + 1);
++    if (!output) abort();
++    rewind(capture);
++    length = fread(output, 1, length, capture);
++    output[length] = 0;
++    fclose(capture);
++    if (occurrences(output, "[FILE_PROBE]") == (trace ? 37u : 4u) &&
++        occurrences(output, "[FILE_ERROR]") == 5u &&
++        strstr(output, "operation=NtReadFile") && strstr(output, "operation=NtWriteFile") &&
++        strstr(output, "thread=") && strstr(output, "tick_ms=") &&
++        strstr(output, "required.dps") &&
++        (trace || (strstr(output, "count=1024 ") && strstr(output, "count=2048 ") &&
++                    strstr(output, "RECOMP_FILE_PROBE_TRACE=1")))) result = 0;
++    if (result) fprintf(stderr, "FAIL: file probe logging mode %s:\n%s", trace ? "trace" : "quiet", output);
++    free(output);
++    CloseHandle(root);
++    DeleteFileW(path);
++    swprintf_s(path, MAX_PATH, L"%s\\Data", folder);
++    RemoveDirectoryW(path);
++    RemoveDirectoryW(folder);
++    if (!result) printf("PASS: %s file probes, exact failure statuses, concurrent TLS and read/write context\n", trace ? "full" : "bounded");
++    return result;
++}
+diff --git a/src/video/nv2a_map_mask.h b/src/video/nv2a_map_mask.h
+new file mode 100644
+index 0000000..0f3cc7c
+--- /dev/null
++++ b/src/video/nv2a_map_mask.h
+@@ -0,0 +1,36 @@
++#ifndef NV2A_MAP_MASK_H
++#define NV2A_MAP_MASK_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++/* PAL MM3 Hud/MapMask, independently decoded from its retail CDDS. Identity
++ * is checked only alongside a title-owned map base; dimensions alone could
++ * otherwise confuse checkpoints, gauges, menus or another title's textures. */
++static inline int nv2a_map_mask_matches(const uint8_t *bytes, size_t length)
++{
++    uint64_t hash = UINT64_C(14695981039346656037);
++    size_t i;
++    if (!bytes || length != 16384u) return 0;
++    for (i = 0; i < length; ++i)
++        hash = (hash ^ bytes[i]) * UINT64_C(1099511628211);
++    return hash == UINT64_C(0xDB4CFCE042391AD0);
++}
++
++/* Keep the middle 112x112 pixels fully visible; smoothly fade the last
++ * eight pixels on each side to transparent, including every corner. Black
++ * RGB retains the native alpha-only texture's register-combiner behavior. */
++static inline uint32_t nv2a_map_mask_pixel(unsigned x, unsigned y)
++{
++    unsigned edge;
++    float t;
++    if (x >= 128u || y >= 128u) return 0;
++    edge = x < y ? x : y;
++    if (127u - x < edge) edge = 127u - x;
++    if (127u - y < edge) edge = 127u - y;
++    t = edge < 8u ? (float)edge / 8.0f : 1.0f;
++    t = t * t * (3.0f - 2.0f * t);
++    return (uint32_t)(t * 255.0f + 0.5f) << 24;
++}
++
++#endif

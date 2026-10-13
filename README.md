@@ -6,9 +6,9 @@ uses the [xboxrecomp](tools/xboxrecomp) runtime and a Direct3D 11 renderer.
 
 An improved and modded PC version with keyboard controls, widescreen graphics,
 custom-car tools, gameplay repairs and performance work. Build it from your own
-supported game disc with the instructions below. See the
-[upstream comparison](#upstream-comparison-2026-10-12) for which recent MattSG
-fixes are present in this fork and which still need integration.
+supported game disc with the instructions below. Recent quality-of-life updates
+add a square race map at the left screen edge, softly fading map edges, cleaner
+logs and safer crash reports.
 
 **Credits:** This project builds on the original
 [mm3-recomp by Matt Graham (MattSG)](https://github.com/MattSG/mm3-recomp) and the
@@ -83,12 +83,12 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   so choosing Next Race displays the A/Start prompt instead of a black screen.
 - **Driving and selection:** arrow-key driving, camera and manual-shift controls,
   focus-aware keyboard input, and selection of all 35 supported-disc car models.
-- **Car workshop:** ten extra tuned variants, optional prepared model
+- **Car workshop:** nine extra tuned variants, optional prepared model
   packages, editable paint and driving stats, sourced specification references
   and a **Restore default driving** action. The presets retain the stock donor
   engine, gearbox and handling, adjusting only weight and power. Each extra
-  car has its own HUD/interior speedometer
-  range, with analog HUD gauges.
+  car uses its donor's HUD font, artwork and gauge style, with its own optional
+  interior speedometer range.
 
 The detailed settings and runtime notes below describe these changes and their
 limits. See the [car-pack guide](tools/car-mods/README.md) for further tuning examples.
@@ -129,7 +129,7 @@ source locations, dependencies, integration steps and acceptance tests.
 | [Audio queue cushion](https://github.com/MattSG/xboxrecomp/commit/9b9a37c) and [audio producer priority](https://github.com/MattSG/xboxrecomp/commit/a4c2800) | Missing | `apu_xaudio2.c` lacks the silent cushion, and `apu_core.c` lacks the new time-critical frame-thread priority. Our PCM queue optimization is a separate change. |
 | [Device interrupts preempt DISPATCH](https://github.com/MattSG/xboxrecomp/commit/d359ee0): half-second freezes | Missing | The APU still holds off delivery while DISPATCH exclusion is owned. Our DPC ordering and interrupt-synchronization repairs do not implement this preemption change. |
 | [Facade slabs and capacity](https://github.com/MattSG/mm3-recomp/commit/31451f6) | Partial | Our allocation-time repair enlarges three capacities by `ceil(draw_distance^2)`, capped at 4x, with failure rollback. Upstream enlarges four fields by 5x and caps facade-zone distance at 2x. Local zones can still scale to 4x; these are different implementations. |
-| [Quiet hot-path logging](https://github.com/MattSG/xboxrecomp/commit/4f4dbc6) | Partial | Summary, path, successful-read and push-buffer logs are already reduced or opt-in here. Expected missing-file failures remain unbounded, and upstream's spike-stage split is absent. Focused building traces add work; disable them for performance comparisons. |
+| [Quiet hot-path logging](https://github.com/MattSG/xboxrecomp/commit/4f4dbc6) | Partial | Summary, path, successful-read and push-buffer logs are reduced or opt-in here. Loose asset search misses use bounded samples; actual file failures include host and guest context. Upstream's spike-stage split is absent. Focused building traces add work; disable them for performance comparisons. |
 
 The main implementation evidence is in `src/recomp_manual.c`,
 `src/mm3_widescreen.c`, `src/mm3_facade_capacity.c`,
@@ -224,6 +224,22 @@ and MSVC/Windows SDK at `tools\bin\msvc` (via `setup_x64.bat`). With local MSVC,
 install CMake and Ninja in the venv (`python -m pip install "cmake>=3.20,<4" ninja`);
 setup uses Ninja Multi-Config and keeps the same `build\<Config>` output paths.
 Run these commands from the repository directory, not its parent folder.
+
+### Get the quality-of-life updates
+
+The [quality-of-life-map-logging branch](https://github.com/lakshya16157/midtown-madness-3-PC-Native/tree/quality-of-life-map-logging)
+contains the square left-edge race map, aligned corner routes and markers,
+useful file/crash diagnostics, desktop shortcuts and icons, native tree
+physics/audio fixes, and car workshop improvements. The tested runtime remains
+pinned, with this fork's changes carried in the runtime patch.
+
+```powershell
+git clone --branch quality-of-life-map-logging --recurse-submodules https://github.com/lakshya16157/midtown-madness-3-PC-Native.git mm3-pc-native
+cd mm3-pc-native
+```
+
+Run `scripts\setup.ps1 -Iso "<your supported disc image>"` as described above,
+then `scripts\play.ps1 -Keyboard`. Game files and build output are not included.
 
 ### Reproduce the improved version (`v2026.10.12.3`)
 
@@ -339,6 +355,17 @@ without edits.
 
 ## Running
 
+Create a **Midtown Madness 3** desktop shortcut with the game icon:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\create-shortcut.ps1
+```
+
+Double-click it to launch with keyboard controls and the normal play settings.
+Run the command again after moving the game folder to update the shortcut.
+Windows builds also embed the game icon in the executable and use it for the
+game window and taskbar.
+
 `scripts\play.ps1` sets the defaults below and runs the build from the repository root (the
 game reads `game_files\`). By hand:
 
@@ -427,6 +454,10 @@ the display ends the process and releases the game archives. The launcher
 captures output without attaching the game to the terminal, so terminal
 **Ctrl+C** is not the game-close shortcut.
 Hold **Ctrl** to enlarge the race map; its checkpoint icons stay aligned with the roads.
+The left race map sits at the screen's left edge and uses a square window
+with softly fading edges instead of a circular border. Roads, route lines and
+markers use the corners, and the square stays aligned with the screen as the
+city rotates with your heading.
 Both map sizes smoothly show more road as speed rises above 20 km/h, reaching
 25% more visible distance at 120 km/h, then ease back as you slow down.
 Their initial framing stays stable as you approach checkpoints.
@@ -466,8 +497,8 @@ unlock keys to your save.
 
 ## Added cars and editing stats
 
-The optional [extra-car pack](tools/car-mods/README.md) adds ten separately
-selectable slots alongside the 35 original cars: Mini Rally,
+The optional [extra-car pack](tools/car-mods/README.md) adds nine separately
+selectable slots alongside the 35 original cars:
 Panoz GTR-1, McLaren F1, Formula 1, Ford GT,
 McLaren Senna, McLaren Senna GTR, Ferrari FXX K, Koenigsegg Regera and Lamborghini
 Aventador. Each has its own name, paint settings, menu ratings and driving setup.
@@ -483,8 +514,9 @@ documents the verified Panoz, F1 GTR, Ferrari F2007, Ford GT, Senna, Senna GTR,
 FXX K, Regera and Aventador conversions. Downloaded models and generated packages
 are not distributed in this repository. Imported initial liveries remain fixed,
 glass is opaque, and interior, sounds and collision remain based on the donor.
-Roadside trees fall in the impact direction at or above 18 km/h, retaining
-native impact sounds and effects while clearing the struck tree's collision.
+Roadside trees detach at or above 18 km/h into the game's native movable-prop
+physics, keeping collision with cars after breaking. Tree impacts use the
+original sound bank, with a guarded fallback for missed collision audio.
 Defaults retain the donor's engine curve, automatic shifting, gearbox and
 handling. Only mass and native torque scale are tuned for arcade driving.
 Manufacturer specifications remain available as references in Workshop.
@@ -559,7 +591,7 @@ paint colors in `#rrggbb` format.
 | `MaxTorqueRPM`, `MaxTurboTorqueRPM` | Peak torque RPM references; automatic shift target in donor mode. |
 | `GearStatusDownGearFactor` | Automatic downshift factor. |
 
-For example, changing Mini Rally's `physics.TorqueScale` from `380` to `400`
+For example, changing Panoz's `physics.TorqueScale` from `750` to `800`
 increases engine torque. Changing `ratings.ACCELERATION` changes only its menu bar.
 The installer validates supported value ranges before applying changes.
 
@@ -587,17 +619,18 @@ rejects conflicting thresholds in custom edits. Select **Automatic** or **Manual
 in the game's car setup; Manual uses **R/F** on the MM3 keyboard layout or Xbox
 **B/X** to shift up/down while driving.
 
-The optional `speedometer.max_kmh` and `speedometer.max_mph` values set the
-HUD dial and interior dashboard needle range. Extra-car ranges provide rounded
-headroom for each preset: **220 km/h / 140 mph** for Mini Rally through
+The optional `speedometer.max_kmh` and `speedometer.max_mph` values set an added
+car's interior dashboard needle range. Its on-screen speedometer keeps the
+donor's native font, artwork, gauge style and scale. Interior ranges provide
+rounded headroom for each preset: **360 km/h / 240 mph** for Panoz through
 **440 km/h / 280 mph** for Regera. Enter both limits, or leave both blank in the
-editor to inherit the donor gauge. These limits change the gauge, not engine
-power, actual top speed or the `TOPSPEED` menu rating. In the workshop, use
+editor to inherit the donor interior gauge. These limits change the interior
+needle range, not engine power, actual top speed or the `TOPSPEED` menu rating. In the workshop, use
 **Original car speedometers…** to change original sport and Koenigsegg HUDs.
 Koenigsegg, Viper and Lotus default to 800 km/h / 500 mph. Their original physics
 and interior gauges stay unchanged. Blank original limits restore the retail HUD.
 The numeric speed readout is hidden in every HUD layout; analog dials and
-their configured ranges remain active.
+their native styles remain active. Original-car HUD overrides remain available.
 
 The installer backs up affected game archives and reuses those originals when
 reapplying, so edits do not accumulate. It does not edit saved profiles. To
@@ -1037,22 +1070,25 @@ spline, projection and submission checks.
 ### Tree contact response
 
 Tree contacts use the original solid-contact and penetration correction path
-for the initial impact. At or above 18 km/h, native object removal clears the
-struck tree's collision and cached contacts in the striking car. Breaking it
-also removes a little forward car speed once (up to 8%, capped at 1.5 m/s),
-preserving the native lateral and vertical response. A render-only override
-keeps that instance's original model visible: it tips in the impact direction
-over 0.55–0.9 seconds depending on impact speed, slides 0.25–1.25 metres,
-settles after a small landing rebound, then sinks away between
-12 and 14 seconds. Slower contacts remain solid. Animation freezes in the pause
-menu; city changes, cell reloads and reused instances invalidate the effect.
+for the initial impact. At or above 18 km/h, the struck piece's authored geometry
+and transform create a native movable prop with a rigid collision body. The
+standing instance is removed only after that body is ready. The detached tree
+uses the same physics controller and lifecycle as other moving street props,
+so cars can push it and collide with it while it falls and after it lands.
+Its initial linear and angular velocity follows the impact; later motion comes
+from native gravity and contact impulses. Breaking also removes a little
+forward car speed once (up to 8%, capped at 1.5 m/s), preserving the native
+lateral and vertical response. Slower contacts remain solid. Invalid or stale
+instances and failed body creation keep the standing collision intact.
 The retail upward-hop response is bypassed for trees. Native metadata identifies
 the selected tree contact; other roadside props retain their original response.
-Leaf effects and impact sounds still run. Falling uses the existing tree model
-and pivots at its base, so it also works without separate destruction assets.
-Falling instances use the full mesh throughout their lifetime: the native tree
-sprite ignores tilt and can otherwise leave an upright copy beside the fallen
-model during detail transitions. Other trees retain their normal detail levels.
+Leaf effects retain their native path. The existing tree sound bank handles
+both cities' impact definitions; a positional fallback restores sounds skipped
+by the shared collision cooldown, and successful native playback prevents a
+duplicate. Repeated contact substeps have a 400 ms per-instance sound cooldown.
+Detached trees use their original full mesh and physics transform: the native
+upright sprite shortcut is bypassed for these draws. Static trees and unrelated
+street props retain their normal detail levels.
 
 The build applies a checked seam at the selected-contact decision in `0x001D137B`;
 regeneration that changes or duplicates that boundary fails configuration.
@@ -1060,11 +1096,16 @@ After entering `scripts/enter-env.ps1`, run
 `python tests/mm3_tree_contact_regression.py` for native/original-XBE contact
 and object-removal comparisons, and
 `python tests/mm3_tree_diagnostics_regression.py` for guarded trace contracts.
-`python tests/mm3_tree_fall_regression.py` checks speed-scaled directional falling,
-bounded travel with a grounded base, render-only visibility, matrix restoration
-and scene lifetime guards.
-It also executes the native renderer with both tree mesh queues and reproduces
-the upright sprite overlap as a negative control.
+`python tests/mm3_tree_body_regression.py` executes the native prop constructor,
+string handling, authored collider handoff, pose/velocity setters, registration
+and failure cleanup. `python tests/mm3_tree_native_render_regression.py` exercises
+the native renderer and both mesh queues with tilted transforms, including a
+billboard negative control and unchanged nearby props.
+`python tests/mm3_tree_audio_regression.py` and
+`python tests/mm3_tree_audio_contact_regression.py` check native playback tracking,
+both cities' tree metadata, positional fallback, sound cooldowns and guest-state
+preservation. These fixtures isolate backend leaves; audible gameplay playback
+is checked separately.
 `MM3_TREE_TRACE=1` adds bounded object-render, collision-event and tree-contact
 reports. Tree-contact reports have their own budget so frequent rendering cannot
 hide a physical impact.
@@ -1079,6 +1120,31 @@ timestamps, and the log stays readable while the game runs. The JSON records
 the executable hash, launch options, runtime environment, profile defaults,
 installed car configuration and exit status. Existing environment overrides
 still take priority.
+
+Loose asset searches log `[FILE_PROBE]` with one example per logical asset
+(up to 256 assets) and a count every 1024 misses. A missing cache, platform or
+DLC candidate can still resolve from another directory or a ZIP archive;
+it does not establish a missing game asset. `RECOMP_FILE_PROBE_TRACE=1`
+records every candidate when the full search history is needed. Required
+archive failures, failed writes, sharing conflicts and access errors remain
+`[FILE_ERROR]` records, with the host path, exact status, thread and time.
+`[FILE_CALLER]` adds the issuing guest path, return address and stack pointer.
+Crash reports safely capture guest frames, stack words and pause/race context,
+including when the memory being inspected is inaccessible.
+
+To check the available fallback locations for a captured or pasted log:
+
+```powershell
+tools\venv\Scripts\python.exe tools\diagnostics\summarize_log.py logs\play-<run>.log
+```
+
+The audit reads existing files and archive indexes. It reports inaccessible
+or locked archives as not verified, and does not count installer backups as
+runtime fallbacks. `--json` includes all paths and `--limit` controls examples.
+Launch metadata also records explicit error-line counts, the most recent
+error and the exit code in hexadecimal. The default launcher picks the newest
+executable from the normal build locations and `build/current/RelWithDebInfo`,
+so an update can be built separately while a game session remains open.
 
 Normal launches use minimal logging: focused building, texture-stream and
 asynchronous-wait tracing is off by default. Use `-TraceBuildings` to opt in
