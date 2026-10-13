@@ -7,7 +7,7 @@ uses the [xboxrecomp](tools/xboxrecomp) runtime and a Direct3D 11 renderer.
 An improved and modded PC version with keyboard controls, widescreen graphics,
 custom-car tools, gameplay repairs and performance work. Build it from your own
 supported game disc with the instructions below. Recent quality-of-life updates
-add a square race map at the left screen edge, softly fading map edges, cleaner
+add a square race map in the bottom-left corner, softly fading map edges, cleaner
 logs and safer crash reports.
 
 **Press F10 for graphics settings** while the game is running. Adjust resolution,
@@ -232,7 +232,7 @@ Run these commands from the repository directory, not its parent folder.
 ### Get the quality-of-life updates
 
 The [quality-of-life-map-logging branch](https://github.com/lakshya16157/midtown-madness-3-PC-Native/tree/quality-of-life-map-logging)
-contains the square left-edge race map, aligned corner routes and markers,
+contains the square bottom-left race map, aligned corner routes and markers,
 useful file/crash diagnostics, desktop shortcuts and icons, native tree
 physics/audio fixes, and car workshop improvements. The tested runtime remains
 pinned, with this fork's changes carried in the runtime patch.
@@ -475,7 +475,7 @@ the display ends the process and releases the game archives. The launcher
 captures output without attaching the game to the terminal, so terminal
 **Ctrl+C** is not the game-close shortcut.
 Hold **Ctrl** to enlarge the race map; its checkpoint icons stay aligned with the roads.
-The left race map sits at the screen's left edge and uses a square window
+The race map sits in the screen's bottom-left corner and uses a square window
 with softly fading edges instead of a circular border. Roads, route lines and
 markers use the corners, and the square stays aligned with the screen as the
 city rotates with your heading.
