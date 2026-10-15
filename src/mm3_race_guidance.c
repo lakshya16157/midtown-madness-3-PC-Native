@@ -1058,12 +1058,16 @@ void mm3_race_route_tag_packed(uint32_t vertex)
 static float road_draw_half_width(float width, float factor)
 {
     float result;
-    if (!isfinite(factor) || factor <= 0.0f) return .55f;
-    /* Use the same world-to-map scale as the street centers. Retain a small
-     * visibility floor for side streets when the map zooms out. The renderer's
-     * common perspective then narrows distant roads and their markers alike. */
+    const float minimum = 1.0f;
+    if (!isfinite(factor) || factor <= 0.0f) return minimum;
+    /* Use the same world-to-map scale as the street centers. At maximum speed,
+     * the far edge's common perspective scales horizontal widths by
+     * 1.6 * (1 - .45) / (1 + .45), about .607. The old 1.1px full-width floor
+     * therefore left narrow streets only .67px wide, making them disappear.
+     * A 2px floor retains at least 1.21px there, while wider roads still use
+     * their physical lane widths and the common road/marker projection. */
     result = road_width_valid(width) * factor * .5f;
-    return isfinite(result) ? fmaxf(.55f, result) : .55f;
+    return isfinite(result) ? fmaxf(minimum, result) : minimum;
 }
 
 static void route_segment(uint32_t renderer, uint32_t clip,

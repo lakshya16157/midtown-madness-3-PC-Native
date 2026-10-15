@@ -5260,7 +5260,7 @@ index 9676e02..16d21d5 100644
   * not flipping into it (loading screens drawn by the CPU, the first frames
   * before any flip). Returns 0 while flips are in charge. */
 diff --git a/src/video/nv2a_d3d11.c b/src/video/nv2a_d3d11.c
-index b9f3fa2..90d73ff 100644
+index b9f3fa2..6e157a8 100644
 --- a/src/video/nv2a_d3d11.c
 +++ b/src/video/nv2a_d3d11.c
 @@ -29,6 +29,10 @@
@@ -5482,7 +5482,7 @@ index b9f3fa2..90d73ff 100644
  }
  
  static uint32_t             s_frame = 1;
-@@ -188,6 +318,46 @@ static UINT s_msaa = 4, s_aniso = 16;
+@@ -188,6 +318,54 @@ static UINT s_msaa = 4, s_aniso = 16;
  static volatile LONG s_edge_hud;
  static uint32_t s_frame_bg_tex;     /* this frame's background image; reset at flip */
  static int s_frame_tag_window;      /* still in the frame's leading name tags */
@@ -5490,11 +5490,13 @@ index b9f3fa2..90d73ff 100644
 +static int (*s_map_texture_query)(uint32_t texture_addr);
 +static int (*s_minimap_style_query)(void);
 +static float (*s_minimap_motion_query)(float cx, float cy);
++static float (*s_minimap_expansion_query)(float cx, float cy);
 +static float s_frame_map_shift;     /* renderer thread only, shared by all map draws */
 +static float s_frame_map_y_offset;  /* guest pixels, shared by map and tagged routes */
 +static float s_frame_map_cx, s_frame_map_cy;
 +static float s_frame_map_half_width, s_frame_map_half_height;
 +static float s_frame_map_motion;
++static float s_frame_map_expansion;
 +static volatile LONG s_frame_map_valid;
 +
 +static void reset_map_placement(void)
@@ -5522,6 +5524,12 @@ index b9f3fa2..90d73ff 100644
 +    reset_map_placement();
 +}
 +
++void nv2a_d3d_set_minimap_expansion_query(float (*query)(float cx, float cy))
++{
++    s_minimap_expansion_query = query;
++    reset_map_placement();
++}
++
 +void nv2a_d3d_set_centered_ui_query(int (*query)(void))
 +{
 +    s_centered_ui_query = query;
@@ -5529,7 +5537,7 @@ index b9f3fa2..90d73ff 100644
  
  /* Name tags over cars (world-anchored 2D) are the first 2D a race frame
   * draws, ahead of the HUD; the title names the HUD's first element by its
-@@ -200,6 +370,17 @@ static float s_hud_start[4];
+@@ -200,6 +378,17 @@ static float s_hud_start[4];
  static uint32_t s_hud_tex[32];
  static int s_hud_tex_n;
  
@@ -5547,7 +5555,7 @@ index b9f3fa2..90d73ff 100644
  void nv2a_d3d_set_hud_start(float x0, float y0, float x1, float y1)
  {
      s_hud_start[0] = x0; s_hud_start[1] = y0; s_hud_start[2] = x1; s_hud_start[3] = y1;
-@@ -225,9 +406,10 @@ static int world_tag_draw(float lo, float hi, float ylo, float yhi, uint32_t tex
+@@ -225,9 +414,10 @@ static int world_tag_draw(float lo, float hi, float ylo, float yhi, uint32_t tex
  
  void nv2a_d3d_set_edge_hud(int on)
  {
@@ -5560,7 +5568,7 @@ index b9f3fa2..90d73ff 100644
          s_hud_tex_n = 0;                 /* a new level may load other textures */
  }
  
-@@ -246,21 +428,33 @@ static int nv2a_d3d_hud_active(void)
+@@ -246,21 +436,33 @@ static int nv2a_d3d_hud_active(void)
      return !s_frame_bg_tex && InterlockedCompareExchange(&s_edge_hud, 0, 0) != 0;
  }
  
@@ -5598,7 +5606,7 @@ index b9f3fa2..90d73ff 100644
      if (e && sscanf(e, "%f:%f", &w, &h) == 2 && h > 0 && w > 0) return clamp_aspect(w / h);
      if (e && sscanf(e, "%f", &w) == 1 && w > 0) return clamp_aspect(w);
      return 0;
-@@ -319,6 +513,82 @@ static ID3D11BlendState *s_blend_opaque;
+@@ -319,6 +521,82 @@ static ID3D11BlendState *s_blend_opaque;
  static ID3D11RasterizerState *s_rs_plain;
  static ID3D11DepthStencilState *s_ds_off;
  
@@ -5681,7 +5689,7 @@ index b9f3fa2..90d73ff 100644
  static void fail(const char *what, HRESULT hr)
  {
      fprintf(stderr, "[D3D11] %s failed: 0x%08lX\n", what, (unsigned long)hr);
-@@ -346,24 +616,7 @@ static uint32_t phys(uint32_t va)
+@@ -346,24 +624,7 @@ static uint32_t phys(uint32_t va)
      return va >= CONTIG_BASE ? va - CONTIG_BASE : va;
  }
  
@@ -5707,7 +5715,7 @@ index b9f3fa2..90d73ff 100644
  
  /* ---------------------------------------------------------------- shaders */
  
-@@ -493,7 +746,6 @@ static const char s_hlsl[] =
+@@ -493,7 +754,6 @@ static const char s_hlsl[] =
  "    t0 = fetch(9, vid); t1 = fetch(10, vid); t2 = fetch(11, vid); t3 = fetch(12, vid);\n"
  "  }\n"
  "  float px = P.x;\n"
@@ -5715,7 +5723,7 @@ index b9f3fa2..90d73ff 100644
  /* The NV2A rasterises with 4-bit sub-pixel precision, truncating (xemu
   * roundScreenCoords), so the Xbox D3D screen offset 0.53125 puts a
   * full-target quad's left/top edge exactly on the centre of pixel 0, and the
-@@ -503,8 +755,18 @@ static const char s_hlsl[] =
+@@ -503,8 +763,18 @@ static const char s_hlsl[] =
   * water. A coordinate that truncates to that first centre is placed on the
   * target edge, as the hardware covers it; everything else is unchanged. */
  "  float py = P.y;\n"
@@ -5736,7 +5744,7 @@ index b9f3fa2..90d73ff 100644
  "  /* NV2A clamps raster w away from zero and infinity (xemu clampAwayZeroInf),\n"
  "   * keeping its sign so geometry behind the eye still clips. oPos is screen\n"
  "   * space after the D3D epilogue's divide; multiplying back by w gives the\n"
-@@ -578,7 +840,20 @@ static const char s_hlsl[] =
+@@ -578,7 +848,20 @@ static const char s_hlsl[] =
  "  if (m == 3) return (x >= 128.0 ? x - 256.0 : x) / 127.0;\n"
  "  return c;\n"
  "}\n"
@@ -5757,7 +5765,7 @@ index b9f3fa2..90d73ff 100644
  "  if (n == 0) return T2D0.Sample(S0, uv); if (n == 1) return T2D1.Sample(S1, uv);\n"
  "  if (n == 2) return T2D2.Sample(S2, uv); return T2D3.Sample(S3, uv);\n"
  "}\n"
-@@ -780,8 +1055,10 @@ static const char s_hlsl[] =
+@@ -780,8 +1063,10 @@ static const char s_hlsl[] =
  "  float4 c = SrcTex.Sample(LinS, i.uv);\n"
  "  if (ovl_flags.x) {\n"
  "    float2 g = i.uv * src_size.xy;\n"
@@ -5770,7 +5778,7 @@ index b9f3fa2..90d73ff 100644
  "    if (all(d >= 0) && all(d < ovl_out.zw)) {\n"
  "      bool show = true;\n"
  "      if (ovl_flags.y) {\n"
-@@ -822,13 +1099,17 @@ static const char s_hlsl[] =
+@@ -822,13 +1107,17 @@ static const char s_hlsl[] =
   * rounding splits between the two (moire in the fog). Both texels hold
   * z[23:8]. ponytail: the low word (z[7:0]:stencil) is not readable this way;
   * keep it for even texels if a title ever reads stencil through Y16.
@@ -5790,7 +5798,7 @@ index b9f3fa2..90d73ff 100644
  "  float s = ccol.x, k = ccol.y;\n"
  "  d = saturate(d);\n"
  "  if (s > 1.0) d = d * s <= k ? d * s : k + (d - k / s) * (1.0 - k) / (1.0 - k / s);\n"
-@@ -856,7 +1137,7 @@ typedef struct {
+@@ -856,7 +1145,7 @@ typedef struct {
      float map[4];                /* 2/w, 2/h, 1/zmax, squeeze */
      uint32_t fogi[4];
      float fogf[4];
@@ -5799,7 +5807,7 @@ index b9f3fa2..90d73ff 100644
  } UbConsts;
  
  typedef struct {
-@@ -868,12 +1149,13 @@ typedef struct {
+@@ -868,12 +1157,13 @@ typedef struct {
  
  static void display_config(int now);
  
@@ -5816,7 +5824,7 @@ index b9f3fa2..90d73ff 100644
      if (FAILED(hr)) {
          fprintf(stderr, "[D3D11] shader %s: %s\n", entry,
                  err ? (const char *)ID3D10Blob_GetBufferPointer(err) : "?");
-@@ -883,6 +1165,11 @@ static ID3DBlob *compile_def(const char *entry, const char *target, const D3D_SH
+@@ -883,6 +1173,11 @@ static ID3DBlob *compile_def(const char *entry, const char *target, const D3D_SH
      return SUCCEEDED(hr) ? code : NULL;
  }
  
@@ -5828,7 +5836,7 @@ index b9f3fa2..90d73ff 100644
  static ID3DBlob *compile(const char *entry, const char *target)
  {
      return compile_def(entry, target, NULL);
-@@ -903,10 +1190,14 @@ typedef struct {
+@@ -903,10 +1198,14 @@ typedef struct {
      uint32_t tex_info[4][3];
  } PsKey;
  
@@ -5844,7 +5852,7 @@ index b9f3fa2..90d73ff 100644
  } PsSpec;
  
  #define PS_SPEC_SLOTS 4096          /* power of two */
-@@ -914,9 +1205,162 @@ typedef struct {
+@@ -914,9 +1213,162 @@ typedef struct {
  static PsSpec *s_spec;
  static PsSpec *s_spec_q[PS_SPEC_QUEUE];
  static unsigned s_spec_head, s_spec_tail;  /* guarded by s_spec_cs */
@@ -6007,7 +6015,7 @@ index b9f3fa2..90d73ff 100644
  
  static DWORD WINAPI spec_worker(LPVOID arg)
  {
-@@ -926,12 +1370,19 @@ static DWORD WINAPI spec_worker(LPVOID arg)
+@@ -926,12 +1378,19 @@ static DWORD WINAPI spec_worker(LPVOID arg)
          const PsKey *k;
          char decl[2048];
          ID3DBlob *b;
@@ -6031,7 +6039,7 @@ index b9f3fa2..90d73ff 100644
          LeaveCriticalSection(&s_spec_cs);
          k = &e->key;
          snprintf(decl, sizeof decl,
-@@ -965,45 +1416,87 @@ static DWORD WINAPI spec_worker(LPVOID arg)
+@@ -965,45 +1424,87 @@ static DWORD WINAPI spec_worker(LPVOID arg)
          m[1].Name = "SPEC_DECL"; m[1].Definition = decl;
          m[2].Name = flat ? "FLATQ" : NULL; m[2].Definition = flat ? "nointerpolation" : NULL;
          m[3].Name = NULL; m[3].Definition = NULL;
@@ -6110,9 +6118,8 @@ index b9f3fa2..90d73ff 100644
 +                spec_remember(&k);
              }
 +            s_spec_saved = s_spec_dirty; /* Imported keys are already persistent. */
-         }
-     }
--    if (!enabled) return NULL;
++        }
++    }
 +    /* Imports finish before threads or draw lookups can see the table. */
 +    for (i = 0; i < 2; i++) {
 +        HANDLE t = CreateThread(NULL, 0, spec_worker, NULL, CREATE_SUSPENDED, NULL);
@@ -6121,8 +6128,9 @@ index b9f3fa2..90d73ff 100644
 +            if (ResumeThread(t) != (DWORD)-1) workers++;
 +            else TerminateThread(t, 0); /* It has never executed user code. */
 +            CloseHandle(t);
-+        }
-+    }
+         }
+     }
+-    if (!enabled) return NULL;
 +    if (!workers) {
 +        s_spec_enabled = 0;
 +        free(s_spec); s_spec = NULL;
@@ -6142,7 +6150,7 @@ index b9f3fa2..90d73ff 100644
      memset(&k, 0, sizeof k);
      memcpy(k.c_icw, pc->c_icw, sizeof k.c_icw);
      memcpy(k.a_icw, pc->a_icw, sizeof k.a_icw);
-@@ -1017,23 +1510,7 @@ static ID3D11PixelShader *spec_ps(const PSConsts *pc, uint32_t variant)
+@@ -1017,23 +1518,7 @@ static ID3D11PixelShader *spec_ps(const PSConsts *pc, uint32_t variant)
          k.tex_info[i][0] = pc->tex_info[i][0]; k.tex_info[i][1] = pc->tex_info[i][1];
          k.tex_info[i][2] = pc->tex_info[i][2];
      }
@@ -6167,7 +6175,7 @@ index b9f3fa2..90d73ff 100644
  }
  
  static ID3D11Buffer *make_buffer(UINT bytes, UINT bind)
-@@ -1050,14 +1527,37 @@ static ID3D11Buffer *make_buffer(UINT bytes, UINT bind)
+@@ -1050,14 +1535,37 @@ static ID3D11Buffer *make_buffer(UINT bytes, UINT bind)
      return b;
  }
  
@@ -6206,7 +6214,7 @@ index b9f3fa2..90d73ff 100644
  }
  
  int nv2a_d3d_init(void)
-@@ -1217,6 +1717,8 @@ int nv2a_d3d_init(void)
+@@ -1217,6 +1725,8 @@ int nv2a_d3d_init(void)
          if (qc && qd) break;
      }
      if (s_msaa < 1) s_msaa = 1;
@@ -6215,7 +6223,7 @@ index b9f3fa2..90d73ff 100644
      s_init_state = 1;
      fprintf(stderr, "[D3D11] renderer ready: %ux%u internal, display aspect %.3f, %ux MSAA, %ux AF\n",
              (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
-@@ -1256,6 +1758,7 @@ typedef struct {
+@@ -1256,6 +1766,7 @@ typedef struct {
      ID3D11ShaderResourceView *srv;
      uint8_t *shadow;                /* guest bytes as of the last sync */
      int gpu_dirty;                  /* drawn since guest memory was updated */
@@ -6223,7 +6231,7 @@ index b9f3fa2..90d73ff 100644
      uint32_t synced_frame, used_frame;
      uint32_t seq;                   /* bind order; see surface_find */
  } Surface;
-@@ -1356,20 +1859,22 @@ static void unbind_textures(void)
+@@ -1356,20 +1867,22 @@ static void unbind_textures(void)
  
  /* Draw columns [u0, u1) of `srv` into columns [x0, x1) of `rtv` (fractions
   * of each width), full height. */
@@ -6251,7 +6259,7 @@ index b9f3fa2..90d73ff 100644
      unbind_textures();
      unbind_targets();
      ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &rtv, NULL);
-@@ -1379,20 +1884,27 @@ static void blit_span(ID3D11ShaderResourceView *srv, ID3D11ShaderResourceView *m
+@@ -1379,20 +1892,27 @@ static void blit_span(ID3D11ShaderResourceView *srv, ID3D11ShaderResourceView *m
      ID3D11DeviceContext_OMSetBlendState(s_ctx, s_blend_opaque, NULL, 0xFFFFFFFF);
      ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, s_ds_off, 0);
      ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -6284,7 +6292,7 @@ index b9f3fa2..90d73ff 100644
  }
  
  static void blit(ID3D11ShaderResourceView *srv, ID3D11RenderTargetView *rtv,
-@@ -1412,14 +1924,22 @@ static void guest_span(const Surface *s, float *x0, float *x1)
+@@ -1412,14 +1932,22 @@ static void guest_span(const Surface *s, float *x0, float *x1)
      *x1 = (1.0f + f) * 0.5f;
  }
  
@@ -6310,7 +6318,7 @@ index b9f3fa2..90d73ff 100644
          uint32_t *dst = out + (size_t)y * s->w;
          if (s->bpp == 4) {
              memcpy(dst, row, (size_t)s->w * 4);
-@@ -1454,6 +1974,8 @@ static ID3D11ShaderResourceView *s_up_srv[2];
+@@ -1454,6 +1982,8 @@ static ID3D11ShaderResourceView *s_up_srv[2];
  static UINT s_up_w[2], s_up_h[2];
  static uint32_t *s_up_pixels, *s_mask_pixels;
  static size_t s_up_cap, s_mask_cap;
@@ -6319,7 +6327,7 @@ index b9f3fa2..90d73ff 100644
  
  /* slot 0: image, slot 1: change mask */
  static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT w, UINT h)
-@@ -1465,10 +1987,12 @@ static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT
+@@ -1465,10 +1995,12 @@ static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT
          s_up_tex[k] = make_texture(w, h, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM,
                                     D3D11_BIND_SHADER_RESOURCE, 0);
          if (!s_up_tex[k]) return NULL;
@@ -6334,7 +6342,7 @@ index b9f3fa2..90d73ff 100644
      ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)s_up_tex[k], 0,
                                            NULL, pixels, w * 4, 0);
      return s_up_srv[k];
-@@ -1489,6 +2013,31 @@ static uint32_t *scratch_pixels(size_t count)
+@@ -1489,6 +2021,31 @@ static uint32_t *scratch_pixels(size_t count)
      return s_up_pixels;
  }
  
@@ -6366,7 +6374,7 @@ index b9f3fa2..90d73ff 100644
  /* Guest memory is the authority for what the CPU writes. A shadow copy of
   * each surface's guest bytes says which pixels the CPU changed since the last
   * look; only those replace what the GPU drew. A loading screen drawn by the
-@@ -1496,71 +2045,84 @@ static uint32_t *scratch_pixels(size_t count)
+@@ -1496,71 +2053,84 @@ static uint32_t *scratch_pixels(size_t count)
  static void surface_sync_impl(Surface *s, int force)
  {
      uint32_t rowb = s->w * s->bpp, y, x, x0 = 0xFFFFFFFFu, x1 = 0, y0 = 0xFFFFFFFFu, y1 = 0;
@@ -6505,7 +6513,7 @@ index b9f3fa2..90d73ff 100644
  }
  
  static void surface_sync(Surface *s, int force)
-@@ -1572,8 +2134,11 @@ static void surface_sync(Surface *s, int force)
+@@ -1572,8 +2142,11 @@ static void surface_sync(Surface *s, int force)
      if (s_prof_on > 0) s_prof[PROF_SYNC] += qpc() - t0;
  }
  
@@ -6517,7 +6525,7 @@ index b9f3fa2..90d73ff 100644
      if (s_cur_rt == s) unbind_targets();
      if (s->srv) ID3D11ShaderResourceView_Release(s->srv);
      if (s->rtv) ID3D11RenderTargetView_Release(s->rtv);
-@@ -1635,9 +2200,10 @@ static Surface *surface_get(uint32_t va, uint32_t pitch, uint32_t fmt,
+@@ -1635,9 +2208,10 @@ static Surface *surface_get(uint32_t va, uint32_t pitch, uint32_t fmt,
      } else {
          for (i = 0; i < MAX_SURFACES && !victim; i++)
              if (!s_surf[i].tex) victim = &s_surf[i];
@@ -6531,7 +6539,7 @@ index b9f3fa2..90d73ff 100644
          if (!victim) victim = &s_surf[0];
      }
      surface_release(victim);
-@@ -1901,9 +2467,9 @@ static void yuv_pair(const uint8_t *g, int uyvy, uint32_t out[2])
+@@ -1901,9 +2475,9 @@ static void yuv_pair(const uint8_t *g, int uyvy, uint32_t out[2])
  }
  
  typedef struct TexEntry {
@@ -6543,7 +6551,7 @@ index b9f3fa2..90d73ff 100644
      size_t bytes;
      ID3D11Texture2D *tex;
      ID3D11ShaderResourceView *srv;
-@@ -1922,6 +2488,58 @@ typedef struct {
+@@ -1922,6 +2496,58 @@ typedef struct {
      size_t face_stride, total;
  } TexLayout;
  
@@ -6602,7 +6610,7 @@ index b9f3fa2..90d73ff 100644
  static int tex_layout(const NvD3DTexture *t, TexLayout *L)
  {
      uint32_t w = t->width, h = t->height, lv, maxlv = 1, m;
-@@ -1954,12 +2572,55 @@ static int tex_layout(const NvD3DTexture *t, TexLayout *L)
+@@ -1954,12 +2580,55 @@ static int tex_layout(const NvD3DTexture *t, TexLayout *L)
      return 1;
  }
  
@@ -6658,7 +6666,7 @@ index b9f3fa2..90d73ff 100644
          for (by = 0; by < bh; by++)
              for (bx = 0; bx < bw; bx++) {
                  d3d8_dxt_decode_block(src + ((size_t)by * bw + bx) * L->bpp, t->color, px);
-@@ -1969,6 +2630,11 @@ static void decode_level(const NvD3DTexture *t, const TexLayout *L, const uint8_
+@@ -1969,6 +2638,11 @@ static void decode_level(const NvD3DTexture *t, const TexLayout *L, const uint8_
              }
          return;
      }
@@ -6670,7 +6678,7 @@ index b9f3fa2..90d73ff 100644
      if (L->kind == K_LIN) {
          for (y = 0; y < h; y++) {
              const uint8_t *row = src + (size_t)y * t->pitch;
-@@ -2023,12 +2689,15 @@ static void tex_evict(void)
+@@ -2023,12 +2697,15 @@ static void tex_evict(void)
          {
              TexEntry *e = *best;
              *best = e->next;
@@ -6687,7 +6695,7 @@ index b9f3fa2..90d73ff 100644
  static void halve_bgra(const uint32_t *src, uint32_t w, uint32_t h, uint32_t *dst)
  {
      uint32_t nw = w > 1 ? w / 2 : 1, nh = h > 1 ? h / 2 : 1, x, y, c;
-@@ -2057,22 +2726,63 @@ static int host_levels(const TexLayout *L, const NvD3DTexture *t)
+@@ -2057,22 +2734,63 @@ static int host_levels(const TexLayout *L, const NvD3DTexture *t)
      return n > L->levels ? n : L->levels;
  }
  
@@ -6737,12 +6745,12 @@ index b9f3fa2..90d73ff 100644
 +    if (guest_levels) *guest_levels = 1;
 +    if (!tex_layout(t, &L)) {
 +        texture_trace_event(t, "invalid_layout", 0, 0, 0, 0, 0, 0);
-         return NULL;
++        return NULL;
 +    }
 +    if (guest_levels) *guest_levels = L.levels;
 +    if (!guest_ok(t->addr, L.total)) {
 +        texture_trace_event(t, "invalid_guest_span", L.total, L.levels, 0, 0, 0, 0);
-+        return NULL;
+         return NULL;
 +    }
      for (e = *head; e; e = e->next)
          if (e->phys == p && e->format == t->format && e->pitch == t->pitch &&
@@ -6758,7 +6766,7 @@ index b9f3fa2..90d73ff 100644
          e->used = s_frame;
          return e->srv;
      }
-@@ -2082,21 +2792,40 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
+@@ -2082,21 +2800,40 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
          ph = hash_mem((const uint8_t *)pal, t->palette_len * 4);
      }
      if (e && e->hash == h && e->pal_hash == ph) {
@@ -6805,7 +6813,7 @@ index b9f3fa2..90d73ff 100644
          if (L.faces == 6) {
              sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
              sd.TextureCube.MipLevels = (UINT)hl;
-@@ -2104,71 +2833,101 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
+@@ -2104,71 +2841,101 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
              sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
              sd.Texture2D.MipLevels = (UINT)hl;
          }
@@ -6939,7 +6947,7 @@ index b9f3fa2..90d73ff 100644
  /* -------------------------------------------------------- state objects */
  
  typedef struct { uint64_t key; void *obj; } StateSlot;
-@@ -2346,12 +3105,29 @@ static D3D11_TEXTURE_ADDRESS_MODE addr_mode(uint32_t m)
+@@ -2346,12 +3113,29 @@ static D3D11_TEXTURE_ADDRESS_MODE addr_mode(uint32_t m)
      }
  }
  
@@ -6970,7 +6978,7 @@ index b9f3fa2..90d73ff 100644
      if (bias13 & 0x1000) bias13 -= 0x2000;
      key = (uint64_t)minf | ((uint64_t)magf << 8) | ((uint64_t)(bias13 & 0x1FFF) << 12) |
            ((uint64_t)(levels & 15) << 25) | ((uint64_t)(reduce != 0) << 29) |
-@@ -2393,9 +3169,26 @@ static ID3D11SamplerState *sampler(const NvD3DTexture *t, int levels, int reduce
+@@ -2393,9 +3177,26 @@ static ID3D11SamplerState *sampler(const NvD3DTexture *t, int levels, int reduce
          }
          ID3D11Device_CreateSamplerState(s_dev, &d, (ID3D11SamplerState **)slot);
      }
@@ -6997,7 +7005,7 @@ index b9f3fa2..90d73ff 100644
  /* ------------------------------------------------------------------- draw */
  
  static uint32_t mode_needs_texture(uint32_t mode)
-@@ -2450,6 +3243,24 @@ static void apply_scissor(const NvD3DState *st, uint32_t gw, uint32_t gh)
+@@ -2450,6 +3251,24 @@ static void apply_scissor(const NvD3DState *st, uint32_t gw, uint32_t gh)
      ID3D11DeviceContext_RSSetScissorRects(s_ctx, 1, &r);
  }
  
@@ -7022,7 +7030,7 @@ index b9f3fa2..90d73ff 100644
  static uint32_t write_mask(const NvD3DState *st, Surface *s)
  {
      uint32_t m = 0, cm = st->color_mask;
-@@ -2467,7 +3278,84 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
+@@ -2467,7 +3286,84 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
  /* What the last setup_pipeline bound: any texture, and any render target
   * stored widened (its image already spans the wide screen). */
  static int s_draw_textured, s_draw_reads_wide;
@@ -7107,7 +7115,7 @@ index b9f3fa2..90d73ff 100644
  
  /* A guest pass that reduces a render target (glare, luminance
   * or reflection downsamples) takes texel-exact taps: at the guest's
-@@ -2585,9 +3473,8 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
+@@ -2585,9 +3481,8 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
          ID3D11DeviceContext_OMSetBlendState(s_ctx, s_blend_opaque, NULL, 0xFFFFFFFF);
          ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, s_ds_off, 0);
          ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -7119,7 +7127,7 @@ index b9f3fa2..90d73ff 100644
          ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, &src);
          ID3D11DeviceContext_Draw(s_ctx, 3, 0);
          unbind_targets();
-@@ -2622,13 +3509,13 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
+@@ -2622,13 +3517,13 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
          ID3D11DeviceContext_OMSetBlendState(s_ctx, s_blend_opaque, NULL, 0xFFFFFFFF);
          ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, s_ds_off, 0);
          ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -7136,7 +7144,7 @@ index b9f3fa2..90d73ff 100644
              upload_cb(s_cb_clear, cc, sizeof cc);
              ID3D11DeviceContext_PSSetConstantBuffers(s_ctx, 0, 1, &s_cb_clear);
          }
-@@ -2640,6 +3527,43 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
+@@ -2640,6 +3535,43 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
      return d->y16_srv;
  }
  
@@ -7180,7 +7188,7 @@ index b9f3fa2..90d73ff 100644
  static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                            uint32_t *out_gw, uint32_t *out_gh, uint32_t *out_zmax)
  {
-@@ -2649,10 +3573,21 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2649,10 +3581,21 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      PSConsts pc;
      ID3D11ShaderResourceView *srv[8] = { 0 };
      ID3D11SamplerState *smp[4] = { 0 };
@@ -7203,7 +7211,7 @@ index b9f3fa2..90d73ff 100644
  
      {
          /* Bring-up switches: RECOMP_D3D_SKIP_CMASK / _SKIP_SFACTOR (hex) drop
-@@ -2686,13 +3621,20 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2686,13 +3629,20 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          rt = surface_find(phys(t->addr));
          if (rt && rt->bpp == 4) { surface_sync(rt, 0); surface_y16(rt); }
      }
@@ -7225,7 +7233,7 @@ index b9f3fa2..90d73ff 100644
      for (n = 0; n < 4; n++) {
          const NvD3DTexture *t = &st->tex[n];
          uint32_t mode = (st->rc.stage_program >> (n * 5)) & 31;
-@@ -2707,10 +3649,14 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2707,10 +3657,14 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          if (!mode_needs_texture(mode) || !t->addr || !t->width || !t->height)
              continue;
          tex_format(t->color, &kind);
@@ -7242,7 +7250,7 @@ index b9f3fa2..90d73ff 100644
          zt = t->color == 0x35 && !t->cube ? depth_find(phys(t->addr)) : NULL;
          if (zt && zt->y16_srv) {
              view = zt->y16_srv;                 /* each pixel is two texels */
-@@ -2742,9 +3688,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2742,9 +3696,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                  }
              }
          } else {
@@ -7254,7 +7262,7 @@ index b9f3fa2..90d73ff 100644
              if (kind == K_LIN) {
                  pc.tex_scale[n][0] = 1.0f / (float)t->width;
                  pc.tex_scale[n][1] = 1.0f / (float)t->height;
-@@ -2758,7 +3703,17 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2758,7 +3711,17 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          }
          if (!view) continue;
          if (t->cube && !rt) srv[4 + n] = view; else srv[n] = view;
@@ -7273,7 +7281,7 @@ index b9f3fa2..90d73ff 100644
          pc.tex_info[n][0] = (t->control0 >> 2) & 1;
          pc.tex_info[n][1] = t->filter >> 28;
          /* Point taps of an upscaled linear target average the guest pixel's
-@@ -2777,7 +3732,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2777,7 +3740,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      /* A sampled surface's CPU upload can blit and unbind this draw's
       * outputs. Restore targets and viewport before binding its textures. */
      if ((s != s_cur_rt || d != s_cur_ds) &&
@@ -7282,7 +7290,7 @@ index b9f3fa2..90d73ff 100644
          return 0;
  
      /* Combiners. */
-@@ -2797,7 +3752,9 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2797,7 +3760,9 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      pc.stage_prog = st->rc_seen ? st->rc.stage_program : (st->tex_used & 1);
      pc.alpha_func = st->alpha_func;
      pc.alpha_ref = st->alpha_ref;
@@ -7293,7 +7301,7 @@ index b9f3fa2..90d73ff 100644
      pc.other_input = st->other_stage_input;
      pc.dot_map = st->dot_rgb_mapping;
      /* SET_FOG_COLOR keeps red in the low byte. */
-@@ -2816,7 +3773,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2816,7 +3781,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          pc.zp1[0] = 1.0f / ((float)zm + 1.0f);
          pc.zp1[1] = (float)zm;
      }
@@ -7302,7 +7310,7 @@ index b9f3fa2..90d73ff 100644
  
      if (st->poly_offset_fill && !(st->z_perspective && d)) {
          /* The slope term multiplies the depth change per pixel. At an
-@@ -2832,11 +3789,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2832,11 +3797,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      {
          uint32_t v = (st->flat_shade ? 1u : 0u) | (st->z_perspective && d ? 2u : 0u);
          ID3D11PixelShader *ps = spec_ps(&pc, v);
@@ -7316,7 +7324,7 @@ index b9f3fa2..90d73ff 100644
      ID3D11DeviceContext_RSSetState(s_ctx, rs_state(cull == 3 ? 0 : cull,
                                                     st->front_face == 0x901, bias, slope));
      apply_scissor(st, gw, gh);
-@@ -2855,7 +3811,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2855,7 +3819,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          blend_state(st->blend_enable, st->blend_sfactor, st->blend_dfactor,
                      st->blend_equation, s ? write_mask(st, s) : 0), bf, 0xFFFFFFFF);
      ID3D11DeviceContext_OMSetDepthStencilState(s_ctx,
@@ -7326,7 +7334,7 @@ index b9f3fa2..90d73ff 100644
                       st->stencil_test, st->stencil_func, st->stencil_func_mask,
                       st->stencil_write_mask, st->stencil_fail,
                       st->stencil_zfail, st->stencil_zpass) : s_ds_off,
-@@ -2908,8 +3865,84 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
+@@ -2908,8 +3873,84 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
   * (index - sub); fills dx with each vertex's x shift in guest pixels and
   * returns 0 when nothing moves, leaving only the shader's 4:3 squeeze. */
  #define HUD_GAP 24.0f
@@ -7412,7 +7420,7 @@ index b9f3fa2..90d73ff 100644
  {
      static uint32_t *root, *piece, cap;
      static float (*box)[4];             /* per piece: x0 x1 y0 y1 */
-@@ -2929,13 +3962,15 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2929,13 +3970,15 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
  #define FIND(x) do { while (root[x] != x) x = root[x] = root[root[x]]; } while (0)
      /* pieces: vertices joined by primitives */
      for (i = 0; i < nv; i++) root[i] = i;
@@ -7429,7 +7437,7 @@ index b9f3fa2..90d73ff 100644
      for (i = 0; i < nv; i++) {
          uint32_t r = i;
          FIND(r);
-@@ -2951,6 +3986,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2951,6 +3994,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
          FIND(r);
          n = piece[r];
          piece[i] = n;
@@ -7437,7 +7445,7 @@ index b9f3fa2..90d73ff 100644
          if (pos[i][0] < box[n][0]) box[n][0] = pos[i][0];
          if (pos[i][0] > box[n][1]) box[n][1] = pos[i][0];
          if (pos[i][1] < box[n][2]) box[n][2] = pos[i][1];
-@@ -2962,6 +3998,11 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2962,6 +4006,11 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
      for (i = 0; i < np; i++)
          for (k = i + 1; k < np; k++) {
              uint32_t a = i, b = k;
@@ -7449,7 +7457,7 @@ index b9f3fa2..90d73ff 100644
              if (box[i][2] > box[k][3] || box[k][2] > box[i][3] ||
                  box[i][0] > box[k][1] + HUD_GAP || box[k][0] > box[i][1] + HUD_GAP)
                  continue;
-@@ -2977,13 +4018,29 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2977,13 +4026,29 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
          uint32_t c = piece[i];
          FIND(c);
          dx[i] = 0.0f;
@@ -7479,7 +7487,7 @@ index b9f3fa2..90d73ff 100644
      }
  #undef FIND
      return moved;
-@@ -3017,7 +4074,7 @@ static uint32_t attr_bytes(uint32_t type, uint32_t size)
+@@ -3017,7 +4082,7 @@ static uint32_t attr_bytes(uint32_t type, uint32_t size)
  
  int nv2a_d3d_widescreen(void)
  {
@@ -7488,7 +7496,7 @@ index b9f3fa2..90d73ff 100644
  }
  
  void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr[16],
-@@ -3025,6 +4082,7 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3025,6 +4090,7 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
                        uint32_t lo, uint32_t hi, const float (*pos)[4])
  {
      static uint32_t s_prog_version, s_vconst_version;
@@ -7496,7 +7504,7 @@ index b9f3fa2..90d73ff 100644
      static float *dx;
      static uint32_t dx_cap;
      struct { const uint8_t *base; uint32_t stride, span; } grp[16];
-@@ -3035,7 +4093,9 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3035,7 +4101,9 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      uint8_t *p;
      UINT total = 0, at = 0, ib_bytes = ni * 4;
      float squeeze = 1.0f, shift = 0.0f, yscale = 1.0f;
@@ -7507,7 +7515,7 @@ index b9f3fa2..90d73ff 100644
      int64_t t_draw;
  
      if (!nv2a_d3d_init() || !ni || hi < lo || ib_bytes > IB_BYTES)
-@@ -3073,56 +4133,228 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3073,56 +4141,239 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      RECOMP_PROFILE_BEGIN("D3D11 draw");
      t_draw = s_prof_on > 0 ? qpc() : 0;
      s_prof_draws++;
@@ -7593,6 +7601,10 @@ index b9f3fa2..90d73ff 100644
                  s_frame_bg_tex = s_draw_tex_addr;
 -            if (nv2a_d3d_hud_active() && !(wide_x && (!s_draw_textured || s_draw_reads_wide))) {
 +            if (!nv2a_d3d_hud_active() && !s_draw_reads_wide) {
++                squeeze = narrow;
++                yscale = ynarrow;
++            }
++            if (nv2a_d3d_hud_active() && (map_part || (widescreen && !(wide_x && (!s_draw_textured || s_draw_reads_wide || route_n))))) {
                  squeeze = narrow;
 -                if (nv2a_d3d_hud_active() && world_tag_draw(xlo, xhi, ylo, yhi, s_draw_tex_addr)) {
 -                    /* a name tag over a car: the title projected it
@@ -7604,10 +7616,6 @@ index b9f3fa2..90d73ff 100644
 -                    else if (xlo >= (float)gw * 0.5f) shift = 1.0f - narrow;
 -                    else use_dx = count <= dx_cap &&
 -                                  hud_split(pos, count, idx, lo, ni, topology, (float)gw, narrow, 0, dx);
-+                yscale = ynarrow;
-+            }
-+            if (nv2a_d3d_hud_active() && (map_part || (widescreen && !(wide_x && (!s_draw_textured || s_draw_reads_wide || route_n))))) {
-+                squeeze = narrow;
 +                yscale = ynarrow;
 +                /* A cap, its panel and its text may use different
 +                 * draws/textures. A centred overlay keeps their shared
@@ -7626,11 +7634,14 @@ index b9f3fa2..90d73ff 100644
 +                            /* Latch once for this map/frame. Native masked
 +                             * tiles and later markers/routes must use the
 +                             * same camera even if the next guest update
-+                             * publishes a different speed while queued. */
++                             * publishes another speed/layout while queued. */
 +                            if (!InterlockedCompareExchange(&s_frame_map_valid, 0, 0) ||
-+                                fabsf(map_cx - s_frame_map_cx) > .5f || fabsf(map_cy - s_frame_map_cy) > .5f)
++                                fabsf(map_cx - s_frame_map_cx) > .5f || fabsf(map_cy - s_frame_map_cy) > .5f) {
 +                                s_frame_map_motion = s_draw_minimap_improved && s_minimap_motion_query ?
 +                                    nv2a_minimap_motion_bound(s_minimap_motion_query(map_cx, map_cy)) : 0.0f;
++                                s_frame_map_expansion = s_draw_minimap_improved && s_minimap_expansion_query ?
++                                    nv2a_minimap_motion_bound(s_minimap_expansion_query(map_cx, map_cy)) : 0.0f;
++                            }
 +                            s_frame_map_cx = (xlo + xhi) * 0.5f;
 +                            s_frame_map_cy = (ylo + yhi) * 0.5f;
 +                            s_frame_map_half_width = (xhi - xlo) * 0.5f;
@@ -7639,9 +7650,16 @@ index b9f3fa2..90d73ff 100644
 +                                /* Remove the authored inset as well as the
 +                                 * widescreen margin, then anchor the bottom. */
 +                                s_frame_map_shift = narrow - 1.0f - 2.0f * xlo * narrow / (float)gw;
-+                                if (s_draw_minimap_improved)
-+                                    s_frame_map_shift -= 2.0f * nv2a_minimap_left_crop_motion(s_frame_map_half_width, s_frame_map_motion) * narrow / (float)gw;
 +                                s_frame_map_y_offset = (float)gh - yhi + (float)gh * 0.5f * (1.0f / ynarrow - 1.0f);
++                                if (s_draw_minimap_improved) {
++                                    /* The expanded map is an authored overview,
++                                     * centred in the same fitted 4:3 canvas.
++                                     * Retaining the driving map's bottom-left
++                                     * anchor crops its checkpoint markers. */
++                                    s_frame_map_shift *= 1.0f - s_frame_map_expansion;
++                                    s_frame_map_y_offset *= 1.0f - s_frame_map_expansion;
++                                    s_frame_map_shift -= 2.0f * nv2a_minimap_left_crop_camera(s_frame_map_half_width, s_frame_map_motion, s_frame_map_expansion) * narrow / (float)gw;
++                                }
 +                            } else {
 +                                s_frame_map_shift = xlo >= (float)gw * 0.5f ? 1.0f - narrow : 0.0f;
 +                                s_frame_map_y_offset = 0.0f;
@@ -7730,9 +7748,10 @@ index b9f3fa2..90d73ff 100644
 +                         * with dimmers/text. Only vertex tags opt those mixed
 +                         * batches in; map-only textures opt their whole draw. */
 +                        if (map_part != 2 && !map_route_vertex(route_uv, lo + k)) continue;
-+                        if (!nv2a_minimap_project_motion(pos[k][0], pos[k][1],
++                        if (!nv2a_minimap_project_camera(pos[k][0], pos[k][1],
 +                            s_frame_map_cx, s_frame_map_cy,
-+                            s_frame_map_half_width, s_frame_map_half_height, s_frame_map_motion, &px, &py)) continue;
++                            s_frame_map_half_width, s_frame_map_half_height,
++                            s_frame_map_motion, s_frame_map_expansion, &px, &py)) continue;
 +                        dx[k] += (px - pos[k][0]) * narrow / squeeze;
 +                        dy[k] += (py - pos[k][1]) * ynarrow / yscale;
 +                        use_dx = use_dy = 1;
@@ -7761,7 +7780,7 @@ index b9f3fa2..90d73ff 100644
          RECOMP_PROFILE_END();
          return;
      }
-@@ -3137,13 +4369,21 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3137,13 +4388,21 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
          for (i = 0; i < 16; i++)
              if (attr[i].enabled && uc.at[i][2] != 0xFF)
                  uc.at[i][0] += goff[gof[i]];
@@ -7783,7 +7802,7 @@ index b9f3fa2..90d73ff 100644
      ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)s_raw, 0);
      if (!(p = ring_map(s_ib, &s_ib_pos, IB_BYTES, ib_bytes, &m))) {
          RECOMP_PROFILE_END();
-@@ -3158,13 +4398,25 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3158,13 +4417,25 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
          const uint32_t (*prog)[4] = nv2a_vsh_program(&start, &pver);
          const float (*consts)[4] = nv2a_vsh_constants(&cver);
          uc.info[0] = start;
@@ -7813,7 +7832,7 @@ index b9f3fa2..90d73ff 100644
          }
      }
      uc.map[0] = 2.0f / (float)gw;
-@@ -3177,14 +4429,23 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3177,14 +4448,23 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      uc.fogf[1] = st->fog_param[1];
      uc.place[0] = shift;
      uc.place[1] = yscale;
@@ -7843,7 +7862,7 @@ index b9f3fa2..90d73ff 100644
          ID3D11DeviceContext_DrawIndexed(s_ctx, ni, 0, 0);
      }
      s_raw_pos += (at + 255) & ~255u;
-@@ -3204,11 +4465,18 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3204,11 +4484,18 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      float cc[8];
      D3D11_RECT r;
      int zclear = (flags & 1) != 0, sclear = (flags & 2) != 0;
@@ -7864,7 +7883,7 @@ index b9f3fa2..90d73ff 100644
      if (s) {
          if (flags & 0x10) mask |= D3D11_COLOR_WRITE_ENABLE_RED;
          if (flags & 0x20) mask |= D3D11_COLOR_WRITE_ENABLE_GREEN;
-@@ -3217,8 +4485,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3217,8 +4504,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
              mask |= D3D11_COLOR_WRITE_ENABLE_ALPHA;
      }
      if (!d) { zclear = sclear = 0; }
@@ -7876,7 +7895,7 @@ index b9f3fa2..90d73ff 100644
      if (s && mask) s->gpu_dirty = 1;
      zf = (st->surface_format >> 4) & 0xF;
      unpack4(color, cc);
-@@ -3234,8 +4504,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3234,8 +4523,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      upload_cb(s_cb_clear, cc, sizeof cc);
      if (x1 >= gw) x1 = gw - 1;
      if (y1 >= gh) y1 = gh - 1;
@@ -7888,7 +7907,7 @@ index b9f3fa2..90d73ff 100644
      r.left = (LONG)(x0 * s_aa_x * s_cur_sx + 0.5f);
      r.top = (LONG)(y0 * s_aa_y * s_cur_sy + 0.5f);
      r.right = (LONG)((x1 + 1) * s_aa_x * s_cur_sx + 0.5f);
-@@ -3247,12 +4519,12 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3247,12 +4538,12 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
          ds_state(zclear, 7, zclear, sclear, 7, 0xFF, 0xFF, 0x1E01, 0x1E01, 0x1E01),
          zf == 1 ? 0 : (zstencil & 0xFF));
      ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -7905,7 +7924,7 @@ index b9f3fa2..90d73ff 100644
  }
  
  /* -------------------------------------------------------------- write-back */
-@@ -3270,6 +4542,27 @@ typedef struct {
+@@ -3270,6 +4561,27 @@ typedef struct {
      ID3D11RenderTargetView *down_rtv;
  } WbSlot;
  static WbSlot s_wb[MAX_SURFACES];
@@ -7933,7 +7952,7 @@ index b9f3fa2..90d73ff 100644
  
  static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
  {
-@@ -3289,12 +4582,14 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
+@@ -3289,12 +4601,14 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
              return 0;
          k->w = w; k->h = h;
      }
@@ -7954,7 +7973,7 @@ index b9f3fa2..90d73ff 100644
      }
      return 1;
  }
-@@ -3305,21 +4600,96 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
+@@ -3305,21 +4619,96 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
   * (nv2a_d3d_writeback_busy), holding back DMA_GET and fence releases until
   * then -- the title cannot learn the frame is finished before its pixels are
   * in guest memory. */
@@ -8053,7 +8072,7 @@ index b9f3fa2..90d73ff 100644
      for (i = 0; i < MAX_SURFACES; i++) {
          Surface *s = &s_surf[i];
          WbSlot *k = &s_wb[i];
-@@ -3328,18 +4698,25 @@ static int writeback_finish(int wait)
+@@ -3328,18 +4717,25 @@ static int writeback_finish(int wait)
          uint32_t x, y, rowb;
          int amode, r565;
          HRESULT hr;
@@ -8080,7 +8099,7 @@ index b9f3fa2..90d73ff 100644
          dst = (uint8_t *)guest(s->va);
          rowb = s->w * s->bpp;
          amode = surface_alpha_mode(s->color_fmt);
-@@ -3350,8 +4727,11 @@ static int writeback_finish(int wait)
+@@ -3350,8 +4746,11 @@ static int writeback_finish(int wait)
              /* A row the CPU changed since the executor last looked holds
               * writes made after this frame was submitted (the title runs
               * ahead): they win, and the next sync uploads them. */
@@ -8093,7 +8112,7 @@ index b9f3fa2..90d73ff 100644
              if (s->bpp == 4) {
                  if (amode < 0) {
                      memcpy(row, src, rowb);
-@@ -3370,10 +4750,16 @@ static int writeback_finish(int wait)
+@@ -3370,10 +4769,16 @@ static int writeback_finish(int wait)
              }
              memcpy(s->shadow + (size_t)y * rowb, row, rowb);
          }
@@ -8110,7 +8129,7 @@ index b9f3fa2..90d73ff 100644
      return !left;
  }
  
-@@ -3381,10 +4767,8 @@ int nv2a_d3d_writeback_busy(void)
+@@ -3381,10 +4786,8 @@ int nv2a_d3d_writeback_busy(void)
  {
      if (!s_wb_pending || writeback_finish(0))
          return 0;
@@ -8123,7 +8142,7 @@ index b9f3fa2..90d73ff 100644
      return 1;
  }
  
-@@ -3409,9 +4793,10 @@ static void writeback_surfaces(void)
+@@ -3409,9 +4812,10 @@ static void writeback_surfaces(void)
              continue;
          surface_resolve(s);
          if (scaled) {
@@ -8137,7 +8156,7 @@ index b9f3fa2..90d73ff 100644
              ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)k->stage,
                                               (ID3D11Resource *)k->down);
          } else {
-@@ -3420,10 +4805,20 @@ static void writeback_surfaces(void)
+@@ -3420,10 +4824,20 @@ static void writeback_surfaces(void)
          }
          s->gpu_dirty = 0;                        /* later draws dirty it again */
          k->pending = 1;
@@ -8159,7 +8178,7 @@ index b9f3fa2..90d73ff 100644
      RECOMP_PROFILE_END();
  }
  
-@@ -3439,13 +4834,16 @@ static uint64_t s_zpass;
+@@ -3439,13 +4853,16 @@ static uint64_t s_zpass;
  static void zpass_collect(void)
  {
      UINT64 n = 0;
@@ -8176,7 +8195,7 @@ index b9f3fa2..90d73ff 100644
  }
  
  void nv2a_d3d_zpass_enable(int on)
-@@ -3642,6 +5040,10 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3642,6 +5059,10 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
          pc->ovl_in[2] = s->sx / s->sy;
          pc->ovl_in[3] = (float)s->w * 0.5f;
      }
@@ -8187,7 +8206,7 @@ index b9f3fa2..90d73ff 100644
      upload_cb(s_cb_present, pc, sizeof *pc);
      unbind_textures();
      unbind_targets();
-@@ -3657,17 +5059,16 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3657,17 +5078,16 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
      ID3D11DeviceContext_OMSetBlendState(s_ctx, s_blend_opaque, NULL, 0xFFFFFFFF);
      ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, s_ds_off, 0);
      ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -8209,7 +8228,7 @@ index b9f3fa2..90d73ff 100644
      ID3D11DeviceContext_Draw(s_ctx, 4, 0);
      unbind_targets();
      unbind_textures();
-@@ -3724,7 +5125,36 @@ static ID3D11Texture2D *s_cap_tex;
+@@ -3724,7 +5144,36 @@ static ID3D11Texture2D *s_cap_tex;
  static ID3D11RenderTargetView *s_cap_rtv;
  static UINT s_cap_w, s_cap_h;
  
@@ -8247,7 +8266,7 @@ index b9f3fa2..90d73ff 100644
  {
      PresentConsts pc;
      s_last_present = GetTickCount();
-@@ -3754,13 +5184,28 @@ static void present_surface(Surface *s)
+@@ -3754,13 +5203,28 @@ static void present_surface(Surface *s)
          ID3D11Texture2D *bb = NULL;
          ID3D11RenderTargetView *rtv = NULL;
          if (SUCCEEDED(IDXGISwapChain1_GetBuffer(s_swap, 0, &IID_ID3D11Texture2D, (void **)&bb))) {
@@ -8280,7 +8299,7 @@ index b9f3fa2..90d73ff 100644
              ID3D11RenderTargetView_Release(rtv);
              ID3D11Texture2D_Release(bb);
          }
-@@ -3779,40 +5224,27 @@ static void pace_vblank(void)
+@@ -3779,40 +5243,27 @@ static void pace_vblank(void)
      static LARGE_INTEGER freq;
      static int64_t next;
      static HANDLE timer;
@@ -8331,7 +8350,7 @@ index b9f3fa2..90d73ff 100644
      }
  }
  
-@@ -3822,30 +5254,41 @@ static void pace_vblank(void)
+@@ -3822,30 +5273,41 @@ static void pace_vblank(void)
   * the monitor's native resolution and shape). A resize applies once it has
   * settled for RESIZE_SETTLE_MS, by dropping every host surface; they are
   * rebuilt at the new size from guest memory, which the flip just updated.
@@ -8382,7 +8401,7 @@ index b9f3fa2..90d73ff 100644
          scale = (float)atof(e);
      } else {
          /* RECOMP_SUPERSAMPLE=N (1..4) renders N x N host pixels per window
-@@ -3860,7 +5303,9 @@ static void display_config(int now)
+@@ -3860,7 +5322,9 @@ static void display_config(int now)
          if (scale < 1.0f) scale = 1.0f;
          if (scale > 8.0f) scale = 8.0f;
      }
@@ -8393,7 +8412,7 @@ index b9f3fa2..90d73ff 100644
      if (!now && fabsf(scale - s_scale) < 1e-3f && fabsf(aspect - s_aspect) < 1e-4f)
          return;
      if (!now) {
-@@ -3897,10 +5342,12 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
+@@ -3897,10 +5361,12 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
  void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
  {
      Surface *s;
@@ -8406,7 +8425,7 @@ index b9f3fa2..90d73ff 100644
      s = surface_find(phys(surface_addr));
      if (!s && pitch)
          s = scan_surface(surface_addr, pitch);
-@@ -3910,17 +5357,17 @@ void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
+@@ -3910,17 +5376,17 @@ void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
          int64_t t0 = s_prof_on > 0 ? qpc() : 0, t1;
          writeback_surfaces();
          t1 = s_prof_on > 0 ? qpc() : 0;
@@ -8431,7 +8450,7 @@ index b9f3fa2..90d73ff 100644
      RECOMP_PROFILE_FRAME();
      prof_report();
      display_config(0);
-@@ -3940,15 +5387,27 @@ void nv2a_d3d_tick(void)
+@@ -3940,15 +5406,27 @@ void nv2a_d3d_tick(void)
          return;
      if (xbox_FramebufferScanSource(&va, &pitch)) {
          Surface *s = scan_surface(va, pitch);
@@ -8463,7 +8482,7 @@ index b9f3fa2..90d73ff 100644
          else
              s_last_present = now;
      }
-@@ -3958,6 +5417,8 @@ void nv2a_d3d_tick(void)
+@@ -3958,6 +5436,8 @@ void nv2a_d3d_tick(void)
  #include "nv2a_d3d11.h"
  int  nv2a_d3d_init(void) { return 0; }
  int  nv2a_d3d_active(void) { return 0; }
@@ -8472,7 +8491,7 @@ index b9f3fa2..90d73ff 100644
  int nv2a_d3d_writeback_busy(void) { return 0; }
  int nv2a_d3d_prof_enabled(void) { return 0; }
  void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
-@@ -3977,7 +5438,15 @@ void nv2a_d3d_zpass_enable(int on) { (void)on; }
+@@ -3977,7 +5457,16 @@ void nv2a_d3d_zpass_enable(int on) { (void)on; }
  void nv2a_d3d_zpass_clear(void) {}
  uint32_t nv2a_d3d_zpass_read(void) { return 0; }
  float nv2a_d3d_display_aspect(void) { return 4.0f / 3.0f; }
@@ -8482,6 +8501,7 @@ index b9f3fa2..90d73ff 100644
 +void nv2a_d3d_set_map_texture_query(int (*query)(uint32_t texture_addr)) { (void)query; }
 +void nv2a_d3d_set_minimap_style_query(int (*query)(void)) { (void)query; }
 +void nv2a_d3d_set_minimap_motion_query(float (*query)(float, float)) { (void)query; }
++void nv2a_d3d_set_minimap_expansion_query(float (*query)(float, float)) { (void)query; }
 +void nv2a_d3d_set_flare_depth_test(int on) { (void)on; }
 +void nv2a_d3d_set_bspline_blend(uint32_t sfactor, uint32_t dfactor)
 +{ (void)sfactor; (void)dfactor; }
@@ -8489,7 +8509,7 @@ index b9f3fa2..90d73ff 100644
  void nv2a_d3d_set_hud_start(float x0, float y0, float x1, float y1) { (void)x0; (void)y0; (void)x1; (void)y1; }
  #endif
 diff --git a/src/video/nv2a_d3d11.h b/src/video/nv2a_d3d11.h
-index 082f091..1350e1f 100644
+index 082f091..f71db1d 100644
 --- a/src/video/nv2a_d3d11.h
 +++ b/src/video/nv2a_d3d11.h
 @@ -2,12 +2,13 @@
@@ -8510,7 +8530,7 @@ index 082f091..1350e1f 100644
   *
   * Everything here runs on the one thread that executes the pushbuffer.
   */
-@@ -91,12 +92,61 @@ int nv2a_d3d_widescreen(void);
+@@ -91,12 +92,65 @@ int nv2a_d3d_widescreen(void);
  int  nv2a_d3d_init(void);
  int  nv2a_d3d_active(void);
  
@@ -8562,6 +8582,10 @@ index 082f091..1350e1f 100644
 + * route and icon in that map/frame. Called on the pushbuffer thread; use
 + * atomic published scalars, without following guest drawing objects. */
 +void nv2a_d3d_set_minimap_motion_query(float (*query)(float cx, float cy));
++/* Optional native overview transition, 0 (driving minimap) to 1 (flat
++ * overview), identified and latched with the same base window as speed.
++ * The callback has the same atomic, read-only restrictions as motion. */
++void nv2a_d3d_set_minimap_expansion_query(float (*query)(float cx, float cy));
 +/* Title opt-in: depth-test additive lamp sprites that sample a framebuffer's
 + * alpha three times for visibility. Keeps glows behind roads/opaque geometry;
 + * never writes depth or changes HUD, postprocessing or road illumination. */
@@ -9709,56 +9733,20 @@ index 9ba2f39..9c5a4d3 100644
      return 0;
  }
 diff --git a/tests/test_menu_placement.py b/tests/test_menu_placement.py
-index a6b4477..aebd07d 100644
+index a6b4477..feb9fbc 100644
 --- a/tests/test_menu_placement.py
 +++ b/tests/test_menu_placement.py
-@@ -1,41 +1,773 @@
+@@ -1,41 +1,825 @@
 -"""Run from an MSVC developer prompt: python tests/test_menu_placement.py."""
--from pathlib import Path
--import subprocess
--import tempfile
--
++"""Exercise real HUD placement/clustering without a D3D device (MSVC prompt)."""
+ from pathlib import Path
+ import subprocess
+ import tempfile
+ 
 -source = (Path(__file__).resolve().parents[1] / "src/video/nv2a_d3d11.c").read_text()
 -start = source.index("            if (tall && wide_x && s_draw_textured")
 -end = source.index("\n        }\n    }\n\n    /* Vertex data", start)
 -placement = source[start:end]
--harness = r"""
--#include <assert.h>
--#include <stdint.h>
--static int s_frame_bg_tex, s_draw_textured, s_draw_reads_wide, s_draw_tex_addr=1, race;
--static int nv2a_d3d_hud_active(void) { return race && !s_frame_bg_tex; }
--static int world_tag_draw(float a,float b,float c,float d,int t) { return 0; }
--static int hud_split(void *p,int c,void *i,int l,int n,int t,float w,float r,int f,void *d) { return 0; }
--static void check(int in_race,int background,int wide,int textured,int reads,float left,float right,float expected,float offset) {
--    float narrow=.75f, squeeze=1, shift=0, yscale=1, xlo=left,xhi=right,ylo=0,yhi=480;
--    int tall=background,wide_x=wide,count=0,dx_cap=0,use_dx=0,lo=0,ni=0,topology=0,gw=640;
--    void *pos=0,*idx=0,*dx=0;
--    race=in_race; s_frame_bg_tex=background==2; s_draw_textured=textured; s_draw_reads_wide=reads;
--""" + placement + r"""
--    assert(squeeze==expected && shift==offset && yscale==1);
--}
--int main(void) {
--    check(0,0,0,1,0,100,200,1,0); /* menu controls */
--    check(0,1,1,1,0,0,640,1,0); /* background */
--    check(0,2,0,1,0,0,100,1,0); /* edge collage */
--    check(1,1,1,1,0,0,640,1,0); /* menu entered from race */
--    check(1,2,0,1,0,100,200,1,0); /* its controls */
--    check(1,0,0,1,0,0,100,.75f,-.25f); /* left HUD */
--    check(1,0,0,1,0,500,640,.75f,.25f); /* right HUD */
--    check(1,0,1,1,1,0,640,1,0); /* wide render-target copy */
--}
--"""
--with tempfile.TemporaryDirectory() as folder:
--    test = Path(folder) / "menu.c"
--    test.write_text(harness)
--    subprocess.run(["cl", "/nologo", str(test), "/Fe:" + str(Path(folder) / "menu.exe"), "/Fo:" + str(Path(folder) / "menu.obj")], check=True)
--    subprocess.run([str(Path(folder) / "menu.exe")], check=True)
--print("Menu and race HUD placement checks passed")
-+"""Exercise real HUD placement/clustering without a D3D device (MSVC prompt)."""
-+from pathlib import Path
-+import subprocess
-+import tempfile
-+
 +source = (Path(__file__).resolve().parents[1] / "src/video/nv2a_d3d11.c").read_text(
 +    encoding="utf-8"
 +)
@@ -9790,10 +9778,19 @@ index a6b4477..aebd07d 100644
 +assert "reset_map_placement();" in flip
 +assert "if (suppress_map_base) {\n        RECOMP_PROFILE_END();\n        return;" in source
 +
-+harness = r"""
-+#include <assert.h>
+ harness = r"""
+ #include <assert.h>
 +#include <math.h>
-+#include <stdint.h>
+ #include <stdint.h>
+-static int s_frame_bg_tex, s_draw_textured, s_draw_reads_wide, s_draw_tex_addr=1, race;
+-static int nv2a_d3d_hud_active(void) { return race && !s_frame_bg_tex; }
+-static int world_tag_draw(float a,float b,float c,float d,int t) { return 0; }
+-static int hud_split(void *p,int c,void *i,int l,int n,int t,float w,float r,int f,void *d) { return 0; }
+-static void check(int in_race,int background,int wide,int textured,int reads,float left,float right,float expected,float offset) {
+-    float narrow=.75f, squeeze=1, shift=0, yscale=1, xlo=left,xhi=right,ylo=0,yhi=480;
+-    int tall=background,wide_x=wide,count=0,dx_cap=0,use_dx=0,lo=0,ni=0,topology=0,gw=640;
+-    void *pos=0,*idx=0,*dx=0;
+-    race=in_race; s_frame_bg_tex=background==2; s_draw_textured=textured; s_draw_reads_wide=reads;
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
@@ -9821,6 +9818,8 @@ index a6b4477..aebd07d 100644
 +static int centered, query_calls, improved, masked;
 +static float motion;
 +static int motion_calls;
++static float expansion;
++static int expansion_calls;
 +static int16_t packed_uv[48][8]; /* Native packed UI vertices, stride 16. */
 +static NvD3DAttrib submitted_uv;
 +static void tag_route(uint32_t first, uint32_t count) {
@@ -9836,6 +9835,9 @@ index a6b4477..aebd07d 100644
 +static int minimap_style_query(void) { return improved; }
 +static float minimap_motion_query(float cx, float cy) {
 +    assert(isfinite(cx) && isfinite(cy)); ++motion_calls; return motion;
++}
++static float minimap_expansion_query(float cx, float cy) {
++    assert(isfinite(cx) && isfinite(cy)); ++expansion_calls; return expansion;
 +}
 +/* Distinct resources observed in the live Paris Blitz map. New levels may
 + * use entirely different allocations; the title owns that lifecycle. */
@@ -9875,7 +9877,8 @@ index a6b4477..aebd07d 100644
 +    s_draw_minimap_improved = !centered && nv2a_d3d_hud_active() &&
 +        s_minimap_style_query && s_minimap_style_query();
 +    s_draw_map_masked = masked;
-+""" + placement + r"""
+ """ + placement + r"""
+-    assert(squeeze==expected && shift==offset && yscale==1);
 +    assert(count <= 16);
 +    for (i = 0; i < count; i++) {
 +        float px = pos[i][0] + (use_dx ? dx[i] : 0.0f);
@@ -9911,6 +9914,7 @@ index a6b4477..aebd07d 100644
 +    query_calls = 0; centered = 1;
 +    improved = masked = 0; nv2a_d3d_set_minimap_style_query(minimap_style_query);
 +    motion = 0; motion_calls = 0; nv2a_d3d_set_minimap_motion_query(NULL);
++    expansion = 0; expansion_calls = 0; nv2a_d3d_set_minimap_expansion_query(NULL);
 +}
 +static void check_centered(Result r, float left, float right, float aspect) {
 +    near(r.x[0], centered_x(left, aspect));
@@ -10391,26 +10395,64 @@ index a6b4477..aebd07d 100644
 +static void improved_expanded(float aspect) {
 +    float p[4][4];
 +    const uint32_t idx[6]={0,1,2,0,2,3};
++    const float phases[]={0,.5f,1};
 +    Result base, plane, marker, route;
-+    int i;
++    float narrow=fminf(1,(4.0f/3.0f)/aspect), ynarrow=fminf(1,aspect/(4.0f/3.0f));
++    int i, phase, corner;
 +    seed(1); centered=0; improved=1;
 +    nv2a_d3d_set_map_texture_query(map_texture_query);
-+    base=box(128,512,48,432,aspect,2,1,0,map_base);
-+    assert(base.suppressed);
-+    quad(p,128,512,48,432); tag_route(0,4);
-+    plane=draw(p,4,idx,6,0,aspect,2,0,0,0);
-+    near(plane.x[2]-plane.x[3],(base.x[1]-base.x[0])*1.60f);
-+    memset(&submitted_uv,0,sizeof submitted_uv);
-+    marker=box(316,324,236,244,aspect,2,1,0,map_marker);
-+    tag_route(17,4); route=box(316,324,236,244,aspect,2,0,0,0);
-+    for(i=0;i<4;++i) { near(marker.x[i],route.x[i]); near(marker.y[i],route.y[i]); }
-+    {
-+        float fraction=((marker.y[0]+marker.y[2])*.5f-plane.y[0])/(480.0f-plane.y[0]);
-+        assert(fraction>=.69f && fraction<=.72f);
++    nv2a_d3d_set_minimap_motion_query(minimap_motion_query);
++    nv2a_d3d_set_minimap_expansion_query(minimap_expansion_query);
++    for(phase=0;phase<3;++phase) {
++        float e=phases[phase], left=50+78*e, top=320-272*e, extent=128+256*e;
++        float cx=left+extent*.5f, cy=top+extent*.5f;
++        next_map_frame(); expansion=e; motion=1;
++        base=box(left,left+extent,top,top+extent,aspect,2,1,0,map_base);
++        assert(base.suppressed); near(s_frame_map_expansion,e);
++        assert(expansion_calls==phase+1 && motion_calls==phase+1);
++        /* A queued next update cannot change this map's camera between its
++         * base, roads and checkpoints, even at the half-open transition. */
++        expansion=1-e; motion=0;
++        box(left,left+extent,top,top+extent,aspect,2,1,0,map_base);
++        assert(expansion_calls==phase+1 && motion_calls==phase+1);
++        near(s_frame_map_expansion,e); near(s_frame_map_motion,1);
++        quad(p,left,left+extent,top,top+extent); tag_route(0,4);
++        plane=draw(p,4,idx,6,0,aspect,2,0,0,0);
++        if(e==0) near(plane.x[2]-plane.x[3],extent*narrow*1.60f);
++        if(e==1) for(i=0;i<4;++i) {
++            near(plane.x[i],320+(p[i][0]-320)*narrow);
++            near(plane.y[i],240+(p[i][1]-240)*ynarrow);
++            assert(plane.x[i]>=0 && plane.x[i]<=640 && plane.y[i]>=0 && plane.y[i]<=480);
++        }
++        /* Checkpoint icons near every corner include the rear corners that
++         * the driving camera deliberately crops below the display. */
++        for(corner=0;corner<4;++corner) {
++            float x=left+(corner&1?extent-8:8), y=top+(corner&2?extent-8:8);
++            memset(&submitted_uv,0,sizeof submitted_uv);
++            marker=box(x-4,x+4,y-4,y+4,aspect,2,1,0,map_marker);
++            tag_route(17,4); route=box(x-4,x+4,y-4,y+4,aspect,2,0,0,0);
++            quad(p,x-4,x+4,y-4,y+4);
++            for(i=0;i<4;++i) {
++                double half=extent*.5, depth=(p[i][1]-cy)/half, denominator=1-.45*depth;
++                double px=cx+(p[i][0]-cx)*.55/denominator;
++                double py=cy+half*.75+(p[i][1]-cy)*.98/denominator;
++                double crop=half*1.60*(1-.55/(1-.45*(.25/(.98+.45*.25))));
++                double driving_x=(left+(px-left)*1.60-left-crop)*narrow;
++                double driving_y=480+(top+extent-(top+extent-py)*1.60-top-extent)*ynarrow;
++                double flat_x=320+(p[i][0]-320)*narrow;
++                double flat_y=240+(p[i][1]-240)*ynarrow;
++                near(marker.x[i],(float)(driving_x*(1-e)+flat_x*e));
++                near(marker.y[i],(float)(driving_y*(1-e)+flat_y*e));
++                near(marker.x[i],route.x[i]); near(marker.y[i],route.y[i]);
++                if(e==1) assert(marker.x[i]>=0 && marker.x[i]<=640 && marker.y[i]>=0 && marker.y[i]<=480);
++            }
++        }
++        memset(&submitted_uv,0,sizeof submitted_uv);
 +    }
-+    memset(&submitted_uv,0,sizeof submitted_uv);
++    nv2a_d3d_set_minimap_expansion_query(NULL); assert(!s_frame_map_valid);
 +}
-+static void mask_fragment_contract(float aspect, float left, float top, float width, float height) {
++static void mask_fragment_contract(float aspect, float left, float top, float width, float height,
++                                   float overview) {
 +    const uint32_t idx[6]={17,18,19,17,19,20};
 +    const double xy_scale=32768.0*0.0005537098622880876;
 +    float bounds[4], p[4][4], old_cx, old_cy;
@@ -10418,6 +10460,7 @@ index a6b4477..aebd07d 100644
 +    Result r;
 +    seed(1); centered=0; improved=masked=1;
 +    nv2a_d3d_set_map_texture_query(map_texture_query);
++    expansion=overview; nv2a_d3d_set_minimap_expansion_query(minimap_expansion_query);
 +    memset(packed_uv,0,sizeof packed_uv);
 +    submitted_uv.enabled=1; submitted_uv.type=1; submitted_uv.size=4; submitted_uv.stride=16;
 +    submitted_uv.data=(const uint8_t *)&packed_uv[0][4];
@@ -10434,6 +10477,7 @@ index a6b4477..aebd07d 100644
 +        assert(fabsf(bounds[2]-top)<.25f && fabsf(bounds[3]-top-height)<.25f);
 +        r=draw(p,4,idx,6,17,aspect,2,1,0,map_base);
 +        assert(r.suppressed && s_frame_map_valid);
++        near(s_frame_map_expansion,overview);
 +        assert(fabsf(s_frame_map_cx-left-width*.5f)<.25f);
 +        assert(fabsf(s_frame_map_cy-top-height*.5f)<.25f);
 +    }
@@ -10448,22 +10492,34 @@ index a6b4477..aebd07d 100644
 +    r=draw(p,4,idx,6,17,aspect,2,1,0,map_base);
 +    assert(r.suppressed); near(s_frame_map_cx,old_cx); near(s_frame_map_cy,old_cy);
 +    memset(&submitted_uv,0,sizeof submitted_uv); masked=0;
-+    /* Anchor the visible plane's clipped left boundary, including a centred
-+     * expanded native window. Roads use the same transform as the car icon. */
++    /* The driving camera anchors its visible clipped boundary; the native
++     * expanded window keeps its flat coordinates and all checkpoint space. */
 +    {
 +        float d=.40f/(1.15f+.22f*.40f), hw=s_frame_map_half_width, hh=s_frame_map_half_height;
 +        float x=s_frame_map_cx-hw, y=s_frame_map_cy+d*hh;
 +        tag_route(17,4);
 +        r=box(x,x+.1f,y,y+.1f,aspect,2,0,0,0);
-+        assert(fabsf(r.x[0])<.01f && fabsf(r.y[0]-480.0f)<.01f);
++        if(overview==0) assert(fabsf(r.x[0])<.01f && fabsf(r.y[0]-480.0f)<.01f);
++        else {
++            near(r.x[0],320+(x-320)*fminf(1,(4.0f/3.0f)/aspect));
++            near(r.y[0],240+(y-240)*fminf(1,aspect/(4.0f/3.0f)));
++        }
 +        memset(&submitted_uv,0,sizeof submitted_uv);
 +    }
 +    next_map_frame(); masked=1;
 +    r=draw(p,4,idx,6,17,aspect,2,1,0,map_base);
 +    assert(r.suppressed && !s_frame_map_valid); /* Invalid first tile cannot invent a window. */
 +    masked=0;
-+}
-+int main(void) {
+ }
+ int main(void) {
+-    check(0,0,0,1,0,100,200,1,0); /* menu controls */
+-    check(0,1,1,1,0,0,640,1,0); /* background */
+-    check(0,2,0,1,0,0,100,1,0); /* edge collage */
+-    check(1,1,1,1,0,0,640,1,0); /* menu entered from race */
+-    check(1,2,0,1,0,100,200,1,0); /* its controls */
+-    check(1,0,0,1,0,0,100,.75f,-.25f); /* left HUD */
+-    check(1,0,0,1,0,500,640,.75f,.25f); /* right HUD */
+-    check(1,0,1,1,1,0,640,1,0); /* wide render-target copy */
 +    const float aspects[] = {4.0f/3.0f, 16.0f/10.0f, 16.0f/9.0f, 21.0f/9.0f};
 +    int a, phase, scale;
 +    for (a = 0; a < 4; a++) {
@@ -10475,20 +10531,25 @@ index a6b4477..aebd07d 100644
 +        improved_map(aspects[a],64); improved_map(aspects[a],160);
 +        speed_perspective(aspects[a],64); speed_perspective(aspects[a],160);
 +        improved_expanded(aspects[a]);
-+        mask_fragment_contract(aspects[a],50,320,128,128);
-+        mask_fragment_contract(aspects[a],128,48,384,384);
++        mask_fragment_contract(aspects[a],50,320,128,128,0);
++        mask_fragment_contract(aspects[a],128,48,384,384,1);
 +    }
 +    tall_layout(1.0f); tall_layout(0.75f);
 +    improved_map(1.0f,64); improved_map(0.75f,64); projection_bounds();
 +    speed_perspective(1.0f,64); speed_perspective(.75f,64); speed_projection_bounds();
 +    improved_expanded(1.0f); improved_expanded(0.75f);
-+    mask_fragment_contract(1.0f,128,48,384,384); mask_fragment_contract(.75f,50,80,128,128);
++    mask_fragment_contract(1.0f,128,48,384,384,1); mask_fragment_contract(.75f,50,80,128,128,0);
 +    tag_upload();
-+    puts("Real HUD placement: stock/speed-responsive perspective, camera latch, road/icon alignment, transparent city isolation, 6 aspects, mixed batches and lifecycle passed");
++    puts("Real HUD placement: stock/driving perspective, flat expanded checkpoints, transition camera latch, road/icon alignment, transparent city isolation, 6 aspects, mixed batches and lifecycle passed");
 +    return 0;
-+}
-+"""
-+with tempfile.TemporaryDirectory() as folder:
+ }
+ """
+ with tempfile.TemporaryDirectory() as folder:
+-    test = Path(folder) / "menu.c"
+-    test.write_text(harness)
+-    subprocess.run(["cl", "/nologo", str(test), "/Fe:" + str(Path(folder) / "menu.exe"), "/Fo:" + str(Path(folder) / "menu.obj")], check=True)
+-    subprocess.run([str(Path(folder) / "menu.exe")], check=True)
+-print("Menu and race HUD placement checks passed")
 +    (Path(folder) / "nv2a_minimap_projection.h").write_text(
 +        (Path(__file__).resolve().parents[1] / "src/video/nv2a_minimap_projection.h").read_text(),
 +        encoding="utf-8",
@@ -10497,7 +10558,7 @@ index a6b4477..aebd07d 100644
 +    assert harness.count(gate) == 1
 +    map_gate = "if (map_part) {"
 +    assert harness.count(map_gate) == 1
-+    for legacy in ("", "menu", "map", "route", "speed", "camera_latch"):
++    for legacy in ("", "menu", "map", "route", "speed", "expansion", "camera_latch"):
 +        name = "placement_" + (legacy or "fixed")
 +        test = Path(folder) / (name + ".c")
 +        # Removing only the new gate reinstates the original renderer path.
@@ -10509,6 +10570,8 @@ index a6b4477..aebd07d 100644
 +            mutant = mutant.replace("return tag[0] == 23117 && tag[1] == -17493;", "return 0;")
 +        if legacy == "speed":
 +            mutant = mutant.replace("nv2a_minimap_motion_bound(s_minimap_motion_query(map_cx, map_cy))", "0.0f")
++        if legacy == "expansion":
++            mutant = mutant.replace("nv2a_minimap_motion_bound(s_minimap_expansion_query(map_cx, map_cy))", "0.0f")
 +        if legacy == "camera_latch":
 +            mutant = mutant.replace("if (!InterlockedCompareExchange(&s_frame_map_valid, 0, 0) ||", "if (1 ||")
 +        test.write_text(mutant, encoding="utf-8")
@@ -10518,7 +10581,7 @@ index a6b4477..aebd07d 100644
 +            check=True,
 +        )
 +        result = subprocess.run([str(exe)], capture_output=True, text=True)
-+        if legacy in ("speed", "camera_latch"):
++        if legacy in ("speed", "expansion", "camera_latch"):
 +            assert result.returncode and "Assertion failed:" in result.stderr, result
 +            print(legacy + " removed renderer correctly fails camera contract")
 +        elif legacy:
@@ -16979,10 +17042,10 @@ index 0000000..6aa13a1
 +or frame-rate improvements.
 diff --git a/tests/nv2a_graphics_quality/test_graphics_quality.c b/tests/nv2a_graphics_quality/test_graphics_quality.c
 new file mode 100644
-index 0000000..4fbe51e
+index 0000000..eb89e2c
 --- /dev/null
 +++ b/tests/nv2a_graphics_quality/test_graphics_quality.c
-@@ -0,0 +1,841 @@
+@@ -0,0 +1,901 @@
 +/* Run the production renderer and its actual HLSL on the selected D3D11 GPU. */
 +#include "../../src/video/nv2a_d3d11.c"
 +#include <math.h>
@@ -17354,8 +17417,16 @@ index 0000000..4fbe51e
 +static int map_improved;
 +static int map_fragment_mask;
 +static float map_mask_bounds[4];
++static float map_motion, map_expansion;
++static unsigned map_motion_calls, map_expansion_calls;
 +static int map_centered_query(void) { return map_centered; }
 +static int map_style_query(void) { return map_improved; }
++static float map_motion_query(float cx, float cy) {
++    CHECK(isfinite(cx) && isfinite(cy)); ++map_motion_calls; return map_motion;
++}
++static float map_expansion_query(float cx, float cy) {
++    CHECK(isfinite(cx) && isfinite(cy)); ++map_expansion_calls; return map_expansion;
++}
 +static int map_texture_query(uint32_t address)
 +{
 +    return address == MAP_BASE_TEXTURE ? 1 : address == MAP_MARKER_TEXTURE ? 2 : 0;
@@ -17560,6 +17631,8 @@ index 0000000..4fbe51e
 +    nv2a_d3d_set_map_texture_query(map_texture_query);
 +    nv2a_d3d_set_centered_ui_query(map_centered_query);
 +    nv2a_d3d_set_minimap_style_query(map_style_query);
++    nv2a_d3d_set_minimap_motion_query(map_motion_query);
++    nv2a_d3d_set_minimap_expansion_query(map_expansion_query);
 +    for (a = 0; a < sizeof aspects / sizeof aspects[0]; ++a) {
 +        NvD3DState target = state_for(640,480);
 +        float p[MAP_MAX_VERTICES][4], captured[MAP_MAX_VERTICES][4];
@@ -17570,7 +17643,7 @@ index 0000000..4fbe51e
 +        s_aspect = aspects[a]; s_scale = 2;
 +        nv2a_d3d_set_edge_hud(0); nv2a_d3d_set_edge_hud(1);
 +        reset_map_placement(); s_frame_bg_tex = 0; s_frame_tag_window = 1;
-+        map_centered = 0; map_improved = 1;
++        map_centered = 0; map_improved = 1; map_motion = map_expansion = 0;
 +        for (i = 0; i < MAP_MAX_VERTICES; ++i) {
 +            sentinel[i][0] = -123; sentinel[i][1] = 234;
 +            sentinel[i][2] = 345; sentinel[i][3] = 456;
@@ -17631,6 +17704,53 @@ index 0000000..4fbe51e
 +            check_map_position(captured[i],320+(p[i][0]-320)*narrow,240+(p[i][1]-240)*ynarrow);
 +        CHECK(!s_frame_map_valid);
 +
++        /* The native Ctrl transition changes the same live map from its
++         * driving camera to a flat overview. Roads and every checkpoint
++         * corner share one camera even if another update is already queued. */
++        {
++            unsigned phase,corner;
++            map_centered=0;
++            for (phase=0;phase<3;++phase) {
++                float e=(float)phase*.5f, left=50+78*e, top=320-272*e, extent=128+256*e;
++                float cx=left+extent*.5f, cy=top+extent*.5f;
++                unsigned motion_before=map_motion_calls, expansion_before=map_expansion_calls;
++                reset_map_placement(); map_motion=1; map_expansion=e;
++                map_quad(p,left,left+extent,top,top+extent);
++                capture_map(geometry,output,&target,(const float (*)[4])p,4,MAP_BASE_TEXTURE,0,0,-1,captured);
++                CHECK(map_motion_calls==motion_before+1 && map_expansion_calls==expansion_before+1);
++                map_motion=0; map_expansion=1-e;
++                capture_map(geometry,output,&target,(const float (*)[4])p,4,MAP_BASE_TEXTURE,0,0,-1,captured);
++                CHECK(map_motion_calls==motion_before+1 && map_expansion_calls==expansion_before+1);
++                CHECK(s_frame_map_motion==1 && s_frame_map_expansion==e);
++                capture_map(geometry,output,&target,(const float (*)[4])p,4,0,0,4,1,captured);
++                if (e==1) for (i=0;i<4;++i) {
++                    check_map_position(captured[i],320+(p[i][0]-320)*narrow,240+(p[i][1]-240)*ynarrow);
++                    CHECK(fabs(captured[i][0])<=1 && fabs(captured[i][1])<=1);
++                }
++                for (corner=0;corner<4;++corner) {
++                    float x=left+(corner&1?extent-8:8), y=top+(corner&2?extent-8:8);
++                    map_quad(p,x-4,x+4,y-4,y+4);
++                    capture_map(geometry,output,&target,(const float (*)[4])p,4,MAP_MARKER_TEXTURE,0,0,1,captured);
++                    memcpy(marker,captured,sizeof marker);
++                    capture_map(geometry,output,&target,(const float (*)[4])p,4,0,0,4,1,captured);
++                    for (i=0;i<4;++i) {
++                        double half=extent*.5, depth=(p[i][1]-cy)/half, denominator=1-.45*depth;
++                        double px=cx+(p[i][0]-cx)*.55/denominator;
++                        double py=cy+half*.75+(p[i][1]-cy)*.98/denominator;
++                        double crop=half*1.60*(1-.55/(1-.45*(.25/(.98+.45*.25))));
++                        double driving_x=((px-left)*1.60-crop)*narrow;
++                        double driving_y=480+(py-top-extent)*1.60*ynarrow;
++                        double flat_x=320+(p[i][0]-320)*narrow;
++                        double flat_y=240+(p[i][1]-240)*ynarrow;
++                        check_map_position(marker[i],driving_x*(1-e)+flat_x*e,driving_y*(1-e)+flat_y*e);
++                        CHECK(fabs(marker[i][0]-captured[i][0])<2e-6);
++                        CHECK(fabs(marker[i][1]-captured[i][1])<2e-6);
++                        if (e==1) CHECK(fabs(marker[i][0])<=1 && fabs(marker[i][1])<=1);
++                    }
++                }
++            }
++        }
++
 +        /* Native city clipping emits up to nine independent pieces. Pack
 +         * both coordinates and UVs with retail constants, and recover the
 +         * normal and expanded whole-window anchor from each queued piece. */
@@ -17639,6 +17759,7 @@ index 0000000..4fbe51e
 +            map_centered=0; map_fragment_mask=1;
 +            for (size=0;size<2;++size) {
 +                float left=size?128:50, top=size?48:320, extent=size?384:128;
++                map_motion=0; map_expansion=(float)size;
 +                reset_map_placement();
 +                map_mask_bounds[0]=left; map_mask_bounds[1]=top;
 +                map_mask_bounds[2]=map_mask_bounds[3]=extent;
@@ -17650,15 +17771,16 @@ index 0000000..4fbe51e
 +                    CHECK(fabs(s_frame_map_cx-left-extent*.5f)<.25);
 +                    CHECK(fabs(s_frame_map_cy-top-extent*.5f)<.25);
 +                }
-+                /* Test the final visible bottom-left clip, not the suppressed
-+                 * city quad. Its side intersects exactly the display corner. */
++                /* The small camera retains its visible bottom-left crop;
++                 * the expanded overview retains the complete flat window. */
 +                {
 +                    float d=.4f/(1.15f+.22f*.4f);
 +                    float x=s_frame_map_cx-s_frame_map_half_width;
 +                    float y=s_frame_map_cy+d*s_frame_map_half_height;
 +                    map_quad(p,x,x+.125f,y,y+.125f);
 +                    capture_map(geometry,output,&target,(const float (*)[4])p,4,0,0,4,1,captured);
-+                    check_map_position(captured[0],0,480);
++                    if (!size) check_map_position(captured[0],0,480);
++                    else check_map_position(captured[0],320+(x-320)*narrow,240+(y-240)*ynarrow);
 +                }
 +                map_quad(p,left,left+.5f,top,top+.5f);
 +                {
@@ -17682,8 +17804,9 @@ index 0000000..4fbe51e
 +    map_improved = map_centered = 0;
 +    nv2a_d3d_set_edge_hud(0); nv2a_d3d_set_map_texture_query(NULL);
 +    nv2a_d3d_set_centered_ui_query(NULL); nv2a_d3d_set_minimap_style_query(NULL);
++    nv2a_d3d_set_minimap_motion_query(NULL); nv2a_d3d_set_minimap_expansion_query(NULL);
 +    ID3D11Buffer_Release(output); ID3D11GeometryShader_Release(geometry);
-+    puts("PASS: actual GPU improved map discards city vertices, tilts the tagged road plane with aligned icons/routes, isolates mixed dimmers and restores Stock/pause at five aspects");
++    puts("PASS: actual GPU improved map preserves the driving camera, opens a flat overview with all checkpoint corners visible, latches transition cameras for roads/icons/routes, isolates mixed dimmers and restores Stock/pause at five aspects");
 +}
 +
 +static void test_menu_canvas(void)
@@ -22357,16 +22480,16 @@ index 0000000..2667224
 +}
 diff --git a/src/video/nv2a_minimap_projection.h b/src/video/nv2a_minimap_projection.h
 new file mode 100644
-index 0000000..e0d4da2
+index 0000000..f5ed00e
 --- /dev/null
 +++ b/src/video/nv2a_minimap_projection.h
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,108 @@
 +#ifndef NV2A_MINIMAP_PROJECTION_H
 +#define NV2A_MINIMAP_PROJECTION_H
 +
 +#include <math.h>
 +
-+/* Grow both map views from their shared visible bottom-left corner. */
++/* Grow the driving minimap from its visible bottom-left corner. */
 +#define NV2A_MINIMAP_SCALE 1.60f
 +
 +static inline float nv2a_minimap_motion_bound(float motion)
@@ -22393,6 +22516,16 @@ index 0000000..e0d4da2
 +static inline float nv2a_minimap_left_crop(float half_width)
 +{
 +    return nv2a_minimap_left_crop_motion(half_width, 0.0f);
++}
++
++/* Opening the overview restores its authored flat rectangle. Blend the
++ * camera and anchor with the native transition rather than guessing from
++ * map size; small and split-screen maps can share the same dimensions. */
++static inline float nv2a_minimap_left_crop_camera(float half_width, float motion,
++                                                 float expansion)
++{
++    expansion = nv2a_minimap_motion_bound(expansion);
++    return nv2a_minimap_left_crop_motion(half_width, motion) * (1.0f - expansion);
 +}
 +
 +/* A camera-facing road plane. Its far edge narrows toward the horizon; the
@@ -22437,6 +22570,25 @@ index 0000000..e0d4da2
 +{
 +    return nv2a_minimap_project_motion(x, y, cx, cy, half_width, half_height,
 +                                     0.0f, projected_x, projected_y);
++}
++
++static inline int nv2a_minimap_project_camera(float x, float y, float cx, float cy,
++                                      float half_width, float half_height,
++                                      float motion, float expansion,
++                                      float *projected_x, float *projected_y)
++{
++    if (!nv2a_minimap_project_motion(x, y, cx, cy, half_width, half_height,
++                                   motion, projected_x, projected_y))
++        return 0;
++    expansion = nv2a_minimap_motion_bound(expansion);
++    if (expansion == 1.0f) {
++        *projected_x = x;
++        *projected_y = y;
++        return 1;
++    }
++    *projected_x += (x - *projected_x) * expansion;
++    *projected_y += (y - *projected_y) * expansion;
++    return isfinite(*projected_x) && isfinite(*projected_y);
 +}
 +
 +#endif

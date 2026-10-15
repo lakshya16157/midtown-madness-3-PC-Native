@@ -19,6 +19,7 @@ static unsigned s_map_zoom_replacement;
  * split-screen maps retain their own camera and reads cannot tear. */
 static volatile uint32_t s_map_motion[MAP_ZOOM_SLOTS];
 static volatile uint32_t s_map_heading[MAP_ZOOM_SLOTS];
+static volatile uint32_t s_map_expansion[MAP_ZOOM_SLOTS];
 
 static void map_scalar_store(volatile uint32_t *scalar, uint32_t value)
 {
@@ -35,6 +36,25 @@ static void map_motion_store(unsigned slot, uint32_t value)
 static void map_heading_publish(unsigned slot, uint32_t player_record)
 {
     map_scalar_store(&s_map_heading[slot], player_record ? MEM32(player_record) : 0x7FC00000u);
+}
+
+static void map_expansion_publish(unsigned slot, uint32_t node)
+{
+    float current = MEMF(node + 0xB4), maximum = MEMF(node + 0xBC), expansion;
+    double fraction;
+    uint32_t bits;
+    if (!isfinite(current) || !isfinite(maximum) || maximum <= 1.0f) {
+        map_scalar_store(&s_map_expansion[slot], 0); return;
+    }
+    /* B4 interpolates between the small map's 1 and BC (3 normally, 2 in
+     * split screen). Window dimensions can change independently of this
+     * native Ctrl transition, so they cannot identify its camera state. */
+    fraction = ((double)current - 1.0) / ((double)maximum - 1.0);
+    if (fraction < 0.0) fraction = 0.0;
+    if (fraction > 1.0) fraction = 1.0;
+    expansion = (float)fraction;
+    memcpy(&bits, &expansion, sizeof bits);
+    map_scalar_store(&s_map_expansion[slot], 0x80000000u | bits);
 }
 
 static void map_motion_publish(unsigned slot, float cx, float cy)
@@ -75,6 +95,27 @@ float mm3_minimap_motion(float cx, float cy)
     return 0;
 }
 
+float mm3_minimap_expansion(float cx, float cy)
+{
+    unsigned i;
+    if (!isfinite(cx) || !isfinite(cy)) return 0;
+    for (i = 0; i < MAP_ZOOM_SLOTS; ++i) {
+        uint32_t window = RECOMP_ATOMIC_CAS32(&s_map_motion[i], 0, 0);
+        uint32_t bits;
+        float expansion;
+        if (!(window & 0x80000000u) ||
+            fabsf(cx - ((float)(window & 4095u) * .5f - 1024.0f)) > .75f ||
+            fabsf(cy - ((float)((window >> 12) & 4095u) * .5f - 1024.0f)) > .75f)
+            continue;
+        bits = RECOMP_ATOMIC_CAS32(&s_map_expansion[i], 0, 0);
+        if (!(bits & 0x80000000u)) return 0;
+        bits &= 0x7FFFFFFFu;
+        memcpy(&expansion, &bits, sizeof expansion);
+        return isfinite(expansion) && expansion >= 0.0f && expansion <= 1.0f ? expansion : 0;
+    }
+    return 0;
+}
+
 static unsigned map_zoom_slot(uint32_t node)
 {
     unsigned i, empty = MAP_ZOOM_SLOTS;
@@ -90,6 +131,7 @@ static unsigned map_zoom_slot(uint32_t node)
     s_map_zoom[empty].origin_valid = 0;
     map_motion_store(empty, 0);
     map_heading_publish(empty, 0);
+    map_scalar_store(&s_map_expansion[empty], 0);
     return empty;
 }
 
@@ -103,6 +145,7 @@ void mm3_map_zoom_reset(uint32_t node)
     s_map_zoom[slot].origin_valid = 0;
     map_motion_store(slot, 0);
     map_heading_publish(slot, 0);
+    map_scalar_store(&s_map_expansion[slot], 0);
 }
 
 int mm3_minimap_heading(uint32_t node, float *angle)
@@ -144,11 +187,14 @@ void mm3_map_zoom_window(uint32_t node, uint32_t clip)
     width = MEMF(clip + 8); height = MEMF(clip + 12);
     if (!mm3_minimap_improved() || !s_map_zoom[slot].origin_valid ||
         !isfinite(width) || !isfinite(height) || width < 1 || height < 1) {
-        map_motion_store(slot, 0); return;
+        map_motion_store(slot, 0);
+        map_scalar_store(&s_map_expansion[slot], 0); return;
     }
     /* Native +94/+98 animate the car/map centre during layout transitions.
      * The renderer identifies the actual mask window instead; publish that
-     * submitted clip rectangle so expanding and split maps keep their tilt. */
+     * submitted clip rectangle so roads and markers share the same camera
+     * while expanding or drawing split-screen maps. */
+    map_expansion_publish(slot, node);
     map_motion_publish(slot, MEMF(clip) + width * .5f, MEMF(clip + 4) + height * .5f);
 }
 
@@ -240,7 +286,10 @@ void mm3_map_zoom_apply(uint32_t node, uint32_t player_record)
     if (!node) return;
     slot = map_zoom_slot(node);
     s_map_zoom[slot].origin_valid = 0;
-    if (!player_record) { map_motion_store(slot, 0); map_heading_publish(slot, 0); return; }
+    if (!player_record) {
+        map_motion_store(slot, 0); map_heading_publish(slot, 0);
+        map_scalar_store(&s_map_expansion[slot], 0); return;
+    }
     if (!mm3_minimap_improved()) {
         mm3_map_zoom_reset(node);
         map_heading_publish(slot, player_record);
@@ -262,6 +311,7 @@ void mm3_map_zoom_apply(uint32_t node, uint32_t player_record)
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
     s_map_zoom[slot].target = 1.0f + 0.25f * t * t * (3.0f - 2.0f * t);
+    map_expansion_publish(slot, node);
     map_motion_publish(slot, MEMF(node + 0x94), MEMF(node + 0x98));
     scale = MEMF(node + 0x50);
     /* 11FE40 fits stock zoom to checkpoint proximity. That fit can zoom in

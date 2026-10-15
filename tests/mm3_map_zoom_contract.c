@@ -252,6 +252,69 @@ static void motion_heading_contract(void) {
     assert(!mm3_minimap_heading(0, &heading)); assert(!mm3_minimap_heading(node, NULL));
     improved = 1; mm3_map_zoom_reset(node); mm3_map_zoom_reset(second_node);
 }
+static void expansion_contract(void) {
+    const float spans[] = {1, 2, 3, 1};
+    const float expected[] = {0, .5f, 1, 0};
+    const float invalid_maximum[] = {1, 0, -1, NAN, INFINITY};
+    unsigned i;
+    check = "published native map expansion";
+    mm3_map_zoom_reset(node); mm3_map_zoom_reset(second_node);
+    MEMF(node + 0x94) = 114; MEMF(node + 0x98) = 384;
+    MEMF(node + 0xBC) = 3; MEM32(player + 4) = 0;
+    /* Ctrl reuses the same node. Camera expansion must follow the native
+     * transition in both directions, independently of speed or HUD size. */
+    for (i = 0; i < sizeof spans / sizeof spans[0]; ++i) {
+        MEMF(node + 0xB4) = spans[i]; fresh_scale(node, player, 2);
+        near(mm3_minimap_expansion(114, 384), expected[i]);
+        near(mm3_minimap_expansion(114.2f, 383.8f), expected[i]);
+        near(mm3_minimap_motion(114, 384), 0);
+    }
+    MEMF(node + 0xB4) = 3; fresh_scale(node, player, 2);
+    MEMF(layout) = 128; MEMF(layout + 4) = 48;
+    MEMF(layout + 8) = 384; MEMF(layout + 12) = 384;
+    mm3_map_zoom_window(node, layout);
+    near(mm3_minimap_expansion(320, 240), 1);
+    near(mm3_minimap_expansion(114, 384), 0);
+    MEMF(node + 0xB4) = 2; mm3_map_zoom_window(node, layout);
+    near(mm3_minimap_expansion(320, 240), .5f);
+    /* Split-screen expansion ends at 2, with an independent screen center. */
+    MEMF(second_node + 0x94) = 500; MEMF(second_node + 0x98) = 120;
+    MEMF(second_node + 0xBC) = 2; MEMF(second_node + 0xB4) = 1.5f;
+    fresh_scale(second_node, player, 2);
+    near(mm3_minimap_expansion(500, 120), .5f);
+    near(mm3_minimap_expansion(320, 240), .5f);
+    MEMF(second_node + 0xB4) = 2; fresh_scale(second_node, player, 2);
+    near(mm3_minimap_expansion(500, 120), 1);
+    MEMF(second_node + 0xB4) = 3; fresh_scale(second_node, player, 2);
+    near(mm3_minimap_expansion(500, 120), 1);
+    MEMF(second_node + 0xB4) = 0; fresh_scale(second_node, player, 2);
+    near(mm3_minimap_expansion(500, 120), 0);
+    MEMF(second_node + 0xB4) = 2;
+    for (i = 0; i < sizeof invalid_maximum / sizeof invalid_maximum[0]; ++i) {
+        MEMF(second_node + 0xBC) = invalid_maximum[i];
+        fresh_scale(second_node, player, 2);
+        near(mm3_minimap_expansion(500, 120), 0);
+    }
+    MEMF(second_node + 0xBC) = 2; MEMF(second_node + 0xB4) = NAN;
+    fresh_scale(second_node, player, 2); near(mm3_minimap_expansion(500, 120), 0);
+    MEMF(node + 0xB4) = 1;
+    MEMF(layout) = 50; MEMF(layout + 4) = 320;
+    MEMF(layout + 8) = 128; MEMF(layout + 12) = 128;
+    mm3_map_zoom_window(node, layout);
+    near(mm3_minimap_expansion(114, 384), 0);
+    near(mm3_minimap_expansion(320, 240), 0);
+    near(mm3_minimap_expansion(NAN, 384), 0);
+    near(mm3_minimap_expansion(114, INFINITY), 0);
+    MEMF(node + 0xB4) = 3; fresh_scale(node, player, 2);
+    near(mm3_minimap_expansion(114, 384), 1);
+    MEMF(layout + 8) = 0; mm3_map_zoom_window(node, layout);
+    near(mm3_minimap_expansion(114, 384), 0);
+    fresh_scale(node, player, 2); mm3_map_zoom_apply(node, 0);
+    near(mm3_minimap_expansion(114, 384), 0);
+    fresh_scale(node, player, 2); mm3_map_zoom_reset(node);
+    near(mm3_minimap_expansion(114, 384), 0);
+    mm3_map_zoom_reset(second_node);
+}
 static Draw *texture_draw(Draw *list, unsigned count, unsigned texture) {
     unsigned i;
     for (i = 0; i < count; ++i) if (list[i].texture == texture) return &list[i];
@@ -529,7 +592,7 @@ int main(void) {
     MEM32(node + 0x8C) = property; MEM32(property) = property + 0x100;
     MEM32(property + 0x100 + 0x5C) = 0x100;
     MEM32(players + 0x14) = player; MEM32(0x407F78 + 4) = markers;
-    speed_contract(); motion_heading_contract(); square_geometry_contract(); native_contract(); native_scale_progression(); square_marker_contract();
+    speed_contract(); motion_heading_contract(); expansion_contract(); square_geometry_contract(); native_contract(); native_scale_progression(); square_marker_contract();
     /* Live Stock selection restores the real native rotation, border, scale
      * and marker sizes with identical guest calling conventions. */
     improved = 0; player_present = 1; zoom_markers = 0;

@@ -66,6 +66,9 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   Blue race guidance follows the cities' road curves and junctions, and updates
   the path to the next checkpoint as the car moves.
   The improved minimap draws gray roads on a transparent, tilted plane.
+  Ctrl expands it into a flat overview, retaining checkpoints around the car
+  throughout the transition. Narrow streets have a wider visibility floor
+  so small Washington DC roads remain readable after perspective scaling.
   The top HUD direction arrows are hidden. Original cars retain their retail
   speedometers by default, including the numeric readout in numeric-only HUD layouts.
   Cubic B-spline sampling smooths the distant skyline, and corrected frame/depth

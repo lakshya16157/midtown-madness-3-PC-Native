@@ -113,7 +113,7 @@ static void road_width_live_map_contract(void)
     const RoadPoint streets[4] = {{-20,0,-10}, {20,0,-10}, {-20,0,10}, {20,0,10}};
     const unsigned offsets[7] = {0x50,0x54,0x58,0x4C,0x94,0x98,0xB4};
     const float factors[2] = {.5f,.25f};
-    const float expected[2][2] = {{1,3},{.55f,1.5f}};
+    const float expected[2][2] = {{1,3},{1,1.5f}};
     unsigned char previous_race[sizeof s_race];
     float previous_fields[9], previous_origin[3];
     int previous_origin_valid = cruise_origin_valid;
@@ -208,7 +208,7 @@ static void road_width_contract(void)
 
     check = "road width physical size, zoom, readability floor and captured quads";
     improved = 1; s_road_layer = 1;
-    near(road_draw_half_width(4,.1f),.55f);
+    near(road_draw_half_width(4,.1f),1);
     near(road_draw_half_width(12,.25f),1.5f);
     near(road_draw_half_width(12,.5f),3);
     road_width_draw(straight,2,4,.5f);
@@ -219,7 +219,7 @@ static void road_width_contract(void)
     road_width_draw(straight,2,12,.25f);
     assert(draw_count == 1); near(road_width_draw_half(draws),1.5f); near(edge(draws),10);
     road_width_draw(straight,2,4,.1f);
-    assert(draw_count == 1); near(road_width_draw_half(draws),.55f);
+    assert(draw_count == 1); near(road_width_draw_half(draws),1);
 
     check = "road width real Cruise gray-layer wiring at two zoom levels";
     road_width_live_map_contract();

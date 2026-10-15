@@ -22,8 +22,10 @@ extern void nv2a_d3d_set_centered_ui_query(int (*query)(void));
 extern void nv2a_d3d_set_map_texture_query(int (*query)(uint32_t texture_addr));
 extern void nv2a_d3d_set_minimap_style_query(int (*query)(void));
 extern void nv2a_d3d_set_minimap_motion_query(float (*query)(float, float));
+extern void nv2a_d3d_set_minimap_expansion_query(float (*query)(float, float));
 extern int mm3_minimap_improved(void);
 extern float mm3_minimap_motion(float, float);
+extern float mm3_minimap_expansion(float, float);
 static float camera_fov_degrees(void);
 
 /* Identities only, used on the title thread. Never follow a cached pointer:
@@ -268,6 +270,7 @@ void mm3_widescreen_init(void)
     nv2a_d3d_set_map_texture_query(map_texture_role);
     nv2a_d3d_set_minimap_style_query(mm3_minimap_improved);
     nv2a_d3d_set_minimap_motion_query(mm3_minimap_motion);
+    nv2a_d3d_set_minimap_expansion_query(mm3_minimap_expansion);
 }
 
 void sub_0025968E(void)
