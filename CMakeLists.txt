@@ -118,7 +118,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_dma_publish_seam.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_collision_call_seam.cmake")
 list(APPEND MM3_SEAM_FUNCTIONS sub_0023F09B)
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_speedometer_seam.cmake")
-list(APPEND MM3_SEAM_FUNCTIONS sub_0011CA25 sub_0011D1E8 sub_0011D808 sub_0011CAE8)
+list(APPEND MM3_SEAM_FUNCTIONS sub_0011CA25 sub_0011D1E8 sub_0011D808 sub_0011CAE8 sub_0011DCBF)
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_map_zoom_seam.cmake")
 list(APPEND MM3_SEAM_FUNCTIONS sub_001EC352)
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_hud_cleanup_seam.cmake")
@@ -221,7 +221,7 @@ foreach(distance_input IN LISTS distance_owners)
     if(owner_sub_0023F09B STREQUAL distance_input)
         mm3_add_speedometer_readout(distance_content)
     endif()
-    foreach(map_owner sub_0011CA25 sub_0011D1E8 sub_0011D808 sub_0011CAE8 sub_00116535)
+    foreach(map_owner sub_0011CA25 sub_0011D1E8 sub_0011D808 sub_0011CAE8 sub_0011DCBF sub_00116535)
         if(owner_${map_owner} STREQUAL distance_input)
             mm3_add_map_zoom(distance_content ${map_owner})
         endif()
@@ -327,6 +327,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/native_menu"
     src/recomp
     ${RECOMP_GEN_DIR}
+    ${XBOXRECOMP_DIR}/src/video
     ${XBOXRECOMP_DIR}/include)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE xboxrecomp)

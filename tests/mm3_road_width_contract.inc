@@ -152,6 +152,75 @@ static void road_width_live_map_contract(void)
     MEMF(layout + 8) = previous_fields[7]; MEMF(layout + 12) = previous_fields[8];
 }
 
+static void road_ctrl_visibility_contract(void)
+{
+    const float expansions[] = {0,.25f,.5f,.75f,1,.75f,.5f,.25f,0};
+    const float distances[] = {0,85,130,210};
+    const unsigned offsets[] = {0x50,0x54,0x58,0x4C,0x94,0x98,0xB4,0xBC};
+    unsigned char previous_race[sizeof s_race];
+    float previous_fields[10], previous_origin[3];
+    RoadPoint streets[8];
+    RoadPoint *cached_points;
+    RoadLine *cached_lines;
+    int previous_origin_valid = cruise_origin_valid;
+    unsigned i, split, turn, zoom, frame, cycle;
+    memcpy(previous_race,s_race,sizeof s_race);
+    memcpy(previous_origin,cruise_origin,sizeof cruise_origin);
+    for (i = 0; i < 8; ++i) previous_fields[i] = MEMF(node + offsets[i]);
+    previous_fields[8] = MEMF(layout + 8); previous_fields[9] = MEMF(layout + 12);
+    for (i = 0; i < 8; ++i)
+        streets[i] = (RoadPoint){410 + distances[i / 2] - (i & 1 ? 0.0f : 10.0f),0,615 + distances[i / 2]};
+    road_width_fixture(streets,8);
+    for (i = 0; i < 4; ++i) assert(road_graph_edge_width(i*2,i*2+1,800+i,800+i,4));
+    memset(s_race,0,sizeof s_race);
+    cruise_origin[0] = 410; cruise_origin[1] = 0; cruise_origin[2] = 615;
+    cruise_origin_valid = 1;
+    MEMF(node + 0x54) = 0; MEMF(node + 0x58) = 1024;
+    assert(road_lines_build()); cached_points = s_road_lines.points; cached_lines = s_road_lines.lines;
+    /* Native 11D808 scales each layout dimension by B4 and moves its centre
+     * with the Ctrl animation. Streets beyond the driving map must enter the
+     * overview, then leave only when its bounds contract again. The near
+     * corner at 85m stays inside even in the shorter split panel at rest;
+     * speed span 1.6 also exposes the 130m corner before Ctrl is pressed.
+     * Keep fixed world streets across cycles so stale culls cannot pass. */
+    for (cycle = 0; cycle < 3; ++cycle) for (split = 0; split < 2; ++split)
+    for (turn = 0; turn < 2; ++turn) for (zoom = 0; zoom < 2; ++zoom)
+    for (frame = 0; frame < sizeof expansions / sizeof expansions[0]; ++frame) {
+        float expansion = expansions[frame], maximum = split ? 2.0f : 3.0f;
+        float span = 1 + (maximum - 1) * expansion;
+        float factor = 1 / (NV2A_MINIMAP_SCALE * (zoom ? 1.6f : 1.0f));
+        unsigned street, persistent = zoom ? 7 : 3;
+        MEMF(node + 0x50) = factor;
+        MEMF(node + 0x4C) = turn ? 1.5707963268f : 0;
+        MEMF(node + 0x94) = -206 * (1 - expansion);
+        MEMF(node + 0x98) = 144 * (1 - expansion);
+        MEMF(node + 0xB4) = span; MEMF(node + 0xBC) = maximum;
+        MEMF(layout + 8) = 128 * span; MEMF(layout + 12) = (split ? 96 : 128) * span;
+        abi_start(0); mm3_race_map_route(node,0x407F78,0x25000,0,layout);
+        for (street = 0; street < 4; ++street) {
+            float x = (turn ? distances[street] : 5 - distances[street]) * factor;
+            float y = (turn ? distances[street] - 5 : distances[street]) * factor;
+            unsigned matches = 0;
+            if (!(persistent & (1u << street)) && expansion != 1) continue;
+            if (expansion == 1 && split && !zoom && street == 3) continue;
+            for (i = 0; i < draw_count; ++i)
+                if (fabsf(centre(draws+i,0) - MEMF(node + 0x94) - x) < .001f &&
+                    fabsf(centre(draws+i,1) - MEMF(node + 0x98) - y) < .001f) {
+                    ++matches; near(edge(draws+i),10 * factor);
+                    near(road_width_draw_half(draws+i),1); near(draws[i].color[0],.62f);
+                }
+            assert(matches == 1);
+        }
+        assert(g_esp == stack && g_fp_top == 0 && !s_road_layer);
+        assert(s_road_lines.points == cached_points && s_road_lines.lines == cached_lines);
+    }
+    road_graph_clear();
+    memcpy(s_race,previous_race,sizeof s_race);
+    memcpy(cruise_origin,previous_origin,sizeof cruise_origin); cruise_origin_valid = previous_origin_valid;
+    for (i = 0; i < 8; ++i) MEMF(node + offsets[i]) = previous_fields[i];
+    MEMF(layout + 8) = previous_fields[8]; MEMF(layout + 12) = previous_fields[9];
+}
+
 static unsigned road_join_covers(float x, float y)
 {
     unsigned i, j, covered = 0;
@@ -172,43 +241,68 @@ static void road_join_contract(void)
 {
     RoadPoint corner[3] = {{20,0,0}, {0,0,0}, {0,0,20}};
     const RoadPoint ring[5] = {{20,0,0}, {0,0,0}, {0,0,20}, {20,0,20}, {20,0,0}};
+    const RoadPoint duplicate[4] = {{20,0,0}, {0,0,0}, {0,0,0}, {0,0,20}};
     const RoadPoint outside[3] = {{-2000,0,0}, {-2020,0,0}, {-2020,0,20}};
-    unsigned turn, i, j, joins;
-    check = "road bend bevel coverage, winding and width bound";
-    for (turn = 0; turn < 2; ++turn) {
-        corner[2].z = turn ? -20.0f : 20.0f;
-        road_width_draw(corner,3,6,1);
-        assert(draw_count == 3);
-        /* This exterior point lies in neither butt-ended street segment. */
-        assert(road_join_covers(1,turn ? 1.0f : -1.0f) == 1);
+    const float fractions[] = {.13f,.37f,.63f,.87f};
+    unsigned turn, width, sample, i, j, joins;
+    check = "gray road rounded elbows, exterior coverage, winding and arc error";
+    for (turn = 0; turn < 6; ++turn) for (width = 0; width < 2; ++width) {
+        float angle = (float)(turn % 3 + 1) * .7853981634f * (turn < 3 ? 1 : -1);
+        float radius = width ? 12.0f : 3.0f;
+        corner[2].x = -20*cosf(angle); corner[2].z = 20*sinf(angle);
+        road_width_draw(corner,3,radius*2,1);
+        assert(route_segment_draw_count() == 2 && draw_count > 2 && draw_count <= 34);
+        for (sample = 0; sample < sizeof fractions / sizeof fractions[0]; ++sample) {
+            float arc = (angle > 0 ? -1.5707963268f : 1.5707963268f) + angle*fractions[sample];
+            /* Includes the part of the circular elbow beyond the former
+             * bevel chord; a missing/flat gray join cannot pass this check. */
+            assert(road_join_covers(radius*.97f*cosf(arc),radius*.97f*sinf(arc)) == 1);
+        }
         joins = 0;
         for (i = 0; i < draw_count; ++i) {
             Draw *draw = draws + i;
             if (draw->xy[0][0] != draw->xy[3][0] || draw->xy[0][1] != draw->xy[3][1]) continue;
             ++joins;
             for (j = 0; j < 4; ++j) {
-                assert(hypotf(draw->xy[j][0],draw->xy[j][1]) <= 3.0001f);
+                assert(hypotf(draw->xy[j][0],draw->xy[j][1]) <= radius + .0001f);
                 near(draw->color[0],.62f); near(draw->color[3],.82f);
             }
+            /* The chord midpoint is furthest from the true circular arc. */
+            assert(radius - hypotf((draw->xy[1][0] + draw->xy[2][0])*.5f,
+                                   (draw->xy[1][1] + draw->xy[2][1])*.5f) <= .1001f);
             assert((draw->xy[1][0] - draw->xy[0][0]) * (draw->xy[2][1] - draw->xy[0][1]) -
                    (draw->xy[1][1] - draw->xy[0][1]) * (draw->xy[2][0] - draw->xy[0][0]) < 0);
         }
-        assert(joins == 1);
+        assert(joins == draw_count - 2);
     }
+    check = "gray repeated junction keeps its rounded exterior";
+    road_width_draw(duplicate,4,6,1);
+    assert(draw_count == 6 && road_join_covers(2,-1.9f) == 1);
     check = "road closed-loop seam and clear island";
     road_width_draw(ring,5,6,1);
-    assert(draw_count == 8 && road_join_covers(-21,-1) == 1);
+    assert(draw_count == 20 && road_join_covers(-22,-1.9f) == 1);
     assert(!road_join_covers(-10,10));
     check = "road off-map bends add no submission";
     road_width_draw(outside,3,6,1); assert(!draw_count);
     check = "road separate chains retain their own butt endpoints";
+    corner[2].x = 0; corner[2].z = -20;
     abi_start(0);
     route_polyline_width(0x25000,0,corner,2,(RoadPoint){0},1,1,0,1000,1000,0,0,.82f,3);
     route_polyline_width(0x25000,0,corner+1,2,(RoadPoint){0},1,1,0,1000,1000,0,0,.82f,3);
     assert(draw_count == 2 && !road_join_covers(1,1));
+    check = "gray round joins survive native packing and route identity";
+    native_submission_begin(); native_submission = 1;
+    road_width_draw(duplicate,4,6,1);
+    native_submission = 0;
+    assert(draw_count == 6 && MEM32(0x3C568C) == 24);
+    for (i = 0; i < MEM32(0x3C568C); ++i) {
+        uint32_t packed = packed_vertices + i * 16;
+        assert((int16_t)MEM16(packed + 8) == ROUTE_TAG_U);
+        assert((int16_t)MEM16(packed + 0xA) == ROUTE_TAG_V);
+    }
     check = "blue guidance uses its own rounded joins";
     s_road_layer = 0; road_width_draw(corner,3,6,1);
-    assert(draw_count == 4 && road_join_covers(1,.7f) == 1);
+    assert(draw_count == 6 && road_join_covers(1,.7f) == 1);
     s_road_layer = 1;
 }
 
@@ -285,6 +379,8 @@ static void road_width_contract(void)
 
     check = "road width real Cruise gray-layer wiring at two zoom levels";
     road_width_live_map_contract();
+    check = "Ctrl road visibility through repeated square/rectangular expansion and collapse";
+    road_ctrl_visibility_contract();
     s_road_layer = 1;
 
     check = "road width dense cached chain preserves one simplified thick draw";

@@ -81,6 +81,11 @@ function(mm3_add_map_zoom source_variable function_name)
     set(reset_replacement [=[loc_0011CA25: ;
     mm3_map_zoom_reset(ecx);
     PUSH32(esp, ebp);]=])
+    set(pool_original [=[loc_0011DCBF: ;
+    MEM32(0x3C568C) = MEM32(0x3C568C) & 0;]=])
+    set(pool_replacement [=[loc_0011DCBF: ;
+    mm3_map_ui_capacity();
+    MEM32(0x3C568C) = MEM32(0x3C568C) & 0;]=])
     set(update_original [=[loc_0011D1E8: ;
     PUSH32(esp, ebp);]=])
     set(update_replacement [=[loc_0011D1E8: ;
@@ -110,6 +115,11 @@ function(mm3_add_map_zoom source_variable function_name)
     } else {
         PUSH32(esp, 0x0011DBB1u); RECOMP_ABI_CALL(0x001C1585u, sub_001C1585); /* call 0x001C1585 */
     }]=])
+    set(compass_original [=[loc_0011DBF1: ;
+    fp_push(MEMF(ebx + 0x4C)); /* fld float */]=])
+    set(compass_replacement [=[loc_0011DBF1: ;
+    mm3_map_zoom_compass_geometry(ebx, ebp + -740);
+    fp_push(MEMF(ebx + 0x4C)); /* fld float */]=])
     set(marker_original [=[    fp_st1() = RECOMP_FP_PC(fp_st1() + fp_top()); fp_pop(); /* faddp st(1) */
     fp_top() = RECOMP_FP_PC(sqrt(fp_top())); /* fsqrt */
     fp_st1() = fp_top(); fp_pop(); /* fstp st(1) */
@@ -123,7 +133,7 @@ function(mm3_add_map_zoom source_variable function_name)
         set(newline "\n")
     else()
         set(newline "\r\n")
-        foreach(block reset update apply checkpoint square border marker)
+        foreach(block reset pool update apply checkpoint square border compass marker)
             string(REPLACE "\n" "\r\n" ${block}_original "${${block}_original}")
             string(REPLACE "\n" "\r\n" ${block}_replacement "${${block}_replacement}")
         endforeach()
@@ -136,6 +146,8 @@ function(mm3_add_map_zoom source_variable function_name)
         set(block apply)
     elseif(function_name STREQUAL "sub_0011CAE8")
         set(block checkpoint)
+    elseif(function_name STREQUAL "sub_0011DCBF")
+        set(block pool)
     else()
         message(FATAL_ERROR "MM3 map zoom: unsupported owner ${function_name}")
     endif()
@@ -165,7 +177,7 @@ function(mm3_add_map_zoom source_variable function_name)
     endif()
     string(REPLACE "${${block}_original}" "${${block}_replacement}" transformed "${body}")
     if(function_name STREQUAL "sub_0011D808")
-        set(square_blocks square border)
+        set(square_blocks square border compass)
     elseif(function_name STREQUAL "sub_0011CAE8")
         set(square_blocks marker)
     else()
@@ -189,6 +201,8 @@ function(mm3_add_map_zoom source_variable function_name)
     endif()
     string(REPLACE "${body}" "${transformed}" content "${content}")
     set(declarations "#include <stdint.h>${newline}extern int mm3_minimap_improved(void);${newline}extern void mm3_map_zoom_reset(uint32_t);${newline}extern void mm3_map_square_geometry(uint32_t, uint32_t, float);${newline}extern float mm3_map_square_marker_distance(uint32_t, uint32_t, float, float);${newline}extern void mm3_map_zoom_update(uint32_t, float);${newline}extern void mm3_map_zoom_apply(uint32_t, uint32_t);${newline}extern void mm3_map_zoom_window(uint32_t, uint32_t);${newline}extern float mm3_map_zoom_checkpoint_scale(uint32_t, uint32_t);${newline}")
+    string(APPEND declarations "extern void mm3_map_zoom_compass_geometry(uint32_t, uint32_t);${newline}")
+    string(APPEND declarations "extern void mm3_map_ui_capacity(void);${newline}")
     string(FIND "${content}" "extern void mm3_map_zoom_reset(" declared)
     if(declared LESS 0)
         set(content "${declarations}${content}")

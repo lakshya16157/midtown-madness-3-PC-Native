@@ -1196,14 +1196,18 @@ static void route_polyline_join(uint32_t renderer, uint32_t clip,
     cross = dx0 * dy1 - dy0 * dx1;
     if (!isfinite(cross) || fabsf(cross) < .000001f) return;
     side = cross > 0 ? -half_width : half_width;
-    if (!s_road_layer) {
+    {
         float angle = atan2f(cross, dx0 * dx1 + dy0 * dy1);
         float start_x, start_y, finish_x, finish_y;
-        unsigned step, steps = (unsigned)ceilf(fabsf(angle) / .7853981634f);
-        /* A blue route has the same butt-ended segments as the streets, but
-         * needs rounded elbows. Fill only the exterior sector so adjacent
-         * translucent segments do not acquire a darker circular overlap.
-         * At 1.25px radius, a 45-degree arc chord differs by under .1px. */
+        unsigned step, steps = (unsigned)fminf(32.0f, ceilf(fabsf(angle) *
+            fmaxf(1.2732395447f, sqrtf(half_width / .8f))));
+        /* Both streets and blue guidance need round exterior elbows. A
+         * single bevel triangle visibly cuts the corner off wider roads.
+         * Scale the arc samples with width: r*(1-cos(step/2)) <= r*step^2/8
+         * bounds the chord error to .1 map pixel, with at most 45 degrees
+         * per triangle. The 32-triangle ceiling bounds malformed huge widths.
+         * Fill only the missing exterior sector, avoiding a full translucent
+         * circle over the two street segments and preserving the road width. */
         if (cross > 0) {
             start_x = -dy1 * side; start_y = dx1 * side;
             finish_x = -dy0 * side; finish_y = dx0 * side;
@@ -1222,21 +1226,7 @@ static void route_polyline_join(uint32_t renderer, uint32_t clip,
             route_quad(renderer, clip, xy, alpha);
             xy[1][0] = xy[2][0]; xy[1][1] = xy[2][1];
         }
-        return;
     }
-    /* Butt-ended street quads leave an exterior wedge at each bend. Fill only
-     * that triangle, using the same native clipping, tags and color. A bevel
-     * stays within the road's half-width; sharp turns cannot grow miter spikes.
-     * The repeated fourth vertex makes the native quad a single triangle. */
-    xy[0][0] = xy[3][0] = cx + b.x; xy[0][1] = xy[3][1] = cy + b.y;
-    xy[1][0] = cx + b.x - dy0 * side; xy[1][1] = cy + b.y + dx0 * side;
-    xy[2][0] = cx + b.x - dy1 * side; xy[2][1] = cy + b.y + dx1 * side;
-    if (cross > 0) {
-        float x = xy[1][0], y = xy[1][1];
-        xy[1][0] = xy[2][0]; xy[1][1] = xy[2][1];
-        xy[2][0] = x; xy[2][1] = y;
-    }
-    route_quad(renderer, clip, xy, alpha);
 }
 
 static void route_polyline_width(uint32_t renderer, uint32_t clip, const RoadPoint *points,

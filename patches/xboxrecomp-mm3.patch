@@ -22542,16 +22542,18 @@ index 0000000..2667224
 +}
 diff --git a/src/video/nv2a_minimap_projection.h b/src/video/nv2a_minimap_projection.h
 new file mode 100644
-index 0000000..b7ba2c2
+index 0000000..9c1099f
 --- /dev/null
 +++ b/src/video/nv2a_minimap_projection.h
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,109 @@
 +#ifndef NV2A_MINIMAP_PROJECTION_H
 +#define NV2A_MINIMAP_PROJECTION_H
 +
 +#include <math.h>
 +
-+/* Grow the driving minimap from its visible bottom-left corner. */
++/* Grow the driving minimap's display frame from its visible bottom-left
++ * corner. The title compensates its world scale and marker sizes by this
++ * same factor, so a larger frame reveals more city at the authored scale. */
 +#define NV2A_MINIMAP_SCALE 2.20f
 +
 +static inline float nv2a_minimap_motion_bound(float motion)

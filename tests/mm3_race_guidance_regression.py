@@ -18,7 +18,8 @@ MATH = ("sub_0002DC95", "sub_0006ACC3", "sub_000C6ADC", "sub_0006AC61",
         "sub_0006AE0C", "sub_0006AEE2", "sub_0001259E", "sub_0006AD9F", "sub_0006AE60",
         "sub_0020BF9C", "sub_0001BA6A", "sub_001C1585", "sub_0011964B",
         "sub_00069807", "sub_001195F7", "sub_0006B623", "sub_000C6CD0",
-        "sub_00349470", "sub_0034C0E0", "sub_000C191C", "sub_0004DBC7", "sub_0013532D")
+        "sub_00349470", "sub_0034C0E0", "sub_000C191C", "sub_0004DBC7", "sub_0013532D",
+        "sub_0011DCBF")
 HOOKS = {
     OWNERS[0]: ("loc_00201BCA", "loc_00201CC0", "loc_00201D55"),
     OWNERS[1]: ("loc_0011CB45",),
@@ -341,6 +342,7 @@ def main():
         executable = folder / "contract.exe"
         subprocess.run(["cl", "/nologo", "/W3", "/WX", "/wd4102", "/Od", "/std:c11",
                         "/I" + str(folder), "/I" + str(ROOT / "tools/xboxrecomp/include"),
+                        "/I" + str(ROOT / "tools/xboxrecomp/src/video"),
                         str(ROOT / "tests/mm3_race_guidance_contract.c"),
                         "/Fo:" + str(folder / "contract.obj"), "/Fe:" + str(executable)],
                        check=True, cwd=folder)

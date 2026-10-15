@@ -13,16 +13,19 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-SEAMS = ("sub_0011CA25", "sub_0011D1E8", "sub_0011D808", "sub_0011CAE8")
+SEAMS = ("sub_0011CA25", "sub_0011D1E8", "sub_0011D808", "sub_0011CAE8", "sub_0011DCBF")
 PRODUCER = "sub_00116535"
 EMITTER_SITES = ("001169A2", "00116A7F", "00116B4A", "00116BDE", "00116C78", "00116D0E", "00116D9D", "00116E2F", "00116EBE")
 MATH = ("sub_0002DC95", "sub_0006ACC3", "sub_000C6ADC",
         "sub_0006AC61", "sub_0006AE0C", "sub_0006AEE2", "sub_0001259E",
-        "sub_0006AD9F", "sub_0006AE60", "sub_000629BE", "sub_0006AEB6")
+        "sub_0006AD9F", "sub_0006AE60", "sub_000629BE", "sub_0006AEB6",
+        "sub_00218844", "sub_001F0399", "sub_0011DD26", "sub_0011DD00")
 SQUARE_ORIGINAL = "    PUSH32(esp, 0x0011DB57u); RECOMP_ABI_CALL(0x000C6ADCu, sub_000C6ADC); /* call 0x000C6ADC */"
 SQUARE_REPLACEMENT = "    if (mm3_minimap_improved()) {\n        mm3_map_square_geometry(eax, ecx, MEMF(esp));\n        mm3_map_zoom_window(ebx, MEM32(eax));\n        esp += 4; /* Inverse city-UV rotation consumes the native angle argument. */\n    } else {\n    " + SQUARE_ORIGINAL + "\n    }"
 BORDER_ORIGINAL = "    PUSH32(esp, 0x0011DBB1u); RECOMP_ABI_CALL(0x001C1585u, sub_001C1585); /* call 0x001C1585 */"
 BORDER_REPLACEMENT = "    if (mm3_minimap_improved()) {\n        esp += 8; /* Improved map has no MapCircle border. */\n    } else {\n    " + BORDER_ORIGINAL + "\n    }"
+COMPASS_ORIGINAL = "loc_0011DBF1: ;\n    fp_push(MEMF(ebx + 0x4C)); /* fld float */"
+COMPASS_REPLACEMENT = "loc_0011DBF1: ;\n    mm3_map_zoom_compass_geometry(ebx, ebp + -740);\n    fp_push(MEMF(ebx + 0x4C)); /* fld float */"
 MARKER_ORIGINAL = "    fp_top() = RECOMP_FP_PC(sqrt(fp_top())); /* fsqrt */"
 MARKER_REPLACEMENT = "    fp_top() = RECOMP_FP_PC(mm3_map_square_marker_distance(ebx, eax, MEMF(ebp + 0x4C), MEMF(ebp + 0x3C)));"
 
@@ -108,14 +111,16 @@ def main():
             SEAMS[1]: "    mm3_map_zoom_update(ecx, MEMF(esp + 0x10));\n",
             SEAMS[2]: "    mm3_map_zoom_apply(ebx, MEM32(ebp + -4));\n",
             SEAMS[3]: "    fp_top() = RECOMP_FP_PC(fp_top() * mm3_map_zoom_checkpoint_scale(ebx, MEM32(ebp + 0x40)));\n",
+            SEAMS[4]: "    mm3_map_ui_capacity();\n",
         }
         labels = {SEAMS[0]: "loc_0011CA25", SEAMS[1]: "loc_0011D1E8",
-                  SEAMS[2]: "loc_0011D8F6", SEAMS[3]: "loc_0011CC53"}
+                  SEAMS[2]: "loc_0011D8F6", SEAMS[3]: "loc_0011CC53", SEAMS[4]: "loc_0011DCBF"}
         instructions = {
             SEAMS[0]: "    PUSH32(esp, ebp);",
             SEAMS[1]: "    PUSH32(esp, ebp);",
             SEAMS[2]: "    PUSH32(esp, edi);",
             SEAMS[3]: "    { double _t = fp_top(); fp_push(_t); } /* fld st(0) */",
+            SEAMS[4]: "    MEM32(0x3C568C) = MEM32(0x3C568C) & 0;",
         }
         for name in SEAMS:
             modified[name] = transform(native[name], name)
@@ -124,9 +129,11 @@ def main():
             restored = modified[name].replace(calls[name], "")
             if name == "sub_0011D808":
                 for original, replacement in ((SQUARE_ORIGINAL, SQUARE_REPLACEMENT),
-                                              (BORDER_ORIGINAL, BORDER_REPLACEMENT)):
+                                              (BORDER_ORIGINAL, BORDER_REPLACEMENT),
+                                              (COMPASS_ORIGINAL, COMPASS_REPLACEMENT)):
                     assert modified[name].count(replacement) == 1, (name, replacement)
-                    assert modified[name].count(original) == 1  # Stock retains the exact native call.
+                    if original != COMPASS_ORIGINAL:
+                        assert modified[name].count(original) == 1  # Stock retains the exact native call.
                     restored = restored.replace(replacement, original)
                     transform(native[name].replace(original, "    /* missing native call */"), name, True)
                     transform(native[name].replace(original, original + "\n" + original), name, True)
@@ -187,7 +194,7 @@ def main():
             composed_bodies.append(owner_body)
         assert composed_bodies[0] == composed_bodies[1]
         body = "\n".join(native[name] for name in MATH)
-        for name, title in zip(SEAMS, ("reset", "update", "draw", "marker")):
+        for name, title in zip(SEAMS, ("reset", "update", "draw", "marker", "pool")):
             body += "\n" + native[name].replace("void " + name, "void retail_" + title, 1)
             body += "\n" + modified[name].replace("void " + name, "void zoom_" + title, 1)
         # Execute the literal native first textured vertex producer, including
@@ -215,15 +222,31 @@ def main():
         executable = folder / "contract.exe"
         command = ["cl", "/nologo", "/W3", "/WX", "/wd4102", "/Od", "/std:c11",
                    "/I" + str(folder), "/I" + str(ROOT / "tools/xboxrecomp/include"),
+                   "/I" + str(ROOT / "tools/xboxrecomp/src/video"),
                    str(ROOT / "tests/mm3_map_zoom_contract.c"),
                    "/Fo:" + str(folder / "contract.obj"), "/Fe:" + str(executable)]
         subprocess.run(command, check=True, cwd=folder)
         subprocess.run([str(executable)], check=True, cwd=folder)
         if "--check-mutants" in sys.argv:
             mutants = {
+                "improved map never requests the native larger UI pool": production.replace(
+                    "MEM8(0x3C5694u) = 1;", "MEM8(0x3C5694u) = 0;"),
+                "UI pool reallocates on every frame": production.replace(
+                    "mm3_minimap_improved() && MEM32(0x3A0EC0u) < 160000u", "mm3_minimap_improved()"),
+                "Stock also requests a larger UI pool": production.replace(
+                    "mm3_minimap_improved() && MEM32(0x3A0EC0u) < 160000u", "MEM32(0x3A0EC0u) < 160000u"),
                 "missing common map scale": production.replace(
-                    "MEMF(node + 0x50) = s_map_zoom[slot].baseline * 1.15f / s_map_zoom[slot].span;",
+                    "MEMF(node + 0x50) = s_map_zoom[slot].baseline /\n            (NV2A_MINIMAP_SCALE * s_map_zoom[slot].span);",
                     "MEMF(node + 0x50) = scale;"),
+                "Ctrl restores native world scale and hides visible checkpoints": production.replace(
+                    "MEMF(node + 0x50) = s_map_zoom[slot].baseline /\n            (NV2A_MINIMAP_SCALE * s_map_zoom[slot].span);",
+                    "MEMF(node + 0x50) = s_map_zoom[slot].baseline / "
+                    "((NV2A_MINIMAP_SCALE + (1 - NV2A_MINIMAP_SCALE) * map_expansion(node)) * "
+                    "(s_map_zoom[slot].span + (1 - s_map_zoom[slot].span) * map_expansion(node)));"),
+                "Ctrl drops speed zoom": production.replace(
+                    "(NV2A_MINIMAP_SCALE * s_map_zoom[slot].span);",
+                    "(NV2A_MINIMAP_SCALE * (s_map_zoom[slot].span + "
+                    "(1 - s_map_zoom[slot].span) * map_expansion(node)));"),
                 "immediate zoom jump": production.replace(
                     "blend = 1.0f - expf(-dt / 0.6f);", "blend = 1.0f;"),
                 "missing speed target": production.replace(
@@ -267,6 +290,8 @@ def main():
             (folder / "production_map_zoom.c").write_text(production)
             for label, replacement, original in (("missing square geometry", SQUARE_REPLACEMENT, SQUARE_ORIGINAL),
                                                  ("retained circular border", BORDER_REPLACEMENT, BORDER_ORIGINAL),
+                                                 ("unscaled map compass sprite", COMPASS_REPLACEMENT, COMPASS_ORIGINAL),
+                                                 ("missing native UI capacity seam", calls[SEAMS[4]], ""),
                                                  ("missing native viewport publication seam", publish_window, ""),
                                                  ("missing native city UV seam", city_uv, "")):
                 assert body.count(replacement) == 1

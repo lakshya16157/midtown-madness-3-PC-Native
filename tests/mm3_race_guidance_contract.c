@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include "recomp_types.h"
+#include "nv2a_minimap_projection.h"
 
 ptrdiff_t g_xbox_mem_offset;
 RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi, g_edi;
@@ -12,7 +13,7 @@ RECOMP_TLS uint32_t g_ebp, g_seh_ebp;
 RECOMP_TLS double g_fp_stack[8];
 RECOMP_TLS int g_fp_top, g_fp_cmp, g_df;
 RECOMP_TLS uint16_t g_fp_cc, g_fp_control_word;
-static unsigned char memory[0x440000];
+static unsigned char memory[0x800000];
 static const uint32_t stack = 0x80000, node = 0x10000, property = 0x22000;
 static const uint32_t layout = 0x23000, markers = 0x24000, position = 0x28000;
 static const uint32_t origin = 0x28100, event = 0x60000, event_vtable = 0x61000;
@@ -20,16 +21,18 @@ static const uint32_t event_list = 0x62000, event_head = 0x62100, list_nodes = 0
 static const uint32_t empty_list = 0x62800, empty_head = 0x62810;
 static const uint32_t players = 0x62900, player_thing = 0x62A00;
 static const uint32_t renderer_vtable = 0x68000, viewport = 0x68100;
-static const uint32_t packed_vertices = 0x69000, packed_batches = 0x6B000, test_quad = 0x6C000;
+static const uint32_t packed_vertices = 0x500000, packed_batches = 0x790000, test_quad = 0x6C000;
 static const uint32_t objects[4] = {0x30018, 0x30118, 0x30218, 0x30318};
 static const float points[4][2] = {{-22, -8}, {-10, 14}, {9, 10}, {23, -5}};
 typedef struct { uint32_t texture; float xy[4][2], color[4]; } Draw;
 static unsigned route_segment_draw_count(void);
 static const Draw *route_segment_draw(unsigned index);
-static Draw draws[256];
+static Draw draws[65536];
 static unsigned draw_count, active_player, marker_count, world_draw_count;
 static unsigned hud_players, native_marker_count;
 static unsigned native_submission;
+static unsigned native_submission_dropped, native_submission_gray, native_submission_blue;
+static unsigned native_submission_markers, native_pool_allocations, native_pool_frees;
 static uint32_t current_target;
 static uint32_t world_color;
 static const char *check = "guidance";
@@ -137,6 +140,13 @@ void sub_0001B8AD(void) { assert(!"unexpected auxiliary HUD collection"); }
 void sub_00095338(void) { assert(!"unexpected auxiliary HUD collection"); }
 void sub_00180E92(void) { assert(!"unexpected auxiliary HUD collection"); }
 void sub_00013A84(void) { assert(!"unexpected auxiliary HUD collection"); }
+void sub_00170EC0(void) {
+    assert(MEM32(g_esp + 4) == packed_vertices); ++native_pool_frees; g_esp += 4;
+}
+void sub_00170EE2(void) {
+    assert(g_eax == 160000 * 16); ++native_pool_allocations;
+    g_eax = packed_vertices; g_esp += 4;
+}
 void sub_001C1585(void) {
     uint32_t texture = MEM32(g_esp + 4), vertices = MEM32(g_esp + 8);
     unsigned i;
@@ -150,8 +160,13 @@ void sub_001C1585(void) {
     }
     ++draw_count; g_esp += 12;
     if (native_submission) {
+        unsigned used = MEM32(0x3C568C);
         g_esp -= 12;
         native_submit();
+        if (MEM32(0x3C568C) == used) ++native_submission_dropped;
+        else if (texture) ++native_submission_markers;
+        else if (draws[draw_count - 1].color[0] == .62f) ++native_submission_gray;
+        else ++native_submission_blue;
     }
 }
 #undef RECOMP_ICALL_SAFE_AT
@@ -981,6 +996,84 @@ static void retail_route_cache_benchmark(const char *filename, const unsigned ch
            1000.0 * (advanced - initialized) / CLOCKS_PER_SEC);
 }
 
+static void retail_hud_capacity_contract(const char *filename) {
+    RoadPoint low = s_roads.nodes[0].position, high = low, center;
+    unsigned checkpoints[8], count = 0, i, grown, baseline_draws = 0;
+    float extent;
+    check = "dense retail Ctrl overview preserves gray/blue/checkpoints/later HUD";
+    for (i = 0; i < s_roads.node_count; ++i) {
+        RoadPoint p = s_roads.nodes[i].position;
+        low.x = fminf(low.x,p.x); low.z = fminf(low.z,p.z);
+        high.x = fmaxf(high.x,p.x); high.z = fmaxf(high.z,p.z);
+        if (count < 8 && s_roads.nodes[i].routable && i % 173 == 0) checkpoints[count++] = i;
+    }
+    assert(count == 8);
+    center = (RoadPoint){(low.x + high.x)*.5f,0,(low.z + high.z)*.5f};
+    extent = fmaxf(high.x - low.x,high.z - low.z)*.5f;
+    assert(extent > 100);
+    MEMF(origin) = center.x; MEMF(origin + 4) = center.y; MEMF(origin + 8) = center.z;
+    mm3_race_guidance_begin(0);
+    for (i = 0; i < 8; ++i) {
+        RoadPoint p = s_roads.nodes[checkpoints[i]].position;
+        uint32_t marker = markers + i*24;
+        MEMF(position) = p.x; MEMF(position + 4) = p.y; MEMF(position + 8) = p.z;
+        mm3_race_guidance_checkpoint(0,0x33000 + i*256,position,origin,0);
+        MEMF(marker) = p.x - center.x; MEMF(marker + 8) = p.z - center.z;
+        MEM32(marker + 12) = i ? 0 : 0x80;
+    }
+    mm3_race_guidance_end(0);
+    MEM32(0x407F78 + 4) = markers; marker_count = 8; active_player = 0; improved = 1;
+    MEMF(node + 0x50) = 100 / extent; MEMF(node + 0x54) = 0; MEMF(node + 0x58) = 1024;
+    MEMF(node + 0x4C) = MEMF(node + 0x94) = MEMF(node + 0x98) = MEMF(node + 0xAC) = 0;
+    MEMF(node + 0xB4) = MEMF(node + 0xBC) = 3;
+    MEMF(layout + 8) = MEMF(layout + 12) = 384;
+    MEMF(4 + 0x50) = MEMF(4 + 0x54) = 1; /* Native Checkpoint texture UVs. */
+    memset((void *)XBOX_PTR(test_quad),0,0xA0);
+    MEM32(test_quad + 4) = 7; MEM32(test_quad + 8) = 8;
+    for (i = 0; i < 4; ++i) {
+        uint32_t vertex = test_quad + 0xC + i*0x24;
+        MEMF(vertex) = i == 0 || i == 3 ? -30.0f : 30.0f;
+        MEMF(vertex + 4) = i < 2 ? -20.0f : 20.0f;
+        MEMF(vertex + 0x14) = MEMF(vertex + 0x18) = MEMF(vertex + 0x1C) = MEMF(vertex + 0x20) = 1;
+    }
+    for (grown = 0; grown < 2; ++grown) {
+        unsigned used, hud_vertices, vertices;
+        native_submission_begin(); MEM32(0x3A0EC0) = 5000;
+        MEM8(0x3C5694) = (uint8_t)grown;
+        native_pool_allocations = native_pool_frees = 0;
+        abi_start(0); PUSH32(g_esp,0x0011E7E0); sub_0011DCBF();
+        assert(g_esp == stack && g_fp_top == 0);
+        assert(native_pool_allocations == grown && native_pool_frees == grown);
+        vertices = grown ? 160000 : 5000;
+        assert(MEM32(0x3A0EC0) == vertices && !MEM8(0x3C5694));
+        MEM32(packed_vertices + vertices*16) = 0xC01DFACE;
+        native_submission_dropped = native_submission_gray = native_submission_blue = native_submission_markers = 0;
+        native_submission = 1;
+        abi_start(0); MEM32(stack + 12) = 0; sub_0011CAE8(); abi_end();
+        native_submission = 0; used = MEM32(0x3C568C);
+        if (!grown) baseline_draws = draw_count;
+        else assert(draw_count == baseline_draws);
+        /* A later untextured HUD quad uses the same real native pool and gate.
+         * The old 5000-vertex pool loses it after roads exhaust that pool. */
+        abi_start(0);
+        PUSH32(g_esp,test_quad); PUSH32(g_esp,0); PUSH32(g_esp,0x0011CB45);
+        g_eax = 0; g_edx = 0x25000; native_submit();
+        assert(g_esp == stack && g_fp_top == 0); hud_vertices = MEM32(0x3C568C) - used;
+        assert(MEM32(packed_vertices + vertices*16) == 0xC01DFACE);
+        if (!grown) {
+            assert(native_submission_dropped && !native_submission_markers && !hud_vertices);
+        } else {
+            assert(!native_submission_dropped && native_submission_gray > 1250);
+            assert(native_submission_blue && native_submission_markers == 8 && hud_vertices == 4);
+            assert(used > 5000 && used + 18 < vertices);
+            printf("PASS retail HUD pool: %s gray_quads=%u blue_quads=%u native_checkpoints=%u used=%u/%u, later HUD retained; original 5000-vertex drop reproduced\n",
+                   filename,native_submission_gray,native_submission_blue,native_submission_markers,used,vertices);
+        }
+    }
+    marker_count = 0; MEMF(origin) = MEMF(origin + 4) = MEMF(origin + 8) = 0;
+    mm3_race_guidance_frame_begin();
+}
+
 static void retail_road_contract(const char *filename) {
     FILE *file = fopen(filename, "rb");
     uint32_t header[7], city, roads, junctions, i;
@@ -1069,6 +1162,7 @@ static void retail_road_contract(const char *filename) {
            s_road_lines.count, s_roads.edge_count / 2);
     if (traffic_nodes) retail_roundabout_contract(city);
     retail_route_cache_benchmark(filename, visited);
+    retail_hud_capacity_contract(filename);
     free(visited); mm3_race_guidance_roads(city, 0);
     assert(!s_roads.node_count && !s_roads.edge_count);
     assert(!s_road_lines.points && !s_road_lines.lines && !s_road_lines.count);

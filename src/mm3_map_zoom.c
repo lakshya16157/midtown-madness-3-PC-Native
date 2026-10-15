@@ -1,6 +1,20 @@
 #include <math.h>
 #include "recomp_types.h"
+#include "nv2a_minimap_projection.h"
 extern int mm3_minimap_improved(void);
+
+#define MAP_SPEED_SPAN 0.60f
+
+void mm3_map_ui_capacity(void)
+{
+    /* 11DCBF runs before the title packs this frame's UI. Request its own
+     * large-buffer path: it frees/reallocates the shared 16-byte vertex pool
+     * at that safe boundary and retains the allocation across later frames.
+     * Expanded city roads otherwise exhaust the retail 5,000 vertices before
+     * checkpoint, route and other HUD submissions reach the same pool. */
+    if (mm3_minimap_improved() && MEM32(0x3A0EC0u) < 160000u)
+        MEM8(0x3C5694u) = 1;
+}
 
 /* The title owns these map nodes and calls the helpers on its update/
  * draw thread. Keep only identities and scalars here; no saved guest pointer
@@ -49,14 +63,11 @@ static void map_heading_publish(unsigned slot, uint32_t player_record)
     map_scalar_store(&s_map_heading[slot], player_record ? MEM32(player_record) : 0x7FC00000u);
 }
 
-static float map_expansion_publish(unsigned slot, uint32_t node)
+static float map_expansion(uint32_t node)
 {
     float current = MEMF(node + 0xB4), maximum = MEMF(node + 0xBC), expansion;
     double fraction;
-    uint32_t bits;
-    if (!isfinite(current) || !isfinite(maximum) || maximum <= 1.0f) {
-        map_scalar_store(&s_map_expansion[slot], 0); return 0;
-    }
+    if (!isfinite(current) || !isfinite(maximum) || maximum <= 1.0f) return 0;
     /* B4 interpolates between the small map's 1 and BC (3 normally, 2 in
      * split screen). Window dimensions can change independently of this
      * native Ctrl transition, so they cannot identify its camera state. */
@@ -64,6 +75,13 @@ static float map_expansion_publish(unsigned slot, uint32_t node)
     if (fraction < 0.0) fraction = 0.0;
     if (fraction > 1.0) fraction = 1.0;
     expansion = (float)fraction;
+    return expansion;
+}
+
+static float map_expansion_publish(unsigned slot, uint32_t node)
+{
+    float expansion = map_expansion(node);
+    uint32_t bits;
     memcpy(&bits, &expansion, sizeof bits);
     map_scalar_store(&s_map_expansion[slot], 0x80000000u | bits);
     return expansion;
@@ -78,7 +96,7 @@ static unsigned map_camera_quantize(float value)
 
 static void map_motion_publish(unsigned slot, float cx, float cy)
 {
-    float motion = (s_map_zoom[slot].span - 1.0f) * 4.0f;
+    float motion = (s_map_zoom[slot].span - 1.0f) / MAP_SPEED_SPAN;
     uint32_t x, y, speed;
     unsigned i;
     if (!isfinite(cx) || !isfinite(cy) || cx < -1024 || cx > 1023.5f ||
@@ -234,7 +252,7 @@ void mm3_map_square_publish_window(float half_width, float half_height)
      * Ctrl's overview) cannot match the renderer's screen-space mask window.
      * It then misses expansion and tilts/crops the overview as a driving map. */
     expansion = map_expansion_publish(slot, node);
-    motion = (s_map_zoom[slot].span - 1.0f) * 4.0f;
+    motion = (s_map_zoom[slot].span - 1.0f) / MAP_SPEED_SPAN;
     s_square_map.camera = (uint16_t)((map_camera_quantize(motion) << 8) |
         map_camera_quantize(expansion));
     s_square_map.camera_valid = 1;
@@ -366,7 +384,7 @@ void mm3_map_zoom_apply(uint32_t node, uint32_t player_record)
     t = (speed - 20.0f) / 100.0f;
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
-    s_map_zoom[slot].target = 1.0f + 0.25f * t * t * (3.0f - 2.0f * t);
+    s_map_zoom[slot].target = 1.0f + MAP_SPEED_SPAN * t * t * (3.0f - 2.0f * t);
     scale = MEMF(node + 0x50);
     /* 11FE40 fits stock zoom to checkpoint proximity. That fit can zoom in
      * while accelerating and cancel the speed zoom. Preserve this layout's
@@ -374,21 +392,51 @@ void mm3_map_zoom_apply(uint32_t node, uint32_t player_record)
      * as the speed curve's baseline. Roads and 11CAE8's marker positions all
      * read +50; the window calculations remain native. This changes world
      * coverage within the fixed HUD frame, not the frame or icon dimensions.
-     * The improved detail view starts 15% closer before the speed zoom. */
+     * The renderer enlarges that frame by NV2A_MINIMAP_SCALE. Compensate the
+     * world scale so a street keeps its authored size instead of inheriting
+     * that enlargement. Ctrl changes the window, never this world scale:
+     * restoring native scale/speed here made the expanded map zoom back in,
+     * dropping streets and moving visible checkpoints to the clamp edge.
+     * Keeping one world camera makes every expansion reveal more of the city
+     * and preserves speed zoom throughout the transition and its reversal. */
     if (isfinite(scale) && scale > 0.0f) {
         if (!s_map_zoom[slot].baseline) s_map_zoom[slot].baseline = scale;
-        MEMF(node + 0x50) = s_map_zoom[slot].baseline * 1.15f / s_map_zoom[slot].span;
+        MEMF(node + 0x50) = s_map_zoom[slot].baseline /
+            (NV2A_MINIMAP_SCALE * s_map_zoom[slot].span);
     }
 }
 
 float mm3_map_zoom_checkpoint_scale(uint32_t node, uint32_t flags)
 {
     unsigned style = flags & 0x1Fu;
-    const float icon_scale = 0.75f;
+    float expansion, icon_scale;
     /* 11CAE8 styles 0 and 3 use Checkpoint; 1/2/4 use You and 5 uses
      * TagMagIcon. Scale the checkpoint's pulse-adjusted half-size before
      * native quad creation, rotation and translation, keeping its centre.
-     * Keep this pixel size stable while world coverage zooms out with speed. */
-    if (!mm3_minimap_improved() || !node || (style != 0 && style != 3)) return 1.0f;
-    return icon_scale;
+     * Keep icon pixel sizes stable while world coverage zooms with speed,
+     * cancelling the same renderer enlargement as the world scale. */
+    if (!mm3_minimap_improved() || !node || style > 5) return 1.0f;
+    expansion = map_expansion(node);
+    icon_scale = 1.0f / (NV2A_MINIMAP_SCALE +
+        (1.0f - NV2A_MINIMAP_SCALE) * expansion);
+    return icon_scale * ((style == 0 || style == 3) ? 0.75f : 1.0f);
+}
+
+void mm3_map_zoom_compass_geometry(uint32_t node, uint32_t vertices)
+{
+    float scale = mm3_map_zoom_checkpoint_scale(node, 1), cx = 0, cy = 0;
+    unsigned i;
+    if (!vertices || scale == 1.0f) return;
+    /* 11D808 draws MapNorth directly, outside 11CAE8's marker dispatch.
+     * Shrink its native quad about its own centre before the
+     * authored map rotation; its position, UVs, color and clip stay intact. */
+    for (i = 0; i < 4; ++i) {
+        cx += MEMF(vertices + 0xC + i * 0x24) * .25f;
+        cy += MEMF(vertices + 0x10 + i * 0x24) * .25f;
+    }
+    for (i = 0; i < 4; ++i) {
+        uint32_t vertex = vertices + 0xC + i * 0x24;
+        MEMF(vertex) = cx + (MEMF(vertex) - cx) * scale;
+        MEMF(vertex + 4) = cy + (MEMF(vertex + 4) - cy) * scale;
+    }
 }

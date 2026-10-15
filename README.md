@@ -69,8 +69,8 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   Ctrl expands it into a flat overview, retaining checkpoints around the car
   throughout the transition. Narrow streets have a wider visibility floor
   so small Washington DC roads remain readable after perspective scaling.
-  Connected street segments now share filled bevel joins at curves and
-  closed-loop seams, removing the small wedges on circular roads.
+  Connected street segments share rounded joins at bends, right-angle turns
+  and closed-loop seams, removing sharp bevels and small gaps between roads.
   World illumination now covers ambient, diffuse and backlight materials
   across the scene; the localized light-buffer overlay is disabled by
   default, removing the concentrated bright patch ahead of the car.
@@ -512,8 +512,9 @@ saved selection at startup.
 The improved minimap shows only gray streets, blue race guidance and native
 markers over the game. Roads, route and markers share a tilted perspective,
 with distant roads narrowing and the player positioned below the center.
-The driving frame is 37.5% larger than the previous improved map and starts
-15% closer, with the car around 70% down the visible road plane.
+The driving frame is 37.5% larger than the previous improved map, with the
+car around 70% down the visible road plane. Streets and the player marker
+retain their original scale inside that larger frame, revealing more city.
 It stays in the bottom-left corner. Holding Ctrl opens a flat, centered
 overview; its roads and checkpoints share the same expanded window.
 The map rotates with your heading. Cruise also shows roads without race data.
@@ -523,10 +524,12 @@ Street thickness follows the road's lane layout: side streets stay thin,
 avenues draw wider, and the widths scale with the map zoom.
 Stock restores the native city artwork, circular border, marker sizes and zoom,
 and retains the existing amber race guidance.
-Both improved map sizes smoothly show more road as speed rises above 20 km/h, reaching
-25% more visible distance at 120 km/h. The frame, perspective and checkpoint
-icon sizes stay fixed while the contents zoom out. Their initial framing
-stays stable as you approach checkpoints.
+The driving map smoothly shows more road as speed rises above 20 km/h, reaching
+60% more visible distance at 120 km/h. The frame, perspective and marker
+sizes stay fixed while the contents zoom out. Holding Ctrl expands the visible
+area at the same world scale and speed zoom, so roads and checkpoints stay in
+range throughout expansion and release. Driving-map framing stays stable as
+you approach checkpoints.
 Both map sizes draw the ordered checkpoint course along actual streets with
 a blue path. The brighter leg updates from the car to the next checkpoint,
 including after a wrong turn. The remaining course stays visible through the final checkpoint. Checkpoint
