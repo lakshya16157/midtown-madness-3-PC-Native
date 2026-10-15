@@ -393,15 +393,16 @@ void mm3_map_zoom_apply(uint32_t node, uint32_t player_record)
      * read +50; the window calculations remain native. This changes world
      * coverage within the fixed HUD frame, not the frame or icon dimensions.
      * The renderer enlarges that frame by NV2A_MINIMAP_SCALE. Compensate the
-     * world scale so a street keeps its authored size instead of inheriting
-     * that enlargement. Ctrl changes the window, never this world scale:
+     * world scale independently of that enlargement. Make the former stopped
+     * view the high-speed endpoint, with a 60% closer view while stopped.
+     * Ctrl changes the window, never this world scale:
      * restoring native scale/speed here made the expanded map zoom back in,
      * dropping streets and moving visible checkpoints to the clamp edge.
      * Keeping one world camera makes every expansion reveal more of the city
      * and preserves speed zoom throughout the transition and its reversal. */
     if (isfinite(scale) && scale > 0.0f) {
         if (!s_map_zoom[slot].baseline) s_map_zoom[slot].baseline = scale;
-        MEMF(node + 0x50) = s_map_zoom[slot].baseline /
+        MEMF(node + 0x50) = s_map_zoom[slot].baseline * (1.0f + MAP_SPEED_SPAN) /
             (NV2A_MINIMAP_SCALE * s_map_zoom[slot].span);
     }
 }

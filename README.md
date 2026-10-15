@@ -513,8 +513,8 @@ The improved minimap shows only gray streets, blue race guidance and native
 markers over the game. Roads, route and markers share a tilted perspective,
 with distant roads narrowing and the player positioned below the center.
 The driving frame is 37.5% larger than the previous improved map, with the
-car around 70% down the visible road plane. Streets and the player marker
-retain their original scale inside that larger frame, revealing more city.
+car around 70% down the visible road plane. The stopped view shows nearby
+streets more closely, while the player marker keeps its original size.
 It stays in the bottom-left corner. Holding Ctrl opens a flat, centered
 overview; its roads and checkpoints share the same expanded window.
 The map rotates with your heading. Cruise also shows roads without race data.

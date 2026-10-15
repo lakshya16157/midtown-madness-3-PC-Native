@@ -236,11 +236,11 @@ def main():
                 "Stock also requests a larger UI pool": production.replace(
                     "mm3_minimap_improved() && MEM32(0x3A0EC0u) < 160000u", "MEM32(0x3A0EC0u) < 160000u"),
                 "missing common map scale": production.replace(
-                    "MEMF(node + 0x50) = s_map_zoom[slot].baseline /\n            (NV2A_MINIMAP_SCALE * s_map_zoom[slot].span);",
+                    "MEMF(node + 0x50) = s_map_zoom[slot].baseline * (1.0f + MAP_SPEED_SPAN) /\n            (NV2A_MINIMAP_SCALE * s_map_zoom[slot].span);",
                     "MEMF(node + 0x50) = scale;"),
                 "Ctrl restores native world scale and hides visible checkpoints": production.replace(
-                    "MEMF(node + 0x50) = s_map_zoom[slot].baseline /\n            (NV2A_MINIMAP_SCALE * s_map_zoom[slot].span);",
-                    "MEMF(node + 0x50) = s_map_zoom[slot].baseline / "
+                    "MEMF(node + 0x50) = s_map_zoom[slot].baseline * (1.0f + MAP_SPEED_SPAN) /\n            (NV2A_MINIMAP_SCALE * s_map_zoom[slot].span);",
+                    "MEMF(node + 0x50) = s_map_zoom[slot].baseline * (1.0f + MAP_SPEED_SPAN) / "
                     "((NV2A_MINIMAP_SCALE + (1 - NV2A_MINIMAP_SCALE) * map_expansion(node)) * "
                     "(s_map_zoom[slot].span + (1 - s_map_zoom[slot].span) * map_expansion(node)));"),
                 "Ctrl drops speed zoom": production.replace(

@@ -175,7 +175,7 @@ static float settle(uint32_t identity, int speed, float baseline) {
     fresh_scale(identity, player, baseline);
     for (i = 0; i < 600; ++i) mm3_map_zoom_update(identity, 1.0f / 60.0f);
     fresh_scale(identity, player, baseline);
-    return baseline / NV2A_MINIMAP_SCALE / MEMF(identity + 0x50);
+    return baseline * 1.6f / NV2A_MINIMAP_SCALE / MEMF(identity + 0x50);
 }
 static void abi_start(uint32_t identity) {
     g_eax = 0xABABABAB; g_ecx = identity; g_edx = 0x12345678;
@@ -201,14 +201,14 @@ static void speed_contract(void) {
         near(settle(node, speeds[i], 2), spans[i]);
     mm3_map_zoom_reset(node);
     MEM32(player + 4) = 120; fresh_scale(node, player, 2);
-    near(MEMF(node + 0x50), 2 / NV2A_MINIMAP_SCALE); /* Drawing is not a time step. */
+    near(MEMF(node + 0x50), 3.2f / NV2A_MINIMAP_SCALE); /* Drawing is not a time step. */
     for (i = 0; i < 30; ++i) fresh_scale(node, player, 2);
-    near(MEMF(node + 0x50), 2 / NV2A_MINIMAP_SCALE);
+    near(MEMF(node + 0x50), 3.2f / NV2A_MINIMAP_SCALE);
     mm3_map_zoom_update(node, 0.1f); fresh_scale(node, player, 2);
-    near(2 / NV2A_MINIMAP_SCALE / MEMF(node + 0x50), 1 + .6f * (1 - expf(-.1f / .6f)));
+    near(3.2f / NV2A_MINIMAP_SCALE / MEMF(node + 0x50), 1 + .6f * (1 - expf(-.1f / .6f)));
     mm3_map_zoom_reset(node); fresh_scale(node, player, 2);
     mm3_map_zoom_update(node, 10); fresh_scale(node, player, 2);
-    near(2 / NV2A_MINIMAP_SCALE / MEMF(node + 0x50), 1 + .6f * (1 - expf(-.1f / .6f)));
+    near(3.2f / NV2A_MINIMAP_SCALE / MEMF(node + 0x50), 1 + .6f * (1 - expf(-.1f / .6f)));
     for (i = 0; i < 4; ++i) {
         const float invalid[] = {0, -.1f, NAN, INFINITY};
         float before = MEMF(node + 0x50);
@@ -230,7 +230,7 @@ static void speed_contract(void) {
     fresh_scale(node, player, 2);
     MEM32(player + 4) = 120; fresh_scale(second_node, player, 2);
     assert(MEMF(node + 0x50) > MEMF(second_node + 0x50));
-    mm3_map_zoom_reset(node); fresh_scale(node, player, 2); near(MEMF(node + 0x50), 2 / NV2A_MINIMAP_SCALE);
+    mm3_map_zoom_reset(node); fresh_scale(node, player, 2); near(MEMF(node + 0x50), 3.2f / NV2A_MINIMAP_SCALE);
     fresh_scale(node, 0, 2); near(MEMF(node + 0x50), 2);
     mm3_map_zoom_reset(0); mm3_map_zoom_update(0, .1f); mm3_map_zoom_apply(0, player);
     for (i = 0; i < 3; ++i) {
@@ -508,8 +508,8 @@ static void native_contract(void) {
     const float angles[] = {0, .3926990817f, 1.5707963268f, -1.5707963268f, 3.1415926536f};
     for (split = 0; split < 2; ++split) for (large = 0; large < 2; ++large) for (turn = 0; turn < sizeof angles / sizeof angles[0]; ++turn) {
         float native_scale = 1.2f * (split ? .75f : 1.0f);
-        float frame_scale = 1.0f / NV2A_MINIMAP_SCALE;
-        float icon_scale = large ? 1.0f : frame_scale;
+        float frame_scale = 1.6f / NV2A_MINIMAP_SCALE;
+        float icon_scale = large ? 1.0f : 1.0f / NV2A_MINIMAP_SCALE;
         float span = 1.6f;
         float cx = large ? 320.0f : 114.0f, cy = large ? 240.0f : 384.0f;
         unsigned original_count;
@@ -590,14 +590,14 @@ static void native_contract(void) {
     settle(node, 120, 1); MEM8(node + 0x35) = 0;
     MEMF(layout) = 50; MEMF(layout + 4) = 320;
     abi_start(node); zoom_reset(); abi_end(16);
-    fresh_scale(node, player, 1); near(MEMF(node + 0x50), 1 / NV2A_MINIMAP_SCALE);
+    fresh_scale(node, player, 1); near(MEMF(node + 0x50), 1.6f / NV2A_MINIMAP_SCALE);
     /* The actual native update argument is +0x10 before its frame prologue. */
     MEM32(player + 4) = 120; fresh_scale(node, player, 1);
     MEMF(node + 0x9C) = MEMF(node + 0x94); MEMF(node + 0xA0) = MEMF(node + 0x98);
     MEMF(node + 0xAC) = MEMF(node + 0xB0) = 0;
     abi_start(node); MEMF(stack + 16) = .1f; zoom_update(); abi_end(20);
     fresh_scale(node, player, 1);
-    near(1 / NV2A_MINIMAP_SCALE / MEMF(node + 0x50), 1 + .6f * (1 - expf(-.1f / .6f)));
+    near(1.6f / NV2A_MINIMAP_SCALE / MEMF(node + 0x50), 1 + .6f * (1 - expf(-.1f / .6f)));
 }
 static void native_ctrl_contract(void) {
     unsigned phase, frame;
@@ -659,8 +659,10 @@ static void native_ctrl_checkpoint_contract(void) {
     const float angles[] = {0, .3926990817f, 1.5707963268f, -1.5707963268f};
     const float durations[] = {.2f, 1, .08f, .08f, 1, 1, 1};
     const int held[] = {0, 1, 0, 1, 0, 1, 0};
-    const float positions[][2] = {{0, 0}, {160, 0}, {-120, 0}, {0, 120},
-        {0, -120}, {100, 70}, {800, -600}, {-900, 700}};
+    /* Retain inside/edge/newly revealed/far coverage with the closer idle
+     * camera; the world-space distances are 1/1.6 of the earlier fixture. */
+    const float positions[][2] = {{0, 0}, {100, 0}, {-75, 0}, {0, 75},
+        {0, -75}, {62.5f, 43.75f}, {500, -375}, {-562.5f, 437.5f}};
     unsigned rate, split, turn, speed, phase, frame, i, j, checkpoints, newly_visible = 0;
     check = "native Ctrl transition, interrupted release and all checkpoint edges";
     race_input_present = player_present = zoom_markers = 1;
@@ -782,7 +784,7 @@ static void native_scale_progression(void) {
     mm3_map_zoom_reset(node);
     MEM32(player + 4) = 0; MEMF(player + 0x34) = .728f;
     fresh_scale(node, player, .728f); stopped = MEMF(node + 0x50);
-    near(stopped, .728f / NV2A_MINIMAP_SCALE);
+    near(stopped, .728f * 1.6f / NV2A_MINIMAP_SCALE);
     MEM32(player + 4) = 120; MEMF(player + 0x34) = 1.4f;
     fresh_scale(node, player, 1.4f); near(MEMF(node + 0x50), stopped);
     for (i = 0; i < 600; ++i) mm3_map_zoom_update(node, 1.0f / 60.0f);
@@ -800,7 +802,7 @@ static void native_scale_progression(void) {
     fresh_scale(node, 0, 1); near(MEMF(node + 0x50), 1);
     fresh_scale(node, player, NAN); assert(isnan(MEMF(node + 0x50)));
     fresh_scale(node, player, -1); near(MEMF(node + 0x50), -1);
-    fresh_scale(node, player, .9f); near(MEMF(node + 0x50), .9f / NV2A_MINIMAP_SCALE);
+    fresh_scale(node, player, .9f); near(MEMF(node + 0x50), .9f * 1.6f / NV2A_MINIMAP_SCALE);
 }
 static void native_speed_record(float metres_per_second) {
     const uint32_t vehicle = 0x2A000, driver = 0x2B000;
@@ -853,10 +855,11 @@ static void native_speed_camera_contract(void) {
         }
         moving_car = *texture_draw(draws, draw_count, 5);
         if (!speed) { stopped_scale = MEMF(node + 0x50); stopped_car = moving_car; }
-        /* The enlarged frame keeps native-sized city details and the You
-         * sprite. More streets fit inside it, and 120+ km/h reveals 60% more
-         * world distance while leaving the fixed player icon unchanged. */
+        /* At maximum speed match the former stopped-car world scale.
+         * Stopping brings the city 60% closer without enlarging You. */
         near(MEMF(node + 0x50), stopped_scale / (speed == 1 || speed == 2 ? 1.6f : 1.0f));
+        near(MEMF(node + 0x50), 1.2f / NV2A_MINIMAP_SCALE *
+            (speed == 1 || speed == 2 ? 1.0f : 1.6f));
         for (i = 0; i < 4; ++i) for (axis = 0; axis < 2; ++axis) {
             float centre = axis ? 384.0f : 114.0f;
             near((moving_car.xy[i][axis] - centre) * NV2A_MINIMAP_SCALE,
@@ -873,7 +876,7 @@ static void native_speed_camera_contract(void) {
         float enlargement = NV2A_MINIMAP_SCALE * (1 - expansion) + expansion;
         MEMF(node + 0xB4) = 1 + 2 * expansion;
         fresh_scale(node, player, 1.2f);
-        near(MEMF(node + 0x50) * NV2A_MINIMAP_SCALE, 1.2f);
+        near(MEMF(node + 0x50) * NV2A_MINIMAP_SCALE, 1.2f * 1.6f);
         for (axis = 0; axis <= 5; ++axis)
             near(mm3_map_zoom_checkpoint_scale(node, axis) * enlargement,
                 axis == 0 || axis == 3 ? .75f : 1.0f);
