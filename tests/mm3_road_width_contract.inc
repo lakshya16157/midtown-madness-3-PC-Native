@@ -152,6 +152,66 @@ static void road_width_live_map_contract(void)
     MEMF(layout + 8) = previous_fields[7]; MEMF(layout + 12) = previous_fields[8];
 }
 
+static unsigned road_join_covers(float x, float y)
+{
+    unsigned i, j, covered = 0;
+    for (i = 0; i < draw_count; ++i) {
+        int inside = 1;
+        for (j = 0; j < 4; ++j) {
+            unsigned next = (j + 1) % 4;
+            float ax = draws[i].xy[j][0], ay = draws[i].xy[j][1];
+            float dx = draws[i].xy[next][0] - ax, dy = draws[i].xy[next][1] - ay;
+            if (dx * (y - ay) - dy * (x - ax) > .0001f) inside = 0;
+        }
+        covered += inside;
+    }
+    return covered;
+}
+
+static void road_join_contract(void)
+{
+    RoadPoint corner[3] = {{20,0,0}, {0,0,0}, {0,0,20}};
+    const RoadPoint ring[5] = {{20,0,0}, {0,0,0}, {0,0,20}, {20,0,20}, {20,0,0}};
+    const RoadPoint outside[3] = {{-2000,0,0}, {-2020,0,0}, {-2020,0,20}};
+    unsigned turn, i, j, joins;
+    check = "road bend bevel coverage, winding and width bound";
+    for (turn = 0; turn < 2; ++turn) {
+        corner[2].z = turn ? -20 : 20;
+        road_width_draw(corner,3,6,1);
+        assert(draw_count == 3);
+        /* This exterior point lies in neither butt-ended street segment. */
+        assert(road_join_covers(1,turn ? 1 : -1) == 1);
+        joins = 0;
+        for (i = 0; i < draw_count; ++i) {
+            Draw *draw = draws + i;
+            if (draw->xy[0][0] != draw->xy[3][0] || draw->xy[0][1] != draw->xy[3][1]) continue;
+            ++joins;
+            for (j = 0; j < 4; ++j) {
+                assert(hypotf(draw->xy[j][0],draw->xy[j][1]) <= 3.0001f);
+                near(draw->color[0],.62f); near(draw->color[3],.82f);
+            }
+            assert((draw->xy[1][0] - draw->xy[0][0]) * (draw->xy[2][1] - draw->xy[0][1]) -
+                   (draw->xy[1][1] - draw->xy[0][1]) * (draw->xy[2][0] - draw->xy[0][0]) < 0);
+        }
+        assert(joins == 1);
+    }
+    check = "road closed-loop seam and clear island";
+    road_width_draw(ring,5,6,1);
+    assert(draw_count == 8 && road_join_covers(-21,-1) == 1);
+    assert(!road_join_covers(-10,10));
+    check = "road off-map bends add no submission";
+    road_width_draw(outside,3,6,1); assert(!draw_count);
+    check = "road separate chains retain their own butt endpoints";
+    abi_start(0);
+    route_polyline_width(0x25000,0,corner,2,(RoadPoint){0},1,1,0,1000,1000,0,0,.82f,3);
+    route_polyline_width(0x25000,0,corner+1,2,(RoadPoint){0},1,1,0,1000,1000,0,0,.82f,3);
+    assert(draw_count == 2 && !road_join_covers(1,1));
+    check = "road bevels do not change blue guidance";
+    s_road_layer = 0; road_width_draw(corner,3,6,1);
+    assert(draw_count == 2 && !road_join_covers(1,1));
+    s_road_layer = 1;
+}
+
 static void road_width_contract(void)
 {
     const RoadPoint chain[4] = {{0,0,0}, {10,0,0}, {20,0,0}, {30,0,0}};
@@ -220,6 +280,8 @@ static void road_width_contract(void)
     assert(draw_count == 1); near(road_width_draw_half(draws),1.5f); near(edge(draws),10);
     road_width_draw(straight,2,4,.1f);
     assert(draw_count == 1); near(road_width_draw_half(draws),1);
+
+    road_join_contract();
 
     check = "road width real Cruise gray-layer wiring at two zoom levels";
     road_width_live_map_contract();

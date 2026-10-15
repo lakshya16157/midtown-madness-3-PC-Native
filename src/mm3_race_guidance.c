@@ -1070,10 +1070,8 @@ static float road_draw_half_width(float width, float factor)
     return isfinite(result) ? fmaxf(minimum, result) : minimum;
 }
 
-static void route_segment(uint32_t renderer, uint32_t clip,
-                           float ax, float ay, float bx, float by, float alpha, float thickness)
+static void route_quad(uint32_t renderer, uint32_t clip, const float xy[4][2], float alpha)
 {
-    float dx = bx - ax, dy = by - ay, length = hypotf(dx, dy), px, py;
     uint32_t saved_eax, saved_ecx, saved_edx, saved_esp, saved_ebx, saved_esi, saved_edi;
     uint32_t saved_ebp, saved_seh_ebp, quad;
     double saved_fp[8];
@@ -1081,13 +1079,6 @@ static void route_segment(uint32_t renderer, uint32_t clip,
     uint16_t saved_cc, saved_control;
     unsigned i;
     const int improved = mm3_minimap_improved();
-    float xy[4][2];
-    if (!isfinite(length) || length < .01f || !isfinite(thickness) || thickness <= 0) return;
-    px = -dy * thickness / length; py = dx * thickness / length;
-    xy[0][0] = ax + px; xy[0][1] = ay + py;
-    xy[1][0] = bx + px; xy[1][1] = by + py;
-    xy[2][0] = bx - px; xy[2][1] = by - py;
-    xy[3][0] = ax - px; xy[3][1] = ay - py;
     saved_eax = g_eax; saved_ecx = g_ecx; saved_edx = g_edx; saved_esp = g_esp;
     saved_ebx = g_ebx; saved_esi = g_esi; saved_edi = g_edi;
     saved_ebp = g_ebp; saved_seh_ebp = g_seh_ebp;
@@ -1119,6 +1110,20 @@ static void route_segment(uint32_t renderer, uint32_t clip,
     g_fp_top = saved_top; g_fp_cmp = saved_cmp; g_df = saved_df;
     g_fp_cc = saved_cc; g_fp_control_word = saved_control;
     memcpy(g_fp_stack, saved_fp, sizeof saved_fp);
+}
+
+static void route_segment(uint32_t renderer, uint32_t clip,
+                           float ax, float ay, float bx, float by, float alpha, float thickness)
+{
+    float dx = bx - ax, dy = by - ay, length = hypotf(dx, dy), px, py;
+    float xy[4][2];
+    if (!isfinite(length) || length < .01f || !isfinite(thickness) || thickness <= 0) return;
+    px = -dy * thickness / length; py = dx * thickness / length;
+    xy[0][0] = ax + px; xy[0][1] = ay + py;
+    xy[1][0] = bx + px; xy[1][1] = by + py;
+    xy[2][0] = bx - px; xy[2][1] = by - py;
+    xy[3][0] = ax - px; xy[3][1] = ay - py;
+    route_quad(renderer, clip, xy, alpha);
 }
 
 typedef struct { float x, y; } RoutePoint;
@@ -1175,12 +1180,45 @@ static int route_clip_axis(double origin, double delta, double extent,
     return *lo < *hi;
 }
 
+static void road_polyline_join(uint32_t renderer, uint32_t clip,
+                              unsigned before, unsigned pivot, unsigned after,
+                              float radius_x, float radius_y, float cx, float cy,
+                              float alpha, float half_width)
+{
+    RoutePoint a = s_route_draw.points[before], b = s_route_draw.points[pivot];
+    RoutePoint c = s_route_draw.points[after];
+    float dx0 = b.x - a.x, dy0 = b.y - a.y, dx1 = c.x - b.x, dy1 = c.y - b.y;
+    float length0 = hypotf(dx0, dy0), length1 = hypotf(dx1, dy1), cross, side;
+    float xy[4][2];
+    if (!isfinite(half_width) || half_width <= 0 ||
+        fabsf(b.x) > radius_x + half_width || fabsf(b.y) > radius_y + half_width ||
+        !isfinite(length0) || !isfinite(length1) ||
+        length0 < .01f || length1 < .01f) return;
+    dx0 /= length0; dy0 /= length0; dx1 /= length1; dy1 /= length1;
+    cross = dx0 * dy1 - dy0 * dx1;
+    if (!isfinite(cross) || fabsf(cross) < .000001f) return;
+    side = cross > 0 ? -half_width : half_width;
+    /* Butt-ended street quads leave an exterior wedge at each bend. Fill only
+     * that triangle, using the same native clipping, tags and color. A bevel
+     * stays within the road's half-width; sharp turns cannot grow miter spikes.
+     * The repeated fourth vertex makes the native quad a single triangle. */
+    xy[0][0] = xy[3][0] = cx + b.x; xy[0][1] = xy[3][1] = cy + b.y;
+    xy[1][0] = cx + b.x - dy0 * side; xy[1][1] = cy + b.y + dx0 * side;
+    xy[2][0] = cx + b.x - dy1 * side; xy[2][1] = cy + b.y + dx1 * side;
+    if (cross > 0) {
+        float x = xy[1][0], y = xy[1][1];
+        xy[1][0] = xy[2][0]; xy[1][1] = xy[2][1];
+        xy[2][0] = x; xy[2][1] = y;
+    }
+    route_quad(renderer, clip, xy, alpha);
+}
+
 static void route_polyline_width(uint32_t renderer, uint32_t clip, const RoadPoint *points,
                            unsigned count, RoadPoint origin, float factor,
                             float cosine, float sine, float radius_x, float radius_y,
                             float cx, float cy, float alpha, float half_width)
 {
-    unsigned i, previous = 0;
+    unsigned i, previous = 0, before = NO_NODE, first_after = NO_NODE;
     if (count < 2 || count > COURSE_POINTS) return;
     for (i = 0; i < count; ++i) {
         float x = -(points[i].x - origin.x) * factor, y = (points[i].z - origin.z) * factor;
@@ -1199,8 +1237,18 @@ static void route_polyline_width(uint32_t renderer, uint32_t clip, const RoadPoi
         if (!s_route_draw.keep[i]) continue;
         ax = s_route_draw.points[previous].x; ay = s_route_draw.points[previous].y;
         bx = s_route_draw.points[i].x; by = s_route_draw.points[i].y;
-        previous = i;
         dx = (double)bx - ax; dy = (double)by - ay;
+        if (s_road_layer) {
+            /* Native zero-length links can repeat a junction sample. Keep the
+             * last real tangent so such a sample cannot interrupt its bevel. */
+            if (dx*dx + dy*dy < .0001f) continue;
+            if (before != NO_NODE)
+                road_polyline_join(renderer, clip, before, previous, i,
+                                   radius_x, radius_y, cx, cy, alpha, half_width);
+            if (first_after == NO_NODE) first_after = i;
+        }
+        before = previous;
+        previous = i;
         /* Clip in the already rotated screen axes so corners remain useful
          * at every heading. The native inset still leaves the route clear of
          * the faded edge. Slab intervals retain outside-to-outside crossings
@@ -1211,6 +1259,13 @@ static void route_polyline_width(uint32_t renderer, uint32_t clip, const RoadPoi
         route_segment(renderer, clip, (float)((double)cx + ax + lo*dx), (float)((double)cy + ay + lo*dy),
                       (float)((double)cx + ax + hi*dx), (float)((double)cy + ay + hi*dy), alpha, half_width);
     }
+    /* Cache loops repeat their actual endpoint. Join that seam only; nearby
+     * endpoints in different street chains never acquire invented links. */
+    if (s_road_layer && before != NO_NODE && first_after != NO_NODE &&
+        points[0].x == points[count - 1].x && points[0].y == points[count - 1].y &&
+        points[0].z == points[count - 1].z)
+        road_polyline_join(renderer, clip, before, count - 1, first_after,
+                           radius_x, radius_y, cx, cy, alpha, half_width);
 }
 
 static void route_polyline(uint32_t renderer, uint32_t clip, const RoadPoint *points,

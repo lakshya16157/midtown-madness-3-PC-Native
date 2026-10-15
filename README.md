@@ -69,6 +69,8 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   Ctrl expands it into a flat overview, retaining checkpoints around the car
   throughout the transition. Narrow streets have a wider visibility floor
   so small Washington DC roads remain readable after perspective scaling.
+  Connected street segments now share filled bevel joins at curves and
+  closed-loop seams, removing the small wedges on circular roads.
   World illumination now covers ambient, diffuse and backlight materials
   across the scene; the localized light-buffer overlay is disabled by
   default, removing the concentrated bright patch ahead of the car.
