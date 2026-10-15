@@ -512,10 +512,10 @@ saved selection at startup.
 The improved minimap shows only gray streets, blue race guidance and native
 markers over the game. Roads, route and markers share a tilted perspective,
 with distant roads narrowing and the player positioned below the center.
-Both views are 60% larger than stock (28% larger than the previous improved map)
-and start 15% closer, with the car around 70%
-down the visible road plane to leave more room ahead.
-Both Improved map sizes stay in the bottom-left corner, including while holding Ctrl.
+The driving frame is 37.5% larger than the previous improved map and starts
+15% closer, with the car around 70% down the visible road plane.
+It stays in the bottom-left corner. Holding Ctrl opens a flat, centered
+overview; its roads and checkpoints share the same expanded window.
 The map rotates with your heading. Cruise also shows roads without race data.
 Paris roundabouts include their native traffic lanes and street entrances,
 while pedestrian paths through their center islands stay clear.
@@ -524,15 +524,14 @@ avenues draw wider, and the widths scale with the map zoom.
 Stock restores the native city artwork, circular border, marker sizes and zoom,
 and retains the existing amber race guidance.
 Both improved map sizes smoothly show more road as speed rises above 20 km/h, reaching
-25% more visible distance at 120 km/h. The camera tilts farther down as speed rises,
-with a narrower far edge and more room ahead, then eases back as you slow down.
-Their initial framing stays stable as you approach checkpoints.
+25% more visible distance at 120 km/h. The frame, perspective and checkpoint
+icon sizes stay fixed while the contents zoom out. Their initial framing
+stays stable as you approach checkpoints.
 Both map sizes draw the ordered checkpoint course along actual streets with
 a blue path. The brighter leg updates from the car to the next checkpoint,
 including after a wrong turn. The remaining course stays visible through the final checkpoint. Checkpoint
-icons use 75% of their original width and height and shrink with the map's speed
-zoom to 60% at maximum zoom-out, while retaining their colors and pulsing. World
-hoops retain their original size.
+icons use 75% of their original width and height at every speed, retaining
+their colors and pulsing. World hoops retain their original size.
 Both Blitz and Checkpoint races end at their final gate. Return legs only appear
 when the ordered checkpoints explicitly revisit a road.
 Choose **Manual** transmission in car setup, then tap **R** to shift up and **F** to shift down
@@ -1168,8 +1167,10 @@ so expanded maps avoid a native draw submission for every six metres of road.
 Improved reuses that graph for gray roads, caching connected street chains and
 culling distant chains before drawing. The renderer suppresses only the
 title-owned city map base and applies one perspective transform to roads,
-guidance and map icons. Its speed factor is smoothed in simulation time and
-latched for each map's frame so all layers share the same tilt.
+guidance and map icons. Speed zoom is smoothed in simulation time. Camera
+metadata travels with each queued native city vertex, so later Ctrl updates
+cannot change the projection of an older map frame. Packed mask UVs retain
+the full map window for the roads, guidance and checkpoints.
 After entering `scripts/enter-env.ps1`, run
 `python tests/mm3_race_guidance_regression.py` for routing, city-asset, native
 spline, projection and submission checks.

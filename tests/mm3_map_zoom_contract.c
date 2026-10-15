@@ -21,7 +21,9 @@ static Draw draws[16];
 static uint32_t emitted[7];
 static unsigned draw_count;
 static float native_window_x, native_window_y;
+static float renderer_half_width, renderer_half_height;
 static int player_present = 1;
+static int race_input_present, ctrl_pressed;
 static int zoom_markers;
 static const char *check = "speed";
 static int improved = 1;
@@ -35,6 +37,7 @@ static void push_float(double value) {
 }
 void retail_marker(void);
 void zoom_marker(void);
+void city_window(void);
 static void fake_icall(uint32_t address) {
     if (address == 0x100) { push_float(0); g_esp += 8; return; }
     if (address == 0x0011CAE8) {
@@ -53,13 +56,11 @@ void sub_001F0399(void) {
     g_eax = (uint32_t)(int32_t)g_fp_stack[g_fp_top];
     g_fp_top = (g_fp_top + 1) & 7; g_esp += 4;
 }
-void sub_001F33A2(void) { g_eax = 0; g_esp += 4; }
-void sub_001F3979(void) { assert(!"unreachable race input branch"); }
+void sub_001F33A2(void) { g_eax = race_input_present ? 0x28000 : 0; g_esp += 4; }
+void sub_001F3979(void) { g_eax = ctrl_pressed && g_eax == 0x28; g_esp += 4; }
 void sub_0004EE0D(void) { g_eax = 1; g_esp += 4; }
 void sub_002414D8(void) { assert(!"unreachable alternate marker color branch"); }
 void sub_00012D29(void) { assert(!"unreachable wrapped animation branch"); }
-void sub_000629BE(void) { g_eax = 0; g_esp += 4; }
-void sub_0006AEB6(void) { assert(!"unreachable map movement branch"); }
 void sub_001E4A45(void) { g_eax = 0xFFFFFFE8u; g_esp += 4; }
 void sub_00069807(void) {
     memcpy(emitted, (void *)XBOX_PTR(g_esp + 4), sizeof emitted);
@@ -73,14 +74,24 @@ void sub_001C1585(void) {
     assert(draw_count < sizeof draws / sizeof draws[0]);
     if (texture == 1) {
         uint32_t mask_window = MEM32(vertices);
-        native_window_x = MEMF(mask_window) + MEMF(mask_window + 8) * .5f;
-        native_window_y = MEMF(mask_window + 4) + MEMF(mask_window + 12) * .5f;
+        native_window_x = MEMF(mask_window) + MEMF(mask_window + 8) * .5f + renderer_half_width;
+        native_window_y = MEMF(mask_window + 4) + MEMF(mask_window + 12) * .5f + renderer_half_height;
+    }
+    if (square) {
+        uint32_t saved_eax = g_eax, saved_edx = g_edx, saved_ebx = g_ebx, saved_ebp = g_ebp;
+        uint32_t dimensions = 0x39100;
+        g_eax = dimensions - 8; g_ebx = texture; g_ebp = 0x39000;
+        MEMF(dimensions) = renderer_half_width * 2;
+        MEMF(dimensions + 4) = renderer_half_height * 2;
+        PUSH32(g_esp, 0xDEADBEEF);
+        city_window();
+        g_eax = saved_eax; g_edx = saved_edx; g_ebx = saved_ebx; g_ebp = saved_ebp;
     }
     draws[draw_count].texture = texture;
     for (i = 0; i < 4; ++i) {
         unsigned component;
-        draws[draw_count].xy[i][0] = MEMF(vertices + 0xC + i * 0x24);
-        draws[draw_count].xy[i][1] = MEMF(vertices + 0x10 + i * 0x24);
+        draws[draw_count].xy[i][0] = MEMF(vertices + 0xC + i * 0x24) + renderer_half_width;
+        draws[draw_count].xy[i][1] = MEMF(vertices + 0x10 + i * 0x24) + renderer_half_height;
         for (component = 0; component < 4; ++component)
             draws[draw_count].rgba[i][component] = MEMF(vertices + 0x20 + i * 0x24 + component * 4);
         /* Native 116535 derives primary UVs from the resource, never source
@@ -124,8 +135,16 @@ static void near(float got, float expected) {
     }
 }
 static void fresh_scale(uint32_t identity, uint32_t record, float scale) {
+    const uint32_t window = 0x23300;
     MEMF(identity + 0x50) = scale;
     mm3_map_zoom_apply(identity, record);
+    /* Isolated scalar tests use a zero-offset renderer; live native drawing
+     * below executes its actual producer viewport conversion instead. */
+    MEMF(window) = MEMF(identity + 0x94) - 64;
+    MEMF(window + 4) = MEMF(identity + 0x98) - 48;
+    MEMF(window + 8) = 128; MEMF(window + 12) = 96;
+    mm3_map_zoom_window(identity, window);
+    mm3_map_square_publish_window(0, 0);
 }
 static float settle(uint32_t identity, int speed, float baseline) {
     unsigned i;
@@ -221,6 +240,7 @@ static void motion_heading_contract(void) {
     MEMF(layout) = 128; MEMF(layout + 4) = 48;
     MEMF(layout + 8) = 384; MEMF(layout + 12) = 384;
     mm3_map_zoom_window(node, layout);
+    mm3_map_square_publish_window(0, 0);
     near(mm3_minimap_motion(320, 240), motion);
     near(mm3_minimap_motion(114, 384), 0);
     fresh_scale(node, player, 2); /* Restore the direct-node window for these checks. */
@@ -268,14 +288,35 @@ static void expansion_contract(void) {
         near(mm3_minimap_expansion(114, 384), expected[i]);
         near(mm3_minimap_expansion(114.2f, 383.8f), expected[i]);
         near(mm3_minimap_motion(114, 384), 0);
+        {
+            const uint32_t packed = 0x39200;
+            memset((void *)XBOX_PTR(packed), 0xA5, 16);
+            mm3_map_square_tag_packed(packed);
+            assert(MEM32(packed) == 0xA5A5A5A5u && MEM32(packed + 4) == 0xA5A5A5A5u);
+            assert(MEM16(packed + 8) == 23213u);
+            assert(MEM16(packed + 0xA) == (unsigned)floorf(expected[i] * 255 + .5f));
+            assert(MEM32(packed + 0xC) == 0xA5A5A5A5u); /* Secondary mask UVs survive. */
+        }
     }
     MEMF(node + 0xB4) = 3; fresh_scale(node, player, 2);
+    {
+        const uint32_t packed = 0x39200;
+        uint32_t captured[4];
+        mm3_map_square_tag_packed(packed);
+        memcpy(captured, (void *)XBOX_PTR(packed), sizeof captured);
+        MEMF(node + 0xB4) = 1; fresh_scale(node, player, 2);
+        assert(!memcmp(captured, (void *)XBOX_PTR(packed), sizeof captured));
+        assert(MEM16(packed + 0xA) == 255u); /* Old queued overview keeps its own state. */
+        MEMF(node + 0xB4) = 3; fresh_scale(node, player, 2);
+    }
     MEMF(layout) = 128; MEMF(layout + 4) = 48;
     MEMF(layout + 8) = 384; MEMF(layout + 12) = 384;
     mm3_map_zoom_window(node, layout);
+    mm3_map_square_publish_window(0, 0);
     near(mm3_minimap_expansion(320, 240), 1);
     near(mm3_minimap_expansion(114, 384), 0);
     MEMF(node + 0xB4) = 2; mm3_map_zoom_window(node, layout);
+    mm3_map_square_publish_window(0, 0);
     near(mm3_minimap_expansion(320, 240), .5f);
     /* Split-screen expansion ends at 2, with an independent screen center. */
     MEMF(second_node + 0x94) = 500; MEMF(second_node + 0x98) = 120;
@@ -301,6 +342,7 @@ static void expansion_contract(void) {
     MEMF(layout) = 50; MEMF(layout + 4) = 320;
     MEMF(layout + 8) = 128; MEMF(layout + 12) = 128;
     mm3_map_zoom_window(node, layout);
+    mm3_map_square_publish_window(0, 0);
     near(mm3_minimap_expansion(114, 384), 0);
     near(mm3_minimap_expansion(320, 240), 0);
     near(mm3_minimap_expansion(NAN, 384), 0);
@@ -308,11 +350,24 @@ static void expansion_contract(void) {
     MEMF(node + 0xB4) = 3; fresh_scale(node, player, 2);
     near(mm3_minimap_expansion(114, 384), 1);
     MEMF(layout + 8) = 0; mm3_map_zoom_window(node, layout);
+    mm3_map_square_publish_window(0, 0);
     near(mm3_minimap_expansion(114, 384), 0);
     fresh_scale(node, player, 2); mm3_map_zoom_apply(node, 0);
     near(mm3_minimap_expansion(114, 384), 0);
     fresh_scale(node, player, 2); mm3_map_zoom_reset(node);
     near(mm3_minimap_expansion(114, 384), 0);
+    MEMF(layout + 8) = MEMF(layout + 12) = 128;
+    for (i = 0; i < 3; ++i) {
+        const float invalid_offset[] = {NAN, INFINITY, -1};
+        fresh_scale(node, player, 2);
+        mm3_map_zoom_window(node, layout);
+        mm3_map_square_publish_window(invalid_offset[i], 240);
+        near(mm3_minimap_expansion(114, 384), 0);
+        fresh_scale(node, player, 2);
+        mm3_map_zoom_window(node, layout);
+        mm3_map_square_publish_window(320, invalid_offset[i]);
+        near(mm3_minimap_expansion(114, 384), 0);
+    }
     mm3_map_zoom_reset(second_node);
 }
 static Draw *texture_draw(Draw *list, unsigned count, unsigned texture) {
@@ -498,7 +553,7 @@ static void native_contract(void) {
             near(b, centre + (a - centre) / span);
             check = "checkpoint icon size";
             for (i = 0; i < 4; ++i)
-                near(checkpoint_zoom->xy[i][axis] - b, (checkpoint->xy[i][axis] - a) * .75f / (span * 1.15f));
+                near(checkpoint_zoom->xy[i][axis] - b, (checkpoint->xy[i][axis] - a) * .75f);
         }
         /* Native scale reconstruction prevents zoom accumulating over draws. */
         draw_count = 0; abi_start(node); zoom_draw(); abi_end(24);
@@ -518,6 +573,60 @@ static void native_contract(void) {
     abi_start(node); MEMF(stack + 16) = .1f; zoom_update(); abi_end(20);
     fresh_scale(node, player, 1);
     near(1.15f / MEMF(node + 0x50), 1 + .25f * (1 - expf(-.1f / .6f)));
+}
+static void native_ctrl_contract(void) {
+    unsigned phase, frame;
+    const float start_x = -206, start_y = 144;
+    check = "real Ctrl input, movement and renderer viewport publication";
+    mm3_map_zoom_reset(node);
+    renderer_half_width = 320; renderer_half_height = 240;
+    race_input_present = 1; player_present = 1; zoom_markers = 1;
+    MEM32(0x28000 + 0x10) = MEM32(0x28000 + 0x14) = 0;
+    MEM32(0x28000 + 0x2C) = 0x29000;
+    MEM8(node + 0x35) = 0; MEM8(node + 0x34) = 1;
+    MEMF(node + 0x94) = MEMF(node + 0x9C) = start_x;
+    MEMF(node + 0x98) = MEMF(node + 0xA0) = start_y;
+    /* Native 11D367 places the overview at local (0, 0). The producer
+     * converts that to screen (320, 240), after the map owner has drawn. */
+    MEMF(node + 0xA4) = MEMF(node + 0xA8) = 0;
+    MEMF(node + 0xB4) = MEMF(node + 0xB8) = 1; MEMF(node + 0xBC) = 3;
+    MEMF(node + 0xAC) = MEMF(node + 0xB0) = 0;
+    MEMF(layout) = start_x - 64; MEMF(layout + 4) = start_y - 64;
+    MEMF(layout + 8) = MEMF(layout + 12) = 128; MEMF(layout + 16) = 0;
+    MEMF(player) = .3926990817f; MEM32(player + 4) = 120; MEMF(player + 0x34) = 1.2f;
+    MEMF(player + 0x10) = 410; MEMF(player + 0x18) = 615;
+    MEMF(node + 0x54) = MEMF(node + 0x5C) = 0;
+    MEMF(node + 0x58) = MEMF(node + 0x60) = 1000;
+    MEMF(markers) = -20; MEMF(markers + 8) = 12; MEM32(markers + 12) = 0;
+    for (phase = 0; phase < 3; ++phase) {
+        ctrl_pressed = phase == 1;
+        for (frame = 0; frame < 5; ++frame) {
+            float expansion;
+            Draw *checkpoint;
+            draw_count = 0; abi_start(node); zoom_draw(); abi_end(24);
+            expansion = (MEMF(node + 0xB4) - 1) / 2;
+            near(native_window_x, MEMF(node + 0x94) + 320);
+            near(native_window_y, MEMF(node + 0x98) + 240);
+            near(mm3_minimap_expansion(native_window_x, native_window_y), expansion);
+            /* Local snapshots used to miss the renderer's lookup entirely. */
+            near(mm3_minimap_expansion(MEMF(node + 0x94), MEMF(node + 0x98)), 0);
+            checkpoint = texture_draw(draws, draw_count, 4);
+            assert(isfinite(checkpoint->xy[0][0]) && isfinite(checkpoint->xy[0][1]));
+            if (phase == 1 && frame == 4) {
+                near(native_window_x, 320); near(native_window_y, 240);
+                near(expansion, 1);
+                assert(checkpoint->xy[0][0] > 128 && checkpoint->xy[0][0] < 512);
+                assert(checkpoint->xy[0][1] > 48 && checkpoint->xy[0][1] < 432);
+            }
+            abi_start(node); MEMF(stack + 16) = .1f; zoom_update(); abi_end(20);
+        }
+        near(MEMF(node + 0x94), ctrl_pressed ? 0 : start_x);
+        near(MEMF(node + 0x98), ctrl_pressed ? 0 : start_y);
+        near(MEMF(node + 0xB4), ctrl_pressed ? 3.0f : 1.0f);
+    }
+    race_input_present = ctrl_pressed = 0;
+    renderer_half_width = renderer_half_height = 0;
+    mm3_map_zoom_reset(node);
 }
 static void native_scale_progression(void) {
     float stopped;
@@ -592,7 +701,7 @@ int main(void) {
     MEM32(node + 0x8C) = property; MEM32(property) = property + 0x100;
     MEM32(property + 0x100 + 0x5C) = 0x100;
     MEM32(players + 0x14) = player; MEM32(0x407F78 + 4) = markers;
-    speed_contract(); motion_heading_contract(); expansion_contract(); square_geometry_contract(); native_contract(); native_scale_progression(); square_marker_contract();
+    speed_contract(); motion_heading_contract(); expansion_contract(); square_geometry_contract(); native_contract(); native_ctrl_contract(); native_scale_progression(); square_marker_contract();
     /* Live Stock selection restores the real native rotation, border, scale
      * and marker sizes with identical guest calling conventions. */
     improved = 0; player_present = 1; zoom_markers = 0;
@@ -617,6 +726,6 @@ int main(void) {
         fresh_scale(node, player, 1); mm3_map_zoom_reset(node);
         assert(!mm3_minimap_origin(node, copied));
     }
-    puts("PASS square map/zoom: city samples match native turns and markers, colors/opacity intact, circle border omitted, small/big/split layouts, speed smoothing and guest ABI");
+    puts("PASS square map/zoom: native Ctrl input/release, screen-space viewport publication, city/marker turns, colors/opacity, small/big/split layouts, speed smoothing and guest ABI");
     return 0;
 }

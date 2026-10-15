@@ -176,11 +176,11 @@ static void road_join_contract(void)
     unsigned turn, i, j, joins;
     check = "road bend bevel coverage, winding and width bound";
     for (turn = 0; turn < 2; ++turn) {
-        corner[2].z = turn ? -20 : 20;
+        corner[2].z = turn ? -20.0f : 20.0f;
         road_width_draw(corner,3,6,1);
         assert(draw_count == 3);
         /* This exterior point lies in neither butt-ended street segment. */
-        assert(road_join_covers(1,turn ? 1 : -1) == 1);
+        assert(road_join_covers(1,turn ? 1.0f : -1.0f) == 1);
         joins = 0;
         for (i = 0; i < draw_count; ++i) {
             Draw *draw = draws + i;
@@ -206,9 +206,9 @@ static void road_join_contract(void)
     route_polyline_width(0x25000,0,corner,2,(RoadPoint){0},1,1,0,1000,1000,0,0,.82f,3);
     route_polyline_width(0x25000,0,corner+1,2,(RoadPoint){0},1,1,0,1000,1000,0,0,.82f,3);
     assert(draw_count == 2 && !road_join_covers(1,1));
-    check = "road bevels do not change blue guidance";
+    check = "blue guidance uses its own rounded joins";
     s_road_layer = 0; road_width_draw(corner,3,6,1);
-    assert(draw_count == 2 && !road_join_covers(1,1));
+    assert(draw_count == 4 && road_join_covers(1,.7f) == 1);
     s_road_layer = 1;
 }
 

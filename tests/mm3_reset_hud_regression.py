@@ -44,7 +44,7 @@ def harness(source, include):
     assert "s_frame_bg_tex = 0;" in flip and "s_frame_tag_window = 1;" in flip
     assert "((px * ub_map.x - 1.0) * ub_map.w + ub_place.x) * w" in source
     helpers = ""
-    for name in ("map_route_vertex", "map_mask_window", "hud_split"):
+    for name in ("map_route_vertex", "map_camera_window", "map_mask_window", "hud_split"):
         if re.search(r"^static int " + name + r"\(", source, re.M):
             helpers += function(source, name) + "\n"
     return r"""

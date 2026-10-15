@@ -1060,12 +1060,10 @@ static float road_draw_half_width(float width, float factor)
     float result;
     const float minimum = 1.0f;
     if (!isfinite(factor) || factor <= 0.0f) return minimum;
-    /* Use the same world-to-map scale as the street centers. At maximum speed,
-     * the far edge's common perspective scales horizontal widths by
-     * 1.6 * (1 - .45) / (1 + .45), about .607. The old 1.1px full-width floor
-     * therefore left narrow streets only .67px wide, making them disappear.
-     * A 2px floor retains at least 1.21px there, while wider roads still use
-     * their physical lane widths and the common road/marker projection. */
+    /* Use the same world-to-map scale as the street centers. Retain a 2px
+     * minimum before the fixed driving camera enlarges it; zooming out at
+     * speed must not turn narrow streets into subpixel gaps. Wider roads
+     * retain their physical lane widths and the common marker projection. */
     result = road_width_valid(width) * factor * .5f;
     return isfinite(result) ? fmaxf(minimum, result) : minimum;
 }
@@ -1180,7 +1178,7 @@ static int route_clip_axis(double origin, double delta, double extent,
     return *lo < *hi;
 }
 
-static void road_polyline_join(uint32_t renderer, uint32_t clip,
+static void route_polyline_join(uint32_t renderer, uint32_t clip,
                               unsigned before, unsigned pivot, unsigned after,
                               float radius_x, float radius_y, float cx, float cy,
                               float alpha, float half_width)
@@ -1198,6 +1196,34 @@ static void road_polyline_join(uint32_t renderer, uint32_t clip,
     cross = dx0 * dy1 - dy0 * dx1;
     if (!isfinite(cross) || fabsf(cross) < .000001f) return;
     side = cross > 0 ? -half_width : half_width;
+    if (!s_road_layer) {
+        float angle = atan2f(cross, dx0 * dx1 + dy0 * dy1);
+        float start_x, start_y, finish_x, finish_y;
+        unsigned step, steps = (unsigned)ceilf(fabsf(angle) / .7853981634f);
+        /* A blue route has the same butt-ended segments as the streets, but
+         * needs rounded elbows. Fill only the exterior sector so adjacent
+         * translucent segments do not acquire a darker circular overlap.
+         * At 1.25px radius, a 45-degree arc chord differs by under .1px. */
+        if (cross > 0) {
+            start_x = -dy1 * side; start_y = dx1 * side;
+            finish_x = -dy0 * side; finish_y = dx0 * side;
+            angle = -angle;
+        } else {
+            start_x = -dy0 * side; start_y = dx0 * side;
+            finish_x = -dy1 * side; finish_y = dx1 * side;
+        }
+        xy[0][0] = xy[3][0] = cx + b.x; xy[0][1] = xy[3][1] = cy + b.y;
+        xy[1][0] = cx + b.x + start_x; xy[1][1] = cy + b.y + start_y;
+        for (step = 1; step <= steps; ++step) {
+            float arc = angle * (float)step / (float)steps;
+            float cosine = cosf(arc), sine = sinf(arc);
+            xy[2][0] = cx + b.x + (step == steps ? finish_x : start_x*cosine - start_y*sine);
+            xy[2][1] = cy + b.y + (step == steps ? finish_y : start_x*sine + start_y*cosine);
+            route_quad(renderer, clip, xy, alpha);
+            xy[1][0] = xy[2][0]; xy[1][1] = xy[2][1];
+        }
+        return;
+    }
     /* Butt-ended street quads leave an exterior wedge at each bend. Fill only
      * that triangle, using the same native clipping, tags and color. A bevel
      * stays within the road's half-width; sharp turns cannot grow miter spikes.
@@ -1238,15 +1264,13 @@ static void route_polyline_width(uint32_t renderer, uint32_t clip, const RoadPoi
         ax = s_route_draw.points[previous].x; ay = s_route_draw.points[previous].y;
         bx = s_route_draw.points[i].x; by = s_route_draw.points[i].y;
         dx = (double)bx - ax; dy = (double)by - ay;
-        if (s_road_layer) {
-            /* Native zero-length links can repeat a junction sample. Keep the
-             * last real tangent so such a sample cannot interrupt its bevel. */
-            if (dx*dx + dy*dy < .0001f) continue;
-            if (before != NO_NODE)
-                road_polyline_join(renderer, clip, before, previous, i,
-                                   radius_x, radius_y, cx, cy, alpha, half_width);
-            if (first_after == NO_NODE) first_after = i;
-        }
+        /* Native zero-length links can repeat a junction sample. Keep the
+         * last real tangent so such a sample cannot interrupt its join. */
+        if (dx*dx + dy*dy < .0001f) continue;
+        if (before != NO_NODE)
+            route_polyline_join(renderer, clip, before, previous, i,
+                                radius_x, radius_y, cx, cy, alpha, half_width);
+        if (first_after == NO_NODE) first_after = i;
         before = previous;
         previous = i;
         /* Clip in the already rotated screen axes so corners remain useful
@@ -1261,10 +1285,10 @@ static void route_polyline_width(uint32_t renderer, uint32_t clip, const RoadPoi
     }
     /* Cache loops repeat their actual endpoint. Join that seam only; nearby
      * endpoints in different street chains never acquire invented links. */
-    if (s_road_layer && before != NO_NODE && first_after != NO_NODE &&
+    if (before != NO_NODE && first_after != NO_NODE &&
         points[0].x == points[count - 1].x && points[0].y == points[count - 1].y &&
         points[0].z == points[count - 1].z)
-        road_polyline_join(renderer, clip, before, count - 1, first_after,
+        route_polyline_join(renderer, clip, before, count - 1, first_after,
                            radius_x, radius_y, cx, cy, alpha, half_width);
 }
 

@@ -21,6 +21,17 @@ static volatile uint32_t s_map_motion[MAP_ZOOM_SLOTS];
 static volatile uint32_t s_map_heading[MAP_ZOOM_SLOTS];
 static volatile uint32_t s_map_expansion[MAP_ZOOM_SLOTS];
 
+/* Native UI geometry uses coordinates relative to the render viewport's
+ * centre. Only 116535 knows the translation used by its queued vertices.
+ * Carry the local window to that immediate packing boundary. */
+static RECOMP_TLS struct {
+    uint32_t quad, window_node;
+    uint16_t camera;
+    unsigned camera_valid;
+    float window_cx, window_cy;
+    float x0, y0, width, height, cx, cy, c, s;
+} s_square_map;
+
 static void map_scalar_store(volatile uint32_t *scalar, uint32_t value)
 {
     uint32_t before = RECOMP_ATOMIC_CAS32(scalar, 0, 0);
@@ -38,13 +49,13 @@ static void map_heading_publish(unsigned slot, uint32_t player_record)
     map_scalar_store(&s_map_heading[slot], player_record ? MEM32(player_record) : 0x7FC00000u);
 }
 
-static void map_expansion_publish(unsigned slot, uint32_t node)
+static float map_expansion_publish(unsigned slot, uint32_t node)
 {
     float current = MEMF(node + 0xB4), maximum = MEMF(node + 0xBC), expansion;
     double fraction;
     uint32_t bits;
     if (!isfinite(current) || !isfinite(maximum) || maximum <= 1.0f) {
-        map_scalar_store(&s_map_expansion[slot], 0); return;
+        map_scalar_store(&s_map_expansion[slot], 0); return 0;
     }
     /* B4 interpolates between the small map's 1 and BC (3 normally, 2 in
      * split screen). Window dimensions can change independently of this
@@ -55,6 +66,14 @@ static void map_expansion_publish(unsigned slot, uint32_t node)
     expansion = (float)fraction;
     memcpy(&bits, &expansion, sizeof bits);
     map_scalar_store(&s_map_expansion[slot], 0x80000000u | bits);
+    return expansion;
+}
+
+static unsigned map_camera_quantize(float value)
+{
+    if (!isfinite(value) || value < 0.0f) value = 0.0f;
+    if (value > 1.0f) value = 1.0f;
+    return (unsigned)floorf(value * 255.0f + .5f);
 }
 
 static void map_motion_publish(unsigned slot, float cx, float cy)
@@ -182,6 +201,8 @@ void mm3_map_zoom_window(uint32_t node, uint32_t clip)
 {
     unsigned slot;
     float width, height;
+    s_square_map.window_node = 0;
+    s_square_map.camera_valid = 0;
     if (!node || !clip) return;
     slot = map_zoom_slot(node);
     width = MEMF(clip + 8); height = MEMF(clip + 12);
@@ -190,23 +211,52 @@ void mm3_map_zoom_window(uint32_t node, uint32_t clip)
         map_motion_store(slot, 0);
         map_scalar_store(&s_map_expansion[slot], 0); return;
     }
-    /* Native +94/+98 animate the car/map centre during layout transitions.
-     * The renderer identifies the actual mask window instead; publish that
-     * submitted clip rectangle so roads and markers share the same camera
-     * while expanding or drawing split-screen maps. */
-    map_expansion_publish(slot, node);
-    map_motion_publish(slot, MEMF(clip) + width * .5f, MEMF(clip + 4) + height * .5f);
+    s_square_map.window_node = node;
+    s_square_map.window_cx = MEMF(clip) + width * .5f;
+    s_square_map.window_cy = MEMF(clip + 4) + height * .5f;
+}
+
+void mm3_map_square_publish_window(float half_width, float half_height)
+{
+    uint32_t node = s_square_map.window_node;
+    unsigned slot;
+    float expansion, motion;
+    s_square_map.window_node = 0;
+    if (!node) return;
+    slot = map_zoom_slot(node);
+    if (!isfinite(half_width) || !isfinite(half_height) ||
+        half_width < 0 || half_height < 0) {
+        map_motion_store(slot, 0);
+        map_scalar_store(&s_map_expansion[slot], 0); return;
+    }
+    /* 116535 adds these same half-viewport dimensions to every vertex.
+     * Publishing the local centre (-206,144 for the small map, 0,0 for
+     * Ctrl's overview) cannot match the renderer's screen-space mask window.
+     * It then misses expansion and tilts/crops the overview as a driving map. */
+    expansion = map_expansion_publish(slot, node);
+    motion = (s_map_zoom[slot].span - 1.0f) * 4.0f;
+    s_square_map.camera = (uint16_t)((map_camera_quantize(motion) << 8) |
+        map_camera_quantize(expansion));
+    s_square_map.camera_valid = 1;
+    map_motion_publish(slot, s_square_map.window_cx + half_width,
+        s_square_map.window_cy + half_height);
+}
+
+void mm3_map_square_tag_packed(uint32_t vertex)
+{
+    if (!vertex || !s_square_map.camera_valid) return;
+    /* Improved city quads establish the window but their backdrop is not
+     * drawn. Carry this draw's camera in their unused packed primary UVs;
+     * callbacks alone can see a newer Ctrl layout than the queued geometry.
+     * Keep secondary mask UVs intact so its bounds remain reconstructible. */
+    MEM16(vertex + 8) = 23213u;
+    MEM16(vertex + 0xA) = s_square_map.camera;
 }
 
 /* Native 11DB57 rotates the road geometry. Keep its square axis aligned and
  * retain only its scalars until the immediately following native UI packing
  * call. 116535 generates city UVs itself, and computes mask UVs from the screen
  * clip rectangle; its source quad's UV fields are not read. */
-static RECOMP_TLS struct {
-    uint32_t quad;
-    float x0, y0, width, height, cx, cy, c, s;
-} s_square_map;
-
 void mm3_map_square_geometry(uint32_t vertices, uint32_t center, float angle)
 {
     uint32_t first = vertices + 0x0Cu;
@@ -215,6 +265,8 @@ void mm3_map_square_geometry(uint32_t vertices, uint32_t center, float angle)
     float height = MEMF(first + 0x6Cu + 4) - y0;
     float cx = MEMF(center), cy = MEMF(center + 4);
     s_square_map.quad = 0;
+    s_square_map.window_node = 0;
+    s_square_map.camera_valid = 0;
     if (!isfinite(angle) || !isfinite(width) || !isfinite(height) ||
         !isfinite(cx) || !isfinite(cy) || fabsf(width) < 0.001f || fabsf(height) < 0.001f)
         return;
@@ -229,6 +281,10 @@ uint32_t mm3_map_square_begin(uint32_t texture, uint32_t quad)
 {
     uint32_t match = mm3_minimap_improved() && texture && quad && quad == s_square_map.quad;
     s_square_map.quad = 0; /* Never classify a reused stack allocation. */
+    if (!match) {
+        s_square_map.window_node = 0;
+        s_square_map.camera_valid = 0;
+    }
     return match;
 }
 
@@ -311,15 +367,13 @@ void mm3_map_zoom_apply(uint32_t node, uint32_t player_record)
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
     s_map_zoom[slot].target = 1.0f + 0.25f * t * t * (3.0f - 2.0f * t);
-    map_expansion_publish(slot, node);
-    map_motion_publish(slot, MEMF(node + 0x94), MEMF(node + 0x98));
     scale = MEMF(node + 0x50);
     /* 11FE40 fits stock zoom to checkpoint proximity. That fit can zoom in
      * while accelerating and cancel the speed zoom. Preserve this layout's
      * initial framing (including native split-screen scaling), then hold it
      * as the speed curve's baseline. Roads and 11CAE8's marker positions all
-     * read +50; the window calculations remain native. Checkpoint icon
-     * dimensions use the same span through mm3_map_zoom_checkpoint_scale.
+     * read +50; the window calculations remain native. This changes world
+     * coverage within the fixed HUD frame, not the frame or icon dimensions.
      * The improved detail view starts 15% closer before the speed zoom. */
     if (isfinite(scale) && scale > 0.0f) {
         if (!s_map_zoom[slot].baseline) s_map_zoom[slot].baseline = scale;
@@ -329,14 +383,12 @@ void mm3_map_zoom_apply(uint32_t node, uint32_t player_record)
 
 float mm3_map_zoom_checkpoint_scale(uint32_t node, uint32_t flags)
 {
-    unsigned slot, style = flags & 0x1Fu;
+    unsigned style = flags & 0x1Fu;
     const float icon_scale = 0.75f;
     /* 11CAE8 styles 0 and 3 use Checkpoint; 1/2/4 use You and 5 uses
      * TagMagIcon. Scale the checkpoint's pulse-adjusted half-size before
      * native quad creation, rotation and translation, keeping its centre.
-     * Use a smaller base size even before the speed zoom starts. */
+     * Keep this pixel size stable while world coverage zooms out with speed. */
     if (!mm3_minimap_improved() || !node || (style != 0 && style != 3)) return 1.0f;
-    slot = map_zoom_slot(node);
-    if (!s_map_zoom[slot].baseline) return icon_scale;
-    return icon_scale / s_map_zoom[slot].span;
+    return icon_scale;
 }

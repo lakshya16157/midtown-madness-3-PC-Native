@@ -24,6 +24,8 @@ static const uint32_t packed_vertices = 0x69000, packed_batches = 0x6B000, test_
 static const uint32_t objects[4] = {0x30018, 0x30118, 0x30218, 0x30318};
 static const float points[4][2] = {{-22, -8}, {-10, 14}, {9, 10}, {23, -5}};
 typedef struct { uint32_t texture; float xy[4][2], color[4]; } Draw;
+static unsigned route_segment_draw_count(void);
+static const Draw *route_segment_draw(unsigned index);
 static Draw draws[256];
 static unsigned draw_count, active_player, marker_count, world_draw_count;
 static unsigned hud_players, native_marker_count;
@@ -336,10 +338,10 @@ static void course_finish_and_revisit_contract(void) {
         mm3_race_guidance_checkpoint(0, objects[i], position, origin, 0);
     }
     mm3_race_guidance_end(0);
-    abi_start(0); sub_0011CAE8(); abi_end(); assert(draw_count == 5);
+    abi_start(0); sub_0011CAE8(); abi_end(); assert(route_segment_draw_count() == 5);
     for (axis = 0; axis < 2; ++axis)
         near(.5f * (draws[0].xy[0][axis] + draws[0].xy[3][axis]),
-             .5f * (draws[2].xy[0][axis] + draws[2].xy[3][axis]));
+             .5f * (route_segment_draw(2)->xy[0][axis] + route_segment_draw(2)->xy[3][axis]));
 }
 static void native_publication_lifecycle_contract(void) {
     unsigned i, pass, axis;
@@ -601,7 +603,7 @@ static void road_navigation_contract(void) {
         mm3_race_guidance_checkpoint(0, objects[i], position, origin, objects[1]);
     }
     mm3_race_guidance_end(0);
-    abi_start(0); sub_0011CAE8(); abi_end(); assert(draw_count == 3);
+    abi_start(0); sub_0011CAE8(); abi_end(); assert(route_segment_draw_count() == 3);
     for (i = 0; i < draw_count; ++i) near(draws[i].color[3], .98f);
     near(.5f*(draws[0].xy[0][0]+draws[0].xy[3][0]), MEMF(node+0x94));
     near(.5f*(draws[0].xy[0][1]+draws[0].xy[3][1]), MEMF(node+0x98));
@@ -621,6 +623,20 @@ static void draw_test_polyline(const RoadPoint *polyline, unsigned count, float 
     route_polyline(0x25000, 0, polyline, count, (RoadPoint){0}, 1, 1, 0, radius, radius, 0, 0, .8f);
     assert(g_esp == stack && g_fp_top == 0);
     assert(g_ebx == 0x11223344 && g_esi == 0x22334455 && g_edi == 0x33445566);
+}
+static unsigned route_segment_draw_count(void) {
+    unsigned i, count = 0;
+    for (i = 0; i < draw_count; ++i)
+        if (draws[i].xy[0][0] != draws[i].xy[3][0] || draws[i].xy[0][1] != draws[i].xy[3][1]) ++count;
+    return count;
+}
+static const Draw *route_segment_draw(unsigned index) {
+    unsigned i;
+    for (i = 0; i < draw_count; ++i) {
+        if (draws[i].xy[0][0] == draws[i].xy[3][0] && draws[i].xy[0][1] == draws[i].xy[3][1]) continue;
+        if (!index--) return draws + i;
+    }
+    assert(!"missing route segment"); return NULL;
 }
 static float distance_to_draw(float x, float y, const Draw *draw) {
     float ax = .5f*(draw->xy[0][0] + draw->xy[3][0]);
@@ -656,12 +672,12 @@ static void route_draw_simplification_contract(void) {
         float x = (float)i - 100;
         dense[i] = (RoadPoint){x,0,.006f*x*x - 40};
     }
-    draw_test_polyline(dense, 201, 1000); curved_draws = draw_count;
-    assert(draw_count >= 8 && draw_count <= 40);
+    draw_test_polyline(dense, 201, 1000); curved_draws = route_segment_draw_count();
+    assert(curved_draws >= 8 && curved_draws <= 40 && draw_count <= curved_draws * 5);
     for (i = 0; i < 201; ++i) {
         float nearest = FLT_MAX;
-        for (j = 0; j < draw_count; ++j) {
-            float distance = distance_to_draw(-dense[i].x, dense[i].z, draws + j);
+        for (j = 0; j < curved_draws; ++j) {
+            float distance = distance_to_draw(-dense[i].x, dense[i].z, route_segment_draw(j));
             if (distance < nearest) nearest = distance;
         }
         assert(nearest <= .2501f);
@@ -672,16 +688,17 @@ static void route_draw_simplification_contract(void) {
                                    turns[i].z + t*(turns[i+1].z-turns[i].z)};
     }
     dense[64] = turns[4];
-    draw_test_polyline(dense, 65, 1000); assert(draw_count == 4);
+    draw_test_polyline(dense, 65, 1000); assert(route_segment_draw_count() == 4);
     for (i = 0; i < 4; ++i) {
-        near(.5f*(draws[i].xy[1][0]+draws[i].xy[2][0]), -turns[i+1].x);
-        near(.5f*(draws[i].xy[1][1]+draws[i].xy[2][1]), turns[i+1].z);
+        const Draw *draw = route_segment_draw(i);
+        near(.5f*(draw->xy[1][0]+draw->xy[2][0]), -turns[i+1].x);
+        near(.5f*(draw->xy[1][1]+draw->xy[2][1]), turns[i+1].z);
     }
     /* Distance to a finite segment preserves a street reversal; a closed
      * shape with coincident endpoints must retain its whole triangle. */
     draw_test_polyline(reverse, 3, 1000); assert(draw_count == 2);
     near(.5f*(draws[0].xy[1][0]+draws[0].xy[2][0]), -60);
-    draw_test_polyline(loop, 4, 1000); assert(draw_count == 3);
+    draw_test_polyline(loop, 4, 1000); assert(route_segment_draw_count() == 3);
     for (i = 0; i < COURSE_POINTS; ++i) dense[i] = (RoadPoint){-100 + 200.0f*i/(COURSE_POINTS-1),0,0};
     draw_test_polyline(dense, COURSE_POINTS, 1000); assert(draw_count == 1);
     /* Full-capacity alternating turns stress bounded scratch and the work
@@ -690,7 +707,7 @@ static void route_draw_simplification_contract(void) {
         s_route_draw.points[i] = (RoutePoint){.01f*i, (float)(i & 1)};
     route_simplify(COURSE_POINTS);
     for (i = 0; i < COURSE_POINTS; ++i) assert(s_route_draw.keep[i]);
-    printf("PASS route draw simplification: 758 straight samples -> 1 quad; 201 curved samples -> %u quads, <=0.25px error; sharp turns/reversal/closed loop/square clipping/maximum-capacity zigzag\n", curved_draws);
+    printf("PASS route draw simplification: 758 straight samples -> 1 segment; 201 curved samples -> %u segments, <=0.25px error; sharp turns/reversal/closed loop/square clipping/maximum-capacity zigzag\n", curved_draws);
 }
 
 static void square_route_clipping_contract(void) {
@@ -1061,6 +1078,7 @@ static void retail_road_contract(const char *filename) {
 #include "mm3_race_route_cache_contract.inc"
 #include "mm3_roundabout_contract.inc"
 #include "mm3_road_width_contract.inc"
+#include "mm3_route_join_contract.inc"
 
 static void live_direction_route_contract(void) {
     const RoadPoint loop[] = {{-50,0,0}, {50,0,0}, {50,0,80}, {-50,0,80}, {-50,0,-40}};
@@ -1122,6 +1140,7 @@ int main(int argc, char **argv) {
     route_cache_contract();
     live_direction_route_contract();
     route_draw_simplification_contract();
+    route_join_contract();
     square_route_clipping_contract();
     /* Roads also draw in Cruise; blue guidance overlays gray street chains
      * in races. Stock keeps its former route color, and teardown drops data. */

@@ -18,7 +18,7 @@ PRODUCER = "sub_00116535"
 EMITTER_SITES = ("001169A2", "00116A7F", "00116B4A", "00116BDE", "00116C78", "00116D0E", "00116D9D", "00116E2F", "00116EBE")
 MATH = ("sub_0002DC95", "sub_0006ACC3", "sub_000C6ADC",
         "sub_0006AC61", "sub_0006AE0C", "sub_0006AEE2", "sub_0001259E",
-        "sub_0006AD9F", "sub_0006AE60")
+        "sub_0006AD9F", "sub_0006AE60", "sub_000629BE", "sub_0006AEB6")
 SQUARE_ORIGINAL = "    PUSH32(esp, 0x0011DB57u); RECOMP_ABI_CALL(0x000C6ADCu, sub_000C6ADC); /* call 0x000C6ADC */"
 SQUARE_REPLACEMENT = "    if (mm3_minimap_improved()) {\n        mm3_map_square_geometry(eax, ecx, MEMF(esp));\n        mm3_map_zoom_window(ebx, MEM32(eax));\n        esp += 4; /* Inverse city-UV rotation consumes the native angle argument. */\n    } else {\n    " + SQUARE_ORIGINAL + "\n    }"
 BORDER_ORIGINAL = "    PUSH32(esp, 0x0011DBB1u); RECOMP_ABI_CALL(0x001C1585u, sub_001C1585); /* call 0x001C1585 */"
@@ -100,7 +100,7 @@ def main():
                 assert result.returncode and "MM3 map zoom" in result.stderr, result
                 return None
             if result.returncode:
-                raise RuntimeError(result.stderr)
+                raise RuntimeError(result.stderr or result.stdout or f"CMake exited {result.returncode}")
             return modified_path.read_text()
         modified = {}
         calls = {
@@ -148,18 +148,25 @@ def main():
         producer = transform(native[PRODUCER], PRODUCER)
         assert transform(native[PRODUCER].replace("\n", "\r\n"), PRODUCER) == producer
         begin = "    uint32_t mm3_square_map = mm3_map_square_begin(ecx, MEM32(esp + 8));\n"
+        publish_window = "    if (mm3_square_map) mm3_map_square_publish_window(MEMF(ebp + 0x4C), MEMF(ebp + 0x48));\n"
         city_uv = "    if (mm3_square_map) mm3_map_square_city_uv(ebx, esp);\n"
-        assert producer.count(begin) == 1 and producer.count(city_uv) == len(EMITTER_SITES)
-        restored = producer.replace(begin, "").replace(city_uv, "")
+        city_pack = "    if (mm3_square_map) mm3_map_square_tag_packed(esi);\n"
+        assert producer.count(begin) == producer.count(publish_window) == 1
+        assert producer.count(city_uv) == producer.count(city_pack) == len(EMITTER_SITES)
+        restored = producer.replace(begin, "").replace(city_uv, "").replace(city_pack, "").replace(publish_window, "")
         assert restored[restored.index("void " + PRODUCER):] == native[PRODUCER]
         transform(native[PRODUCER] + "\n" + native[PRODUCER], PRODUCER, True)
         transform(producer, PRODUCER, True)
         entry = "    PUSH32(esp, ebp);\n    ebp = esp + -116;"
         transform(native[PRODUCER].replace(entry, "    PUSH32(esp, ebp);\n    ebp = esp + -120;"), PRODUCER, True)
         transform(native[PRODUCER].replace(entry, entry + "\n" + entry), PRODUCER, True)
+        viewport = "loc_00116580: ;\n    eax = MEM32(0x3C568C);"
+        transform(native[PRODUCER].replace(viewport, "loc_00116580_BAD: ;\n    eax = MEM32(0x3C568C);"), PRODUCER, True)
+        transform(native[PRODUCER].replace(viewport, viewport + "\n" + viewport), PRODUCER, True)
         for site in EMITTER_SITES:
             emitter = f"    PUSH32(esp, 0x{site}u); RECOMP_ABI_CALL(0x00069807u, sub_00069807); /* call 0x00069807 */"
             assert city_uv + emitter in producer
+            assert emitter + "\n" + city_pack in producer
             transform(native[PRODUCER].replace(emitter, "    /* missing vertex */"), PRODUCER, True)
             transform(native[PRODUCER].replace(emitter, emitter + "\n" + emitter), PRODUCER, True)
         unrelated = "\nvoid unrelated(void)\n{\nloc_00116535: ;\n    PUSH32(esp, ebp);\n}\n"
@@ -172,8 +179,9 @@ def main():
             assert transform(native[PRODUCER].replace("\n", "\r\n"), PRODUCER, order=order) == composed
             owner_body = composed[composed.index("void " + PRODUCER):]
             assert owner_body.count(begin) == owner_body.count(route_begin) == 1
-            assert owner_body.count(city_uv) == 9 and owner_body.count(route_pack) == 3
-            restored = owner_body.replace(begin, "").replace(route_begin, "").replace(city_uv, "").replace(route_pack, "")
+            assert owner_body.count(publish_window) == 1
+            assert owner_body.count(city_uv) == owner_body.count(city_pack) == 9 and owner_body.count(route_pack) == 3
+            restored = owner_body.replace(begin, "").replace(route_begin, "").replace(city_uv, "").replace(city_pack, "").replace(route_pack, "").replace(publish_window, "")
             assert restored == native[PRODUCER]
             assert route_begin + "    PUSH32(esp, ebp);\n" + begin in owner_body
             composed_bodies.append(owner_body)
@@ -189,6 +197,13 @@ def main():
         begin_code = producer[producer.index("loc_00116535: ;"):producer.index("    ebp = esp + -116;")]
         begin_code += "    g_eax = mm3_square_map;\n    POP32(esp, ebp);\n"
         body += "\nvoid city_begin(void)\n{\n" + prelude + begin_code + producer[producer.rindex("    #undef fp_push"):producer.rindex("}")] + "}\n"
+        # Execute native renderer dimensions -> half-viewport conversion at
+        # the actual publication boundary. The renderer virtual lookup is
+        # captured by supplying its returned dimensions pointer in eax.
+        viewport_code = producer[producer.index("loc_00116554: ;"):producer.index("loc_00116580: ;")]
+        viewport_code = viewport_code.replace("    if (CMP_EQ(_fa, _fb)) goto loc_00116ED6; /* je: equal / zero */", "    assert(ebx);")
+        cleanup = producer[producer.rindex("    #undef fp_push"):producer.rindex("}")]
+        body += "\nvoid city_window(void)\n{\n" + prelude + "    uint32_t mm3_square_map = 1;\n" + viewport_code + publish_window + "    esp += 4;\n" + cleanup + "}\n"
         first_vertex = producer[producer.index("loc_0011692B: ;"):producer.index("\nloc_001169A2: ;")]
         cleanup = producer[producer.rindex("    #undef fp_push"):producer.rindex("}")]
         body += "\nvoid city_first_vertex(void)\n{\n" + prelude + "    uint32_t mm3_square_map = 1;\n" + first_vertex + cleanup + "}\n"
@@ -214,10 +229,17 @@ def main():
                 "missing speed target": production.replace(
                     "speed = fabsf((float)SMEM32(player_record + 4));", "speed = 0.0f;"),
                 "camera tilt omits speed publication": production.replace(
-                    "map_motion_publish(slot, MEMF(node + 0x94), MEMF(node + 0x98));", "map_motion_store(slot, 0);"),
+                    "map_motion_publish(slot, s_square_map.window_cx + half_width,\n        s_square_map.window_cy + half_height);", "map_motion_store(slot, 0);"),
                 "camera speed ignores expanded clip window": production.replace(
-                    "map_motion_publish(slot, MEMF(clip) + width * .5f, MEMF(clip + 4) + height * .5f);",
-                    "map_motion_publish(slot, MEMF(node + 0x94), MEMF(node + 0x98));"),
+                    "s_square_map.window_cx = MEMF(clip) + width * .5f;",
+                    "s_square_map.window_cx = MEMF(node + 0x94);"),
+                "viewport X offset omitted": production.replace(
+                    "s_square_map.window_cx + half_width,", "s_square_map.window_cx,"),
+                "viewport Y offset omitted": production.replace(
+                    "s_square_map.window_cy + half_height);", "s_square_map.window_cy);"),
+                "original local-space publication restored": production.replace(
+                    "s_square_map.window_cx + half_width,\n        s_square_map.window_cy + half_height);",
+                    "s_square_map.window_cx, s_square_map.window_cy);"),
                 "routing reads speed instead of car heading": production.replace(
                     "player_record ? MEM32(player_record) : 0x7FC00000u",
                     "player_record ? MEM32(player_record + 4) : 0x7FC00000u"),
@@ -245,6 +267,7 @@ def main():
             (folder / "production_map_zoom.c").write_text(production)
             for label, replacement, original in (("missing square geometry", SQUARE_REPLACEMENT, SQUARE_ORIGINAL),
                                                  ("retained circular border", BORDER_REPLACEMENT, BORDER_ORIGINAL),
+                                                 ("missing native viewport publication seam", publish_window, ""),
                                                  ("missing native city UV seam", city_uv, "")):
                 assert body.count(replacement) == 1
                 (folder / "native_map_zoom.inc").write_text(declarations + "\n" + body.replace(replacement, original) + constants(body))
