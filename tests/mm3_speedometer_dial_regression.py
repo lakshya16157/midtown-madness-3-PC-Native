@@ -55,9 +55,32 @@ def main():
             "Crossfire 800 751\n"
             "NewBeetle 800\n", encoding="ascii")
         subprocess.run([str(executable), "configured"], check=True, cwd=folder)
+        settings.write_text(
+            "# Original syntax and behavior remain unchanged.\n"
+            "Koenigsegg 800 500\n"
+            "added Form1 400 240\n"
+            "added Panoz 650 404\n"
+            "ADDED MRly 500 311\n"
+            "added ThisAliasIsLongerThan15 1200 750\n"
+            "added Native0 300 150\n"
+            "added Native1 300 200\n"
+            "added Native2 160 100\n"
+            "added Native3 220 180\n"
+            "added Native4 380 280\n"
+            "added MatchingKoenig 380 240\n"
+            "# Stale legacy entries cannot replace explicit added scales.\n"
+            "Form1 800 500\n"
+            "LegacyOnly 800 500\n"
+            "added TaggedBad 99 240\n"
+            "added TaggedNan nan 240\n"
+            "added TaggedShort 400\n"
+            "added TaggedTrailing 400 240 extra\n"
+            "added Koenigsegg 600 400\n"
+            "added ParisBus 400 240\n", encoding="ascii")
+        subprocess.run([str(executable), "added"], check=True, cwd=folder)
         settings.write_text("Koenigsegg nan 500\nViper 800 751\n", encoding="ascii")
         subprocess.run([str(executable), "invalid"], check=True, cwd=folder)
-    print("PASS: added-car retail HUD fallback with legacy settings, unchanged original overrides, parser, native quad ABI and guest state")
+    print("PASS: 35 original numeric readouts, tagged added scales/needles across all five styles, native/legacy fallback, explicit original overrides, parser, native quad ABI and guest state")
 
 
 if __name__ == "__main__":

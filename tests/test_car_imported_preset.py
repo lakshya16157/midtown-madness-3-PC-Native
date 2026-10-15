@@ -43,6 +43,12 @@ class ImportedPresetTest(unittest.TestCase):
         self.assertEqual(len(self.imported["cars"]), 9)
         self.assertNotIn(9001, {car["id"] for car in self.imported["cars"]})
 
+    def test_shipped_presets_select_no_base_stats_car(self):
+        # Shipped cars use their body donor's driving values plus weight/power.
+        for preset in (self.defaults, self.imported):
+            for car in preset["cars"]:
+                self.assertNotIn("driving_base", car)
+
     def test_configuration_validation_does_not_need_downloaded_models(self):
         # The installer validates asset existence separately when making a plan.
         self.assertEqual(PREPARE.load_config(MODS / "cars.imported.json"), self.imported)

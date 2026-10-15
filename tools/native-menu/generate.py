@@ -25,9 +25,12 @@ DISPLAY_ROWS = [("RESOLUTION", None), ("MODE", None), ("FPS", None),
                 ("VSYNC", None), ("SCALE", None), ("SHOW_FPS", None),
                 ("ADVANCED", None), ("APPLY", "graphicsApply"), ("DEFAULTS", "graphicsDefaults")]
 ADVANCED_ROWS = [("ASPECT", None), ("MSAA", None), ("ANISO", None), ("DISTANCE", None),
+                 ("MINIMAP", None),
                  ("APPLY", "graphicsApply"), ("DEFAULTS", "graphicsDefaults")]
 PICKER_COUNTS = {"RESOLUTION": 12, "MODE": 2, "FPS": 7, "VSYNC": 2, "SCALE": 9,
-                 "SHOW_FPS": 2, "ASPECT": 5, "MSAA": 4, "ANISO": 5, "DISTANCE": 5}
+                 "SHOW_FPS": 2, "ASPECT": 5, "MSAA": 4, "ANISO": 5, "DISTANCE": 5, "MINIMAP": 2}
+PAUSE_OPTIONS = "Pausemenu/menuOptions"
+PAUSE_HUD = "Pausemenu/menuHud"
 PICKERS = {key: "graphics/picker" + key for key in PICKER_COUNTS}
 PICKER_TITLES = {key: "titles/titleGraphics" + key for key in PICKER_COUNTS}
 RESOLUTION_OTHER = "graphics/pickerRESOLUTIONOther"
@@ -182,10 +185,57 @@ def info_box_resource(retail):
     return resource
 
 
+def pause_hud_resources(retail):
+    """Keep the retail pause transitions and controller controls for HUD choices."""
+    options = clone(retail)
+    option_rows = rows(options)
+    if len(option_rows) != 2 or [label for label, _, _ in option_rows] != ["SID_SOUND_SETUP", "SID_GAME_SETUP"]:
+        raise ValueError("Retail pause Options rows changed")
+    first, last = option_rows[0][2], option_rows[1][2]
+    template = clone(first)
+    template.parts[0] = Reference()
+    hud_entry = clone(template)
+    hud_entry.parts[1] = struct.pack("<4f", 0, 60, 500, 30)
+    button = row_button(hud_entry)
+    button.parts[1] = Reference(object=sid("SID_MM3_GRAPHICS_HUD"))
+    push = button.parts[3].object.references()[0]
+    push.object.references()[1].name = "menuHud"
+    last.parts[0] = Reference(object=hud_entry)
+    for obj in options.root.walk():
+        if (obj.kind == "TransformNode" and len(obj.parts) == 3 and
+                isinstance(obj.parts[1], bytes) and len(obj.parts[1]) == 16 and
+                struct.unpack("<4f", obj.parts[1]) == (70, 160, 520, 80)):
+            obj.parts[1] = struct.pack("<4f", 70, 160, 520, 110)
+
+    hud = clone(retail)
+    first = rows(hud)[0][2]
+    pop_actions = [obj for obj in hud.root.walk() if obj.kind == "PopPathAction"]
+    if len(pop_actions) != 1 or pop_actions[0].references()[0].name != "pathMenu":
+        raise ValueError("Retail pause Back action changed")
+    next_row = Reference()
+    for index, (key, function) in reversed(list(enumerate([
+            ("HUD_MINIMAP_STOCK", "hudMinimapStock"),
+            ("HUD_MINIMAP_IMPROVED", "hudMinimapImproved")]))):
+        row = clone(template)
+        row.parts[0] = next_row
+        row.parts[1] = struct.pack("<4f", 0, index * 30, 500, 30)
+        button = row_button(row)
+        button.parts[1] = Reference(object=sid("SID_MM3_GRAPHICS_" + key))
+        button.parts[3] = actions([call_function(function),
+                                  Reference(object=clone(pop_actions[0])),
+                                  Reference(object=Object("SoundAction", [b"\x0aSelect.wav"]))])
+        next_row = Reference(object=row)
+    replace_object(hud, first, next_row.object)
+    for ref in named_references(hud, "variables/indexOptions"):
+        ref.name = "variables/indexHud"
+    return {PAUSE_OPTIONS: options, PAUSE_HUD: hud}
+
+
 def generate_resources(archive):
     with zipfile.ZipFile(archive) as files:
         original = {name: files.read("Menu/Frontend/" + name)
                     for name in (MAIN, OPTIONS, TITLE, INFOBOX, INFO_WIDGET, MULTIPOP_TEMPLATE)}
+        pause_options = Resource.decode(files.read("Menu/" + PAUSE_OPTIONS))
     decoded = {name: Resource.decode(data) for name, data in original.items()}
     multipops = [obj for obj in decoded[MULTIPOP_TEMPLATE].root.walk() if obj.kind == "MultiPopPathAction"]
     if len(multipops) != 1 or len(multipops[0].parts) != 2:
@@ -201,6 +251,7 @@ def generate_resources(archive):
                  TITLE_ADVANCED: title_resource(decoded[TITLE], "ADVANCED"),
                  GRAPHICS_INFOBOX: info_box_resource(decoded[INFOBOX]),
                  GRAPHICS_INFO_WIDGET: clone(decoded[INFO_WIDGET])}
+    resources.update(pause_hud_resources(pause_options))
     for key in PICKER_COUNTS:
         specs = picker_rows(key, RESOLUTION_PRIMARY if key == "RESOLUTION" else None)
         if key == "RESOLUTION":

@@ -1,7 +1,8 @@
-# Hide the live numeric speed in both native HUD layouts. Full-screen HUDs
-# retain their analog gauge, with editable maxima for configured cars and
-# the complete retail dial/needle as the fallback. Units are still evaluated
-# before selecting the analog path; no guest text is allocated for the readout.
+# Retail cars retain both original HUD layouts unless explicitly overridden.
+# Added cars keep their hidden numeric-only readout; HUD style selects the
+# native dial family and needle arc. Explicit added-car maxima render custom
+# dials with matching needles, retaining native artwork for a unit whose maximum
+# matches its native printed maximum. Original HUD overrides remain independent.
 function(mm3_add_speedometer_readout source_variable)
     set(content "${${source_variable}}")
     set(original_prologue [=[void sub_0023F09B(void)
@@ -10,6 +11,7 @@ function(mm3_add_speedometer_readout source_variable)
     set(replacement_prologue [=[void sub_0023F09B(void)
 {
     extern int mm3_speedometer_draw(uint32_t, uint32_t, double);
+    extern int mm3_speedometer_hide_readout(void);
     uint32_t mm3_speedometer_node = 0;
     uint32_t ebp = 0;]=])
     set(original_selector [=[loc_0023F82D: ;
@@ -19,10 +21,10 @@ function(mm3_add_speedometer_readout source_variable)
     set(replacement_selector [=[loc_0023F82D: ;
     _fa = (uint32_t)(MEM32(ebp + -344)) & 0xFFFFFFFFu; _fb = (uint32_t)(1) & 0xFFFFFFFFu;
     _fas = (int32_t)(int32_t)(_fa); _fbs = (int32_t)(int32_t)(_fb); /* cmp MEM32(ebp + -344), 1 (32-bit) */
-    /* Split-screen uses a numeric-only gauge. Omit its readout; the
-     * full-screen analog dial keeps its native getter and units selection. */
-    if (CMP_EQ(_fa, _fb)) goto loc_0023FB95;
-    goto loc_0023F8F8;]=])
+    if (CMP_NE(_fa, _fb)) goto loc_0023F8F8; /* jne: not equal / not zero */
+    /* Keep the retail numeric-only gauge for original cars; added cars
+     * retain their existing hidden readout. The units getter stays native. */
+    if (mm3_speedometer_hide_readout()) goto loc_0023FB95;]=])
     set(original_node [=[loc_0023F8F8: ;
     fp_push(MEMF(0x38641C)); /* fld float */]=])
     set(replacement_node [=[loc_0023F8F8: ;

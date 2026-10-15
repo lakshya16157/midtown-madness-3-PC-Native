@@ -3,7 +3,7 @@
 Open the local MM3 visual car/stat editor. No packages need to be installed.
 #>
 param(
-    [string]$Config = (Join-Path $PSScriptRoot 'cars.json'),
+    [string]$Config,
     [string]$GameDir = (Join-Path $PSScriptRoot '..\..\game_files')
 )
 $ErrorActionPreference = 'Stop'
@@ -15,5 +15,7 @@ if (-not (Test-Path -LiteralPath $python)) {
 if (-not (Test-Path -LiteralPath $python)) {
     throw 'Python environment missing. Run scripts\setup.ps1 first, or launch editor.py with Python 3 and Tkinter.'
 }
-& $python (Join-Path $PSScriptRoot 'editor.py') --config $Config --game-dir $GameDir
+$editorArgs = @((Join-Path $PSScriptRoot 'editor.py'), '--game-dir', $GameDir)
+if ($Config) { $editorArgs += @('--config', $Config) }
+& $python @editorArgs
 if ($LASTEXITCODE -ne 0) { throw "Car editor exited with code $LASTEXITCODE." }

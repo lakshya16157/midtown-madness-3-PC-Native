@@ -30,6 +30,8 @@ def apply_preset(car: dict) -> dict:
     result = copy.deepcopy(car)
     for field in ("physics", "ratings", "speedometer"):
         result[field] = copy.deepcopy(specs[alias][field])
+    # A factory engine profile and a base stats car are mutually exclusive.
+    result.pop("driving_base", None)
     result["engine_profile"] = "factory"
     return result
 

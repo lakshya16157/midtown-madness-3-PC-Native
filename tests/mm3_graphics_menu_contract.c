@@ -38,6 +38,7 @@ void mm3_display_settings_defaults(MM3DisplaySettings *settings, const char *pro
     memset(settings, 0, sizeof *settings);
     settings->window_width = 800; settings->window_height = 600;
     settings->fps_limit = 60; settings->render_scale = 1;
+    settings->minimap_improved = 1;
     strcpy(settings->aspect, "auto");
     settings->msaa = settings->aniso = 1; settings->draw_distance = 1;
 }
@@ -208,6 +209,7 @@ int main(void)
     assert(draft.fullscreen == 1 && draft.fps_limit == 60 && draft.vsync == 1 && draft.show_fps == 1);
     assert(draft.render_scale == 4 && !strcmp(draft.aspect, "21:9"));
     assert(draft.msaa == 8 && draft.aniso == 16 && draft.draw_distance == 4);
+    assert(draft.minimap_improved == 1);
     execute(choice_action(SETTING_RESOLUTION, 9));
     execute(choice_action(SETTING_FPS, 1));
     execute(choice_action(SETTING_MODE, 0));
@@ -218,11 +220,14 @@ int main(void)
     execute(choice_action(SETTING_MSAA, 2));
     execute(choice_action(SETTING_ANISO, 3));
     execute(choice_action(SETTING_DISTANCE, 2));
+    execute(choice_action(SETTING_MINIMAP, 0));
     assert(draft.fps_limit == 24 && draft.fullscreen == 0 && draft.render_scale == .75f);
     assert(draft.vsync == 0 && draft.show_fps == 0 && !strcmp(draft.aspect, "16:9"));
     assert(draft.msaa == 4 && draft.aniso == 8 && draft.draw_distance == 2);
+    assert(draft.minimap_improved == 0 && saved_settings.minimap_improved == 1);
     execute(GRAPHICS_APPLY);
     assert(commits == 1 && saved_settings.fps_limit == 24 && saved_settings.window_width == 2560 && saved_settings.window_height == 1440);
+    assert(saved_settings.minimap_improved == 0);
     get_native_label("SID_MM3_GRAPHICS_HELP_APPLY", label, sizeof label);
     assert(!strcmp(label, "Saved. Display changes applied."));
 
@@ -276,6 +281,24 @@ int main(void)
     save_guest(&expected_loader_state);
     sub_001C5E11();
     assert(registered == GRAPHICS_ACTION_COUNT && loaded == 2);
+    prepare_state();
+    memcpy((char *)XBOX_PTR(test_key), "PauseMenu", sizeof "PauseMenu");
+    MEM32(test_stack + 4u) = test_key;
+    memset(&expected_loader_state, 0, sizeof expected_loader_state);
+    save_guest(&expected_loader_state);
+    sub_001C5E11();
+    assert(registered == GRAPHICS_ACTION_COUNT * 2 && loaded == 3);
+    get_native_label("SID_MM3_GRAPHICS_HUD_MINIMAP_STOCK", label, sizeof label);
+    assert(!strcmp(label, "Minimap: Stock  (Selected)"));
+    fail_commit = 0;
+    execute(GRAPHICS_MINIMAP_IMPROVED);
+    assert(commits == 3 && saved_settings.minimap_improved == 1);
+    assert(saved_settings.fps_limit == 24 && saved_settings.window_width == 2560);
+    get_native_label("SID_MM3_GRAPHICS_HUD_MINIMAP_IMPROVED", label, sizeof label);
+    assert(!strcmp(label, "Minimap: Improved  (Selected)"));
+    fail_commit = 1;
+    execute(GRAPHICS_MINIMAP_STOCK);
+    assert(commits == 4 && saved_settings.minimap_improved == 1);
     puts("Native graphics menu contract passed.");
     return 0;
 }

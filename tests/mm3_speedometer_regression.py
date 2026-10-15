@@ -1,4 +1,4 @@
-"""Verify numeric speed removal and the retained native analog path offline.
+"""Verify retail numeric speed restoration and the native analog path offline.
 
 Run after scripts/enter-env.ps1. The test extracts the real generated code;
 it requires no game process, GPU, XBE data changes or player save.
@@ -119,7 +119,7 @@ def main():
                         "/Fo:" + str(folder / "contract.obj"), "/Fe:" + str(executable)],
                        check=True, cwd=folder)
         subprocess.run([str(executable)], check=True)
-    print("PASS: exact CMake HUD seam, hidden numeric speed, analog fallback, override stack balance, LF/CRLF and rejected invalid anchors")
+    print("PASS: exact CMake HUD seam, retail numeric speed, unchanged added-car readout, analog fallback, override stack balance, LF/CRLF and rejected invalid anchors")
 
 
 if __name__ == "__main__":

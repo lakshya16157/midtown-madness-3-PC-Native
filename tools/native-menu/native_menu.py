@@ -163,7 +163,8 @@ def row_button(transform):
     if not isinstance(child, Reference) or not child.object or child.object.kind != "TabstopNode":
         return None
     refs = child.object.references()
-    if len(refs) != 1 or not refs[0].object or refs[0].object.kind != "MmxSimpleButtonNode":
+    if (len(refs) != 1 or not refs[0].object or
+            refs[0].object.kind not in ("MmxSimpleButtonNode", "MmxCenteredSimpleButtonNode")):
         return None
     button = refs[0].object
     if len(button.parts) != 5 or not all(isinstance(p, Reference) for p in button.parts):

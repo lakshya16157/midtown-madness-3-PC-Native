@@ -28,6 +28,11 @@ _factory_spec = importlib.util.spec_from_file_location(
     "mm3_factory_specs", Path(__file__).with_name("factory_specs.py"))
 factory_specs = importlib.util.module_from_spec(_factory_spec)
 _factory_spec.loader.exec_module(factory_specs)
+# Read-only tweak parser and the retail alias table for base stats cars.
+_original_spec = importlib.util.spec_from_file_location(
+    "mm3_prepare_original_stats", Path(__file__).with_name("original_stats.py"))
+original_stats = importlib.util.module_from_spec(_original_spec)
+_original_spec.loader.exec_module(original_stats)
 
 
 def default_config_path(directory: Path | None = None) -> Path:
@@ -71,6 +76,20 @@ PHYSICS = {
     "GearStatusDownGearFactor": (0.1, 0.95),
     "SteeringEndSpeed": (20, 1000), "WheelRadius": (0.1, 2),
 }
+# Every retail and DLC car uses these RPMs; blank manifest values inherit them.
+DONOR_RPM = {"MinRPM": 1000, "MinRPMGearChange": 4000, "CutRPM": 8000, "MaxRPM": 10000,
+             "MaxTorqueRPM": 6500, "MaxTurboTorqueRPM": 6750}
+AUTOMATIC_PEAK_LIMIT = 8000
+# Driving values a base stats car ("driving_base") supplies. WheelRadius stays
+# with the body donor: the loaded wheel model sets the real rolling radius.
+# NGears travels with the gearbox and TurboSpinup with TurboSize, which are
+# equal in every retail car.
+BASE_KEYS = tuple(key for key in PHYSICS if key != "WheelRadius") + ("NGears", "GearRatioVector", "TurboSpinup")
+# Some retail cars omit these and run on the native default. A base car that
+# omits one removes the donor's line, so the variant drives like the base.
+BASE_OPTIONAL = frozenset({"LatFrictionFactor", "SteeringEndSpeed"})
+_BASE_ALIASES = {alias.casefold(): alias for alias in original_stats.ORIGINAL_ALIASES.values()}
+_DECIMAL = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 PAINT_MATERIALS = {
     "mini": ({"body1", "texture_gloss", "minitexturMatt"}, {"Skin_Blank"}),
     "mfastback": ({"Color", "Color_tex_logo", "Color_tex_mply"}, {"Lodtexture"}),
@@ -104,7 +123,54 @@ def exact_keys(obj: dict, allowed: set[str], description: str) -> None:
 
 
 def load_config(path: Path) -> dict:
-    config = json.loads(path.read_text(encoding="utf-8"))
+    return validate_config(json.loads(path.read_text(encoding="utf-8")))
+
+
+def _original_car_alias(name, field: str, description: str) -> str:
+    """Resolve a manifest reference to one of the pristine retail tweaks."""
+    if not isinstance(name, str):
+        raise ValueError(f"{field} must name an original car, for example Viper")
+    alias = _BASE_ALIASES.get(name.casefold())
+    if alias is None:
+        raise ValueError(f"Unknown {description} {name!r}: {field} must name one of the "
+                         "35 original cars, for example Viper or Lotus")
+    return alias
+
+
+def driving_base_alias(name) -> str:
+    """Exact retail tweak stem for a base stats car named in any letter case."""
+    return _original_car_alias(name, "driving_base", "base stats car")
+
+
+def hud_style_alias(name) -> str:
+    """Exact retail tweak stem for an independently selected native HUD style."""
+    return _original_car_alias(name, "hud_style", "HUD style car")
+
+
+def validate_rpm(values: dict) -> None:
+    """Native automatic-gearbox RPM rules; keys left out use DONOR_RPM.
+
+    sub_001CF7B4 builds road-speed upshift thresholds from peak RPM - 50;
+    sub_001CB7E8 samples the supported stock curve, which ends near 8500 RPM
+    (and has a hard 9500-RPM limit). Lowering only CutRPM must not leave an
+    automatic shift threshold beyond the usable engine.
+    """
+    idle, shift, cutoff, redline = (values.get(key, DONOR_RPM[key])
+                                    for key in ("MinRPM", "MinRPMGearChange", "CutRPM", "MaxRPM"))
+    if not idle < shift < cutoff <= redline:
+        raise ValueError("RPM settings require MinRPM < MinRPMGearChange < CutRPM <= MaxRPM")
+    for key in ("MaxTorqueRPM", "MaxTurboTorqueRPM"):
+        if not idle < values.get(key, DONOR_RPM[key]) < cutoff:
+            raise ValueError(f"{key} must be above MinRPM and below CutRPM for automatic gear changes")
+
+
+def validate_config(config: dict) -> dict:
+    """Validate a manifest held in memory and return it unchanged.
+
+    The editor validates drafts with this directly; it reads no files and no
+    game data. Base stats values are checked again when installing, once the
+    base car's retail tweak is available.
+    """
     exact_keys(config, {"version", "cars", "original_speedometers"}, "manifest")
     if config.get("version") != 1 or not isinstance(config.get("cars"), list):
         raise ValueError("Manifest requires version 1 and a cars array")
@@ -115,7 +181,7 @@ def load_config(path: Path) -> dict:
     seen_ids, seen_aliases = set(), set()
     for car in config["cars"]:
         required = {"id", "alias", "donor", "display_name", "ratings", "physics", "colors"}
-        exact_keys(car, required | {"speedometer", "model_package", "engine_profile"}, "car")
+        exact_keys(car, required | {"speedometer", "model_package", "engine_profile", "driving_base", "hud_style"}, "car")
         if not required <= set(car):
             raise ValueError("Each car requires id, alias, donor, display_name, ratings, physics, colors")
         ident = car["id"]
@@ -123,7 +189,7 @@ def load_config(path: Path) -> dict:
             raise ValueError("Car IDs must be unique integers from 1 to 32767")
         seen_ids.add(ident)
         if IDENTITIES.get(ident) != (car["alias"], car["donor"], car["display_name"]):
-            raise ValueError("Car id, alias, donor and display_name are fixed identities; edit ratings, physics, colors, speedometer and model_package")
+            raise ValueError("Car id, alias, donor and display_name are fixed identities; edit ratings, physics, colors, speedometer, model_package, driving_base and hud_style")
         for key in ("alias", "donor"):
             if not isinstance(car[key], str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{1,31}", car[key]):
                 raise ValueError(f"Invalid car {key}")
@@ -140,6 +206,16 @@ def load_config(path: Path) -> dict:
         if set(car["ratings"]) != RATINGS or any(type(v) is not int or not 0 <= v <= 9 for v in car["ratings"].values()):
             raise ValueError("All five ratings must be integers from 0 to 9")
         profile = factory_specs.profile_for(car)
+        if "hud_style" in car:
+            hud_style_alias(car["hud_style"])
+        if "driving_base" in car:
+            base = driving_base_alias(car["driving_base"])
+            if base.casefold() == car["donor"].casefold():
+                raise ValueError(f"{car['display_name']}: its {car['donor']} body donor already supplies the "
+                                 "driving values; remove driving_base or choose another car")
+            if profile is not None:
+                raise ValueError(f"{car['display_name']}: the factory engine profile cannot be combined "
+                                 "with a base stats car (driving_base)")
         exact_keys(car["physics"], set(PHYSICS) | {"GearRatioVector"}, "physics")
         for key, value in car["physics"].items():
             if key == "GearRatioVector":
@@ -153,27 +229,15 @@ def load_config(path: Path) -> dict:
                     raise ValueError("Forward gear ratios must decrease as gears increase")
                 continue
             low, high = PHYSICS[key]
-            if profile is None and key in {"MaxTorqueRPM", "MaxTurboTorqueRPM"} and type(value) in (int, float) and math.isfinite(value) and value > 8000:
+            if profile is None and key in {"MaxTorqueRPM", "MaxTurboTorqueRPM"} and type(value) in (int, float) and math.isfinite(value) and value > AUTOMATIC_PEAK_LIMIT:
                 raise ValueError("Supported stock torque curve ends near 8500 RPM; automatic peak must be <= 8000 RPM")
             if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
                 raise ValueError(f"{key} must be a finite number from {low} to {high}")
             if key == "WheelDrive" and type(value) is not int:
                 raise ValueError("WheelDrive must be 0 (front), 1 (rear), or 2 (all wheels)")
-        # The supported donors all use this idle/shift/cutoff/redline ordering.
+        # Every donor and base car shares DONOR_RPM, so blank keys are exact here.
         physics = car["physics"]
-        idle, shift, cutoff, redline = (physics.get(key, default) for key, default in
-                                      (("MinRPM", 1000), ("MinRPMGearChange", 4000),
-                                       ("CutRPM", 8000), ("MaxRPM", 10000)))
-        if not idle < shift < cutoff <= redline:
-            raise ValueError("RPM settings require MinRPM < MinRPMGearChange < CutRPM <= MaxRPM")
-        # sub_001CF7B4 builds road-speed upshift thresholds from peak RPM - 50;
-        # sub_001CB7E8 samples the supported stock curve, which ends near 8500
-        # RPM (and has a hard 9500-RPM limit); keep peaks <= 8000 for headroom.
-        # All supported donors inherit these two peaks. Lowering only CutRPM
-        # must not leave an automatic shift threshold beyond the usable engine.
-        for key, default in (("MaxTorqueRPM", 6500), ("MaxTurboTorqueRPM", 6750)):
-            if not idle < physics.get(key, default) < cutoff:
-                raise ValueError(f"{key} must be above MinRPM and below CutRPM for automatic gear changes")
+        validate_rpm(physics)
         if profile is not None:
             validate_factory_profile(profile, physics)
         if not isinstance(car["colors"], list) or not 1 <= len(car["colors"]) <= 3 or any(not isinstance(c, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", c) for c in car["colors"]):
@@ -229,11 +293,21 @@ def validate_speedometer(settings: dict) -> None:
 
 
 def speedometer_settings(config: dict) -> bytes:
-    """Write original-car HUD overrides; added cars retain the donor HUD."""
+    """Publish original overrides and explicitly tagged added-car HUD ranges.
+
+    The ``added`` marker opts into the configured HUD maximum. Old untagged
+    added-car entries are not this contract, so a stale sidecar cannot silently
+    change a car that should use its native dial. The same per-car settings
+    also calibrate the interior needle through tweak_variant.
+    """
     lines = ["# MM3 speedometer maxima: alias max_kmh max_mph"]
     entries = list(config.get("original_speedometers", {}).items())
     for alias, limits in entries:
         lines.append(f"{alias} {limits['max_kmh']:g} {limits['max_mph']:g}")
+    for car in config.get("cars", []):
+        if "speedometer" in car:
+            limits = car["speedometer"]
+            lines.append(f"added {car['alias']} {limits['max_kmh']:g} {limits['max_mph']:g}")
     return ("\n".join(lines) + "\n").encode("ascii")
 
 
@@ -329,18 +403,126 @@ def update_section(text: str, section: str, values: dict, remove: set[str] = fro
     return text[:match.start(2)] + body + text[match.end(2):]
 
 
-def tweak_variant(original: bytes, car: dict) -> bytes:
+def base_driving_values(text: str, name: str) -> dict[str, str]:
+    """Scoped CarBody values of a base stats car: raw, whitespace-normalised."""
+    try:
+        sections = original_stats.parse_sections(text)
+    except ValueError as error:
+        raise ValueError(f"Base stats car {name}: {error}") from error
+    bodies = [section for section in sections if section["name"].casefold() == "carbody"]
+    if len(bodies) != 1:
+        raise ValueError(f"Base stats car {name} needs exactly one CarBody section")
+    values = {}
+    for key, raw in bodies[0]["entries"]:
+        if key not in BASE_KEYS:
+            continue
+        if key in values:
+            raise ValueError(f"Base stats car {name} repeats {key}")
+        tokens = re.split(r"\s+(?://|#|;)", raw.strip(), maxsplit=1)[0].split()
+        if (not tokens or (key != "GearRatioVector" and len(tokens) != 1)
+                or any(not _DECIMAL.fullmatch(token) or not math.isfinite(float(token)) for token in tokens)):
+            raise ValueError(f"Base stats car {name} has an unusable {key} value: {raw.strip()!r}")
+        values[key] = " ".join(tokens)
+    return values
+
+
+def based_physics(car: dict, base: str) -> tuple[dict, set]:
+    """Merged CarBody values for a car with a base stats car, plus donor keys to drop.
+
+    Base values fill every scoped key the manifest leaves blank; overrides win.
+    A base without an optional key drops the donor's line (native default).
+    """
+    name = car["driving_base"]
+    inherited = base_driving_values(base, name)
+    overrides = car["physics"]
+    missing = set(BASE_KEYS) - BASE_OPTIONAL - set(inherited) - set(overrides)
+    if "GearRatioVector" in overrides:
+        missing.discard("NGears")
+    if missing:
+        raise ValueError(f"Base stats car {name} lacks {', '.join(sorted(missing))}")
+    merged = {key: value for key, value in inherited.items() if key not in ("NGears", "GearRatioVector")}
+    merged.update((key, value) for key, value in overrides.items() if key != "GearRatioVector")
+    # NGears precedes GearRatioVector, as in retail tweaks and override output.
+    if "GearRatioVector" in overrides:
+        ratios = overrides["GearRatioVector"]
+        merged["NGears"] = len(ratios) - 1
+        merged["GearRatioVector"] = " ".join(format(ratio, ".9g") for ratio in ratios)
+    else:
+        gears = inherited["GearRatioVector"]
+        if float(inherited["NGears"]) != len(gears.split()) - 1:
+            raise ValueError(f"Base stats car {name} has NGears {inherited['NGears']} "
+                             f"for {len(gears.split()) - 1} forward gears")
+        merged["NGears"] = inherited["NGears"]
+        merged["GearRatioVector"] = gears
+    return merged, set(BASE_KEYS) - set(merged)
+
+
+def check_installed_driving(text: str, label: str) -> None:
+    """Re-check the native RPM rules on the merged CarBody a car will load."""
+    bodies = [section for section in original_stats.parse_sections(text) if section["name"].casefold() == "carbody"]
+    numbers = {}
+    for key, raw in (bodies[0]["entries"] if bodies else []):
+        value = original_stats.typed_value(raw)
+        if key in DONOR_RPM and type(value) in (int, float):
+            numbers[key] = value
+    try:
+        validate_rpm(numbers)
+        for key in ("MaxTorqueRPM", "MaxTurboTorqueRPM"):
+            if numbers.get(key, DONOR_RPM[key]) > AUTOMATIC_PEAK_LIMIT:
+                raise ValueError("Supported stock torque curve ends near 8500 RPM; automatic peak must be <= 8000 RPM")
+    except ValueError as error:
+        raise ValueError(f"{label}: {error}") from error
+
+
+def hud_speedometer_type(text: str, name: str) -> int:
+    """Read one supported native gauge type from an original car's CarInfo."""
+    sections = original_stats.parse_sections(text)
+    info = [section for section in sections if section["name"].casefold() == "carinfo"]
+    if len(info) != 1:
+        raise ValueError(f"HUD style {name} needs exactly one CarInfo section")
+    values = [raw for key, raw in info[0]["entries"] if key.casefold() == "speedometertype"]
+    if len(values) == 1:
+        value = re.split(r"\s+(?://|#|;)", values[0].strip(), maxsplit=1)[0]
+        if re.fullmatch(r"[0-4]", value):
+            return int(value)
+    raise ValueError(f"HUD style {name} needs exactly one SPEEDOMETERTYPE from 0 to 4")
+
+
+def tweak_variant(original: bytes, car: dict, base: str | None = None,
+                  hud: str | None = None) -> bytes:
+    """Clone a donor tweak for ``car``.
+
+    ``base`` is the retail tweak text of the car's base stats car and must be
+    given exactly when the car sets driving_base. ``hud`` is the selected
+    original HUD car's retail tweak and is supplied exactly when hud_style is
+    set. It changes only CarInfo.SPEEDOMETERTYPE; the donor still supplies the
+    interior and every other retained field. Cars without either selection
+    keep the byte-identical output of earlier releases.
+    """
+    if ("driving_base" in car) != (base is not None):
+        raise ValueError(f"{car.get('display_name', car.get('alias'))}: base stats tweak text must be "
+                         "supplied exactly when driving_base is set")
+    if ("hud_style" in car) != (hud is not None):
+        raise ValueError(f"{car.get('display_name', car.get('alias'))}: HUD style tweak text must be "
+                         "supplied exactly when hud_style is set")
     text = original.decode("ascii")
     info = {"ID": car["id"], **car["ratings"], "PAINTJOBNAME": car["alias"]}
+    if hud is not None:
+        info["SPEEDOMETERTYPE"] = hud_speedometer_type(hud, hud_style_alias(car["hud_style"]))
     text = update_section(text, "CarInfo", info, {"LOCKED", "HIDDEN", "ADMITTANCE", "SKIN", "COLOR"})
     colors = "".join(f"\tCOLOR\t\t{i} 0x{c[1:]} 0x{c[1:]}\r\n" for i, c in enumerate(car["colors"]))
     text = text.replace("End(CarInfo)", colors + "End(CarInfo)", 1)
-    physics = dict(car["physics"])
-    if "GearRatioVector" in physics:
-        ratios = physics["GearRatioVector"]
-        physics = {"NGears": len(ratios) - 1, **physics}
-        physics["GearRatioVector"] = " ".join(format(ratio, ".9g") for ratio in ratios)
-    text = update_section(text, "CarBody", physics)
+    if base is None:
+        physics = dict(car["physics"])
+        if "GearRatioVector" in physics:
+            ratios = physics["GearRatioVector"]
+            physics = {"NGears": len(ratios) - 1, **physics}
+            physics["GearRatioVector"] = " ".join(format(ratio, ".9g") for ratio in ratios)
+        text = update_section(text, "CarBody", physics)
+    else:
+        merged, remove = based_physics(car, base)
+        text = update_section(text, "CarBody", merged, remove)
+        check_installed_driving(text, car.get("display_name", car["alias"]))
     if "speedometer" in car:
         gauges = {"SpeedometerMaxKmh": car["speedometer"]["max_kmh"],
                   "SpeedometerMaxMph": car["speedometer"]["max_mph"]}
@@ -434,6 +616,33 @@ def append_zip(original: bytes, updates: dict[str, tuple[bytes, zipfile.ZipInfo]
     return original + added[:new_cd] + central + eocd
 
 
+def _read_original_references(archive: zipfile.ZipFile, config: dict, field: str,
+                              description: str, resolve_alias) -> dict[int, str]:
+    """Read selected reference tweaks from the pristine archive, keyed by ID."""
+    texts = {}
+    for car in config["cars"]:
+        if field not in car:
+            continue
+        stem = resolve_alias(car[field])
+        target = f"cars/tweak/{stem}.txt".casefold()
+        matches = [info for info in archive.infolist() if info.filename.replace("\\", "/").casefold() == target]
+        if len(matches) != 1:
+            raise ValueError(f"{car['display_name']}: {description} {car[field]} was not found "
+                             "in the original game data")
+        texts[car["id"]] = original_stats.decode_text(archive.read(matches[0]))
+    return texts
+
+
+def read_driving_bases(archive: zipfile.ZipFile, config: dict) -> dict[int, str]:
+    """Retail tweak text of each car's base stats car, keyed by car ID."""
+    return _read_original_references(archive, config, "driving_base", "base stats car", driving_base_alias)
+
+
+def read_hud_styles(archive: zipfile.ZipFile, config: dict) -> dict[int, str]:
+    """Retail tweak text of each explicitly selected HUD car, keyed by car ID."""
+    return _read_original_references(archive, config, "hud_style", "HUD style car", hud_style_alias)
+
+
 def find_info(archive: zipfile.ZipFile, name: str) -> zipfile.ZipInfo:
     matches = [i for i in archive.infolist() if i.filename.lower() == name.lower()]
     if len(matches) != 1:
@@ -492,6 +701,9 @@ def build_plan(game_dir: Path, originals: dict[str, bytes], config: dict,
                 for asset in load_model_package(car, config_dir or Path(__file__).parent)]
     hd = zipfile.ZipFile(io.BytesIO(originals[ARCHIVES[0]]))
     ranking = catalog_ranking(hd, config)
+    # Base stats always come from the pristine retail archive, never the install.
+    bases = read_driving_bases(hd, config)
+    hud_styles = read_hud_styles(hd, config)
     installed_ids = set()
     for info in hd.infolist():
         if re.fullmatch(r"Cars/Tweak/[^/]+\.txt", info.filename, re.I):
@@ -534,7 +746,8 @@ def build_plan(game_dir: Path, originals: dict[str, bytes], config: dict,
                     updates[target] = (archive.read(info), info)
             if relative == ARCHIVES[0]:
                 info = find_info(archive, f"Cars/Tweak/{donor}.txt")
-                updates[f"Cars/Tweak/{alias}.txt"] = (tweak_variant(archive.read(info), car), info)
+                updates[f"Cars/Tweak/{alias}.txt"] = (tweak_variant(archive.read(info), car,
+                                                                  bases.get(car["id"]), hud_styles.get(car["id"])), info)
         if relative == ARCHIVES[0]:
             info = find_info(archive, "Cars/Tweak/SortOrder")
             order = b"\r\n".join(str(car["id"]).encode() for car in ranking) + b"\r\n"
@@ -704,7 +917,9 @@ def main() -> int:
         output, counts = build_plan(game_dir, originals, config, args.config.resolve().parent)
         for car in config["cars"]:
             body = "prepared custom model" if car.get("model_package", "").strip() else car["donor"] + " model"
-            print(f"{car['id']}: {car['display_name']} ({body}), ratings {car['ratings']}")
+            driving = f", driving values from {car['driving_base']}" if "driving_base" in car else ""
+            hud = f", HUD style from {car['hud_style']}" if "hud_style" in car else ""
+            print(f"{car['id']}: {car['display_name']} ({body}{driving}{hud}), ratings {car['ratings']}")
         with zipfile.ZipFile(io.BytesIO(originals[ARCHIVES[0]])) as archive:
             ranking = catalog_ranking(archive, config)
         print("Menu order: original cars first; extras slow-to-fast by TOPSPEED (0-9), then ID.")

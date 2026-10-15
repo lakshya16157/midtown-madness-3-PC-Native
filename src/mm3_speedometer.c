@@ -26,7 +26,7 @@ extern void sub_001C1585(void);
  * these per-car ranges alongside the archives; camera maxima still control
  * the interior model's needle independently. No host pointer enters a guest
  * draw call, and an absent/invalid setting retains the complete retail dial. */
-static struct { char alias[32]; float kmh, mph; } ranges[256];
+static struct { char alias[32]; float kmh, mph; int added; } ranges[256];
 static unsigned range_count;
 static int initialized;
 
@@ -88,6 +88,22 @@ static int original_alias(const char *alias)
     return 0;
 }
 
+static int retail_alias(const char *alias)
+{
+    static const char *const names[] = {
+        "ambulance", "ArmoredCar", "AudiTT", "Avalanche", "Avant", "cement",
+        "ChevySSR", "Corvette", "Crossfire", "DCBus", "escalade", "firetruck",
+        "Freightliner", "garbage", "HummerH2", "Koenigsegg", "Limo", "Lotus",
+        "MFastBack", "Microcar", "mini", "Mv_Badguy", "NewBeetle", "Opel_Astra",
+        "ParisBus", "ParisPolice", "ParisTaxi", "Pt", "Renault5", "Saab93",
+        "SerpentMk2", "Seville", "Viper", "WashingtonPolice", "WashingtonTaxi"
+    };
+    unsigned i;
+    for (i = 0; i < sizeof names / sizeof names[0]; ++i)
+        if (same_alias(names[i], alias)) return 1;
+    return 0;
+}
+
 static int valid_alias(const char *alias)
 {
     const unsigned char *p = (const unsigned char *)alias;
@@ -101,7 +117,7 @@ static int valid_alias(const char *alias)
 static void load_ranges(void)
 {
     FILE *file;
-    char line[192], alias[32], extra;
+    char line[192], alias[32], tag[32], extra;
     float kmh, mph;
     if (initialized) return;
     initialized = 1;
@@ -109,11 +125,18 @@ static void load_ranges(void)
     if (!file) return;
     while (fgets(line, sizeof line, file)) {
         unsigned i;
+        int added;
         char *p = line;
         while (*p == ' ' || *p == '\t') ++p;
         if (*p == '#' || *p == '\r' || *p == '\n' || !*p) continue;
-        if (sscanf(p, "%31s %f %f %c", alias, &kmh, &mph, &extra) != 3 ||
-            !valid_alias(alias) || !isfinite(kmh) || !isfinite(mph) ||
+        added = sscanf(p, "%31s %31s %f %f %c", tag, alias, &kmh, &mph, &extra) == 4 &&
+            same_alias(tag, "added");
+        if (!added && sscanf(p, "%31s %f %f %c", alias, &kmh, &mph, &extra) != 3)
+            continue;
+        /* Only the explicit new format opts added cars into a custom dial.
+         * Legacy untagged extra-car lines must never replace native artwork. */
+        if (!valid_alias(alias) || (added ? retail_alias(alias) : !original_alias(alias)) ||
+            !isfinite(kmh) || !isfinite(mph) ||
             kmh < 100.0f || kmh > 1200.0f || mph < 60.0f || mph > 750.0f)
             continue;
         for (i = 0; i < range_count; ++i)
@@ -124,6 +147,7 @@ static void load_ranges(void)
         strcpy(ranges[i].alias, alias);
         ranges[i].kmh = kmh;
         ranges[i].mph = mph;
+        ranges[i].added = added;
     }
     fclose(file);
 }
@@ -147,6 +171,16 @@ static int player_alias(char alias[32])
     memcpy(alias, (const void *)XBOX_PTR(text), length);
     alias[length] = 0;
     return valid_alias(alias);
+}
+
+int mm3_speedometer_hide_readout(void)
+{
+    /* Pristine PAL Cars/Tweak aliases, including both hidden bonus cars.
+     * Use the loaded vehicle identity, never its donor gauge type: added cars
+     * can share the stock artwork while keeping their previous HUD behavior. */
+    char alias[32];
+    if (!player_alias(alias)) return 0;
+    return !retail_alias(alias);
 }
 
 typedef struct {
@@ -347,13 +381,16 @@ static void units(const Dial *dial, int metric)
 
 int mm3_speedometer_draw(uint32_t node, uint32_t frame, double speed_kmh)
 {
+    static const float native_maxima[5][2] = {
+        {300, 150}, {300, 200}, {160, 100}, {220, 180}, {380, 280}
+    };
     static char last_alias[32];
     static float last_maximum;
     static int last_metric;
     char alias[32];
     uint32_t type, index;
     unsigned i;
-    int metric;
+    int metric, added;
     float maximum;
     double start, end, value, angle;
     const float (*directions)[2];
@@ -363,19 +400,21 @@ int mm3_speedometer_draw(uint32_t node, uint32_t frame, double speed_kmh)
     if (!mapped(node, 0x34) || !mapped(frame - 352u, 0x180) ||
         MEM32(frame - 344u) == 1u) return 0;
     type = MEM32(frame - 36u);
-    if (type != 1u && type != 4u) return 0;
-    /* Added cars retain their donor's complete native gauge: the retail
-     * artwork includes its font, tick marks and units, and the original
-     * needle is calibrated to those labels. Also ignore stale extra-car
-     * overrides left by an older installer. */
-    if (!player_alias(alias) || !original_alias(alias)) return 0;
+    if (type > 4u || !player_alias(alias)) return 0;
+    added = !retail_alias(alias);
+    /* Existing original overrides retain their supported native gauge types.
+     * Added aliases require the explicit tagged sidecar entry for every type. */
+    if (!added && (!original_alias(alias) || (type != 1u && type != 4u))) return 0;
     load_ranges();
     if (!range_count) return 0;
     for (i = 0; i < range_count; ++i)
-        if (same_alias(ranges[i].alias, alias)) break;
+        if (ranges[i].added == added && same_alias(ranges[i].alias, alias)) break;
     if (i == range_count) return 0;
     metric = MEM8(frame + 0x13u) != 0;
     maximum = metric ? ranges[i].kmh : ranges[i].mph;
+    /* An exact native scale keeps the complete retail texture and calibrated
+     * needle. The other unit can still use an independently configured dial. */
+    if (added && maximum == native_maxima[type][metric ? 0 : 1]) return 0;
     index = (type * 2u + (metric ? 0u : 1u)) * 4u;
     if (!mapped(0x0039E264u + index, 4) || !mapped(0x0039E28Cu + index, 4) ||
         g_esp < 0x10900u || !mapped(g_esp - 0x900u, 0x900) ||

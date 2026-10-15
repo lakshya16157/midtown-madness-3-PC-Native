@@ -20,6 +20,10 @@ extern void nv2a_d3d_set_edge_hud(int on);
 extern void nv2a_d3d_set_hud_start(float x0, float y0, float x1, float y1);
 extern void nv2a_d3d_set_centered_ui_query(int (*query)(void));
 extern void nv2a_d3d_set_map_texture_query(int (*query)(uint32_t texture_addr));
+extern void nv2a_d3d_set_minimap_style_query(int (*query)(void));
+extern void nv2a_d3d_set_minimap_motion_query(float (*query)(float, float));
+extern int mm3_minimap_improved(void);
+extern float mm3_minimap_motion(float, float);
 static float camera_fov_degrees(void);
 
 /* Identities only, used on the title thread. Never follow a cached pointer:
@@ -262,6 +266,8 @@ void mm3_widescreen_init(void)
     /* Register after the XBE is mapped, before the renderer thread starts. */
     nv2a_d3d_set_centered_ui_query(pause_ui_active);
     nv2a_d3d_set_map_texture_query(map_texture_role);
+    nv2a_d3d_set_minimap_style_query(mm3_minimap_improved);
+    nv2a_d3d_set_minimap_motion_query(mm3_minimap_motion);
 }
 
 void sub_0025968E(void)

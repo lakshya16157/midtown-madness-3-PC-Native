@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include "recomp_types.h"
 
 ptrdiff_t g_xbox_mem_offset;
@@ -30,6 +31,21 @@ static unsigned native_submission;
 static uint32_t current_target;
 static uint32_t world_color;
 static const char *check = "guidance";
+static int improved, cruise_origin_valid;
+static float cruise_origin[3];
+static int player_heading_valid;
+static float player_heading;
+int mm3_minimap_improved(void) { return improved; }
+int mm3_minimap_heading(uint32_t owner, float *angle) {
+    assert(owner == node);
+    if (!player_heading_valid) return 0;
+    *angle = player_heading; return 1;
+}
+int mm3_minimap_origin(uint32_t owner, float *copy) {
+    assert(owner == node);
+    if (!cruise_origin_valid) return 0;
+    memcpy(copy, cruise_origin, sizeof cruise_origin); return 1;
+}
 
 #include "production_race_guidance.c"
 void sub_00201BCA(void);
@@ -297,7 +313,7 @@ static void clipping_and_state_contract(void) {
     mm3_race_guidance_end(0);
     abi_start(0); sub_0011CAE8(); abi_end(); assert(draw_count == 0);
 }
-static void course_closure_and_revisit_contract(void) {
+static void course_finish_and_revisit_contract(void) {
     unsigned i, axis;
     active_player = 0; marker_count = 0;
     MEMF(node + 0x4C) = 0; MEMF(node + 0x50) = 1;
@@ -307,14 +323,10 @@ static void course_closure_and_revisit_contract(void) {
     MEM32(0x407C1C) = 2; publish(0, 4);
     abi_start(0); sub_0011CAE8(); abi_end(); assert(draw_count == 3);
     MEM32(0x407C1C) = 3; publish(0, 4);
-    abi_start(0); sub_0011CAE8(); abi_end(); assert(draw_count == 6);
-    /* The circuit returns on the same connected roads in reverse order. */
-    near(draws[3].color[3], .8f);
-    for (axis = 0; axis < 2; ++axis) {
-        float base = MEMF(node + 0x94 + 4 * axis), sign = axis ? 1.0f : -1.0f;
-        near(.5f * (draws[3].xy[0][axis] + draws[3].xy[3][axis]), base + sign * points[3][axis]);
-        near(.5f * (draws[5].xy[1][axis] + draws[5].xy[2][axis]), base + sign * points[0][axis]);
-    }
+    /* Retail Checkpoint scripts finish after total_targets, just like Blitz.
+     * Event mode must not synthesize a last-to-first return leg. */
+    abi_start(0); sub_0011CAE8(); abi_end(); assert(draw_count == 3);
+    assert(s_paths[0].lengths[3] == 0);
     MEM32(0x407C1C) = 2; mm3_race_guidance_begin(0);
     /* Two checkpoint identities can share a crossing without losing either
      * adjacent course segment or depending on the native icon's order. */
@@ -393,6 +405,38 @@ static void native_publication_lifecycle_contract(void) {
     active_player = 1; abi_start(0); sub_0011CAE8(); abi_end(); assert(draw_count == 0);
     hud_players = 0; abi_start(0); sub_00120091();
     active_player = 0; abi_start(0); sub_0011CAE8(); abi_end(); assert(draw_count == 0);
+    /* Actual 20DA6F removes the crossed node from the pending list. Exercise
+     * both native race modes through 4 -> 3 -> 2 -> 1 -> 0, not just icon flags. */
+    for (i = 2; i <= 3; ++i) {
+        MEM32(0x407C1C) = i; hud_players = 1;
+        for (pass = 0; pass <= 4; ++pass) {
+            unsigned route_draws = 0, draw;
+            MEM32(event_head) = pass == 4 ? event_head : list_nodes + pass * 16;
+            current_target = pass == 4 ? 0 : objects[pass];
+            /* A live car on the previous gate's road must still see the last
+             * approach after the publisher has only one checkpoint to copy. */
+            MEMF(player_thing + 0x34) = points[pass ? pass - 1 : 1][0];
+            MEMF(player_thing + 0x3C) = points[pass ? pass - 1 : 1][1];
+            native_marker_count = 0;
+            abi_start(0); sub_00120091();
+            assert(g_esp == stack + 8 && g_fp_top == 0);
+            assert(s_race[0].count == 4 - pass);
+            assert(s_race[0].valid == (pass < 4));
+            assert(s_race[0].current == 0);
+            abi_start(0); sub_0011CAE8(); abi_end();
+            for (draw = 0; draw < draw_count; ++draw)
+                if (draws[draw].color[3] == .98f) ++route_draws;
+            assert(route_draws == (pass < 4 ? 1u : 0u));
+            if (pass == 3) {
+                assert(s_paths[0].count == 1 && s_paths[0].course_count == 0);
+                assert(s_paths[0].active_target == objects[3]);
+                near(s_paths[0].active[s_paths[0].active_count - 1].x, points[3][0]);
+                near(s_paths[0].active[s_paths[0].active_count - 1].z, points[3][1]);
+            }
+            if (pass == 4) assert(draw_count == 0);
+        }
+    }
+    hud_players = 0; MEM32(0x407C1C) = 2;
     MEM32(0x3C569C) = 0;
 }
 static void native_submission_begin(void) {
@@ -467,7 +511,7 @@ static void native_submission_contract(void) {
     }
     native_submission_begin();
     abi_start(0); native_submission = 1;
-    route_segment(0x25000, 0, 80, 20, 100, 30, .8f);
+    route_segment(0x25000, 0, 80, 20, 100, 30, .8f, 1.25f);
     native_submission = 0;
     assert(g_esp == stack && g_fp_top == 0);
     assert(MEM32(0x3C568C) == 4);
@@ -694,22 +738,268 @@ static void square_route_clipping_contract(void) {
     puts("PASS square route: corner coverage, outside crossings, outside rejection, tangent rejection, rotated/rectangular axes, native inset/placement and ABI");
 }
 
+static unsigned road_line_cache_complete(void) {
+    unsigned i, segments = 0, points = 0;
+    RoadPoint *cached_points;
+    RoadLine *cached_lines;
+    assert(s_roads.edge_count && !(s_roads.edge_count & 1));
+    assert(road_lines_build());
+    assert(s_road_lines.points && s_road_lines.lines && s_road_lines.count);
+    assert(s_road_lines.generation == s_roads.generation && s_road_lines.edges == s_roads.edge_count);
+    assert(s_road_lines.count <= s_roads.edge_count / 2);
+    for (i = 0; i < s_road_lines.count; ++i) {
+        const RoadLine *line = s_road_lines.lines + i;
+        unsigned j;
+        float min_x = FLT_MAX, max_x = -FLT_MAX, min_z = FLT_MAX, max_z = -FLT_MAX;
+        assert(line->first == points && line->count >= 2 && line->count <= COURSE_POINTS);
+        assert(line->first + line->count <= s_roads.edge_count + 1);
+        for (j = 0; j < line->count; ++j) {
+            RoadPoint p = s_road_lines.points[line->first + j];
+            assert(road_point_valid(p));
+            if (p.x < min_x) min_x = p.x; if (p.x > max_x) max_x = p.x;
+            if (p.z < min_z) min_z = p.z; if (p.z > max_z) max_z = p.z;
+        }
+        near(line->min_x, min_x); near(line->max_x, max_x);
+        near(line->min_z, min_z); near(line->max_z, max_z);
+        segments += line->count - 1; points += line->count;
+    }
+    /* Every undirected street edge contributes exactly one drawable segment;
+     * shared chain endpoints account for the additional cached points. */
+    assert(segments == s_roads.edge_count / 2);
+    assert(points == segments + s_road_lines.count && points <= s_roads.edge_count);
+    cached_points = s_road_lines.points; cached_lines = s_road_lines.lines;
+    assert(road_lines_build());
+    assert(s_road_lines.points == cached_points && s_road_lines.lines == cached_lines);
+    return segments;
+}
+
+static void road_line_fixture_edges_once(void) {
+    unsigned char seen[16] = {0};
+    unsigned i, j, edge;
+    assert(s_roads.edge_count / 2 <= sizeof seen);
+    for (i = 0; i < s_road_lines.count; ++i) {
+        const RoadLine *line = s_road_lines.lines + i;
+        for (j = 1; j < line->count; ++j) {
+            RoadPoint a = s_road_lines.points[line->first + j - 1];
+            RoadPoint b = s_road_lines.points[line->first + j];
+            unsigned matches = 0;
+            for (edge = 0; edge < s_roads.edge_count; edge += 2) {
+                RoadPoint p = s_roads.nodes[s_roads.edges[edge ^ 1].to].position;
+                RoadPoint q = s_roads.nodes[s_roads.edges[edge].to].position;
+                if ((road_distance(a,p) == 0 && road_distance(b,q) == 0) ||
+                    (road_distance(a,q) == 0 && road_distance(b,p) == 0)) {
+                    assert(!seen[edge / 2]); seen[edge / 2] = 1; ++matches;
+                }
+            }
+            assert(matches == 1);
+        }
+    }
+    for (edge = 0; edge < s_roads.edge_count / 2; ++edge) assert(seen[edge]);
+}
+
+static void road_line_cache_contract(void) {
+    static const RoadPoint branch_cycle[10] = {
+        {0,0,0}, {-10,0,0}, {-20,0,0}, {10,0,0}, {20,0,0}, {0,0,10},
+        {40,0,0}, {50,0,0}, {45,0,10}, {1000,0,1000}
+    };
+    static const unsigned edges[8][2] = {{0,1},{1,2},{0,3},{3,4},{0,5},{6,7},{7,8},{8,6}};
+    unsigned i, closed = 0;
+    road_graph_clear(); assert(road_graph_allocate(10));
+    for (i = 0; i < 10; ++i) s_roads.nodes[i].position = branch_cycle[i];
+    for (i = 0; i < 8; ++i) assert(road_graph_edge(edges[i][0],edges[i][1]));
+    assert(road_line_cache_complete() == 8 && s_road_lines.count == 4);
+    road_line_fixture_edges_once();
+    /* Three branch arms and one disconnected degree-two cycle. The cycle
+     * retains its closing edge; the isolated node invents no street. */
+    for (i = 0; i < s_road_lines.count; ++i) {
+        const RoadLine *line = s_road_lines.lines + i;
+        RoadPoint a = s_road_lines.points[line->first];
+        RoadPoint b = s_road_lines.points[line->first + line->count - 1];
+        if (road_distance(a,b) == 0) { assert(line->count == 4); ++closed; }
+        else assert(road_distance(a,branch_cycle[0]) == 0 || road_distance(b,branch_cycle[0]) == 0);
+    }
+    assert(closed == 1);
+    /* An edge added within one generation retires the earlier decomposition.
+     * It closes an arm into a junction loop while preserving every old edge. */
+    assert(road_graph_edge(5,2));
+    assert(s_road_lines.edges != s_roads.edge_count);
+    assert(road_line_cache_complete() == 9 && s_road_lines.count == 3);
+    road_line_fixture_edges_once();
+    closed = 0;
+    for (i = 0; i < s_road_lines.count; ++i) {
+        const RoadLine *line = s_road_lines.lines + i;
+        if (road_distance(s_road_lines.points[line->first],
+                          s_road_lines.points[line->first + line->count - 1]) == 0) ++closed;
+    }
+    assert(closed == 2);
+    road_graph_clear();
+    assert(!s_road_lines.points && !s_road_lines.lines && !s_road_lines.count);
+
+    /* A street longer than the draw scratch capacity splits into bounded
+     * chains without dropping or duplicating the join's street segment. */
+    assert(road_graph_allocate(COURSE_POINTS + 5));
+    for (i = 0; i < COURSE_POINTS + 5; ++i) {
+        s_roads.nodes[i].position.x = (float)i;
+        if (i) assert(road_graph_edge(i-1,i));
+    }
+    assert(road_line_cache_complete() == COURSE_POINTS + 4 && s_road_lines.count == 2);
+    assert(s_road_lines.lines[0].count == COURSE_POINTS);
+    {
+        unsigned char seen[COURSE_POINTS + 4] = {0};
+        unsigned j;
+        for (i = 0; i < s_road_lines.count; ++i) {
+            const RoadLine *line = s_road_lines.lines + i;
+            for (j = 1; j < line->count; ++j) {
+                float a = s_road_lines.points[line->first + j - 1].x;
+                float b = s_road_lines.points[line->first + j].x;
+                unsigned segment = (unsigned)fminf(a,b);
+                assert(fabsf(a-b) == 1 && segment < sizeof seen && !seen[segment]);
+                seen[segment] = 1;
+            }
+        }
+        for (i = 0; i < sizeof seen; ++i) assert(seen[i]);
+    }
+    road_graph_clear();
+    puts("PASS road-line cache: branch arms, disconnected degree-two cycle, isolated node, exact edge coverage, cache reuse/invalidation, teardown and oversized-chain split");
+}
+
+static unsigned retail_traffic_contract(uint32_t city) {
+    unsigned i, j, total = 0, samples = 0;
+    for (i = 0; i < MEM32(city + 0xAC); ++i) {
+        uint32_t area = MEM32(city + 0x4C) + i * 0xE8;
+        uint32_t geometry;
+        for (geometry = MEM32(area + 0x78); geometry < MEM32(area + 0x7C); geometry += 7) {
+            unsigned count;
+            if ((MEM8(geometry + 6) & 15) != 1) continue;
+            count = MEM16(geometry) == 2 ? 6 : MEM16(geometry); total += count;
+            for (j = 0; j < count; ++j) {
+                RoadPoint expected = road_traffic_point(area, geometry, j);
+                abi_start(0); g_eax = position + 0x200; g_ecx = area + 0xD4; g_edx = geometry;
+                MEMF(stack + 4) = MEMF(area + 0xE0); MEM32(stack + 8) = j;
+                sub_0013532D();
+                assert(g_esp == stack + 12 && g_fp_top == 0);
+                assert(fabsf(MEMF(position + 0x200) - expected.x) < .005f);
+                assert(fabsf(MEMF(position + 0x204) - expected.y) < .005f);
+                assert(fabsf(MEMF(position + 0x208) - expected.z) < .005f);
+                ++samples;
+            }
+        }
+    }
+    printf("PASS retail traffic paths: native sample oracle=%u; type-zero island/footpaths omitted\n", samples);
+    return total;
+}
+
+static void retail_roundabout_contract(uint32_t city) {
+    uint32_t area = MEM32(city + 0x4C) + 19 * 0xE8;
+    const unsigned streets[2] = {153, 145};
+    RoadPoint center = road_control(area + 0x34, 0), ends[2], route[ACTIVE_POINTS];
+    unsigned i, count, drawn = 0;
+    float length = 0;
+    for (i = 0; i < 2; ++i) {
+        uint32_t road = MEM32(city + 0x40) + streets[i] * 0xDC, spline = MEM32(road + 0x78);
+        ends[i] = road_control(MEM32(spline + 4), (MEM32(spline + 8) - MEM32(spline + 4)) / 12 - 2);
+    }
+    count = road_path(ends[0], ends[1], route, ACTIVE_POINTS);
+    assert(count >= 8);
+    for (i = 0; i < count; ++i) {
+        assert(hypotf(route[i].x - center.x, route[i].z - center.z) > 48);
+        if (i) length += road_distance(route[i - 1], route[i]);
+    }
+    assert(length > 150 && length < 350);
+    /* Inspect submitted gray geometry too: cache decomposition and screen
+     * simplification must retain the loop while leaving its island clear. */
+    improved = 1; s_road_layer = 1;
+    for (i = 0; i < s_road_lines.count; ++i) {
+        RoadLine *line = s_road_lines.lines + i;
+        unsigned j;
+        if (line->max_x < center.x - 110 || line->min_x > center.x + 110 ||
+            line->max_z < center.z - 110 || line->min_z > center.z + 110) continue;
+        abi_start(0);
+        route_polyline(1, 0, s_road_lines.points + line->first, line->count,
+                       center, 1, 1, 0, 110, 110, 0, 0, .82f);
+        for (j = 0; j < draw_count; ++j) {
+            float ax = (draws[j].xy[0][0] + draws[j].xy[3][0]) * .5f;
+            float ay = (draws[j].xy[0][1] + draws[j].xy[3][1]) * .5f;
+            float bx = (draws[j].xy[1][0] + draws[j].xy[2][0]) * .5f;
+            float by = (draws[j].xy[1][1] + draws[j].xy[2][1]) * .5f;
+            float dx = bx - ax, dy = by - ay, t = -(ax*dx + ay*dy) / (dx*dx + dy*dy);
+            if (t < 0) t = 0; if (t > 1) t = 1;
+            assert(hypotf(ax + t*dx, ay + t*dy) > 48);
+            near(draws[j].color[0], .62f); ++drawn;
+        }
+    }
+    s_road_layer = 0;
+    assert(drawn > 24);
+    printf("PASS retail Paris roundabout: opposite entrances route %.1fm around clear island; %u gray segments retain ring\n", length, drawn);
+}
+
+static void retail_route_cache_benchmark(const char *filename, const unsigned char *visited) {
+    const RoadPoint heading = {0, 0, 0};
+    static RoadPoint expected[COURSE_POINTS];
+    unsigned i, candidate, expected_count;
+    clock_t begin, initialized, advanced;
+    memset(&s_race[0], 0, sizeof s_race[0]);
+    memset(&s_paths[0], 0, sizeof s_paths[0]);
+    for (i = 0; i < 15; ++i) {
+        candidate = (i * s_roads.node_count / 15) % s_roads.node_count;
+        while (!visited[candidate] || !s_roads.nodes[candidate].routable)
+            candidate = (candidate + 1) % s_roads.node_count;
+        s_race[0].checkpoints[i].object = 1000 + i;
+        s_race[0].checkpoints[i].position = s_roads.nodes[candidate].position;
+    }
+    s_race[0].count = 15; s_race[0].current_object = 1000;
+    s_race[0].origin = s_race[0].checkpoints[0].position;
+    begin = clock(); race_paths_update(0, heading); initialized = clock();
+    assert(s_paths[0].course_rebuilt == 14 && !s_paths[0].course_reused);
+    expected_count = s_paths[0].course_count - s_paths[0].lengths[0];
+    memcpy(expected, s_paths[0].course + s_paths[0].lengths[0], expected_count * sizeof(RoadPoint));
+    memmove(s_race[0].checkpoints, s_race[0].checkpoints + 1, 14 * sizeof(RaceCheckpoint));
+    s_race[0].count = 14; s_race[0].current_object = 1001;
+    race_paths_update(0, heading); advanced = clock();
+    assert(!s_paths[0].course_rebuilt && s_paths[0].course_reused == 13);
+    assert(s_paths[0].course_count == expected_count);
+    assert(!memcmp(expected, s_paths[0].course, expected_count * sizeof(RoadPoint)));
+    printf("PERF retail route cache: %s initial_15_ms=%.3f advance_14_ms=%.3f course_searches=0 reused_legs=13\n", filename,
+           1000.0 * (initialized - begin) / CLOCKS_PER_SEC,
+           1000.0 * (advanced - initialized) / CLOCKS_PER_SEC);
+}
+
 static void retail_road_contract(const char *filename) {
     FILE *file = fopen(filename, "rb");
     uint32_t header[7], city, roads, junctions, i;
-    unsigned samples = 0, reachable = 0, pending = 0;
+    unsigned samples = 0, reachable = 0, ordinary_reachable = 0, pending = 0, traffic_nodes;
     unsigned char *visited;
     RoadPoint route[ACTIVE_POINTS];
     assert(file && fread(header, sizeof header, 1, file) == 1);
     assert(header[0] < sizeof memory && header[2] <= sizeof memory - header[0]);
     assert(fread(memory + header[0], header[2], 1, file) == 1); fclose(file);
     city = header[1]; roads = header[3]; junctions = header[4];
+    traffic_nodes = retail_traffic_contract(city);
     mm3_race_guidance_roads(city, 1);
-    assert(s_roads.node_count == header[5] && s_roads.edge_count > s_roads.node_count);
+    assert(s_roads.node_count == header[5] + traffic_nodes && s_roads.edge_count > s_roads.node_count);
+    {
+        char *audit_directory = NULL;
+        size_t audit_length = 0;
+        assert(!_dupenv_s(&audit_directory, &audit_length, "MM3_ROAD_AUDIT"));
+        if (audit_directory) {
+            char path[1024];
+            FILE *audit;
+            snprintf(path, sizeof path, "%s/%s.graph.bin", audit_directory, traffic_nodes ? "Paris" : "Washington");
+            assert(!fopen_s(&audit, path, "wb") && audit);
+            fwrite(&s_roads.node_count, sizeof s_roads.node_count, 1, audit);
+            fwrite(&s_roads.edge_count, sizeof s_roads.edge_count, 1, audit);
+            fwrite(s_roads.nodes, sizeof *s_roads.nodes, s_roads.node_count, audit);
+            fwrite(s_roads.edges, sizeof *s_roads.edges, s_roads.edge_count, audit);
+            fclose(audit);
+        }
+        free(audit_directory);
+    }
+    assert(road_line_cache_complete() == s_roads.edge_count / 2);
     visited = (unsigned char *)calloc(s_roads.node_count, 1); assert(visited);
     visited[junctions] = 1; s_roads.heap[pending++] = junctions;
     while (pending) {
         unsigned n = s_roads.heap[--pending], edge; ++reachable;
+        if (n < header[5]) ++ordinary_reachable;
         for (edge = s_roads.nodes[n].first; edge != NO_NODE; edge = s_roads.edges[edge].next) {
             unsigned next = s_roads.edges[edge].to;
             if (!visited[next]) { visited[next] = 1; s_roads.heap[pending++] = next; }
@@ -717,7 +1007,13 @@ static void retail_road_contract(const char *filename) {
     }
     /* Both cities have a complete core street network. Washington's two
      * isolated streets remain isolated instead of inventing cross-city joins. */
-    assert(reachable == header[6]);
+    assert(ordinary_reachable == header[6]);
+    for (i = 0; i < s_roads.node_count; ++i) {
+        if (i < header[5]) assert(s_roads.nodes[i].routable);
+        else assert(s_roads.nodes[i].routable == (unsigned)(visited[i] != 0));
+    }
+    printf("PASS retail traffic routing: %u/%u native samples have a verified street entrance; other traffic paths render without stealing route snaps\n",
+           reachable - ordinary_reachable, traffic_nodes);
     for (i = 0; i < roads; i += 7) {
         uint32_t object = MEM32(city + 0x40) + i * 0xDC, spline = MEM32(object + 0x78);
         RoadCurve curve = {0};
@@ -751,10 +1047,59 @@ static void retail_road_contract(const char *filename) {
             assert(road_distance(route[count-1], s_roads.nodes[finish].position) < .01f);
         }
     }
-    printf("PASS retail street graph: %s roads=%u junctions=%u reachable=%u/%u native_spline_samples=%u\n",
-           filename, roads, junctions, reachable, s_roads.node_count, samples);
+    printf("PASS retail street graph: %s roads=%u junctions=%u reachable=%u/%u native_spline_samples=%u cache_lines=%u cache_segments=%u\n",
+           filename, roads, junctions, reachable, s_roads.node_count, samples,
+           s_road_lines.count, s_roads.edge_count / 2);
+    if (traffic_nodes) retail_roundabout_contract(city);
+    retail_route_cache_benchmark(filename, visited);
     free(visited); mm3_race_guidance_roads(city, 0);
     assert(!s_roads.node_count && !s_roads.edge_count);
+    assert(!s_road_lines.points && !s_road_lines.lines && !s_road_lines.count);
+}
+
+#include "mm3_race_routing_contract.inc"
+#include "mm3_race_route_cache_contract.inc"
+#include "mm3_roundabout_contract.inc"
+#include "mm3_road_width_contract.inc"
+
+static void live_direction_route_contract(void) {
+    const RoadPoint loop[] = {{-50,0,0}, {50,0,0}, {50,0,80}, {-50,0,80}, {-50,0,-40}};
+    routing_fixture(loop, 5);
+    routing_street(0,1,100); routing_street(1,2,200); routing_street(2,3,300);
+    routing_street(3,0,400); routing_street(0,4,500);
+    MEMF(origin) = MEMF(origin + 4) = MEMF(origin + 8) = 0;
+    MEMF(position) = -50; MEMF(position + 4) = 0; MEMF(position + 8) = -20;
+    mm3_race_guidance_begin(0);
+    mm3_race_guidance_checkpoint(0, objects[0], position, origin, objects[0]);
+    mm3_race_guidance_end(0);
+    MEMF(node + 0x50) = 1; MEMF(node + 0x54) = 0; MEMF(node + 0x58) = 1024;
+    MEMF(node + 0xB4) = 1; MEMF(layout + 8) = MEMF(layout + 12) = 512;
+    /* Expanded/north-up map rotation differs from the real car heading. */
+    MEMF(node + 0x4C) = 0; player_heading_valid = 1; player_heading = -1.5707963268f;
+    abi_start(0); mm3_race_map_route(node, 0x407F78, 1, 0, layout);
+    assert(s_paths[0].active_count == 6); near(s_paths[0].active[1].x, 50);
+    /* Turning while stationary invalidates the cached forward route. */
+    player_heading = 1.5707963268f;
+    abi_start(0); mm3_race_map_route(node, 0x407F78, 1, 0, layout);
+    assert(s_paths[0].active_count == 3); near(s_paths[0].active[1].x, -50);
+    /* The same current gate can be approached from opposite directions
+     * after recovery. Its outgoing cached leg must share the new approach. */
+    MEMF(origin) = -20; player_heading = -1.5707963268f;
+    mm3_race_guidance_begin(0);
+    MEMF(position) = MEMF(position + 8) = 0;
+    mm3_race_guidance_checkpoint(0, objects[0], position, origin, objects[0]);
+    MEMF(position) = -50; MEMF(position + 8) = -20;
+    mm3_race_guidance_checkpoint(0, objects[1], position, origin, objects[0]);
+    mm3_race_guidance_end(0);
+    abi_start(0); mm3_race_map_route(node, 0x407F78, 1, 0, layout);
+    assert(s_paths[0].active_count == 2 && s_paths[0].lengths[0] == 6);
+    near(s_paths[0].course[s_paths[0].starts[0] + 1].x, 50);
+    s_race[0].origin.x = 20; player_heading = 1.5707963268f;
+    abi_start(0); mm3_race_map_route(node, 0x407F78, 1, 0, layout);
+    assert(s_paths[0].active_count == 2 && s_paths[0].lengths[0] == 3);
+    near(s_paths[0].course[s_paths[0].starts[0] + 1].x, -50);
+    player_heading_valid = 0; road_graph_clear(); mm3_race_guidance_frame_begin();
+    MEMF(origin) = 0;
 }
 
 int main(int argc, char **argv) {
@@ -767,12 +1112,44 @@ int main(int argc, char **argv) {
     MEM32(node + 0x8C) = property; MEM32(property) = property + 0x100;
     MEM32(property + 0x100 + 0x5C) = 0x100;
     fixture_roads();
-    native_contract(); clipping_and_state_contract(); course_closure_and_revisit_contract();
+    native_contract(); clipping_and_state_contract(); course_finish_and_revisit_contract();
     native_publication_lifecycle_contract(); native_world_contract(); native_submission_contract();
     native_gpu_format_contract();
     road_navigation_contract();
+    roundabout_traffic_contract();
+    road_width_contract();
+    race_direction_routing_contract();
+    route_cache_contract();
+    live_direction_route_contract();
     route_draw_simplification_contract();
     square_route_clipping_contract();
+    /* Roads also draw in Cruise; blue guidance overlays gray street chains
+     * in races. Stock keeps its former route color, and teardown drops data. */
+    fixture_roads(); improved = 1; cruise_origin_valid = 1;
+    memset(cruise_origin, 0, sizeof cruise_origin);
+    MEMF(node + 0x50) = 1; MEMF(node + 0x54) = 0; MEMF(node + 0x58) = 1024;
+    MEMF(node + 0x4C) = 0; MEMF(node + 0x94) = 114; MEMF(node + 0x98) = 384;
+    MEMF(node + 0xB4) = 1; MEMF(layout + 8) = 128; MEMF(layout + 12) = 128;
+    mm3_race_guidance_frame_begin(); abi_start(0);
+    mm3_race_map_route(node, 0x407F78, 1, 0, layout);
+    assert(draw_count > 0);
+    for (i = 0; i < draw_count; ++i) {
+        near(draws[i].color[0], .62f); near(draws[i].color[1], .65f); near(draws[i].color[2], .69f);
+    }
+    assert(s_road_lines.count == 1 && s_road_lines.lines[0].count == 4);
+    publish(0, 1); abi_start(0); mm3_race_map_route(node, 0x407F78, 1, 0, layout);
+    {
+        unsigned gray = 0, blue = 0;
+        for (i = 0; i < draw_count; ++i) {
+            if (draws[i].color[0] == .62f) ++gray;
+            else { near(draws[i].color[0], .12f); near(draws[i].color[1], .58f); near(draws[i].color[2], 1); ++blue; }
+        }
+        assert(gray && blue);
+    }
+    mm3_race_guidance_frame_begin(); cruise_origin_valid = 0; abi_start(0);
+    mm3_race_map_route(node, 0x407F78, 1, 0, layout); assert(!draw_count);
+    improved = 0; road_graph_clear(); assert(!s_road_lines.points && !s_road_lines.lines);
+    road_line_cache_contract();
     for (i = 1; i < (unsigned)argc; ++i) retail_road_contract(argv[i]);
     puts("PASS race guidance: native small/expanded/split/rotated maps, checkpoint styles/pulses, persistent course/HUD lifecycle, connected street detours, overpass snapping, live reroutes, city teardown, quad clipping/packing/batch identity, shader/PB format and guest ABI");
     return 0;

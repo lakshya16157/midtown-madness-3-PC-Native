@@ -34,6 +34,7 @@ void sub_00119AEE(void)
     unsigned i;
     if (*name == '+') ++name;
     if (_strnicmp(name, "Menu/Frontend/", 14) == 0) name += 14;
+    else if (_strnicmp(name, "Menu/Pausemenu/", 15) == 0) name += 5;
     for (i = 0; i < MM3_MENU_RESOURCE_COUNT; ++i)
         if (_stricmp(name, mm3_menu_resources[i].name) == 0) break;
     if (i == MM3_MENU_RESOURCE_COUNT) {

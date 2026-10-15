@@ -81,6 +81,10 @@ void sub_001EEC53_original(void) { g_esp += 60; }
 void sub_000F4AC3(void) { g_esp += 20; }
 void sub_000F4BB1_original(void) { g_esp += 4; }
 void nv2a_d3d_set_map_texture_query(int (*query)(uint32_t)) { (void)query; }
+int mm3_minimap_improved(void) { return 1; }
+void nv2a_d3d_set_minimap_style_query(int (*query)(void)) { (void)query; }
+float mm3_minimap_motion(float cx, float cy) { (void)cx; (void)cy; return 0; }
+void nv2a_d3d_set_minimap_motion_query(float (*query)(float, float)) { (void)query; }
 void sub_0011C742_original(void) { g_esp += 8; }
 void sub_0011CAAC_original(void) { g_esp += 12; }
 void sub_0007CEC3_original(void) { g_esp += 8; }

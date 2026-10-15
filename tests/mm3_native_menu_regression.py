@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT / "tools/native-menu"))
 from native_menu import Object, Reference, Resource, named_references, row_button, rows, sid_text
 from generate import (ADVANCED, ADVANCED_ROWS, DISPLAY, DISPLAY_ROWS, GRAPHICS_INFOBOX,
                       GRAPHICS_INFO_WIDGET, INFOBOX, INFO_WIDGET, MAIN, MULTIPOP_TEMPLATE, OPTIONS,
-                      PICKER_COUNTS, PICKERS, PICKER_TITLES, RESOLUTION_OTHER,
+                      PAUSE_HUD, PAUSE_OPTIONS, PICKER_COUNTS, PICKERS, PICKER_TITLES, RESOLUTION_OTHER,
                       RESOLUTION_PRIMARY, RESOLUTION_SECONDARY, ROW_DESTINATIONS,
                       TITLE, TITLE_ADVANCED, TITLE_DISPLAY, generate_resources, picker_rows, write_header)
 
@@ -214,7 +214,7 @@ class NativeMenuTests(unittest.TestCase):
                                 for obj in resource.root.walk()))
 
     def test_header_and_determinism(self):
-        self.assertEqual(len(self.encoded), 7 + 2 * len(PICKER_COUNTS) + 1)
+        self.assertEqual(len(self.encoded), 7 + 2 * len(PICKER_COUNTS) + 1 + 2)
         self.assertEqual(generate_resources(self.archive), self.encoded)
         with tempfile.TemporaryDirectory(prefix="mm3-native-menu-") as directory:
             header = Path(directory) / "resources.h"
@@ -224,6 +224,34 @@ class NativeMenuTests(unittest.TestCase):
             for name, data in self.encoded.items():
                 self.assertIn('"' + name + '"', text)
                 self.assertIn(str(len(data)) + "u", text)
+
+    def test_pause_hud_choices_preserve_retail_controls(self):
+        options = self.resources[PAUSE_OPTIONS]
+        self.assertEqual([label for label, _, _ in rows(options)],
+                         ["SID_SOUND_SETUP", "SID_GAME_SETUP", "SID_MM3_GRAPHICS_HUD"])
+        self.assertEqual([rect for _, rect, _ in rows(options)],
+                         [(0, index * 30, 500, 30) for index in range(3)])
+        for destination in ("menuOptionsSound", "menuOptionsGame", "menuHud"):
+            self.assertEqual(len(named_references(options, destination)), 1)
+        hud = self.resources[PAUSE_HUD]
+        self.assertEqual([label for label, _, _ in rows(hud)],
+                         ["SID_MM3_GRAPHICS_HUD_MINIMAP_STOCK", "SID_MM3_GRAPHICS_HUD_MINIMAP_IMPROVED"])
+        for (_, rect, row), function in zip(rows(hud), ("hudMinimapStock", "hudMinimapImproved")):
+            self.assertEqual(rect[3], 30)
+            button = row_button(row)
+            self.assertEqual(button.kind, "MmxCenteredSimpleButtonNode")
+            action = button.parts[3].object
+            self.assertEqual(function_names(action), ["functions/" + function])
+            self.assertEqual([ref.object.kind for ref in action.references() if ref.object],
+                             ["CallFunctionAction", "PopPathAction", "SoundAction"])
+            self.assertEqual(action.references()[1].object.references()[0].name, "pathMenu")
+        # The Back event has no host callback, so merely browsing does not save.
+        back = [obj for obj in hud.root.walk() if obj.kind == "ActionListAction" and
+                any(ref.object and ref.object.kind == "PopPathAction" for ref in obj.references()) and
+                not function_names(obj)]
+        self.assertEqual(len(back), 1)
+        self.assertEqual(len(named_references(hud, "variables/indexHud")), 1)
+        self.assertEqual(named_references(hud, "variables/indexOptions"), [])
 
 
 if __name__ == "__main__":

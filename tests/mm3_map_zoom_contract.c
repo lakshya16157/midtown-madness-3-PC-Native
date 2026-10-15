@@ -20,9 +20,12 @@ typedef struct { uint32_t texture; float xy[4][2], uv[4][2], mask_uv[4][2], rgba
 static Draw draws[16];
 static uint32_t emitted[7];
 static unsigned draw_count;
+static float native_window_x, native_window_y;
 static int player_present = 1;
 static int zoom_markers;
 static const char *check = "speed";
+static int improved = 1;
+int mm3_minimap_improved(void) { return improved; }
 
 #include "production_map_zoom.c"
 
@@ -68,6 +71,11 @@ void sub_001C1585(void) {
     int square = zoom_markers && mm3_map_square_begin(texture, vertices);
     unsigned i;
     assert(draw_count < sizeof draws / sizeof draws[0]);
+    if (texture == 1) {
+        uint32_t mask_window = MEM32(vertices);
+        native_window_x = MEMF(mask_window) + MEMF(mask_window + 8) * .5f;
+        native_window_y = MEMF(mask_window + 4) + MEMF(mask_window + 12) * .5f;
+    }
     draws[draw_count].texture = texture;
     for (i = 0; i < 4; ++i) {
         unsigned component;
@@ -126,7 +134,7 @@ static float settle(uint32_t identity, int speed, float baseline) {
     fresh_scale(identity, player, baseline);
     for (i = 0; i < 600; ++i) mm3_map_zoom_update(identity, 1.0f / 60.0f);
     fresh_scale(identity, player, baseline);
-    return baseline / MEMF(identity + 0x50);
+    return baseline * 1.15f / MEMF(identity + 0x50);
 }
 static void abi_start(uint32_t identity) {
     g_eax = 0xABABABAB; g_ecx = identity; g_edx = 0x12345678;
@@ -152,14 +160,14 @@ static void speed_contract(void) {
         near(settle(node, speeds[i], 2), spans[i]);
     mm3_map_zoom_reset(node);
     MEM32(player + 4) = 120; fresh_scale(node, player, 2);
-    near(MEMF(node + 0x50), 2); /* Draw announces the target, not a time step. */
+    near(MEMF(node + 0x50), 2.3f); /* 15% closer detail; drawing is not a time step. */
     for (i = 0; i < 30; ++i) fresh_scale(node, player, 2);
-    near(MEMF(node + 0x50), 2);
+    near(MEMF(node + 0x50), 2.3f);
     mm3_map_zoom_update(node, 0.1f); fresh_scale(node, player, 2);
-    near(2 / MEMF(node + 0x50), 1 + .25f * (1 - expf(-.1f / .6f)));
+    near(2.3f / MEMF(node + 0x50), 1 + .25f * (1 - expf(-.1f / .6f)));
     mm3_map_zoom_reset(node); fresh_scale(node, player, 2);
     mm3_map_zoom_update(node, 10); fresh_scale(node, player, 2);
-    near(2 / MEMF(node + 0x50), 1 + .25f * (1 - expf(-.1f / .6f)));
+    near(2.3f / MEMF(node + 0x50), 1 + .25f * (1 - expf(-.1f / .6f)));
     for (i = 0; i < 4; ++i) {
         const float invalid[] = {0, -.1f, NAN, INFINITY};
         float before = MEMF(node + 0x50);
@@ -181,7 +189,7 @@ static void speed_contract(void) {
     fresh_scale(node, player, 2);
     MEM32(player + 4) = 120; fresh_scale(second_node, player, 2);
     assert(MEMF(node + 0x50) > MEMF(second_node + 0x50));
-    mm3_map_zoom_reset(node); fresh_scale(node, player, 2); near(MEMF(node + 0x50), 2);
+    mm3_map_zoom_reset(node); fresh_scale(node, player, 2); near(MEMF(node + 0x50), 2.3f);
     fresh_scale(node, 0, 2); near(MEMF(node + 0x50), 2);
     mm3_map_zoom_reset(0); mm3_map_zoom_update(0, .1f); mm3_map_zoom_apply(0, player);
     for (i = 0; i < 3; ++i) {
@@ -189,6 +197,60 @@ static void speed_contract(void) {
         fresh_scale(node, player, invalid[i]);
         assert(MEMF(node + 0x50) == invalid[i]);
     }
+}
+static void motion_heading_contract(void) {
+    unsigned i;
+    float motion, heading;
+    check = "published motion/heading";
+    MEMF(node + 0x94) = 114; MEMF(node + 0x98) = 384;
+    MEMF(second_node + 0x94) = 500; MEMF(second_node + 0x98) = 120;
+    MEMF(player) = 1.2f; MEM32(player + 4) = 120;
+    mm3_map_zoom_reset(node); mm3_map_zoom_reset(second_node);
+    fresh_scale(node, player, 2);
+    near(mm3_minimap_motion(114, 384), 0);
+    assert(mm3_minimap_heading(node, &heading)); near(heading, 1.2f);
+    /* An expanded map uses a fixed compass heading, but routing must retain
+     * the car's world heading copied from its native player HUD record. */
+    MEMF(node + 0x4C) = 0;
+    assert(mm3_minimap_heading(node, &heading)); near(heading, 1.2f);
+    for (i = 0; i < 60; ++i) mm3_map_zoom_update(node, 1.0f / 60.0f);
+    fresh_scale(node, player, 2);
+    motion = mm3_minimap_motion(114, 384);
+    near(motion, floorf((1 - expf(-1.0f / .6f)) * 127 + .5f) / 127);
+    assert(motion > .8f && motion < .9f);
+    MEMF(layout) = 128; MEMF(layout + 4) = 48;
+    MEMF(layout + 8) = 384; MEMF(layout + 12) = 384;
+    mm3_map_zoom_window(node, layout);
+    near(mm3_minimap_motion(320, 240), motion);
+    near(mm3_minimap_motion(114, 384), 0);
+    fresh_scale(node, player, 2); /* Restore the direct-node window for these checks. */
+    /* Packed native city positions lose less than a quarter pixel; the
+     * asynchronous query still identifies that same authored map window. */
+    near(mm3_minimap_motion(114.2f, 383.8f), motion);
+    MEM32(player + 4) = 0; fresh_scale(second_node, player, 2);
+    near(mm3_minimap_motion(500, 120), 0);
+    near(mm3_minimap_motion(114, 384), motion);
+    for (i = 0; i < 30; ++i) fresh_scale(node, player, 2);
+    near(mm3_minimap_motion(114, 384), motion); /* Drawing cannot advance time. */
+    near(mm3_minimap_motion(300, 200), 0); near(mm3_minimap_motion(NAN, 384), 0);
+    mm3_map_zoom_apply(node, 0); near(mm3_minimap_motion(114, 384), 0);
+    assert(!mm3_minimap_heading(node, &heading));
+    MEM32(player + 4) = 120; settle(node, 120, 2);
+    near(mm3_minimap_motion(114, 384), 1);
+    /* Reallocated scene maps at the same screen centre cannot inherit the
+     * previous identity's speed. Distinct split-screen centres stay intact. */
+    MEMF(second_node + 0x94) = 114; MEMF(second_node + 0x98) = 384;
+    MEM32(player + 4) = 0; fresh_scale(second_node, player, 2);
+    near(mm3_minimap_motion(114, 384), 0);
+    mm3_map_zoom_reset(second_node);
+    assert(!mm3_minimap_heading(second_node, &heading));
+    MEMF(player) = NAN; fresh_scale(node, player, 2);
+    assert(!mm3_minimap_heading(node, &heading));
+    MEMF(player) = -.7f; improved = 0; fresh_scale(node, player, 2);
+    assert(mm3_minimap_heading(node, &heading)); near(heading, -.7f);
+    near(mm3_minimap_motion(114, 384), 0);
+    assert(!mm3_minimap_heading(0, &heading)); assert(!mm3_minimap_heading(node, NULL));
+    improved = 1; mm3_map_zoom_reset(node); mm3_map_zoom_reset(second_node);
 }
 static Draw *texture_draw(Draw *list, unsigned count, unsigned texture) {
     unsigned i;
@@ -331,10 +393,10 @@ static void native_contract(void) {
         mm3_map_zoom_reset(node);
         zoom_markers = 1;
         draw_count = 0; abi_start(node); zoom_draw(); abi_end(24);
-        near(MEMF(node + 0x50), native_scale);
+        near(MEMF(node + 0x50), native_scale * 1.15f);
         assert(draw_count + 1 == original_count);
         roads = texture_draw(original, original_count, 1); roads_zoom = texture_draw(draws, draw_count, 1);
-        road_samples(roads, roads_zoom, cx, cy, 1);
+        road_samples(roads, roads_zoom, cx, cy, 1 / 1.15f);
         for (i = 0; i < draw_count; ++i) {
             unsigned vertex;
             Draw *retail;
@@ -347,13 +409,14 @@ static void native_contract(void) {
                     centre += retail->xy[vertex][axis] * .25f;
                 for (vertex = 0; vertex < 4; ++vertex)
                     near(draws[i].xy[vertex][axis], draws[i].texture == 4 ?
-                        centre + (retail->xy[vertex][axis] - centre) * .75f :
+                        (axis ? cy : cx) + (centre - (axis ? cy : cx)) * 1.15f + (retail->xy[vertex][axis] - centre) * .75f :
                         retail->xy[vertex][axis]);
             }
         }
         for (i = 0; i < 600; ++i) mm3_map_zoom_update(node, 1.0f / 60.0f);
         draw_count = 0; abi_start(node); zoom_draw(); abi_end(24);
-        assert(draw_count + 1 == original_count); near(MEMF(node + 0x50), native_scale / span);
+        assert(draw_count + 1 == original_count); near(MEMF(node + 0x50), native_scale * 1.15f / span);
+        near(mm3_minimap_motion(native_window_x, native_window_y), 1);
         /* Single-precision smoothing asymptotically approaches the cap; use
          * its observed scalar for the much larger native road coordinates. */
         span = native_scale / MEMF(node + 0x50);
@@ -372,7 +435,7 @@ static void native_contract(void) {
             near(b, centre + (a - centre) / span);
             check = "checkpoint icon size";
             for (i = 0; i < 4; ++i)
-                near(checkpoint_zoom->xy[i][axis] - b, (checkpoint->xy[i][axis] - a) * .75f / span);
+                near(checkpoint_zoom->xy[i][axis] - b, (checkpoint->xy[i][axis] - a) * .75f / (span * 1.15f));
         }
         /* Native scale reconstruction prevents zoom accumulating over draws. */
         draw_count = 0; abi_start(node); zoom_draw(); abi_end(24);
@@ -384,14 +447,14 @@ static void native_contract(void) {
     settle(node, 120, 1); MEM8(node + 0x35) = 0;
     MEMF(layout) = 50; MEMF(layout + 4) = 320;
     abi_start(node); zoom_reset(); abi_end(16);
-    fresh_scale(node, player, 1); near(MEMF(node + 0x50), 1);
+    fresh_scale(node, player, 1); near(MEMF(node + 0x50), 1.15f);
     /* The actual native update argument is +0x10 before its frame prologue. */
     MEM32(player + 4) = 120; fresh_scale(node, player, 1);
     MEMF(node + 0x9C) = MEMF(node + 0x94); MEMF(node + 0xA0) = MEMF(node + 0x98);
     MEMF(node + 0xAC) = MEMF(node + 0xB0) = 0;
     abi_start(node); MEMF(stack + 16) = .1f; zoom_update(); abi_end(20);
     fresh_scale(node, player, 1);
-    near(1 / MEMF(node + 0x50), 1 + .25f * (1 - expf(-.1f / .6f)));
+    near(1.15f / MEMF(node + 0x50), 1 + .25f * (1 - expf(-.1f / .6f)));
 }
 static void native_scale_progression(void) {
     float stopped;
@@ -401,7 +464,7 @@ static void native_scale_progression(void) {
     mm3_map_zoom_reset(node);
     MEM32(player + 4) = 0; MEMF(player + 0x34) = .728f;
     fresh_scale(node, player, .728f); stopped = MEMF(node + 0x50);
-    near(stopped, .728f);
+    near(stopped, .728f * 1.15f);
     MEM32(player + 4) = 120; MEMF(player + 0x34) = 1.4f;
     fresh_scale(node, player, 1.4f); near(MEMF(node + 0x50), stopped);
     for (i = 0; i < 600; ++i) mm3_map_zoom_update(node, 1.0f / 60.0f);
@@ -419,7 +482,7 @@ static void native_scale_progression(void) {
     fresh_scale(node, 0, 1); near(MEMF(node + 0x50), 1);
     fresh_scale(node, player, NAN); assert(isnan(MEMF(node + 0x50)));
     fresh_scale(node, player, -1); near(MEMF(node + 0x50), -1);
-    fresh_scale(node, player, .9f); near(MEMF(node + 0x50), .9f);
+    fresh_scale(node, player, .9f); near(MEMF(node + 0x50), .9f * 1.15f);
 }
 static void square_marker_contract(void) {
     const float angles[] = {0, .3926990817f, 1.5707963268f, -1.5707963268f};
@@ -466,7 +529,31 @@ int main(void) {
     MEM32(node + 0x8C) = property; MEM32(property) = property + 0x100;
     MEM32(property + 0x100 + 0x5C) = 0x100;
     MEM32(players + 0x14) = player; MEM32(0x407F78 + 4) = markers;
-    speed_contract(); square_geometry_contract(); native_contract(); native_scale_progression(); square_marker_contract();
+    speed_contract(); motion_heading_contract(); square_geometry_contract(); native_contract(); native_scale_progression(); square_marker_contract();
+    /* Live Stock selection restores the real native rotation, border, scale
+     * and marker sizes with identical guest calling conventions. */
+    improved = 0; player_present = 1; zoom_markers = 0;
+    draw_count = 0; abi_start(node); retail_draw(); abi_end(24);
+    {
+        Draw original[16]; unsigned count = draw_count, i;
+        memcpy(original, draws, sizeof original);
+        zoom_markers = 1; draw_count = 0;
+        abi_start(node); zoom_draw(); abi_end(24);
+        assert(draw_count == count);
+        for (i = 0; i < count; ++i) assert(!memcmp(&original[i], &draws[i], sizeof(Draw)));
+        near(mm3_map_zoom_checkpoint_scale(node, 0), 1);
+        near(mm3_map_square_marker_distance(node, layout, 20, 30), hypotf(20, 30));
+    }
+    improved = 1; mm3_map_zoom_reset(node);
+    MEMF(player + 0x10) = 410; MEMF(player + 0x14) = 8; MEMF(player + 0x18) = 615;
+    fresh_scale(node, player, 1);
+    {
+        float copied[3]; assert(mm3_minimap_origin(node, copied));
+        near(copied[0], 410); near(copied[1], 8); near(copied[2], 615);
+        mm3_map_zoom_apply(node, 0); assert(!mm3_minimap_origin(node, copied));
+        fresh_scale(node, player, 1); mm3_map_zoom_reset(node);
+        assert(!mm3_minimap_origin(node, copied));
+    }
     puts("PASS square map/zoom: city samples match native turns and markers, colors/opacity intact, circle border omitted, small/big/split layouts, speed smoothing and guest ABI");
     return 0;
 }

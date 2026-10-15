@@ -25,6 +25,8 @@ enum GraphicsAction {
     GRAPHICS_APPLY,
     GRAPHICS_DEFAULTS,
     GRAPHICS_DISCARD,
+    GRAPHICS_MINIMAP_STOCK,
+    GRAPHICS_MINIMAP_IMPROVED,
     GRAPHICS_COMMAND_COUNT
 };
 
@@ -39,22 +41,24 @@ enum GraphicsSetting {
     SETTING_MSAA,
     SETTING_ANISO,
     SETTING_DISTANCE,
+    SETTING_MINIMAP,
     GRAPHICS_SETTING_COUNT
 };
 
 static const char *const command_names[GRAPHICS_COMMAND_COUNT] = {
-    "graphicsBegin", "graphicsApply", "graphicsDefaults", "graphicsDiscard"
+    "graphicsBegin", "graphicsApply", "graphicsDefaults", "graphicsDiscard",
+    "hudMinimapStock", "hudMinimapImproved"
 };
 static const char *const setting_keys[GRAPHICS_SETTING_COUNT] = {
     "RESOLUTION", "MODE", "FPS", "VSYNC", "SCALE", "SHOW_FPS",
-    "ASPECT", "MSAA", "ANISO", "DISTANCE"
+    "ASPECT", "MSAA", "ANISO", "DISTANCE", "MINIMAP"
 };
 static const char *const setting_titles[GRAPHICS_SETTING_COUNT] = {
     "Resolution", "Display Mode", "Maximum FPS", "VSync", "Render Scale",
-    "Show FPS", "Aspect Ratio", "Anti-aliasing", "Texture Filtering", "Draw Distance"
+    "Show FPS", "Aspect Ratio", "Anti-aliasing", "Texture Filtering", "Draw Distance", "Minimap Style"
 };
-static const unsigned choice_counts[GRAPHICS_SETTING_COUNT] = {12, 2, 7, 2, 9, 2, 5, 4, 5, 5};
-#define GRAPHICS_ACTION_COUNT (GRAPHICS_COMMAND_COUNT + 53u)
+static const unsigned choice_counts[GRAPHICS_SETTING_COUNT] = {12, 2, 7, 2, 9, 2, 5, 4, 5, 5, 2};
+#define GRAPHICS_ACTION_COUNT (GRAPHICS_COMMAND_COUNT + 55u)
 static const int resolutions[][2] = {
     {800, 600}, {1024, 768}, {1280, 720}, {1280, 800}, {1366, 768},
     {1536, 960}, {1600, 900}, {1920, 1080}, {1920, 1200},
@@ -191,6 +195,7 @@ static void select_choice(unsigned setting, unsigned choice)
     case SETTING_MSAA: draft.msaa = msaa[choice]; break;
     case SETTING_ANISO: draft.aniso = aniso[choice]; break;
     case SETTING_DISTANCE: draft.draw_distance = distances[choice]; break;
+    case SETTING_MINIMAP: draft.minimap_improved = (int)choice; break;
     default: return;
     }
     strcpy(status, "Changes pending. Apply saves; Back discards changes.");
@@ -209,6 +214,7 @@ static int choice_selected(unsigned setting, unsigned choice)
     case SETTING_MSAA: return draft.msaa == msaa[choice];
     case SETTING_ANISO: return draft.aniso == aniso[choice];
     case SETTING_DISTANCE: return fabsf(draft.draw_distance - distances[choice]) < 0.0001f;
+    case SETTING_MINIMAP: return draft.minimap_improved == (int)choice;
     default: return 0;
     }
 }
@@ -236,6 +242,7 @@ static void choice_label(unsigned setting, unsigned choice, char *label, size_t 
         else snprintf(value, sizeof value, "%dx", aniso[choice]);
         break;
     case SETTING_DISTANCE: snprintf(value, sizeof value, "%.3gx", distances[choice]); break;
+    case SETTING_MINIMAP: snprintf(value, sizeof value, "%s", choice ? "Improved" : "Stock"); break;
     default: value[0] = 0; break;
     }
     snprintf(label, capacity, "%s%s", value, choice_selected(setting, choice) ? "  (Selected)" : "");
@@ -244,6 +251,19 @@ static void choice_label(unsigned setting, unsigned choice, char *label, size_t 
 static void run_action(unsigned action)
 {
     unsigned setting, choice;
+    /* Pause HUD choices publish just this preference, using a fresh snapshot
+     * so the F10 panel and an old graphics draft cannot overwrite each other. */
+    if (action == GRAPHICS_MINIMAP_STOCK || action == GRAPHICS_MINIMAP_IMPROVED) {
+        MM3DisplaySettings current;
+        mm3_display_settings_get(&current);
+        current.minimap_improved = action == GRAPHICS_MINIMAP_IMPROVED;
+        if (mm3_display_settings_commit(&current, status, sizeof status)) {
+            if (draft_ready) draft.minimap_improved = current.minimap_improved;
+        } else {
+            fprintf(stderr, "[MM3_HUD_MENU] save failed: %s\n", status);
+        }
+        return;
+    }
     if (!draft_ready || action == GRAPHICS_BEGIN || action == GRAPHICS_DISCARD) {
         start_draft();
         if (action == GRAPHICS_BEGIN || action == GRAPHICS_DISCARD) return;
@@ -292,6 +312,15 @@ const char *mm3_graphics_menu_label(const char *key)
     unsigned setting, choice;
     if (!key || strncmp(key, "SID_MM3_GRAPHICS_", 17) != 0) return NULL;
     field = key + 17;
+    if (!strcmp(field, "HUD")) return "HUD Settings";
+    if (!strcmp(field, "HUD_MINIMAP_STOCK") || !strcmp(field, "HUD_MINIMAP_IMPROVED")) {
+        MM3DisplaySettings current;
+        int improved = !strcmp(field, "HUD_MINIMAP_IMPROVED");
+        mm3_display_settings_get(&current);
+        snprintf(label, sizeof label, "Minimap: %s%s", improved ? "Improved" : "Stock",
+                 current.minimap_improved == improved ? "  (Selected)" : "");
+        return label;
+    }
     if (!draft_ready) start_draft();
     if (!strncmp(field, "CHOICE_", 7)) {
         if (!choice_key(field + 7, &setting, &choice)) return NULL;
@@ -315,13 +344,14 @@ const char *mm3_graphics_menu_label(const char *key)
             "Automatic matches the window. Gameplay shows more scenery without stretching menus.",
             "Smooth jagged edges. Higher values use more GPU power.",
             "Sharpen distant road and building textures. Higher values use more GPU power.",
-            "Show scenery farther away. Higher values use more CPU and GPU power."
+            "Show scenery farther away. Higher values use more CPU and GPU power.",
+            "Stock uses the original map. Improved shows transparent gray roads and a blue race route."
         };
         for (setting = 0; setting < GRAPHICS_SETTING_COUNT; ++setting)
             if (!strcmp(field + 5, setting_keys[setting])) return help[setting];
         if (!strcmp(field + 5, "APPLY")) return status;
         if (!strcmp(field + 5, "DEFAULTS")) return "Restore recommended defaults. Apply Settings saves them.";
-        if (!strcmp(field + 5, "ADVANCED")) return "Aspect ratio, anti-aliasing, texture filtering and draw distance.";
+        if (!strcmp(field + 5, "ADVANCED")) return "Aspect ratio, anti-aliasing, texture filtering, draw distance and minimap style.";
         return NULL;
     }
     if (!strcmp(field, "MORE_RESOLUTIONS")) return "Other Resolutions...";
@@ -350,6 +380,7 @@ const char *mm3_graphics_menu_label(const char *key)
         else snprintf(label, sizeof label, "Texture Filtering: %dx", draft.aniso);
     }
     else if (!strcmp(field, "DISTANCE")) snprintf(label, sizeof label, "Draw Distance: %.3gx", draft.draw_distance);
+    else if (!strcmp(field, "MINIMAP")) snprintf(label, sizeof label, "Minimap Style: %s", draft.minimap_improved ? "Improved" : "Stock");
     else return NULL;
     return label;
 }
@@ -460,7 +491,7 @@ void sub_001C5E11(void)
             root, have_path ? path : "?", guest_field(root, 0x30u));
     /* The root already owns its +Menu/FrontEnd/ prefix. The loader argument
      * is the FrontEnd resource name, not the path passed to its constructor. */
-    if (have_path && !_stricmp(path, "FrontEnd"))
+    if (have_path && (!_stricmp(path, "FrontEnd") || !_stricmp(path, "PauseMenu")))
         register_functions(g_ecx);
     sub_001C5E11_original();
     if (report)

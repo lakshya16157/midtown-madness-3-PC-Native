@@ -40,6 +40,15 @@ class FactorySpecsTest(unittest.TestCase):
         self.assertEqual(before, self.config)
         self.assertNotEqual(FACTORY.load_specs()["Panoz"]["physics"]["TorqueScale"], 1)
 
+    def test_factory_preset_clears_a_base_stats_car(self):
+        # The factory engine profile and driving_base are mutually exclusive.
+        self.config["cars"][0]["driving_base"] = "Corvette"
+        before = copy.deepcopy(self.config)
+        result = FACTORY.apply_presets(self.config)
+        self.assertEqual(before, self.config)
+        self.assertNotIn("driving_base", result["cars"][0])
+        self.assertEqual(self.validate(result), result)
+
     def test_removed_slots_are_not_resurrected_and_unknowns_fail_clearly(self):
         self.config["cars"] = self.config["cars"][:1]
         self.assertEqual(len(FACTORY.apply_presets(self.config)["cars"]), 1)

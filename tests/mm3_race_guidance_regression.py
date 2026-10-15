@@ -18,7 +18,7 @@ MATH = ("sub_0002DC95", "sub_0006ACC3", "sub_000C6ADC", "sub_0006AC61",
         "sub_0006AE0C", "sub_0006AEE2", "sub_0001259E", "sub_0006AD9F", "sub_0006AE60",
         "sub_0020BF9C", "sub_0001BA6A", "sub_001C1585", "sub_0011964B",
         "sub_00069807", "sub_001195F7", "sub_0006B623", "sub_000C6CD0",
-        "sub_00349470", "sub_0034C0E0", "sub_000C191C", "sub_0004DBC7")
+        "sub_00349470", "sub_0034C0E0", "sub_000C191C", "sub_0004DBC7", "sub_0013532D")
 HOOKS = {
     OWNERS[0]: ("loc_00201BCA", "loc_00201CC0", "loc_00201D55"),
     OWNERS[1]: ("loc_0011CB45",),
@@ -30,10 +30,11 @@ HOOKS = {
 
 
 def retail_city_fixture(city, destination):
-    """Decode the retail road/junction sections using the native load formats.
+    """Decode the retail road, junction and area sections using native formats.
 
     144C9D loads templates, 1554D8/138CFC load road splines, 138C4C loads
-    junctions and 14E660 resolves the paired object IDs into native pointers.
+    junctions, 13879C/135286 load area paths, and 14E660 resolves the paired
+    object IDs into native pointers.
     Build only fields read by the production snapshot; preserve retail curves
     and connectivity rather than committing copies of the game's assets.
     """
@@ -42,8 +43,8 @@ def retail_city_fixture(city, destination):
     base = data.index(b"\0", cursor) + 1 + 80
     counts = struct.unpack_from("<8I", data, base)
     offsets = struct.unpack_from("<8I", data, base + 32)
-    _, ordinary, special, junctions, areas, _, _, link_count = counts
-    cursor = base + offsets[1]
+    template_count, ordinary, special, junctions, areas, _, _, link_count = counts
+    cursor = base + offsets[0]
 
     def u32():
         nonlocal cursor
@@ -70,15 +71,42 @@ def retail_city_fixture(city, destination):
             cursor += count * 4
         return matrix[9:12]
 
+    def path_records():
+        nonlocal cursor
+        polygons = []
+        for _ in range(u32()):
+            low, high = struct.unpack_from("<BB", data, cursor)
+            cursor += 2
+            count = u32()
+            points = struct.unpack_from("<" + "H" * (count * 3), data, cursor)
+            cursor += count * 6
+            assert count <= 0xFFFF and low < 16 and high < 16
+            polygons.append((count, points, low | (high << 4)))
+        return polygons
+
+    templates = []
+    for _ in range(template_count):
+        bounds = floats(6)
+        poses = []
+        for _ in range(u32()):
+            poses.append(struct.unpack_from("<3HB", data, cursor))
+            cursor += 7
+        templates.append((bounds, poses, path_records()))
+    assert cursor == base + offsets[1]
+
     roads = []
+    road_sections = []
     for index in range(ordinary + special):
         common()
         length, = floats(1)
         parameters = floats(3)
         controls = floats(u32() * 3)
-        skip_array(4)
-        cursor += 4
-        skip_array(4)
+        sections = floats(u32())
+        template_length, = floats(1)
+        template_ids = tuple(u32() for _ in range(u32()))
+        assert len(sections) == len(template_ids)
+        assert all(index < template_count for index in template_ids)
+        road_sections.append((sections, template_length, template_ids))
         skip_array(2)
         skip_array(2)
         cursor += 12
@@ -87,10 +115,13 @@ def retail_city_fixture(city, destination):
             assert cursor == base + offsets[2]
     assert cursor == base + offsets[3]
     centers = []
+    junction_shapes = []
     for _ in range(junctions):
         centers.append(common())
-        cursor += 48
-        u32()
+        matrix = floats(12)
+        template = u32()
+        assert template < template_count
+        junction_shapes.append((matrix, template))
         if u32() == 1:
             cursor += 16
             signals = u32()
@@ -98,6 +129,18 @@ def retail_city_fixture(city, destination):
                 skip_array(4)
                 skip_array(6)
     assert cursor == base + offsets[4]
+    area_shapes = []
+    for _ in range(areas):
+        center = common()
+        skip_array(36)
+        minimum = floats(3)
+        scale, = floats(1)
+        polygons = path_records()
+        skip_array(7)
+        skip_array(12)
+        u32()
+        area_shapes.append((center, minimum, scale, polygons))
+    assert cursor == base + offsets[5]
     link_ids = struct.unpack_from("<" + "i" * (2 * link_count), data, base + offsets[7])
     assert all(-1 <= index < ordinary + special + junctions + areas for index in link_ids)
 
@@ -117,6 +160,27 @@ def retail_city_fixture(city, destination):
     for group, count in enumerate((ordinary, special, junctions, areas)):
         write(manager + 0x40 + 4 * group, "I", arrays[group])
         write(manager + 0xA0 + 4 * group, "I", count)
+    template_array = allocate(template_count * 0x3C)
+    write(manager + 0x3C, "I", template_array)
+    write(manager + 0x9C, "I", template_count)
+
+    def write_path_vector(header, polygons):
+        records = allocate(len(polygons) * 7)
+        write(header + 4, "II", records, records + len(polygons) * 7)
+        for polygon, (count, coordinates, flags) in enumerate(polygons):
+            points = allocate(len(coordinates) * 2)
+            write(points, "H" * len(coordinates), *coordinates)
+            write(records + polygon * 7, "HIB", count, points, flags)
+
+    for index, (bounds, poses, polygons) in enumerate(templates):
+        template = template_array + index * 0x3C
+        write(template + 0x20, "6f", *bounds)
+        write(template + 0x38, "f", math.dist(bounds[:3], bounds[3:]))
+        write_path_vector(template, polygons)
+        pose_array = allocate(len(poses) * 8)
+        write(template + 0x14, "II", pose_array, pose_array + len(poses) * 8)
+        for pose, values in enumerate(poses):
+            write(pose_array + pose * 8, "3HB", *values)
     objects = [arrays[group] + index * stride
                for group, count, stride in ((0, ordinary, 0xDC), (1, special, 0xDC),
                                              (2, junctions, 0xAC), (3, areas, 0xE8))
@@ -128,8 +192,27 @@ def retail_city_fixture(city, destination):
         write(spline + 4, "II", points, points + len(controls) * 4)
         write(spline + 0x10, "3f", *parameters)
         write(objects[index] + 0x74, "fI", length, spline)
+        sections, template_length, template_ids = road_sections[index]
+        section_array = allocate(len(sections) * 4)
+        profile_array = allocate(len(template_ids) * 4)
+        write(section_array, "f" * len(sections), *sections)
+        write(profile_array, "I" * len(template_ids),
+              *(template_array + template * 0x3C for template in template_ids))
+        write(objects[index] + 0x80, "II", section_array, section_array + len(sections) * 4)
+        write(objects[index] + 0x90, "II", profile_array, profile_array + len(template_ids) * 4)
+        write(objects[index] + 0xCC, "f", template_length)
     for index, center in enumerate(centers):
-        write(arrays[2] + index * 0xAC + 0x34, "3f", *center)
+        junction = arrays[2] + index * 0xAC
+        matrix, template = junction_shapes[index]
+        write(junction + 0x34, "3f", *center)
+        write(junction + 0x74, "12f", *matrix)
+        write(junction + 0xA4, "I", template_array + template * 0x3C)
+    for index, (center, minimum, scale, polygons) in enumerate(area_shapes):
+        area = arrays[3] + index * 0xE8
+        write(area + 0x34, "3f", *center)
+        write(area + 0xD4, "3f", *minimum)
+        write(area + 0xE0, "f", scale)
+        write_path_vector(area + 0x74, polygons)
     links = allocate(link_count * 8)
     write(links, "I" * len(link_ids), *(objects[index] if index >= 0 else 0 for index in link_ids))
     write(manager + 0x58, "I", links)

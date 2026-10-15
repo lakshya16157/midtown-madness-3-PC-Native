@@ -17,6 +17,15 @@ static MM3DisplaySettings s_current, s_boot;
 static HWND s_dialog;
 static SRWLOCK s_settings_lock = SRWLOCK_INIT;
 
+int mm3_minimap_improved(void)
+{
+    int improved;
+    AcquireSRWLockShared(&s_settings_lock);
+    improved = s_current.minimap_improved;
+    ReleaseSRWLockShared(&s_settings_lock);
+    return improved;
+}
+
 static float display_aspect(const char *value)
 {
     float width, height;
@@ -149,7 +158,7 @@ static void populate(HWND dialog, const MM3DisplaySettings *settings)
 {
     static const int ids[] = { IDC_DISPLAY_RESOLUTION, IDC_DISPLAY_MODE,
         IDC_DISPLAY_FPS, IDC_DISPLAY_SCALE, IDC_DISPLAY_ASPECT,
-        IDC_DISPLAY_MSAA, IDC_DISPLAY_ANISO, IDC_DISPLAY_DISTANCE };
+        IDC_DISPLAY_MSAA, IDC_DISPLAY_ANISO, IDC_DISPLAY_DISTANCE, IDC_DISPLAY_MINIMAP };
     static const int resolutions[][2] = { {800,600}, {1024,768}, {1280,720},
         {1280,800}, {1366,768}, {1536,960}, {1600,900}, {1920,1080},
         {1920,1200}, {2560,1440}, {2560,1600}, {3840,2160} };
@@ -218,6 +227,9 @@ static void populate(HWND dialog, const MM3DisplaySettings *settings)
     select_float(dialog, IDC_DISPLAY_DISTANCE, settings->draw_distance, " (custom)");
     CheckDlgButton(dialog, IDC_DISPLAY_VSYNC, settings->vsync ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dialog, IDC_DISPLAY_SHOW_FPS, settings->show_fps ? BST_CHECKED : BST_UNCHECKED);
+    combo_add(dialog, IDC_DISPLAY_MINIMAP, "Stock", 0);
+    combo_add(dialog, IDC_DISPLAY_MINIMAP, "Improved", 1);
+    combo_select(dialog, IDC_DISPLAY_MINIMAP, settings->minimap_improved);
     EnableWindow(GetDlgItem(dialog, IDC_DISPLAY_RESOLUTION), !settings->fullscreen);
 }
 
@@ -240,6 +252,7 @@ static int read_controls(HWND dialog, MM3DisplaySettings *settings)
     settings->fps_limit = (int)limit;
     settings->vsync = IsDlgButtonChecked(dialog, IDC_DISPLAY_VSYNC) == BST_CHECKED;
     settings->show_fps = IsDlgButtonChecked(dialog, IDC_DISPLAY_SHOW_FPS) == BST_CHECKED;
+    settings->minimap_improved = (int)combo_value(dialog, IDC_DISPLAY_MINIMAP);
     settings->render_scale = combo_float(dialog, IDC_DISPLAY_SCALE);
     if (aspect < 5) strcpy(settings->aspect, aspects[aspect]);
     settings->msaa = (int)combo_value(dialog, IDC_DISPLAY_MSAA);

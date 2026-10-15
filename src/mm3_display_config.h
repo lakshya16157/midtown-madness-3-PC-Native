@@ -10,6 +10,7 @@ typedef struct MM3DisplaySettings {
     int fps_limit;
     int vsync;
     int show_fps;
+    int minimap_improved; /* 0 = retail minimap; 1 = transparent perspective roads. */
     float render_scale; /* 0 = automatic window-based size; otherwise 0.5..8. */
     char aspect[32]; /* auto, a familiar ratio, or a normalized numeric ratio. */
     int msaa;
@@ -45,5 +46,8 @@ const char *mm3_display_settings_apply_environment(const MM3DisplaySettings *set
  * they do not prevent startup. Call before renderer/guest initialization. */
 int mm3_display_settings_startup(MM3DisplaySettings *settings,
                                  char *error, size_t error_capacity);
+
+/* Read the live HUD preference safely from either the title or render thread. */
+int mm3_minimap_improved(void);
 
 #endif

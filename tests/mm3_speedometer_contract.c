@@ -24,6 +24,12 @@ static int displayed;
 static float rectangle[5];
 static int use_override;
 static unsigned override_calls;
+static int added_car;
+
+int mm3_speedometer_hide_readout(void)
+{
+    return added_car;
+}
 
 int mm3_speedometer_draw(uint32_t hud, uint32_t caller_frame, double velocity)
 {
@@ -116,9 +122,9 @@ static void sub_000127A9(void)
 #include "production_speedometer.inc"
 
 static void check(void (*branch)(void), int modified, unsigned type,
-                  int split, int is_metric, double velocity)
+                  int split, int is_metric, double velocity, int custom)
 {
-    int readout = !modified && split;
+    int readout = split && (!modified || !custom);
     memset(memory, 0, sizeof memory);
     g_xbox_mem_offset = (ptrdiff_t)memory;
     g_esp = stack; g_ebp = frame; g_ebx = node; g_esi = renderer;
@@ -143,6 +149,7 @@ static void check(void (*branch)(void), int modified, unsigned type,
     MEMF(0x386420) = 0.6213712096214294f;
     metric = is_metric ? 1.0 : 0.0;
     speed = velocity;
+    added_car = custom;
     text_calls = needle_calls = destroyed = constructors = formatted = 0;
     displayed = -99999;
     branch();
@@ -172,13 +179,14 @@ int main(void)
         for (split = 0; split <= 1; ++split)
             for (units = 0; units <= 1; ++units)
                 for (i = 0; i < sizeof velocities / sizeof velocities[0]; ++i) {
-                    check(contract_original, 0, type, split, units, velocities[i]);
-                    check(contract_modified, 1, type, split, units, velocities[i]);
+                    check(contract_original, 0, type, split, units, velocities[i], 0);
+                    check(contract_modified, 1, type, split, units, velocities[i], 0);
+                    check(contract_modified, 1, type, split, units, velocities[i], 1);
                 }
     for (i = 0; i < sizeof velocities / sizeof velocities[0]; ++i) {
         unsigned configured;
         for (configured = 0; configured <= 1; ++configured) {
-            check(contract_modified, 1, 1, 0, 1, velocities[i]);
+            check(contract_modified, 1, 1, 0, 1, velocities[i], 0);
             MEMF(0x38641C) = 81.0f;
             use_override = configured;
             override_calls = needle_calls = 0;
@@ -188,7 +196,7 @@ int main(void)
             assert(g_ebx == speed_data && g_esi == renderer);
         }
     }
-    puts("PASS: numeric speed hidden for all gauge types and both HUD layouts; "
+    puts("PASS: retail numeric gauge restored for all gauge types/units; added-car readout unchanged; "
          "analog continuation, units, custom-dial override, stack and text ownership");
     return 0;
 }

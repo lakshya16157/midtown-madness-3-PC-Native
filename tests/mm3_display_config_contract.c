@@ -10,7 +10,7 @@
 
 static const char *s_environment[] = {
     "RECOMP_WINDOW_SIZE", "RECOMP_FULLSCREEN", "RECOMP_FPS_LIMIT", "RECOMP_VSYNC",
-    "MM3_SHOW_FPS", "RECOMP_RENDER_SCALE", "RECOMP_ASPECT", "RECOMP_MSAA",
+    "MM3_SHOW_FPS", "MM3_MINIMAP_IMPROVED", "RECOMP_RENDER_SCALE", "RECOMP_ASPECT", "RECOMP_MSAA",
     "RECOMP_ANISO", "RECOMP_DRAW_DISTANCE", "MM3_PERFORMANCE_PROFILE"
 };
 
@@ -34,6 +34,7 @@ static void equal_settings(const MM3DisplaySettings *a, const MM3DisplaySettings
     assert(a->fps_limit == b->fps_limit);
     assert(a->vsync == b->vsync);
     assert(a->show_fps == b->show_fps);
+    assert(a->minimap_improved == b->minimap_improved);
     assert(a->render_scale == b->render_scale);
     assert(strcmp(a->aspect, b->aspect) == 0);
     assert(a->msaa == b->msaa);
@@ -64,6 +65,7 @@ static void persistence(void)
     FILE *file;
     HANDLE locked;
     mm3_display_settings_defaults(&expected, "Balanced");
+    assert(expected.minimap_improved == 1);
     loaded = expected;
     assert(mm3_display_settings_load(&loaded, error, sizeof error));
     assert(!*error);
@@ -76,6 +78,7 @@ static void persistence(void)
     expected.fps_limit = 45;
     expected.vsync = 1;
     expected.show_fps = 0;
+    expected.minimap_improved = 0;
     expected.render_scale = 1.875f;
     strcpy(expected.aspect, "21:9");
     expected.msaa = 2;
@@ -100,6 +103,10 @@ static void persistence(void)
     invalid.fps_limit = 61;
     assert(!mm3_display_settings_save(&invalid, error, sizeof error));
     assert(strstr(error, "fps_limit"));
+    invalid = expected;
+    invalid.minimap_improved = 2;
+    assert(!mm3_display_settings_save(&invalid, error, sizeof error));
+    assert(strstr(error, "minimap_improved"));
     invalid = expected;
     invalid.render_scale = NAN;
     assert(!mm3_display_settings_save(&invalid, error, sizeof error));
@@ -135,7 +142,7 @@ static void malformed_fields(void)
     loaded = expected;
     write_config("# partial config\n[display]\nwindow_width=1366\nwindow_height=768\n"
                  "fullscreen=2\nfps_limit=45 ; accepted comment\nvsync=-1\nshow_fps=0\n"
-                 "render_scale=nan\naspect=16:0\nmsaa=3\naniso=17\n"
+                 "minimap_improved=2\nrender_scale=nan\naspect=16:0\nmsaa=3\naniso=17\n"
                  "draw_distance=2.25junk\nunknown_key=999\n");
     assert(mm3_display_settings_load(&loaded, error, sizeof error));
     expected.window_width = 1366;
@@ -191,6 +198,7 @@ static void precedence(void)
     environment("RECOMP_ASPECT", "1.75");
     environment("RECOMP_ANISO", "3");
     environment("RECOMP_FULLSCREEN", "1");
+    environment("MM3_MINIMAP_IMPROVED", "0");
     assert(mm3_display_settings_startup(&loaded, error, sizeof error));
     assert(!*error);
     expected.window_width = 1920;
@@ -200,6 +208,7 @@ static void precedence(void)
     strcpy(expected.aspect, "1.75");
     expected.aniso = 3;
     expected.fullscreen = 1;
+    expected.minimap_improved = 0;
     equal_settings(&loaded, &expected);
     assert(strcmp(getenv("RECOMP_FPS_LIMIT"), "30") == 0);
     assert(strcmp(getenv("RECOMP_WINDOW_SIZE"), "1920x1080") == 0);
@@ -229,6 +238,7 @@ static void precedence(void)
     environment("RECOMP_MSAA", "3");
     environment("RECOMP_ASPECT", "16:0");
     environment("RECOMP_FULLSCREEN", "   ");
+    environment("MM3_MINIMAP_IMPROVED", "2");
     assert(mm3_display_settings_startup(&loaded, error, sizeof error));
     assert(*error);
     mm3_display_settings_defaults(&expected, "Balanced");

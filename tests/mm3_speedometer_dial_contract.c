@@ -31,6 +31,9 @@ static unsigned char contract_memory[0x400000];
 static const uint32_t contract_frame = 0x3D000, contract_stack = 0x3C000;
 static const uint32_t contract_node = 0x17000, contract_renderer = 0x18000;
 static const uint32_t contract_effects = 0x19000;
+/* Retail XBE metadata for all five gauge styles, metric then imperial. */
+static const float contract_starts[10] = {125, 125, 125, 109, 125, 110, 125, 155, 106, 156};
+static const float contract_ends[10] = {415, 415, 415, 417.5f, 415, 405, 415, 385, 434, 384};
 
 struct contract_state {
     uint32_t registers[10];
@@ -146,9 +149,8 @@ static void contract_initialize(const char *alias, unsigned type, int metric)
     MEM32(contract_frame + 0x18) = contract_effects;
     MEMF(contract_frame - 76) = 450; MEMF(contract_frame - 72) = 300;
     for (i = 0; i < 10; ++i) {
-        float start = 135.0f + (float)i * 3.0f;
-        MEMF(0x39E264 + i * 4) = start;
-        MEMF(0x39E28C + i * 4) = 540.0f - start - 270.0f;
+        MEMF(0x39E264 + i * 4) = contract_starts[i];
+        MEMF(0x39E28C + i * 4) = 540.0f - contract_ends[i];
     }
     memset((void *)XBOX_PTR(contract_stack), 0xA5, 32);
     g_esp = contract_stack; g_eax = 0x101; g_ecx = 0x102; g_edx = 0x103;
@@ -230,7 +232,7 @@ static void contract_check_geometry(unsigned type, int metric, float maximum, do
 {
     const float cx = 531, cy = 381;
     unsigned position = 40, i, index = type * 2u + (metric ? 0u : 1u);
-    double start = 135 + index * 3, end = start + 270;
+    double start = contract_starts[index], end = contract_ends[index];
     double value = metric ? speed : speed * 0.6213712096214294;
     double angle;
     const struct contract_quad *needle;
@@ -302,17 +304,108 @@ static void contract_added_cars_retain_retail(void)
         "ThisAliasIsLongerThan15"
     };
     unsigned alias, type, metric;
-    int loaded = initialized;
     /* These aliases have valid ranges in the legacy sidecar fixture. Added
      * cars must still leave the complete native texture and needle path in
-     * control, without submitting replacement quads or loading that file. */
+     * control, without submitting replacement quads. */
     for (alias = 0; alias < sizeof aliases / sizeof aliases[0]; ++alias)
-        for (type = 1; type <= 4; type += 3)
+        for (type = 0; type <= 4; ++type)
             for (metric = 0; metric <= 1; ++metric) {
                 contract_initialize(aliases[alias], type, (int)metric);
+                assert(mm3_speedometer_hide_readout());
                 assert(!contract_draw(400) && !contract_quad_count);
-                assert(initialized == loaded);
             }
+}
+
+static void contract_added_custom_scales(void)
+{
+    static const struct { const char *alias; float kmh, mph; } cars[] = {
+        {"fOrM1", 400, 240}, {"Panoz", 650, 404}, {"MRly", 500, 311},
+        {"ThisAliasIsLongerThan15", 1200, 750}
+    };
+    static const float native[5][2] = {
+        {300, 150}, {300, 200}, {160, 100}, {220, 180}, {380, 280}
+    };
+    static const double fractions[] = {0, .5, 1, 2, -1};
+    static const char *invalid[] = {
+        "LegacyOnly", "TaggedBad", "TaggedNan", "TaggedShort", "TaggedTrailing", "UnknownCar"
+    };
+    unsigned car, type, metric, speed;
+    /* Every configured style/unit is checked against independently known
+     * retail arcs, decoded tick numbers and actual emitted needle vertices. */
+    for (car = 0; car < sizeof cars / sizeof cars[0]; ++car)
+        for (type = 0; type <= 4; ++type)
+            for (metric = 0; metric <= 1; ++metric)
+                for (speed = 0; speed < sizeof fractions / sizeof fractions[0]; ++speed) {
+                    float maximum = metric ? cars[car].kmh : cars[car].mph;
+                    double kmh = maximum * fractions[speed] / (metric ? 1.0 : 0.6213712096214294);
+                    contract_initialize(cars[car].alias, type, (int)metric);
+                    assert(contract_draw(kmh));
+                    contract_check_geometry(type, (int)metric, maximum, kmh);
+                }
+    /* Exact matches retain complete native artwork, independently per unit. */
+    for (type = 0; type <= 4; ++type) {
+        char alias[16];
+        snprintf(alias, sizeof alias, "Native%u", type);
+        for (metric = 0; metric <= 1; ++metric) {
+            contract_initialize(alias, type, (int)metric);
+            assert(!contract_draw(native[type][metric ? 0 : 1]) && !contract_quad_count);
+        }
+    }
+    contract_initialize("MatchingKoenig", 4, 1);
+    assert(!contract_draw(190) && !contract_quad_count);
+    contract_initialize("MatchingKoenig", 4, 0);
+    assert(contract_draw(120 / 0.6213712096214294));
+    contract_check_geometry(4, 0, 240, 120 / 0.6213712096214294);
+    for (car = 0; car < sizeof invalid / sizeof invalid[0]; ++car) {
+        contract_initialize(invalid[car], 4, 1);
+        assert(!contract_draw(100) && !contract_quad_count);
+    }
+    /* A tag cannot change a retail original or bypass the normal type checks. */
+    contract_initialize("Koenigsegg", 4, 1);
+    assert(contract_draw(400)); contract_check_geometry(4, 1, 800, 400);
+    contract_initialize("ParisBus", 3, 1);
+    assert(!contract_draw(100) && !contract_quad_count);
+    contract_initialize("Form1", 5, 1);
+    assert(!contract_draw(100) && !contract_quad_count);
+    contract_initialize("Form1", 0, 1);
+    MEM32(contract_frame - 344) = 1;
+    assert(!contract_draw(100) && !contract_quad_count);
+    contract_initialize("Form1", 0, 1);
+    MEMF(0x39E28C) = 600;
+    assert(!contract_draw(100) && !contract_quad_count);
+    contract_initialize("Form1", 2, 0);
+    assert(contract_draw(NAN)); contract_check_geometry(2, 0, 240, NAN);
+    contract_initialize("Form1", 3, 1);
+    assert(contract_draw(INFINITY)); contract_check_geometry(3, 1, 400, INFINITY);
+}
+
+static void contract_retail_numeric_readout(void)
+{
+    static const char *const aliases[] = {
+        "ambulance", "ArmoredCar", "AudiTT", "Avalanche", "Avant", "cement",
+        "ChevySSR", "Corvette", "Crossfire", "DCBus", "escalade", "firetruck",
+        "Freightliner", "garbage", "HummerH2", "Koenigsegg", "Limo", "Lotus",
+        "MFastBack", "Microcar", "mini", "Mv_Badguy", "NewBeetle", "Opel_Astra",
+        "ParisBus", "ParisPolice", "ParisTaxi", "Pt", "Renault5", "Saab93",
+        "SerpentMk2", "Seville", "Viper", "WashingtonPolice", "WashingtonTaxi"
+    };
+    unsigned i;
+    for (i = 0; i < sizeof aliases / sizeof aliases[0]; ++i) {
+        struct contract_state before, after;
+        contract_initialize(aliases[i], 1, 1);
+        before = contract_snapshot();
+        assert(!mm3_speedometer_hide_readout());
+        after = contract_snapshot();
+        assert(!memcmp(&before, &after, sizeof before));
+    }
+    contract_initialize("koENIGsegg", 4, 0);
+    assert(!mm3_speedometer_hide_readout());
+    /* Incomplete guest state conservatively keeps the native readout. */
+    MEM32(0x3C5CDC) = 0;
+    assert(!mm3_speedometer_hide_readout());
+    contract_initialize("Viper", 1, 1);
+    MEM32(0x13000 + 0x1DC + 0x14) = 32;
+    assert(!mm3_speedometer_hide_readout());
 }
 
 static void contract_check_cached_geometry(void)
@@ -350,6 +443,12 @@ int main(int argc, char **argv)
     static const double fractions[] = {0, .5, 1, 2, -1};
     unsigned car, type, metric, speed;
     assert(argc == 2);
+    contract_retail_numeric_readout();
+    if (!strcmp(argv[1], "added")) {
+        contract_added_custom_scales();
+        puts("PASS: tagged added scales across five styles/both units; exact native fallback; decoded labels; zero/half/max/clamped needle vertices; legacy rejection; original HUD and guest state preserved");
+        return 0;
+    }
     contract_added_cars_retain_retail();
     if (strcmp(argv[1], "configured")) {
         contract_initialize("Koenigsegg", 4, 1);
@@ -384,6 +483,6 @@ int main(int argc, char **argv)
     contract_added_cars_retain_retail();
     contract_fallbacks();
     contract_check_cached_geometry();
-    puts("PASS: added cars retain complete retail dials before/after legacy settings load; 83 unchanged original overrides, decoded labels, calibrated clamped needles, native ABI, complete guest state, fallbacks and exact cached geometry");
+    puts("PASS: 35 original numeric readouts; added-car retail dials before/after legacy settings; 83 explicit original overrides, decoded labels, calibrated clamped needles, native ABI, guest state, fallbacks and cached geometry");
     return 0;
 }

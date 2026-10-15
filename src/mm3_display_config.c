@@ -48,6 +48,7 @@ static const SettingField s_fields[] = {
     INT_FIELD(fps_limit, "RECOMP_FPS_LIMIT", 1, 60, 0),
     INT_FIELD(vsync, "RECOMP_VSYNC", 0, 1, 0),
     INT_FIELD(show_fps, "MM3_SHOW_FPS", 0, 1, 0),
+    INT_FIELD(minimap_improved, "MM3_MINIMAP_IMPROVED", 0, 1, 0),
     FLOAT_FIELD(render_scale, "RECOMP_RENDER_SCALE", 0.5f, 8.0f),
     {"aspect", "RECOMP_ASPECT", SETTING_ASPECT, offsetof(MM3DisplaySettings, aspect), 0, 0, 0},
     INT_FIELD(msaa, "RECOMP_MSAA", 1, 8, CHOICE(1) | CHOICE(2) | CHOICE(4) | CHOICE(8)),
@@ -165,6 +166,7 @@ void mm3_display_settings_defaults(MM3DisplaySettings *settings, const char *pro
     settings->window_height = 800;
     settings->fps_limit = atoi(profile->fps_limit);
     settings->show_fps = 1;
+    settings->minimap_improved = 1;
     settings->render_scale = (float)atof(profile->render_scale);
     strcpy(settings->aspect, "auto");
     settings->msaa = atoi(profile->msaa);
@@ -399,10 +401,10 @@ int mm3_display_settings_save(const MM3DisplaySettings *settings, char *error, s
     if (fprintf(file,
                 "# MM3 display settings. Changes made in the game are saved here.\n"
                 "[display]\nwindow_width=%d\nwindow_height=%d\nfullscreen=%d\n"
-                "fps_limit=%d\nvsync=%d\nshow_fps=%d\nrender_scale=%s\n"
+                "fps_limit=%d\nvsync=%d\nshow_fps=%d\nminimap_improved=%d\nrender_scale=%s\n"
                 "aspect=%s\nmsaa=%d\naniso=%d\ndraw_distance=%.9g\n",
                 settings->window_width, settings->window_height, settings->fullscreen,
-                settings->fps_limit, settings->vsync, settings->show_fps,
+                settings->fps_limit, settings->vsync, settings->show_fps, settings->minimap_improved,
                 scale_value, settings->aspect, settings->msaa,
                 settings->aniso, (double)settings->draw_distance) < 0) failed = 1;
     if (fflush(file)) failed = 1;

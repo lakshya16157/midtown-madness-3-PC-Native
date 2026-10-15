@@ -60,7 +60,78 @@ To open a specific car and tab directly, for example Panoz's model package:
 tools\car-mods\editor.cmd --car-id 9004 --tab model
 ```
 
-Tabs are `specs`, `driving`, `gears`, `advanced` and `model`. The added car IDs are
+The searchable sidebar has **Added**, **Original** and **DLC** lists. The original
+list reads all 35 retail cars from the pristine HD archive backup, or the game
+archive when no backup exists. The DLC list reads installed car packs from the
+game folder's `TDATA/4d53002a/$C` directory, including their vehicle names.
+Original and DLC stats are read-only references; browsing them does not change
+the game or your added-car tuning.
+
+**Compare with**, above the tabs, picks any other added car (its current draft),
+original car or DLC car. Its values fill a Compare column on every tab and the
+Game stats table; click a Compare value to copy it into the car you are editing.
+
+**Game stats** shows every stored value, including engine, gearing, wheel,
+suspension, camera, paint and menu fields, beside the compared car. Search values
+or native setting names, and use **Copy selected value** to bring a reference value
+into an added-car field. Selecting a stat shows its explanation and its range
+across all original and DLC cars. Added-car previews combine your draft values
+with the base stats car and donor using the installer's rules; these are
+configuration values, not measured driving performance, and imported geometry
+can change the actual wheel radius.
+
+The Driving, Gears & RPM and More settings tabs list every value with these columns:
+
+| Column | Shows |
+|---|---|
+| Your value | Your override. A blank box shows the inherited value in grey; the arrow keys step from it, and ↺ clears the override. |
+| Base | The value a blank box uses, from the Base stats car (see below). |
+| Compare | The compared car's value. |
+| Max allowed | The highest value the installer accepts for your value. |
+| Game max | The highest value among the original and DLC cars, naming the car (+N more cars with the same value). ▲ or ▼ marks a value above or below every game car. |
+
+Menu ratings show the same columns with a clickable 0 to 9 bar; small ticks mark
+the Base and Compare cars' ratings, and **Copy base ratings** copies the base car's
+bars. The gearbox has a per-gear grid with Base, Compare and Game max rows, plus a
+text field for pasting all ratios; editing one gear of an inherited gearbox fills
+the other gears from the base. A live line checks the RPM order.
+
+Values are checked as you type. An invalid value turns its box red, its tab shows
+⚠ and the status line explains the problem; nothing is saved until you choose
+Save. Unsaved cars show a dot (•) in the list and an **Unsaved changes** badge, and
+the window title starts with `*`. Hover over any label for its tuning tip, accepted
+range and game range. Paint, model packages and interior dial controls are
+grouped under **Appearance**, which also offers a matching prepared package from
+`out/car-models/packages` with **Use it**. **Ctrl+S** saves settings, **Ctrl+F**
+searches the car list (or Game stats on that tab), **Ctrl+Tab** switches tabs and
+**Ctrl+C** copies the selected Game stats value.
+
+### Base stats
+
+Each added car's MM3 donor is fixed: it supplies the interior, sound, collision,
+suspension, cameras and nominal `WheelRadius`. It also supplies exterior visuals
+unless a selected prepared model package replaces them. **Base stats** chooses which
+original car supplies the driving values instead: engine torque and turbo, RPM
+limits, gearbox and final drive, shift times, weight, brakes, grip, drag and
+steering speed. Blank values use the base car; your own values always win, and
+menu ratings do not change. The first entry is the MM3 donor, which is the
+default. Each original car in the list names the DLC cars that drive exactly the
+same, because every official DLC car reuses one original car's driving values.
+The factory engine profile and a base stats car cannot be combined.
+Base stats does not select the on-screen speedometer: choosing Koenigsegg here
+changes driving values, while **Appearance → On-screen speedometer (HUD) → HUD
+style** selects its native dial separately.
+
+A base car may bring values that are outside the override limits, such as a
+bus's 15000 kg mass or its gearbox. Those install as original game data, but the
+same numbers cannot be typed in as overrides. Base stats does not change the
+donor's nominal `WheelRadius`; your own override can change that setting. The
+loaded wheel geometry determines the actual rolling radius, so imported wheels
+can change road speeds with the same gearbox.
+
+Command-line tabs are `stats`, `specs`, `driving`, `gears`, `advanced` and `model`
+(Appearance). `--car-id 18 --tab stats` opens the Lotus Esprit V8 reference;
+installed DLC IDs can be selected the same way. The added car IDs are
 9004–9006 and 9009–9014. Removed IDs 9001–9003, 9007 and 9008 remain
 unused, so the remaining cars keep their existing identities. Older manifests
 containing a removed car must have that entry removed before applying.
@@ -78,18 +149,36 @@ import is a **1995 McLaren F1 GTR**, the Formula 1 import is a **Ferrari F2007**
 the Ford GT is the **2017 model**, and the Aventador is the **LP700-4**. It shows
 manufacturer figures with their weight basis and source links. Unknown figures
 stay unknown; calibration notes explain the estimates used by the game.
-**Restore default driving** clears custom drivetrain and handling overrides,
-restoring the shipped weight and power tuning on top of the donor's driving
-setup. It keeps model packages, paint, menu ratings and dial limits. Save & Apply
-installs it.
+**Restore shipped tuning**, on the Driving tab, clears custom drivetrain and
+handling overrides and the base stats car, restoring the shipped weight and power
+tuning on top of the donor's driving setup. It keeps model packages, paint, menu
+ratings and dial limits. **Clear all overrides** blanks every driving value so the
+car uses its base stats car unchanged. Save & Apply installs either change.
 The reset values live in [driving_defaults.py](driving_defaults.py), so saving
 custom tuning into a manifest does not change the reset target.
 
-Choose a car on the left. Edit its paint colors, menu ratings, physics, gearing,
-RPM thresholds and **Interior speedometer maximum** values. The maximum km/h
-and mph values set the interior dashboard needle range for added cars. Their
-on-screen speedometers keep the donor's native font, artwork, gauge style and
-scale. **Original car speedometers…** opens a selector for the original sports
+Search cars by name, alias or ID on the left. While searching, each catalog tab
+shows matching cars out of its total (for example, **Added (2/9)**); clearing
+the search restores the full lists.
+
+Choose a car on the left. Edit its paint colors, menu ratings, physics, gearing
+and RPM thresholds. In **Appearance → On-screen speedometer (HUD)**, **HUD style**
+selects an original car's native dial family and needle arc, independently of
+Base stats. **Dial max km/h** and **Dial max mph** set the on-screen dial range
+and calibrate the interior needle. Enter both, or leave both blank to use the
+selected style's native HUD artwork and range. Without a HUD style override,
+the fixed MM3 donor supplies the family.
+
+Custom maxima redraw the dial with matching markings and needle calibration.
+Each unit keeps its native artwork when its maximum equals the selected style's
+native printed maximum. For example, Formula 1's current Koenigsegg style with
+380 km/h / 240 mph uses the native 380 km/h dial and a custom 240 mph dial;
+Koenigsegg's native mph dial ends at 280. Existing saved ranges on other added
+cars also control their HUD when applied. Dial maxima do not boost performance.
+Workshop does not infer a dial maximum from physics or the menu's Top speed
+rating.
+
+**Original HUD speedometers...** opens a selector for the original sports
 cars, including Koenigsegg, Viper and Lotus. Edit their dial maxima, then choose
 **Keep changes** before saving in the main window. Original-car physics stay
 unchanged. The paint preview is a
@@ -98,10 +187,32 @@ also installs them into the game data. Close the game before applying, and
 restart it afterward. Invalid settings are rejected before installation, and
 the original data backups are retained.
 
-The **Model** tab selects a prepared MM3 model package folder containing
+**Save & Apply** installs a snapshot of the settings that this window just
+saved. Editing the JSON file elsewhere while installation is starting cannot
+change that apply. Relative model-package paths keep their original meaning.
+Edits made in Workshop during installation remain unsaved and need another
+Save & Apply; the completion message makes this clear.
+
+The footer badge separates **Unsaved edits** from **Saved · apply needed**.
+**Saved · matches last apply** means the file matches the installer's recorded
+settings; **Saved · no recorded apply** means that record is unavailable.
+During installation it shows **Applying saved settings...**. After success,
+**Applied · restart MM3** identifies settings applied in this session. Matching
+the recorded settings does not prove game-file integrity; the installer checks
+that before applying.
+
+Artwork previews use Pillow and the existing local `tools/cache/decdds` decoder
+to read the game's HUD textures. These dependencies are optional: without them,
+Workshop still displays the verified native markings as text.
+
+The header shows the fixed MM3 donor separately from the selected exterior
+visuals. It updates when the package selection changes and describes the current
+Workshop selection; **Save & Apply** installs that selection into the game.
+
+The **Appearance** tab selects a prepared MM3 model package folder containing
 `package.json`. Custom visuals are applied after donor cloning each time, so
 editing stats and choosing **Save & Apply** keeps the selected body and
-textures. **Use donor model** clears the package selection. Raw MM2 `.ar` and
+textures. **Use MM3 donor model** clears the package selection. Raw MM2 `.ar` and
 `.pkg` models require conversion first. A prepared package supplies its own
 materials and textures; the schematic paint preview does not show those
 materials or guarantee that changing its paint colors recolors the imported
@@ -229,20 +340,52 @@ For example, change Panoz's `physics.TorqueScale` from `750` to `800`
 for more engine torque, then reapply the pack. Its acceleration menu bar is
 controlled separately by `ratings.ACCELERATION`.
 
-The optional `speedometer` object contains `max_kmh` and `max_mph`, controlling
-the added car's interior dashboard needle range separately from driving
-performance. The on-screen speedometer retains the donor's native font, artwork,
-gauge style and scale. Interior defaults range from 360 km/h / 240 mph for
-Panoz to 440 km/h / 280 mph for Regera. These saved ranges do not predict the
-tuned car's top speed or change engine power or the menu's `TOPSPEED` rating.
-Allowed ranges are 100–1200 km/h and 60–750 mph; both values are required for an
-override. Leave both editor fields blank to inherit the donor's interior needle
-range.
+The optional per-car `driving_base` names an original car whose driving values
+fill every `physics` key you leave out (the editor's **Base stats**). It takes
+the car's tweak name in any letter case, for example:
+
+```json
+{"id": 9009, "alias": "Ford_GTcar", "donor": "Koenigsegg", "display_name": "Ford GT",
+ "driving_base": "Viper", "physics": {"Mass": 1520, "TorqueScale": 1000}, ...}
+```
+
+It covers every key in the physics table above except `WheelRadius`, plus the
+gear ratios with their gear count and the turbo spin-up that pairs with
+`TurboSize`. Other native settings, including suspension, tyres, collision and
+cameras, stay with the MM3 `donor`. Nominal `WheelRadius` also stays with the donor
+unless you provide a physics override. A selected prepared package can replace
+exterior visuals and wheel geometry; the loaded wheels determine the actual
+rolling radius. The installer reads the base car from the
+pristine retail archive, keeps your `physics` values on top and rechecks the RPM
+rules on the result. When the base car omits `LatFrictionFactor` or
+`SteeringEndSpeed`, the variant also leaves it at the game default, exactly as the
+base car does. `driving_base` cannot name the car's own donor or be combined with
+`engine_profile`, and the preview lists it as "driving values from <car>".
+**Restore shipped tuning** removes it. Older installers reject manifests that
+contain this field.
+
+The optional per-car `hud_style` names an original car alias, for example
+`"hud_style": "Koenigsegg"`. It copies only that original car's
+`CarInfo.SPEEDOMETERTYPE`, selecting the native HUD family and needle arc.
+Omit it to keep the MM3 donor's family. The fixed donor, identity, interior,
+sound, collision and driving values stay unchanged; `driving_base` does not
+select this style. Original-car custom
+HUD ranges in `original_speedometers` remain independent and are not copied.
+
+The optional `speedometer` object contains `max_kmh` and `max_mph`. These set
+both the added car's on-screen HUD range and its interior needle calibration.
+The HUD uses a custom rendered dial and matching needle for an explicit maximum
+that differs from the selected family's native printed maximum. Matching that
+native maximum retains the original artwork for that unit. Omitting the object
+(both editor fields blank) uses the selected HUD style's native artwork and
+range. Allowed ranges are 100–1200 km/h and 60–750 mph; both values are required
+for an override. These limits do not predict road top speed or change driving
+performance, engine power or the menu's `TOPSPEED` rating.
 
 The optional top-level `original_speedometers` map sets on-screen dial maxima
 for original sports cars without changing their physics, paint or interior
-camera configuration. The shipped settings raise Koenigsegg, Viper and Lotus
-to 800 km/h / 500 mph. For example:
+camera configuration. Shipped settings use the retail HUD ranges; only explicit
+entries override them. For example:
 
 ```json
 "original_speedometers": {
@@ -250,9 +393,9 @@ to 800 km/h / 500 mph. For example:
 }
 ```
 
-The installer writes only original-car HUD overrides to
-`Data/mm3_speedometers.ini`. Added-car interior ranges stay in the car camera
-settings. The sidecar is tracked with the installed assets, rebuilt on reapplication and
+The installer writes HUD overrides to `Data/mm3_speedometers.ini`. Added-car
+interior calibration also stays in the car camera settings. The sidecar is
+tracked with the installed assets, rebuilt on reapplication and
 removed by restoration. The game reads it at startup, so restart MM3 after
 applying changes. An original car with no explicit override uses its retail HUD.
 

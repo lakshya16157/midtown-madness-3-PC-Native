@@ -2,6 +2,7 @@
 
 import copy
 from contextlib import redirect_stdout
+import hashlib
 import importlib.util
 import io
 import json
@@ -43,6 +44,65 @@ def zip_bytes(entries):
         pos = end
     eocd = struct.pack("<4s4H2IH", b"PK\x05\x06", 0, 0, count, count, len(central), start, 0)
     return original[:start] + bytes(central) + eocd
+
+
+# Retail-format driving values, raw as stored in Cars/Tweak/*.txt. Quirks are
+# deliberate: a trailing tab after the gear vector, a single space before
+# GearStatusDownGearFactor and a space-indented LatFrictionFactor.
+RETAIL_DRIVING = {
+    "NGears": "6", "GearRatioVector": "-3.3 2.53 1.48 0.99 0.79 0.66 0.61\t",
+    "WheelDrive": "1", "Mass": "1526", "TorqueScale": "1000", "WheelRatio": "4.0",
+    "WheelRadius": "0.34", "TurboSize": "1.0", "TurboSpinup": "1.0", "AirKZY": "1.5",
+    "AirKZZ": "0.01", "MaxTorqueRPM": "6500.0", "MaxTurboTorqueRPM": "6750.0",
+    "MinRPMGearChange": "4000.0", "BrakeTorque": "18000.0", "MinRPM": "1000.0",
+    "MaxRPM": "10000.0", "CutRPM": "8000.0", "TimeChangeGear": "0.6",
+    "TimeChangeGearFR": "0.15", "GearStatusDownGearFactor": "0.75",
+    "HandBrakeTorque": "19500.0", "TorqueScaleFactor": "1.125",
+    "LatFrictionFactor": "2.0", "SteeringEndSpeed": "340.0",
+}
+# CarBody values that belong to the body and never come from a base car.
+BODY_ONLY = {"NWheels": "4", "NColPoints": "12", "vInertia": "3.25 2.45 1.5", "BrakeBalance": "1.0"}
+
+
+def retail_tweak(ident, alias, driving=None, omit=()):
+    """A complete retail-style tweak with every driving key and its quirks."""
+    values = {**BODY_ONLY, **RETAIL_DRIVING, **(driving or {})}
+    lines = ["Begin(CarInfo)", f"\tID\t{ident}", "\tCOLOR\t0 0x443322 0x443322", "\tLOCKED",
+             *[f"\t{key}\t1" for key in sorted(MOD.RATINGS)], f"\tPAINTJOBNAME\t{alias}",
+             "End(CarInfo)", "Begin(CarBody)"]
+    for key, value in values.items():
+        if key in omit:
+            continue
+        if key == "GearStatusDownGearFactor":
+            lines.append(f"\t{key} {value}")
+        elif key == "LatFrictionFactor":
+            lines.append(f"    {key}\t{value}")
+        else:
+            lines.append(f"\t{key}\t{value}")
+    lines += ["End(CarBody)", "Begin(CarWheel0)", "\tWheelBasePos\t-0.765 0.23 1.39",
+              "\tSpringK\t70000.0", "End(CarWheel0)", "Begin(CarCamera)", "\tHoodPos\t0 1 2",
+              "\tSpeedometerMaxKmh\t620", "\tSpeedometerMaxMph\t500", "End(CarCamera)",
+              "Begin(CarCameraSS)", "\tOutFarStartZ\t6", "End(CarCameraSS)"]
+    return ("\r\n".join(lines) + "\r\n").encode("ascii")
+
+
+def retail_hud_tweak(ident, alias, gauge_type, driving=None):
+    """Retail-style tweak with an explicit native HUD artwork selector."""
+    return retail_tweak(ident, alias, driving).replace(
+        b"End(CarInfo)", f"\tSPEEDOMETERTYPE\t{gauge_type}\r\nEnd(CarInfo)".encode("ascii"), 1)
+
+
+def carbody(tweak):
+    """Ordered CarBody (key, raw value) pairs of tweak bytes or text."""
+    text = tweak.decode("ascii") if isinstance(tweak, bytes) else tweak
+    body = re.search(r"Begin\(CarBody\)\r?\n(.*?)End\(CarBody\)", text, re.S).group(1)
+    return [tuple(line.strip().split(None, 1)) if len(line.split()) > 1 else (line.strip(), "")
+            for line in body.splitlines() if line.strip()]
+
+
+# Recorded from tweak_variant before driving_base existed. Cars without a base
+# stats car must keep producing exactly these bytes.
+NO_BASE_TWEAK_DIGEST = "b13843f59a3c924e27338d45d9ec6ee0975db8ac79eac8f892e7ed78405ae105"
 
 
 def material(names, donor, lod=False):
@@ -139,6 +199,17 @@ class CarModsTest(unittest.TestCase):
 
     def plan(self, config=None):
         return MOD.build_plan(self.game, self.originals, config or self.config)[0]
+
+    def with_retail_bases(self, tweaks, install=True):
+        """Originals whose HD archive also holds complete retail base tweaks."""
+        with zipfile.ZipFile(io.BytesIO(self.originals[MOD.ARCHIVES[0]])) as archive:
+            files = {name: archive.read(name) for name in archive.namelist()}
+        files.update({f"Cars/Tweak/{alias}.txt": data for alias, data in tweaks.items()})
+        originals = {**self.originals, MOD.ARCHIVES[0]: zip_bytes(files)}
+        if install:
+            for name, data in originals.items():
+                (self.game / name).write_bytes(data)
+        return originals
 
     def model_package(self):
         folder = self.game / "prepared models" / "panoz"
@@ -551,6 +622,7 @@ class CarModsTest(unittest.TestCase):
         path.write_text(json.dumps(legacy))
         MOD.load_config(path)
         legacy_output = self.plan(legacy)
+        self.assertNotIn(b"added Panoz ", legacy_output[MOD.SPEEDOMETER_FILE])
         with zipfile.ZipFile(io.BytesIO(legacy_output[MOD.ARCHIVES[0]])) as hd:
             self.assertIn(b"SpeedometerMaxKmh\t620\r\n", hd.read("Cars/Tweak/Panoz.txt"))
         for value in [{"max_kmh": 800}, {"max_kmh": 800, "max_mph": 500, "bogus": 1},
@@ -562,20 +634,31 @@ class CarModsTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 MOD.load_config(path)
 
-    def test_speedometer_sidecar_contains_only_original_hud_overrides(self):
+    def test_speedometer_sidecar_separates_original_overrides_and_tagged_added_ranges(self):
         config = copy.deepcopy(self.config)
+        # Original overrides remain explicit workshop edits; defaults are retail.
+        config["original_speedometers"] = {"Koenigsegg": {"max_kmh": 800, "max_mph": 500}}
         config["cars"][0]["speedometer"] = {"max_kmh": 650, "max_mph": 404}
         del config["cars"][1]["speedometer"]
         output = self.plan(config)
         settings = output[MOD.SPEEDOMETER_FILE].decode("ascii")
         rows = [line.split() for line in settings.splitlines() if not line.startswith("#")]
-        actual = {alias: (float(kmh), float(mph)) for alias, kmh, mph in rows}
+        original_rows = [row for row in rows if row[0] != "added"]
+        added_rows = [row for row in rows if row[0] == "added"]
+        actual = {alias: (float(kmh), float(mph)) for alias, kmh, mph in original_rows}
         expected = {alias: (limits["max_kmh"], limits["max_mph"])
                     for alias, limits in config["original_speedometers"].items()}
         self.assertEqual(actual, expected)
-        self.assertEqual(len(rows), len(actual))
+        self.assertEqual(len(original_rows), len(actual))
         self.assertFalse({car["alias"] for car in config["cars"]} & set(actual))
         self.assertEqual(actual["Koenigsegg"], (800, 500))
+        added = {alias: (float(kmh), float(mph)) for marker, alias, kmh, mph in added_rows}
+        self.assertEqual(added, {car["alias"]: (car["speedometer"]["max_kmh"], car["speedometer"]["max_mph"])
+                                 for car in config["cars"] if "speedometer" in car})
+        self.assertEqual(len(added_rows), len(added))
+        self.assertEqual(added["Panoz"], (650, 404))
+        self.assertEqual(added["Form1"], (380, 240))
+        self.assertNotIn("McLaren_F1", added)
         with zipfile.ZipFile(io.BytesIO(output[MOD.ARCHIVES[0]])) as hd, \
                 zipfile.ZipFile(io.BytesIO(self.originals[MOD.ARCHIVES[0]])) as before:
             for alias in config["original_speedometers"]:
@@ -587,13 +670,36 @@ class CarModsTest(unittest.TestCase):
                 original_style = next(line for line in donor.splitlines() if b"SPEEDOMETERTYPE" in line)
                 self.assertEqual([line for line in variant.splitlines() if b"SPEEDOMETERTYPE" in line], [original_style])
 
+    def test_default_original_speedometers_remain_retail_and_added_ranges_are_tagged(self):
+        for name in ("cars.json", "cars.imported.json"):
+            shipped = MOD.load_config(ROOT / "tools/car-mods" / name)
+            self.assertFalse(shipped.get("original_speedometers"))
+            settings = MOD.speedometer_settings(shipped).decode("ascii")
+            rows = [row.split() for row in settings.splitlines() if row and not row.startswith("#")]
+            self.assertTrue(all(row[0] == "added" and len(row) == 4 for row in rows))
+            self.assertEqual({alias: (float(kmh), float(mph)) for marker, alias, kmh, mph in rows},
+                             {car["alias"]: (car["speedometer"]["max_kmh"], car["speedometer"]["max_mph"])
+                              for car in shipped["cars"] if "speedometer" in car})
+        output = self.plan()
+        with zipfile.ZipFile(io.BytesIO(output[MOD.ARCHIVES[0]])) as hd, \
+                zipfile.ZipFile(io.BytesIO(self.originals[MOD.ARCHIVES[0]])) as before:
+            for name in before.namelist():
+                if name.startswith("Cars/Tweak/") and name.endswith(".txt"):
+                    self.assertEqual(hd.read(name), before.read(name))
+
     def test_original_speedometer_validation_and_version_one_compatibility(self):
         path = self.game / "original-speedometers.json"
         legacy = copy.deepcopy(self.config)
         legacy.pop("original_speedometers")
         path.write_text(json.dumps(legacy))
         self.assertEqual(MOD.load_config(path), legacy)
-        self.assertEqual(self.plan(legacy)[MOD.SPEEDOMETER_FILE].count(b"\n"), 1)
+        settings = self.plan(legacy)[MOD.SPEEDOMETER_FILE]
+        self.assertIn(b"added Form1 380 240\n", settings)
+        self.assertTrue(all(line.startswith(b"added ") for line in settings.splitlines() if not line.startswith(b"#")))
+        without_maxima = copy.deepcopy(legacy)
+        for car in without_maxima["cars"]:
+            car.pop("speedometer", None)
+        self.assertEqual(self.plan(without_maxima)[MOD.SPEEDOMETER_FILE].count(b"\n"), 1)
         for value in (None, [], {"UnknownCar": {"max_kmh": 800, "max_mph": 500}},
                       {"Koenigsegg": {"max_kmh": 800}},
                       {"Koenigsegg": {"max_kmh": 800, "max_mph": float("inf")}},
@@ -620,6 +726,59 @@ class CarModsTest(unittest.TestCase):
         state, stock = MOD.read_install(self.game)
         MOD.restore(self.game, state, stock)
         self.assertFalse(path.exists())
+        self.assertEqual((self.game / "UDATA/profile").read_bytes(), b"do not change player save")
+
+    def test_added_speedometer_installs_hud_and_interior_range_then_clears_to_native(self):
+        originals = self.with_retail_bases({
+            "Lotus": retail_hud_tweak(18, "Lotus", 1),
+            "Koenigsegg": retail_hud_tweak(15, "Koenigsegg", 4)})
+        fallback_config = copy.deepcopy(self.config)
+        for car in fallback_config["cars"]:
+            car.pop("speedometer", None)
+        fallback_config["original_speedometers"] = {"Lotus": {"max_kmh": 800, "max_mph": 500}}
+        formula = fallback_config["cars"][2]
+        formula["hud_style"] = "Koenigsegg"
+        formula["driving_base"] = "Koenigsegg"
+        fallback = MOD.build_plan(self.game, originals, fallback_config)[0]
+        config = copy.deepcopy(fallback_config)
+        config["cars"][2]["speedometer"] = {"max_kmh": 480, "max_mph": 300}
+        MOD.validate_config(config)
+        output = MOD.build_plan(self.game, originals, config)[0]
+        self.assertEqual([name for name in output if output[name] != fallback[name]],
+                         [MOD.ARCHIVES[0], MOD.SPEEDOMETER_FILE])
+        rows = [line for line in output[MOD.SPEEDOMETER_FILE].splitlines() if not line.startswith(b"#")]
+        self.assertEqual(rows, [b"Lotus 800 500", b"added Form1 480 300"])
+        self.assertNotIn(b"\nForm1 ", output[MOD.SPEEDOMETER_FILE])
+        self.assertGreater(MOD.apply_plan(self.game, None, originals, output, config), 0)
+        state, stock = MOD.read_install(self.game)
+        self.assertEqual(state["config"], config)
+        self.assertEqual((self.game / MOD.SPEEDOMETER_FILE).read_bytes(), output[MOD.SPEEDOMETER_FILE])
+        with zipfile.ZipFile(self.game / MOD.ARCHIVES[0]) as installed, \
+                zipfile.ZipFile(io.BytesIO(originals[MOD.ARCHIVES[0]])) as before:
+            actual = installed.read("Cars/Tweak/Form1.txt")
+            self.assertEqual(actual.count(b"SpeedometerMaxKmh\t\t480\r\n"), 2)
+            self.assertEqual(actual.count(b"SpeedometerMaxMph\t\t300\r\n"), 2)
+            self.assertEqual(MOD.hud_speedometer_type(actual.decode(), "Form1"), 4)
+            for name in before.namelist():
+                if name.startswith("Cars/Tweak/") and name.endswith(".txt"):
+                    self.assertEqual(installed.read(name), before.read(name))
+        self.assertEqual(MOD.apply_plan(self.game, state, stock,
+                                       MOD.build_plan(self.game, stock, config)[0], config), 0)
+        cleared = MOD.build_plan(self.game, stock, fallback_config)[0]
+        self.assertEqual(cleared, fallback)
+        self.assertEqual(MOD.apply_plan(self.game, state, stock, cleared, fallback_config), 2)
+        self.assertEqual((self.game / MOD.SPEEDOMETER_FILE).read_bytes(),
+                         b"# MM3 speedometer maxima: alias max_kmh max_mph\nLotus 800 500\n")
+        with zipfile.ZipFile(self.game / MOD.ARCHIVES[0]) as installed:
+            actual = installed.read("Cars/Tweak/Form1.txt")
+            self.assertIn(b"SpeedometerMaxKmh\t620\r\n", actual)
+            self.assertIn(b"SpeedometerMaxMph\t500\r\n", actual)
+            self.assertEqual(MOD.hud_speedometer_type(actual.decode(), "Form1"), 4)
+        state, stock = MOD.read_install(self.game)
+        MOD.restore(self.game, state, stock)
+        self.assertFalse((self.game / MOD.SPEEDOMETER_FILE).exists())
+        for name, expected in originals.items():
+            self.assertEqual((self.game / name).read_bytes(), expected)
         self.assertEqual((self.game / "UDATA/profile").read_bytes(), b"do not change player save")
 
     def test_reapply_stats_is_idempotent_and_restore_is_exact(self):
@@ -781,6 +940,7 @@ class CarModsTest(unittest.TestCase):
             with self.subTest(car=car["alias"]):
                 self.assertEqual(set(car["physics"]), {"Mass", "TorqueScale"})
                 self.assertNotIn("engine_profile", car)
+                self.assertNotIn("driving_base", car)
                 output = MOD.tweak_variant(donor, car).decode()
                 for key, value in donor_values.items():
                     line = re.search(r"^\s*" + key + r"\s+([^\r\n]+)", output, re.M)
@@ -790,6 +950,308 @@ class CarModsTest(unittest.TestCase):
                     self.assertRegex(output, r"\b" + key + r"\s+" + str(value) + r"\s")
         output = self.plan()
         self.assertEqual(len(output[MOD.FACTORY_PHYSICS_FILE].splitlines()), 1)
+
+    def test_tweak_variant_without_driving_base_is_byte_identical(self):
+        # Shipped and factory-preset cars on realistic retail donors; the digest
+        # was recorded before base stats support was added.
+        ids = {"Lotus": 18, "Viper": 11, "Koenigsegg": 15}
+        cars = self.config["cars"] + MOD.factory_specs.apply_presets(self.config)["cars"]
+        digest = hashlib.sha256()
+        for car in cars:
+            digest.update(MOD.tweak_variant(retail_tweak(ids[car["donor"]], car["donor"]), car))
+        self.assertEqual(len(cars), 18)
+        self.assertEqual(digest.hexdigest(), NO_BASE_TWEAK_DIGEST)
+
+    def test_validate_config_matches_load_config_and_reads_no_files(self):
+        path = self.game / "cars.json"
+        path.write_text(json.dumps(self.config), encoding="utf-8")
+        loaded = MOD.load_config(path)
+        bad = copy.deepcopy(self.config)
+        bad["cars"][0]["ratings"]["HANDLING"] = 11
+        with patch.object(Path, "read_text", side_effect=AssertionError("validation read a file")), \
+                patch.object(Path, "read_bytes", side_effect=AssertionError("validation read a file")):
+            self.assertEqual(MOD.validate_config(copy.deepcopy(self.config)), loaded)
+            with self.assertRaisesRegex(ValueError, "ratings"):
+                MOD.validate_config(bad)
+
+    def test_driving_base_validation_accepts_any_case_and_rejects_invalid_values(self):
+        # Panoz uses a Viper body, so the Viper itself is not a separate base.
+        for name in ("Corvette", "corvette", "DCBUS", "Mv_Badguy", "koenigsegg"):
+            config = copy.deepcopy(self.config)
+            config["cars"][0]["driving_base"] = name
+            with self.subTest(name=name):
+                self.assertEqual(MOD.validate_config(copy.deepcopy(config)), config)
+        for name in (None, 42, "", " Corvette", "Viper", "viper", "Panoz", "car213", "Corvette.txt"):
+            config = copy.deepcopy(self.config)
+            config["cars"][0]["driving_base"] = name
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                MOD.validate_config(config)
+        config = copy.deepcopy(self.config)
+        config["cars"][0] = MOD.factory_specs.apply_preset(config["cars"][0])
+        config["cars"][0]["driving_base"] = "Corvette"
+        with self.assertRaisesRegex(ValueError, "factory engine profile"):
+            MOD.validate_config(config)
+
+    def test_hud_style_validation_uses_original_aliases_independently_of_driving(self):
+        for alias in MOD.original_stats.ORIGINAL_ALIASES.values():
+            config = copy.deepcopy(self.config)
+            config["cars"][2]["hud_style"] = alias.swapcase()
+            with self.subTest(alias=alias):
+                self.assertEqual(MOD.hud_style_alias(alias.swapcase()), alias)
+                self.assertEqual(MOD.validate_config(copy.deepcopy(config)), config)
+        for value in (None, True, 4, "", " Koenigsegg", "Koenigsegg ", "Form1", "car213", "Koenigsegg.txt"):
+            config = copy.deepcopy(self.config)
+            config["cars"][2]["hud_style"] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "hud_style"):
+                MOD.validate_config(config)
+        config = copy.deepcopy(self.config)
+        car = config["cars"][2]
+        car["hud_style"] = "Lotus"  # Explicitly choosing its donor is valid.
+        car["driving_base"] = "Koenigsegg"
+        self.assertEqual(MOD.validate_config(copy.deepcopy(config)), config)
+        car.pop("driving_base")
+        config["cars"][2] = MOD.factory_specs.apply_preset(car)
+        self.assertEqual(MOD.validate_config(copy.deepcopy(config)), config)
+
+    def test_hud_style_changes_only_carinfo_gauge_on_an_independent_driving_base(self):
+        car = copy.deepcopy(self.config["cars"][2])  # Formula 1 keeps the Lotus body.
+        car["driving_base"] = "Koenigsegg"
+        donor = retail_hud_tweak(18, "Lotus", 1, {"WheelRadius": "0.33", "BrakeTorque": "7500"})
+        koenig = retail_hud_tweak(15, "Koenigsegg", 4).decode("ascii")
+        plain = MOD.tweak_variant(donor, car, koenig)
+        car["hud_style"] = "kOeNiGsEgG"
+        styled = MOD.tweak_variant(donor, car, koenig, hud=koenig)
+        before = MOD.original_stats.parse_sections(plain.decode("ascii"))
+        after = MOD.original_stats.parse_sections(styled.decode("ascii"))
+        self.assertEqual([s for s in before if s["name"] != "CarInfo"],
+                         [s for s in after if s["name"] != "CarInfo"])
+        info_before = next(s["entries"] for s in before if s["name"] == "CarInfo")
+        info_after = next(s["entries"] for s in after if s["name"] == "CarInfo")
+        self.assertEqual([entry for entry in info_before if entry[0] != "SPEEDOMETERTYPE"],
+                         [entry for entry in info_after if entry[0] != "SPEEDOMETERTYPE"])
+        self.assertEqual(dict(info_before)["SPEEDOMETERTYPE"], "1")
+        self.assertEqual(dict(info_after)["SPEEDOMETERTYPE"], "4")
+        self.assertEqual(sum(key == "SPEEDOMETERTYPE" for key, _ in info_after), 1)
+        self.assertEqual((dict(info_after)["ID"], dict(info_after)["PAINTJOBNAME"]), ("9006", "Form1"))
+        body = dict(carbody(styled))
+        self.assertEqual((body["Mass"], body["TorqueScale"], body["BrakeTorque"], body["WheelRadius"]),
+                         ("600", "420", "18000.0", "0.33"))
+        with self.assertRaisesRegex(ValueError, "exactly when hud_style"):
+            MOD.tweak_variant(donor, car, koenig)
+        car.pop("hud_style")
+        with self.assertRaisesRegex(ValueError, "exactly when hud_style"):
+            MOD.tweak_variant(donor, car, koenig, hud=koenig)
+        self.assertEqual(MOD.tweak_variant(donor, car, koenig), plain)
+
+    def test_hud_style_source_requires_one_supported_native_gauge(self):
+        source = retail_hud_tweak(15, "Koenigsegg", 4).decode("ascii")
+        for gauge_type in range(5):
+            self.assertEqual(MOD.hud_speedometer_type(
+                source.replace("SPEEDOMETERTYPE\t4", f"SPEEDOMETERTYPE\t{gauge_type} // retail"), "Koenigsegg"),
+                gauge_type)
+        bad_sources = [source.replace("CarInfo", "OtherInfo"),
+                       source + "Begin(CarInfo)\r\n\tSPEEDOMETERTYPE\t4\r\nEnd(CarInfo)\r\n",
+                       source.replace("\tSPEEDOMETERTYPE\t4\r\n", ""),
+                       source.replace("End(CarInfo)", "\tSPEEDOMETERTYPE\t1\r\nEnd(CarInfo)")]
+        bad_sources.extend(source.replace("SPEEDOMETERTYPE\t4", "SPEEDOMETERTYPE\t" + value)
+                           for value in ("-1", "5", "4.0", "0x4", "nan", "1 4", "Koenigsegg"))
+        for text in bad_sources:
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, "HUD style"):
+                MOD.hud_speedometer_type(text, "Koenigsegg")
+
+    def test_hud_style_installs_reapplies_and_clears_without_changing_other_assets(self):
+        originals = self.with_retail_bases({
+            "Lotus": retail_hud_tweak(18, "Lotus", 1, {"WheelRadius": "0.33"}),
+            "Koenigsegg": retail_hud_tweak(15, "Koenigsegg", 4)})
+        plain_config = copy.deepcopy(self.config)
+        plain_config["cars"][2]["driving_base"] = "Koenigsegg"
+        plain = MOD.build_plan(self.game, originals, plain_config)[0]
+        config = copy.deepcopy(plain_config)
+        config["cars"][2]["hud_style"] = "koenigsegg"
+        MOD.validate_config(config)
+        styled = MOD.build_plan(self.game, originals, config)[0]
+        self.assertEqual(set(styled), set(plain))
+        self.assertEqual([path for path in styled if styled[path] != plain[path]], [MOD.ARCHIVES[0]])
+        with zipfile.ZipFile(io.BytesIO(plain[MOD.ARCHIVES[0]])) as before, \
+                zipfile.ZipFile(io.BytesIO(styled[MOD.ARCHIVES[0]])) as after:
+            self.assertEqual([name for name in before.namelist() if before.read(name) != after.read(name)],
+                             ["Cars/Tweak/Form1.txt"])
+            self.assertEqual(MOD.hud_speedometer_type(after.read("Cars/Tweak/Form1.txt").decode(), "Form1"), 4)
+        self.assertGreater(MOD.apply_plan(self.game, None, originals, styled, config), 0)
+        state, stock = MOD.read_install(self.game)
+        self.assertEqual(state["config"]["cars"][2]["hud_style"], "koenigsegg")
+        self.assertEqual(MOD.apply_plan(self.game, state, stock,
+                                       MOD.build_plan(self.game, stock, config)[0], config), 0)
+        cleared = MOD.build_plan(self.game, stock, plain_config)[0]
+        self.assertEqual(cleared, plain)
+        self.assertEqual(MOD.apply_plan(self.game, state, stock, cleared, plain_config), 1)
+        with zipfile.ZipFile(self.game / MOD.ARCHIVES[0]) as installed, \
+                zipfile.ZipFile(io.BytesIO(originals[MOD.ARCHIVES[0]])) as original:
+            self.assertEqual(MOD.hud_speedometer_type(installed.read("Cars/Tweak/Form1.txt").decode(), "Form1"), 1)
+            for name in original.namelist():
+                if name != "Cars/Tweak/SortOrder":
+                    self.assertEqual(installed.read(name), original.read(name))
+        state, stock = MOD.read_install(self.game)
+        MOD.restore(self.game, state, stock)
+        for name, expected in originals.items():
+            self.assertEqual((self.game / name).read_bytes(), expected)
+        self.assertEqual((self.game / "UDATA/profile").read_bytes(), b"do not change player save")
+
+    def test_hud_style_missing_or_invalid_original_source_fails_before_writes(self):
+        config = copy.deepcopy(self.config)
+        config["cars"][2]["hud_style"] = "Corvette"  # Valid original, absent in this fixture.
+        with self.assertRaisesRegex(ValueError, "HUD style car Corvette was not found"):
+            MOD.build_plan(self.game, self.originals, config)
+        invalid = retail_hud_tweak(15, "Koenigsegg", 5)
+        originals = self.with_retail_bases({"Koenigsegg": invalid})
+        config["cars"][2]["hud_style"] = "Koenigsegg"
+        with self.assertRaisesRegex(ValueError, "SPEEDOMETERTYPE from 0 to 4"):
+            MOD.build_plan(self.game, originals, config)
+        for name, expected in originals.items():
+            self.assertEqual((self.game / name).read_bytes(), expected)
+        self.assertFalse((self.game / MOD.STATE_DIR).exists())
+
+    def test_driving_base_copies_driving_values_but_keeps_the_body(self):
+        bus = retail_tweak(115, "DCBus", {
+            "Mass": "15000", "TorqueScale": "900", "BrakeTorque": "20000.0", "WheelDrive": "2",
+            "WheelRatio": "8.0", "WheelRadius": "0.6", "TurboSize": "0.0", "TurboSpinup": "0.0",
+            "GearRatioVector": "-6.0 3.60 2.64 2.14 1.87 1.65 1.66\t"}).decode("ascii")
+        car = copy.deepcopy(self.config["cars"][2])  # Formula 1 on a Lotus body.
+        car["physics"] = {}
+        car["driving_base"] = "dcbus"
+        donor = retail_tweak(18, "Lotus", {"WheelRadius": "0.33", "TurboSize": "0.5", "TurboSpinup": "0.5"})
+        output = MOD.tweak_variant(donor, car, bus)
+        pairs = carbody(output)
+        body = dict(pairs)
+        keys = [key for key, _value in pairs]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertEqual((body["Mass"], body["BrakeTorque"], body["WheelDrive"]), ("15000", "20000.0", "2"))
+        self.assertEqual(body["GearRatioVector"], "-6.0 3.60 2.64 2.14 1.87 1.65 1.66")
+        self.assertEqual(body["NGears"], "6")
+        self.assertLess(keys.index("NGears"), keys.index("GearRatioVector"))
+        self.assertEqual((body["TurboSize"], body["TurboSpinup"]), ("0.0", "0.0"))
+        self.assertEqual(body["WheelRadius"], "0.33")  # Wheel size stays with the body.
+        plain = MOD.tweak_variant(donor, {key: value for key, value in car.items() if key != "driving_base"})
+        for key in BODY_ONLY:
+            self.assertEqual(body[key], dict(carbody(plain))[key])
+        for section in ("CarInfo", "CarWheel0", "CarCamera", "CarCameraSS"):
+            pattern = rf"Begin\({section}\).*?End\({section}\)"
+            self.assertEqual(re.search(pattern, output.decode(), re.S).group(0),
+                             re.search(pattern, plain.decode(), re.S).group(0))
+
+    def test_driving_base_overrides_win_and_override_gearbox_recomputes_ngears(self):
+        base = retail_tweak(25, "Corvette", {"Mass": "1500", "TorqueScale": "800",
+                                             "BrakeTorque": "7500.0"}).decode("ascii")
+        car = copy.deepcopy(self.config["cars"][0])  # Panoz overrides Mass 980, TorqueScale 750.
+        car["driving_base"] = "Corvette"
+        car["physics"]["GearRatioVector"] = [-3.3, 2.5, 1.5, 0.8]
+        body = dict(carbody(MOD.tweak_variant(retail_tweak(11, "Viper"), car, base)))
+        self.assertEqual((body["Mass"], body["TorqueScale"]), ("980", "750"))
+        self.assertEqual(body["BrakeTorque"], "7500.0")
+        self.assertEqual((body["NGears"], body["GearRatioVector"]), ("3", "-3.3 2.5 1.5 0.8"))
+
+    def test_driving_base_missing_optional_keys_remove_donor_lines(self):
+        renault = retail_tweak(23, "Renault5", omit=("LatFrictionFactor", "SteeringEndSpeed")).decode("ascii")
+        car = copy.deepcopy(self.config["cars"][0])
+        car["driving_base"] = "Renault5"
+        donor = retail_tweak(11, "Viper")
+        body = dict(carbody(MOD.tweak_variant(donor, car, renault)))
+        self.assertNotIn("LatFrictionFactor", body)
+        self.assertNotIn("SteeringEndSpeed", body)
+        car["physics"]["LatFrictionFactor"] = 1.4
+        body = dict(carbody(MOD.tweak_variant(donor, car, renault)))
+        self.assertEqual(body["LatFrictionFactor"], "1.4")
+        broken = retail_tweak(23, "Renault5", omit=("BrakeTorque",)).decode("ascii")
+        with self.assertRaisesRegex(ValueError, "lacks BrakeTorque"):
+            MOD.tweak_variant(donor, car, broken)
+
+    def test_driving_base_rejects_unusable_values_and_rechecks_rpm(self):
+        car = copy.deepcopy(self.config["cars"][0])
+        car["driving_base"] = "Corvette"
+        donor = retail_tweak(11, "Viper")
+        for driving in ({"Mass": "heavy"}, {"Mass": "0x5dc"}, {"Mass": "1e999"}, {"Mass": "1 2"},
+                        {"NGears": "5"}, {"CutRPM": "6000.0"}, {"MaxTorqueRPM": "7900.0", "CutRPM": "9000.0",
+                                                               "MaxTurboTorqueRPM": "8500.0"}):
+            with self.subTest(driving=driving), self.assertRaises(ValueError):
+                MOD.tweak_variant(donor, car, retail_tweak(25, "Corvette", driving).decode("ascii"))
+        duplicate = retail_tweak(25, "Corvette").replace(b"End(CarBody)", b"\tMass\t1400\r\nEnd(CarBody)")
+        with self.assertRaisesRegex(ValueError, "repeats Mass"):
+            MOD.tweak_variant(donor, car, duplicate.decode("ascii"))
+        with self.assertRaisesRegex(ValueError, "exactly when driving_base"):
+            MOD.tweak_variant(donor, car)
+        with self.assertRaisesRegex(ValueError, "exactly when driving_base"):
+            MOD.tweak_variant(donor, self.config["cars"][0], retail_tweak(25, "Corvette").decode("ascii"))
+
+    def test_build_plan_reads_base_from_pristine_archive_reapplies_and_restores(self):
+        originals = self.with_retail_bases({
+            "DCBus": retail_tweak(115, "DCBus", {"Mass": "15000", "BrakeTorque": "20000.0"}),
+            "Corvette": retail_tweak(25, "Corvette", {"TorqueScale": "850"})})
+        config = copy.deepcopy(self.config)
+        config["cars"][2]["driving_base"] = "dcbus"  # Formula 1 on a Lotus body.
+        config["cars"][2]["physics"] = {}
+        MOD.validate_config(copy.deepcopy(config))
+        output = MOD.build_plan(self.game, originals, config)[0]
+        with zipfile.ZipFile(io.BytesIO(output[MOD.ARCHIVES[0]])) as hd:
+            body = dict(carbody(hd.read("Cars/Tweak/Form1.txt")))
+        self.assertEqual((body["Mass"], body["BrakeTorque"]), ("15000", "20000.0"))
+        rejected = copy.deepcopy(config)
+        rejected["cars"][2]["physics"]["Mass"] = 15000  # Typed values keep the override limit.
+        with self.assertRaises(ValueError):
+            MOD.validate_config(rejected)
+        self.assertGreater(MOD.apply_plan(self.game, None, originals, output, config), 0)
+        state, stock = MOD.read_install(self.game)
+        self.assertEqual(state["config"]["cars"][2]["driving_base"], "dcbus")
+        self.assertEqual(MOD.apply_plan(self.game, state, stock, MOD.build_plan(self.game, stock, config)[0], config), 0)
+        switched = copy.deepcopy(config)
+        switched["cars"][2]["driving_base"] = "Corvette"
+        changed = MOD.build_plan(self.game, stock, switched)[0]
+        self.assertEqual(changed[MOD.ARCHIVES[1]], output[MOD.ARCHIVES[1]])
+        with zipfile.ZipFile(io.BytesIO(changed[MOD.ARCHIVES[0]])) as after, \
+                zipfile.ZipFile(io.BytesIO(output[MOD.ARCHIVES[0]])) as before:
+            differing = [name for name in after.namelist() if after.read(name) != before.read(name)]
+            self.assertEqual(dict(carbody(after.read("Cars/Tweak/Form1.txt")))["TorqueScale"], "850")
+        self.assertEqual(differing, ["Cars/Tweak/Form1.txt"])
+        MOD.apply_plan(self.game, state, stock, changed, switched)
+        state, stock = MOD.read_install(self.game)
+        MOD.restore(self.game, state, stock)
+        for name, original in originals.items():
+            self.assertEqual((self.game / name).read_bytes(), original)
+
+    def test_driving_base_missing_from_archive_fails_before_writes(self):
+        config = copy.deepcopy(self.config)
+        config["cars"][0]["driving_base"] = "Corvette"  # Valid name, absent from the fixture.
+        with self.assertRaisesRegex(ValueError, "was not found in the original game data"):
+            MOD.build_plan(self.game, self.originals, config)
+        for name, original in self.originals.items():
+            self.assertEqual((self.game / name).read_bytes(), original)
+        self.assertFalse((self.game / MOD.STATE_DIR).exists())
+
+    def test_catalog_ranking_ignores_driving_base(self):
+        config = copy.deepcopy(self.config)
+        with zipfile.ZipFile(io.BytesIO(self.originals[MOD.ARCHIVES[0]])) as archive:
+            before = [car["id"] for car in MOD.catalog_ranking(archive, config)]
+            for car in config["cars"]:
+                car["driving_base"] = "Corvette"
+            self.assertEqual([car["id"] for car in MOD.catalog_ranking(archive, config)], before)
+
+    def test_cli_dry_run_names_the_base_stats_car(self):
+        self.with_retail_bases({"Corvette": retail_tweak(25, "Corvette")})
+        config = copy.deepcopy(self.config)
+        config["cars"][0]["driving_base"] = "Corvette"
+        path = self.game / "preview.json"
+        path.write_text(json.dumps(config), encoding="utf-8")
+        stdout = io.StringIO()
+        with patch.object(sys, "argv", ["prepare.py", "--game-dir", str(self.game), "--config", str(path)]), \
+                redirect_stdout(stdout):
+            self.assertEqual(MOD.main(), 0)
+        self.assertIn("9004: Panoz GTR-1 (Viper model, driving values from Corvette)", stdout.getvalue())
+
+    def test_update_section_does_not_remove_longer_key_names(self):
+        text = ("Begin(CarBody)\r\n\tTorqueScale\t1\r\n\tTorqueScaleFactor\t2\r\n\tMinRPM\t3\r\n"
+                "\tMinRPMGearChange\t4\r\n\tTimeChangeGear\t5\r\n\tTimeChangeGearFR\t6\r\nEnd(CarBody)\r\n")
+        result = MOD.update_section(text, "CarBody", {"TorqueScale": 9}, {"MinRPM", "TimeChangeGear"})
+        self.assertEqual(dict(carbody(result)), {"TorqueScaleFactor": "2", "MinRPMGearChange": "4",
+                                                 "TimeChangeGearFR": "6", "TorqueScale": "9"})
 
     def test_factory_profile_sidecar_opt_in_reapply_and_exact_restore(self):
         config = MOD.factory_specs.apply_presets(self.config)

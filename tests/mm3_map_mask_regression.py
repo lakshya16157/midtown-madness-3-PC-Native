@@ -20,7 +20,7 @@ def main():
     renderer = (ROOT / "tools/xboxrecomp/src/video/nv2a_d3d11.c").read_text()
     production = re.search(r"^static ID3D11ShaderResourceView \*map_square_mask\(.*?^\}", renderer, re.M | re.S).group()
     assert "s_map_texture_query(st->tex[n].addr) == 1" in renderer
-    assert "if (map_base_draw) view = map_square_mask(t);\n            if (!view) view = texture_get_with_levels(t, &levels);" in renderer
+    assert "if (map_base_draw && s_draw_minimap_improved) view = map_square_mask(t);\n            if (!view) view = texture_get_with_levels(t, &levels);" in renderer
     candidates = (ROOT / "game_files/.mm3-car-mods/Data_dvd.zip", ROOT / "game_files/Data/Data_dvd.zip")
     archive = next(path for path in candidates if path.is_file())
     with zipfile.ZipFile(archive) as source:

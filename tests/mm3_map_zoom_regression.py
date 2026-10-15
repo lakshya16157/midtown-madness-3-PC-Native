@@ -20,9 +20,9 @@ MATH = ("sub_0002DC95", "sub_0006ACC3", "sub_000C6ADC",
         "sub_0006AC61", "sub_0006AE0C", "sub_0006AEE2", "sub_0001259E",
         "sub_0006AD9F", "sub_0006AE60")
 SQUARE_ORIGINAL = "    PUSH32(esp, 0x0011DB57u); RECOMP_ABI_CALL(0x000C6ADCu, sub_000C6ADC); /* call 0x000C6ADC */"
-SQUARE_REPLACEMENT = "    mm3_map_square_geometry(eax, ecx, MEMF(esp));\n    esp += 4; /* Inverse city-UV rotation consumes the native angle argument. */"
+SQUARE_REPLACEMENT = "    if (mm3_minimap_improved()) {\n        mm3_map_square_geometry(eax, ecx, MEMF(esp));\n        mm3_map_zoom_window(ebx, MEM32(eax));\n        esp += 4; /* Inverse city-UV rotation consumes the native angle argument. */\n    } else {\n    " + SQUARE_ORIGINAL + "\n    }"
 BORDER_ORIGINAL = "    PUSH32(esp, 0x0011DBB1u); RECOMP_ABI_CALL(0x001C1585u, sub_001C1585); /* call 0x001C1585 */"
-BORDER_REPLACEMENT = "    esp += 8; /* Square soft-edge map replaces only the MapCircle border draw. */"
+BORDER_REPLACEMENT = "    if (mm3_minimap_improved()) {\n        esp += 8; /* Improved map has no MapCircle border. */\n    } else {\n    " + BORDER_ORIGINAL + "\n    }"
 MARKER_ORIGINAL = "    fp_top() = RECOMP_FP_PC(sqrt(fp_top())); /* fsqrt */"
 MARKER_REPLACEMENT = "    fp_top() = RECOMP_FP_PC(mm3_map_square_marker_distance(ebx, eax, MEMF(ebp + 0x4C), MEMF(ebp + 0x3C)));"
 
@@ -126,7 +126,7 @@ def main():
                 for original, replacement in ((SQUARE_ORIGINAL, SQUARE_REPLACEMENT),
                                               (BORDER_ORIGINAL, BORDER_REPLACEMENT)):
                     assert modified[name].count(replacement) == 1, (name, replacement)
-                    assert original not in modified[name]
+                    assert modified[name].count(original) == 1  # Stock retains the exact native call.
                     restored = restored.replace(replacement, original)
                     transform(native[name].replace(original, "    /* missing native call */"), name, True)
                     transform(native[name].replace(original, original + "\n" + original), name, True)
@@ -207,12 +207,20 @@ def main():
         if "--check-mutants" in sys.argv:
             mutants = {
                 "missing common map scale": production.replace(
-                    "MEMF(node + 0x50) = s_map_zoom[slot].baseline / s_map_zoom[slot].span;",
+                    "MEMF(node + 0x50) = s_map_zoom[slot].baseline * 1.15f / s_map_zoom[slot].span;",
                     "MEMF(node + 0x50) = scale;"),
                 "immediate zoom jump": production.replace(
                     "blend = 1.0f - expf(-dt / 0.6f);", "blend = 1.0f;"),
                 "missing speed target": production.replace(
                     "speed = fabsf((float)SMEM32(player_record + 4));", "speed = 0.0f;"),
+                "camera tilt omits speed publication": production.replace(
+                    "map_motion_publish(slot, MEMF(node + 0x94), MEMF(node + 0x98));", "map_motion_store(slot, 0);"),
+                "camera speed ignores expanded clip window": production.replace(
+                    "map_motion_publish(slot, MEMF(clip) + width * .5f, MEMF(clip + 4) + height * .5f);",
+                    "map_motion_publish(slot, MEMF(node + 0x94), MEMF(node + 0x98));"),
+                "routing reads speed instead of car heading": production.replace(
+                    "player_record ? MEM32(player_record) : 0x7FC00000u",
+                    "player_record ? MEM32(player_record + 4) : 0x7FC00000u"),
                 "checkpoint zoom cancels speed zoom": production.replace(
                     "if (!s_map_zoom[slot].baseline) s_map_zoom[slot].baseline = scale;",
                     "s_map_zoom[slot].baseline = scale;"),

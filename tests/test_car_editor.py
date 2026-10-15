@@ -25,6 +25,27 @@ def form(car):
     }
 
 
+def tweak_text(ident, alias, **driving):
+    """Retail-style tweak text with every driving value a base car supplies."""
+    body = {"NGears": "5", "GearRatioVector": "-3.3 2.9 1.77 1.21 0.92 0.81\t", "WheelDrive": "1",
+            "Mass": "1500", "TorqueScale": "800", "WheelRatio": "4.0", "WheelRadius": "0.34",
+            "TurboSize": "0.0", "TurboSpinup": "0.0", "AirKZY": "1.5", "AirKZZ": "0.03",
+            "MaxTorqueRPM": "6500.0", "MaxTurboTorqueRPM": "6750.0", "MinRPMGearChange": "4000.0",
+            "BrakeTorque": "4000.0", "MinRPM": "1000.0", "MaxRPM": "10000.0", "CutRPM": "8000.0",
+            "TimeChangeGear": "0.4", "TimeChangeGearFR": "0.15", "GearStatusDownGearFactor": "0.75",
+            "HandBrakeTorque": "7000.0", "TorqueScaleFactor": "1.125", "LatFrictionFactor": "2.0",
+            "SteeringEndSpeed": "300.0", **{key: str(value) for key, value in driving.items()}}
+    return (f"Begin(CarInfo)\r\n\tID\t{ident}\r\n\tTOPSPEED\t7\r\n\tPAINTJOBNAME\t{alias}\r\nEnd(CarInfo)\r\n"
+            "Begin(CarBody)\r\n\tNWheels\t4\r\n" + "".join(f"\t{key}\t{value}\r\n" for key, value in body.items()) +
+            "End(CarBody)\r\nBegin(CarCamera)\r\n\tSpeedometerMaxKmh\t620\r\nEnd(CarCamera)\r\n")
+
+
+def car_body(text):
+    sections = editor.original_stats.parse_sections(text)
+    return [(key, " ".join(value.split())) for section in sections if section["name"] == "CarBody"
+            for key, value in section["entries"]]
+
+
 class CarEditorTest(unittest.TestCase):
     def test_default_local_manifest_preserves_models_stats_and_apply_path(self):
         folder = Path(self.temp.name)
@@ -182,6 +203,47 @@ class CarEditorTest(unittest.TestCase):
         self.assertEqual(command[2:], ["--config", str(self.path), "--game-dir", str(game.resolve()), "--apply"])
         self.assertNotIn("--restore", command)
 
+    def test_apply_snapshot_uses_saved_bytes_despite_external_and_unsaved_changes(self):
+        saved_bytes = self.model.baseline
+        saved_config = copy.deepcopy(self.model.saved)
+        external = copy.deepcopy(saved_config)
+        external["cars"][0]["colors"][0] = "#abcdef"
+        self.path.write_text(json.dumps(external), encoding="utf-8")
+        external_bytes = self.path.read_bytes()
+        self.model.config["cars"][0]["physics"]["TorqueScale"] = 777
+        draft = copy.deepcopy(self.model.config)
+
+        command, snapshot = self.model.apply_snapshot_command(Path(self.temp.name) / "game")
+        try:
+            self.assertEqual(snapshot.read_bytes(), saved_bytes)
+            self.assertEqual(editor.prepare.load_config(snapshot), saved_config)
+            self.assertEqual(command[3], str(snapshot))
+            self.assertNotEqual(snapshot, self.path)
+            self.assertEqual(self.path.read_bytes(), external_bytes)
+            self.assertEqual(self.model.config, draft)
+            self.assertEqual(self.model.saved, saved_config)
+            self.assertEqual(self.model.baseline, saved_bytes)
+        finally:
+            snapshot.unlink(missing_ok=True)
+
+    def test_apply_snapshot_keeps_relative_model_package_resolution(self):
+        package = "prepared models/Panoz"
+        self.model.config["cars"][0]["model_package"] = package
+        self.model.save()
+        game = Path(self.temp.name) / "game with spaces"
+
+        command, snapshot = self.model.apply_snapshot_command(game)
+        try:
+            self.assertEqual(snapshot.parent, self.path.parent)
+            self.assertEqual(command[1], str(ROOT / "tools/car-mods/prepare.py"))
+            self.assertEqual(command[2:], ["--config", str(snapshot), "--game-dir", str(game.resolve()), "--apply"])
+            settings = editor.prepare.load_config(snapshot)
+            snapshot_package = (snapshot.parent / settings["cars"][0]["model_package"]).resolve()
+            self.assertEqual(snapshot_package, (self.path.parent / package).resolve())
+            self.assertEqual(snapshot.read_bytes(), self.model.baseline)
+        finally:
+            snapshot.unlink(missing_ok=True)
+
     def test_model_package_path_survives_stats_edit_save_and_reload(self):
         original = self.model.config["cars"][0]
         fields = form(original)
@@ -242,6 +304,7 @@ class CarEditorTest(unittest.TestCase):
         app.speed_vars = {"max_kmh": Mock(get=Mock(return_value="600")),
                           "max_mph": Mock(get=Mock(return_value="400"))}
         app.status, app._load_car, app._error = Mock(), Mock(), Mock()
+        app._hud_style_value = Mock(return_value="Koenigsegg")
         app._collect = Mock(side_effect=ValueError("Invalid in-progress gear edit"))
         app.restore_default_driving()
         app._collect.assert_not_called()
@@ -252,6 +315,7 @@ class CarEditorTest(unittest.TestCase):
         self.assertEqual(restored["model_package"], "models with spaces/Panoz")
         self.assertEqual(restored["ratings"], {key: 3 for key in editor.RATING_ORDER})
         self.assertEqual(restored["speedometer"], {"max_kmh": 600, "max_mph": 400})
+        self.assertEqual(restored["hud_style"], "Koenigsegg")
         app._load_car.assert_called_once_with(0)
 
     def test_default_reset_replaces_single_speed_and_high_rpm_profiles(self):
@@ -307,6 +371,98 @@ class CarEditorTest(unittest.TestCase):
         for ident, car in zip(range(9010, 9015), self.model.config["cars"][len(before):]):
             self.assertEqual(car["id"], ident)
             self.assertEqual(car["model_package"], f"models/{editor.prepare.IDENTITIES[ident][0]}")
+
+    def test_validated_returns_an_independent_copy_and_writes_nothing(self):
+        config = copy.deepcopy(self.model.config)
+        with patch.object(editor.prepare, "atomic_write") as writer, \
+                patch.object(Path, "write_text") as text_writer, patch.object(Path, "write_bytes") as byte_writer:
+            result = editor.validated(config)
+        writer.assert_not_called()
+        text_writer.assert_not_called()
+        byte_writer.assert_not_called()
+        self.assertEqual(result, config)
+        self.assertIsNot(result["cars"][0], config["cars"][0])
+
+    def test_edited_car_keeps_sets_and_clears_driving_base(self):
+        car = copy.deepcopy(self.model.config["cars"][0])
+        car["driving_base"] = "corvette"
+        self.assertEqual(editor.edited_car(car, **form(car))["driving_base"], "corvette")
+        self.assertEqual(editor.edited_car(car, **form(car), driving_base="Lotus")["driving_base"], "Lotus")
+        self.assertNotIn("driving_base", editor.edited_car(car, **form(car), driving_base=""))
+        plain = self.model.config["cars"][0]
+        self.assertNotIn("driving_base", editor.edited_car(plain, **form(plain)))
+
+    def test_hud_style_roundtrip_and_donor_reset_preserve_other_tuning(self):
+        car = copy.deepcopy(self.model.config["cars"][2])
+        car["driving_base"] = "Koenigsegg"
+        car["speedometer"] = {"max_kmh": 380, "max_mph": 240}
+        selected = editor.edited_car(car, **form(car), hud_style="koenigsegg")
+        self.assertEqual(selected, {**car, "hud_style": "koenigsegg"})
+        self.model.replace_car(2, selected)
+        self.model.save()
+        self.model.reload()
+        loaded = self.model.config["cars"][2]
+        self.assertEqual(loaded, selected)
+        self.assertEqual(editor.edited_car(loaded, **form(loaded)), selected)
+        self.assertEqual(editor.edited_car(loaded, **form(loaded), hud_style=""), car)
+
+    def test_effective_hud_stats_use_the_installed_type_and_keep_interior(self):
+        car = copy.deepcopy(self.model.config["cars"][2])
+        car["hud_style"] = "Koenigsegg"
+        car["speedometer"] = {"max_kmh": 380, "max_mph": 240}
+        donor_text = tweak_text(18, "Lotus").replace("End(CarInfo)", "SPEEDOMETERTYPE 1\r\nEnd(CarInfo)")
+        hud_text = tweak_text(13, "Koenigsegg").replace("End(CarInfo)", "SPEEDOMETERTYPE 4\r\nEnd(CarInfo)")
+        donor = {"alias": "Lotus", "display_name": "Lotus Esprit V8", "raw_text": donor_text}
+        hud = {"alias": "Koenigsegg", "raw_text": hud_text}
+        preview = editor.effective_stats(car, donor, hud=hud)
+        self.assertEqual(editor.reference.native_hud_markings(preview), {"type": 4, "max_kmh": 380, "max_mph": 280})
+        self.assertEqual(editor.reference.car_values(preview)["dial"], {"max_kmh": 380, "max_mph": 240})
+        with self.assertRaisesRegex(ValueError, "HUD style car.*not available"):
+            editor.effective_stats(car, donor)
+
+    def test_driving_base_survives_save_and_reload_and_is_validated(self):
+        car = editor.edited_car(self.model.config["cars"][0], **form(self.model.config["cars"][0]),
+                                driving_base="Corvette")
+        self.model.replace_car(0, car)
+        self.model.save()
+        self.model.reload()
+        self.assertEqual(self.model.config["cars"][0]["driving_base"], "Corvette")
+        before = copy.deepcopy(self.model.config)
+        for invalid in ("Viper", "Panoz", "car213"):  # Panoz's own donor, itself, a DLC alias.
+            changed = copy.deepcopy(car)
+            changed["driving_base"] = invalid
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                self.model.replace_car(0, changed)
+            self.assertEqual(self.model.config, before)
+
+    def test_restore_default_driving_returns_every_shipped_car_to_its_donor(self):
+        for car in self.model.config["cars"]:
+            changed = copy.deepcopy(car)
+            changed["driving_base"] = "Corvette"
+            changed["physics"] = {"Mass": 1234, "BrakeTorque": 9000}
+            before = copy.deepcopy(changed)
+            with self.subTest(car=car["alias"]):
+                self.assertEqual(editor.defaults.apply_preset(changed), car)
+                self.assertEqual(changed, before)
+
+    def test_effective_stats_matches_the_installer_merge(self):
+        donor_text = tweak_text(11, "Viper", WheelRadius="0.36", BrakeTorque="5000.0")
+        base_text = tweak_text(25, "Corvette", BrakeTorque="7500.0", Mass="1460",
+                               GearRatioVector="-3.2 3.0 2.0 1.4 1.0 0.8 0.6", NGears="6")
+        donor = {"alias": "Viper", "display_name": "Dodge Viper", "raw_text": donor_text}
+        base = {"alias": "Corvette", "display_name": "Chevrolet Corvette", "raw_text": base_text}
+        car = copy.deepcopy(self.model.config["cars"][0])
+        car["driving_base"] = "Corvette"
+        preview = editor.effective_stats(car, donor, base)
+        installed = editor.prepare.tweak_variant(donor_text.encode("ascii"), car, base_text).decode("ascii")
+        self.assertEqual(car_body(preview["raw_text"]), car_body(installed))
+        body = dict(car_body(preview["raw_text"]))
+        self.assertEqual((body["BrakeTorque"], body["Mass"], body["WheelRadius"]), ("7500.0", "980", "0.36"))
+        self.assertIn("Chevrolet Corvette base stats", preview["source"])
+        with self.assertRaisesRegex(ValueError, "not available"):
+            editor.effective_stats(car, donor)
+        plain = self.model.config["cars"][0]
+        self.assertEqual(dict(car_body(editor.effective_stats(plain, donor)["raw_text"]))["BrakeTorque"], "5000.0")
 
     def test_running_game_check_parses_process_rows(self):
         with patch.object(editor.sys, "platform", "win32"), patch.object(editor.subprocess, "run") as run:

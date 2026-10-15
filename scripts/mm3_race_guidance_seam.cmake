@@ -1,4 +1,4 @@
-# Complete checkpoint order feeds the route in both native map layouts.
+# Remaining checkpoint order feeds the route in both native map layouts.
 function(mm3_add_race_guidance source_variable function_name)
     set(content "${${source_variable}}")
     set(hooks "")

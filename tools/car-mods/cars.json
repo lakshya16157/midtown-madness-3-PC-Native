@@ -1,19 +1,6 @@
 {
   "version": 1,
-  "original_speedometers": {
-    "Koenigsegg": {
-      "max_kmh": 800,
-      "max_mph": 500
-    },
-    "Viper": {
-      "max_kmh": 800,
-      "max_mph": 500
-    },
-    "Lotus": {
-      "max_kmh": 800,
-      "max_mph": 500
-    }
-  },
+  "original_speedometers": {},
   "cars": [
     {
       "id": 9004,

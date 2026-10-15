@@ -247,6 +247,12 @@ int main(void)
     check_size(1);
     destroy(1u);
 
+    load("+Menu/Pausemenu/menuHud", 2);
+    read_bytes(mm3_menu_resources[2].size, mm3_menu_resources[2].size, 1);
+    destroy(1u);
+    load("Menu/pAuSeMeNu/MeNuHuD", 2);
+    destroy(1u);
+
     load("MainMenu.men", 0);
     check_tell(0u);
     read_bytes(0u, 0u, 1);

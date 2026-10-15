@@ -7,7 +7,7 @@ uses the [xboxrecomp](tools/xboxrecomp) runtime and a Direct3D 11 renderer.
 An improved and modded PC version with keyboard controls, widescreen graphics,
 custom-car tools, gameplay repairs and performance work. Build it from your own
 supported game disc with the instructions below. Recent quality-of-life updates
-add a square race map in the bottom-left corner, softly fading map edges, cleaner
+add a selectable transparent road minimap in the bottom-left corner, cleaner
 logs and safer crash reports.
 
 **Choose Graphics Settings in the main menu**, between Options and Profile.
@@ -63,10 +63,11 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   converter builds closed body and animated-wheel shadow proxies. Widescreen
   pause menus keep button caps, labels and controller prompts joined in one layout.
   Race maps and their checkpoint icons share one placement while expanding or turning.
-  Yellow race guidance follows the cities' road curves and junctions, and updates
+  Blue race guidance follows the cities' road curves and junctions, and updates
   the path to the next checkpoint as the car moves.
-  The top HUD direction arrows and numeric speed readout are hidden; the
-  analog speedometer, minimap, route and checkpoint markers remain available.
+  The improved minimap draws gray roads on a transparent, tilted plane.
+  The top HUD direction arrows are hidden. Original cars retain their retail
+  speedometers by default, including the numeric readout in numeric-only HUD layouts.
   Cubic B-spline sampling smooths the distant skyline, and corrected frame/depth
   alignment removes the sampling offsets that caused bright silhouette rims
   and uncovered top/left frame strips.
@@ -92,8 +93,8 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   packages, editable paint and driving stats, sourced specification references
   and a **Restore default driving** action. The presets retain the stock donor
   engine, gearbox and handling, adjusting only weight and power. Each extra
-  car uses its donor's HUD font, artwork and gauge style, with its own optional
-  interior speedometer range.
+  car can select a native HUD family and custom dial maxima; those maxima also
+  calibrate its interior speedometer needle.
 
 The detailed settings and runtime notes below describe these changes and their
 limits. See the [car-pack guide](tools/car-mods/README.md) for further tuning examples.
@@ -493,20 +494,39 @@ the display ends the process and releases the game archives. The launcher
 captures output without attaching the game to the terminal, so terminal
 **Ctrl+C** is not the game-close shortcut.
 Hold **Ctrl** to enlarge the race map; its checkpoint icons stay aligned with the roads.
-The race map sits in the screen's bottom-left corner and uses a square window
-with softly fading edges instead of a circular border. Roads, route lines and
-markers use the corners, and the square stays aligned with the screen as the
-city rotates with your heading.
-Both map sizes smoothly show more road as speed rises above 20 km/h, reaching
-25% more visible distance at 120 km/h, then ease back as you slow down.
+Choose **Pause → Options → HUD Settings → Minimap: Stock / Improved**.
+The choice saves immediately and takes effect when driving resumes. It is also
+available in **Graphics Settings → Advanced Graphics → Minimap Style**, and
+**F10 → HUD → Minimap style**, where **Apply** saves the selection.
+Improved is the default. Set `MM3_MINIMAP_IMPROVED=0` or `1` to override the
+saved selection at startup.
+
+The improved minimap shows only gray streets, blue race guidance and native
+markers over the game. Roads, route and markers share a tilted perspective,
+with distant roads narrowing and the player positioned below the center.
+Both views are 60% larger than stock (28% larger than the previous improved map)
+and start 15% closer, with the car around 70%
+down the visible road plane to leave more room ahead.
+Both Improved map sizes stay in the bottom-left corner, including while holding Ctrl.
+The map rotates with your heading. Cruise also shows roads without race data.
+Paris roundabouts include their native traffic lanes and street entrances,
+while pedestrian paths through their center islands stay clear.
+Street thickness follows the road's lane layout: side streets stay thin,
+avenues draw wider, and the widths scale with the map zoom.
+Stock restores the native city artwork, circular border, marker sizes and zoom,
+and retains the existing amber race guidance.
+Both improved map sizes smoothly show more road as speed rises above 20 km/h, reaching
+25% more visible distance at 120 km/h. The camera tilts farther down as speed rises,
+with a narrower far edge and more room ahead, then eases back as you slow down.
 Their initial framing stays stable as you approach checkpoints.
 Both map sizes draw the ordered checkpoint course along actual streets with
-an amber path. The brighter leg updates from the car to the next checkpoint,
-including after a wrong turn. Passing checkpoints keeps the full course visible. Checkpoint
+a blue path. The brighter leg updates from the car to the next checkpoint,
+including after a wrong turn. The remaining course stays visible through the final checkpoint. Checkpoint
 icons use 75% of their original width and height and shrink with the map's speed
 zoom to 60% at maximum zoom-out, while retaining their colors and pulsing. World
 hoops retain their original size.
-Blitz courses stay open; checkpoint races include the closing lap segment.
+Both Blitz and Checkpoint races end at their final gate. Return legs only appear
+when the ordered checkpoints explicitly revisit a road.
 Choose **Manual** transmission in car setup, then tap **R** to shift up and **F** to shift down
 (the default Xbox B/X gear controls). These aliases operate only while driving.
 Set `RECOMP_KEYBOARD_LAYOUT=legacy` to use only the original runtime bindings.
@@ -570,17 +590,29 @@ Manufacturer specifications remain available as references in Workshop.
 1. Close the game, then double-click [tools/car-mods/editor.cmd](tools/car-mods/editor.cmd)
    or run `tools\car-mods\editor.cmd` from the repository root.
 2. Select an added car. **Car specs** shows its reference variant, source links
-   and calibration notes; **Restore default driving** restores the weight/power
-   preset while retaining paint, ratings, gauges and model choices. Edit its paint, menu ratings, physics, gearing, RPM
-   settings and interior speedometer ranges. Blank optional physics fields inherit
-   the stock donor's settings.
+   and calibration notes. Edit its paint, menu ratings, physics, gearing, RPM
+   settings and speedometer dial ranges. Every value shows its **Base** value,
+   a **Compare** car's value, the **Max allowed** by the installer and the **Game
+   max** among the original and DLC cars. Blank values use the **Base stats** car:
+   the body donor by default, or any original car you pick for its engine, gearbox,
+   weight, brakes, grip and drag. **Compare with** picks any added, original or DLC
+   car. **Restore shipped tuning** on the Driving tab restores the weight/power
+   preset and the donor's driving values while retaining paint, ratings, gauges
+   and model choices.
+   For speedometers, open **Appearance → On-screen speedometer (HUD)**, choose
+   **HUD style**, then enter both **Dial max km/h** and **Dial max mph**. Leave
+   both blank for the selected style's native artwork and range. The previews
+   show the dial that will be used.
 3. Choose **Save** to write the selected manifest, or **Save & Apply**
    to save and install the changes into your extracted `game_files` data.
+   Invalid values are marked in red as you type, and unsaved cars show a dot.
 4. Restart the game and select the car to load the changes.
 
 The paint view is a schematic color preview; it does not display or edit the 3D
 car mesh. The editor is a small Python/Tkinter desktop app with no web server or
-extra GUI packages. Its source is [editor.py](tools/car-mods/editor.py).
+extra GUI packages. Its source is [editor.py](tools/car-mods/editor.py). The
+[car-pack guide](tools/car-mods/README.md#visual-editor) explains each column and
+the optional `driving_base` manifest field behind **Base stats**.
 
 ### JSON and command-line editing
 
@@ -663,18 +695,26 @@ rejects conflicting thresholds in custom edits. Select **Automatic** or **Manual
 in the game's car setup; Manual uses **R/F** on the MM3 keyboard layout or Xbox
 **B/X** to shift up/down while driving.
 
-The optional `speedometer.max_kmh` and `speedometer.max_mph` values set an added
-car's interior dashboard needle range. Its on-screen speedometer keeps the
-donor's native font, artwork, gauge style and scale. Interior ranges provide
-rounded headroom for each preset: **360 km/h / 240 mph** for Panoz through
-**440 km/h / 280 mph** for Regera. Enter both limits, or leave both blank in the
-editor to inherit the donor interior gauge. These limits change the interior
-needle range, not engine power, actual top speed or the `TOPSPEED` menu rating. In the workshop, use
-**Original car speedometers…** to change original sport and Koenigsegg HUDs.
-Koenigsegg, Viper and Lotus default to 800 km/h / 500 mph. Their original physics
-and interior gauges stay unchanged. Blank original limits restore the retail HUD.
-The numeric speed readout is hidden in every HUD layout; analog dials and
-their native styles remain active. Original-car HUD overrides remain available.
+For added cars, optional `hud_style` selects an original car's native HUD family
+and needle arc; omitting it uses the fixed MM3 donor's family. This selection is
+independent of **Base stats**, which changes driving physics.
+
+The optional `speedometer.max_kmh` and `speedometer.max_mph` values set both the
+on-screen dial range and interior needle calibration. Enter both limits, or
+leave both blank for the selected HUD style's native artwork and range. Custom
+maxima render a new dial with matching markings and needle calibration. Each
+unit retains its native artwork when its maximum equals the selected family's
+native printed maximum. Formula 1's current Koenigsegg style at **380 km/h /
+240 mph**, for example, uses the native metric dial and a custom mph dial;
+Koenigsegg's native mph maximum is 280. Changing a dial limit does not boost
+performance, and Workshop does not infer dial maxima from physics or the
+`TOPSPEED` menu rating. Choose **Save & Apply**, then restart MM3 to load changes.
+
+**Original HUD speedometers...** independently changes original sport and
+Koenigsegg HUDs. Original cars default to their complete retail gauges, artwork,
+scales, needles and numeric-only readouts; blank original limits restore that
+HUD. Their physics and interior gauges stay unchanged. Added cars retain their
+existing hidden numeric-only readout.
 
 The installer backs up affected game archives and reuses those originals when
 reapplying, so edits do not accumulate. It does not edit saved profiles. To
@@ -730,6 +770,7 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `RECOMP_D3D_PROFILE` | Print per-second fps, worst frame and renderer stage costs to stderr. |
 | `RECOMP_KERNEL_SUMMARY` | `1`: collect and print periodic kernel-call totals (off during normal play). |
 | `RECOMP_CS_COUNTERS` | `1`: count critical-section entries/exits for contention diagnostics (off during normal play). |
+| `RECOMP_CS_TRACE_CONTENTION` | `1`: print the first 16 contended lock waits, holder sites, guest stacks and matching acquisitions. Off during normal play to avoid synchronous logging around allocator/audio locks. |
 | `RECOMP_HITCH_TRACE` | `1`: report slow command submissions, shader compilation, GPU waits, and file reads with QPC timestamps (off during normal play). |
 | `RECOMP_PB_CAPTURE=<prefix>` | Diagnose the first bounded-parser limit by saving fetched command words, parser state, and guest RAM; disabled during normal play. |
 | `RECOMP_PRESENT_CAPTURE=<prefix>` | With `<prefix>.flag` containing N, save the next N frames as `<prefix>-*.bmp`. |
@@ -1097,18 +1138,28 @@ open requests, genuine absence and EOF.
 
 ### Race map guidance
 
-The yellow route follows the native Paris and Washington street splines and
+The blue route in Improved (amber in Stock) follows the native Paris and Washington street splines and
 their connected junctions. The brighter leg leads from the car's current road
-position to the next checkpoint and recalculates after moving four metres or
-changing checkpoints, including after a missed turn. Height helps distinguish
-bridges and roads below them. Checkpoint races keep their closing lap, while
-Blitz courses end at their final checkpoint.
+position to the next checkpoint and recalculates after moving four metres,
+changing checkpoints or turning thirty degrees, including after a missed turn.
+The route tracks the car's heading independently of the expanded map's orientation.
+It prefers forward travel through junctions; checkpoints behind on the same native
+street can require a reversal, and dead ends permit recovery when no forward route
+exists. Future legs carry their incoming direction through each checkpoint.
+Height helps distinguish bridges and roads below them. Both native race scripts
+remove passed gates and finish at the final checkpoint; a single remaining gate
+still receives guidance, without an invented return to the first gate.
 
 Road geometry is copied after native city loading and cleared on unload.
 Unavailable or disconnected paths are omitted. The line uses the same map
 projection, rotation, zoom and viewport clipping as the checkpoint markers.
 Drawing retains bends within a quarter pixel while combining straight samples,
 so expanded maps avoid a native draw submission for every six metres of road.
+Improved reuses that graph for gray roads, caching connected street chains and
+culling distant chains before drawing. The renderer suppresses only the
+title-owned city map base and applies one perspective transform to roads,
+guidance and map icons. Its speed factor is smoothed in simulation time and
+latched for each map's frame so all layers share the same tilt.
 After entering `scripts/enter-env.ps1`, run
 `python tests/mm3_race_guidance_regression.py` for routing, city-asset, native
 spline, projection and submission checks.

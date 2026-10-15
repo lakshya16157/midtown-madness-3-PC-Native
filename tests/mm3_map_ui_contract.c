@@ -27,6 +27,10 @@ void nv2a_d3d_set_hud_start(float a, float b, float c, float d) {
 }
 void nv2a_d3d_set_centered_ui_query(int (*callback)(void)) { (void)callback; }
 void nv2a_d3d_set_map_texture_query(int (*callback)(uint32_t)) { query = callback; }
+int mm3_minimap_improved(void) { return 1; }
+void nv2a_d3d_set_minimap_style_query(int (*callback)(void)) { assert(callback() == 1); }
+float mm3_minimap_motion(float cx, float cy) { (void)cx; (void)cy; return 0; }
+void nv2a_d3d_set_minimap_motion_query(float (*callback)(float, float)) { assert(callback(114, 384) == 0); }
 void sub_0025968E_original(void) { g_esp += 24; }
 void sub_001EEC53_original(void) { g_esp += 60; }
 void sub_000F4AC3(void) { g_esp += 20; }

@@ -83,10 +83,19 @@ function(mm3_add_map_zoom source_variable function_name)
     fp_top() = RECOMP_FP_PC(fp_top() * mm3_map_zoom_checkpoint_scale(ebx, MEM32(ebp + 0x40)));
     { double _t = fp_top(); fp_push(_t); } /* fld st(0) */]=])
     set(square_original [=[    PUSH32(esp, 0x0011DB57u); RECOMP_ABI_CALL(0x000C6ADCu, sub_000C6ADC); /* call 0x000C6ADC */]=])
-    set(square_replacement [=[    mm3_map_square_geometry(eax, ecx, MEMF(esp));
-    esp += 4; /* Inverse city-UV rotation consumes the native angle argument. */]=])
+    set(square_replacement [=[    if (mm3_minimap_improved()) {
+        mm3_map_square_geometry(eax, ecx, MEMF(esp));
+        mm3_map_zoom_window(ebx, MEM32(eax));
+        esp += 4; /* Inverse city-UV rotation consumes the native angle argument. */
+    } else {
+        PUSH32(esp, 0x0011DB57u); RECOMP_ABI_CALL(0x000C6ADCu, sub_000C6ADC); /* call 0x000C6ADC */
+    }]=])
     set(border_original [=[    PUSH32(esp, 0x0011DBB1u); RECOMP_ABI_CALL(0x001C1585u, sub_001C1585); /* call 0x001C1585 */]=])
-    set(border_replacement [=[    esp += 8; /* Square soft-edge map replaces only the MapCircle border draw. */]=])
+    set(border_replacement [=[    if (mm3_minimap_improved()) {
+        esp += 8; /* Improved map has no MapCircle border. */
+    } else {
+        PUSH32(esp, 0x0011DBB1u); RECOMP_ABI_CALL(0x001C1585u, sub_001C1585); /* call 0x001C1585 */
+    }]=])
     set(marker_original [=[    fp_st1() = RECOMP_FP_PC(fp_st1() + fp_top()); fp_pop(); /* faddp st(1) */
     fp_top() = RECOMP_FP_PC(sqrt(fp_top())); /* fsqrt */
     fp_st1() = fp_top(); fp_pop(); /* fstp st(1) */
@@ -165,7 +174,7 @@ function(mm3_add_map_zoom source_variable function_name)
         endforeach()
     endif()
     string(REPLACE "${body}" "${transformed}" content "${content}")
-    set(declarations "#include <stdint.h>${newline}extern void mm3_map_zoom_reset(uint32_t);${newline}extern void mm3_map_square_geometry(uint32_t, uint32_t, float);${newline}extern float mm3_map_square_marker_distance(uint32_t, uint32_t, float, float);${newline}extern void mm3_map_zoom_update(uint32_t, float);${newline}extern void mm3_map_zoom_apply(uint32_t, uint32_t);${newline}extern float mm3_map_zoom_checkpoint_scale(uint32_t, uint32_t);${newline}")
+    set(declarations "#include <stdint.h>${newline}extern int mm3_minimap_improved(void);${newline}extern void mm3_map_zoom_reset(uint32_t);${newline}extern void mm3_map_square_geometry(uint32_t, uint32_t, float);${newline}extern float mm3_map_square_marker_distance(uint32_t, uint32_t, float, float);${newline}extern void mm3_map_zoom_update(uint32_t, float);${newline}extern void mm3_map_zoom_apply(uint32_t, uint32_t);${newline}extern void mm3_map_zoom_window(uint32_t, uint32_t);${newline}extern float mm3_map_zoom_checkpoint_scale(uint32_t, uint32_t);${newline}")
     string(FIND "${content}" "extern void mm3_map_zoom_reset(" declared)
     if(declared LESS 0)
         set(content "${declarations}${content}")

@@ -76,6 +76,10 @@ def case_definitions(config_path=ROOT / "tools/car-mods/cars.json"):
     for car in config["cars"]:
         if car.get("engine_profile") == "factory":
             raise ValueError(f"{car['alias']} must retain the default donor engine")
+        if "driving_base" in car:
+            # These cases take gearing from the donor tweak; a base car would
+            # supply different ratios.
+            raise ValueError(f"{car['alias']} defaults must use the donor's driving values")
         if set(car["physics"]) != {"Mass", "TorqueScale"}:
             raise ValueError(f"{car['alias']} defaults must only change weight and power")
         physics = donor_physics[car["donor"]]

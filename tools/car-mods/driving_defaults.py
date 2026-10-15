@@ -24,7 +24,11 @@ TUNING = {
 
 
 def apply_preset(car: dict) -> dict:
-    """Reset driving only; preserve identity, model, paint, ratings and gauges."""
+    """Reset driving only; preserve identity, model, paint, ratings and gauges.
+
+    The shipped state uses the body donor's driving values, so any base stats
+    car (driving_base) and factory engine opt-in are removed as well.
+    """
     alias = car.get("alias")
     if alias not in TUNING:
         raise ValueError(f"No default driving setup for {alias!r}")
@@ -32,4 +36,5 @@ def apply_preset(car: dict) -> dict:
     mass, torque = TUNING[alias]
     result["physics"] = {"Mass": mass, "TorqueScale": torque}
     result.pop("engine_profile", None)
+    result.pop("driving_base", None)
     return result

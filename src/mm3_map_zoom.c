@@ -1,5 +1,6 @@
 #include <math.h>
 #include "recomp_types.h"
+extern int mm3_minimap_improved(void);
 
 /* The title owns these map nodes and calls the helpers on its update/
  * draw thread. Keep only identities and scalars here; no saved guest pointer
@@ -8,8 +9,71 @@ enum { MAP_ZOOM_SLOTS = 16 };
 static struct {
     uint32_t node;
     float target, span, baseline;
+    float origin[3];
+    unsigned origin_valid;
 } s_map_zoom[MAP_ZOOM_SLOTS];
 static unsigned s_map_zoom_replacement;
+
+/* The pushbuffer thread cannot follow live map nodes. Publish each map's
+ * authored centre (half-pixels) and smoothed speed in one atomic word, so
+ * split-screen maps retain their own camera and reads cannot tear. */
+static volatile uint32_t s_map_motion[MAP_ZOOM_SLOTS];
+static volatile uint32_t s_map_heading[MAP_ZOOM_SLOTS];
+
+static void map_scalar_store(volatile uint32_t *scalar, uint32_t value)
+{
+    uint32_t before = RECOMP_ATOMIC_CAS32(scalar, 0, 0);
+    while (RECOMP_ATOMIC_CAS32(scalar, before, value) != before)
+        before = RECOMP_ATOMIC_CAS32(scalar, 0, 0);
+}
+
+static void map_motion_store(unsigned slot, uint32_t value)
+{
+    map_scalar_store(&s_map_motion[slot], value);
+}
+
+static void map_heading_publish(unsigned slot, uint32_t player_record)
+{
+    map_scalar_store(&s_map_heading[slot], player_record ? MEM32(player_record) : 0x7FC00000u);
+}
+
+static void map_motion_publish(unsigned slot, float cx, float cy)
+{
+    float motion = (s_map_zoom[slot].span - 1.0f) * 4.0f;
+    uint32_t x, y, speed;
+    unsigned i;
+    if (!isfinite(cx) || !isfinite(cy) || cx < -1024 || cx > 1023.5f ||
+        cy < -1024 || cy > 1023.5f) { map_motion_store(slot, 0); return; }
+    if (motion < 0) motion = 0;
+    if (motion > 1) motion = 1;
+    x = (uint32_t)floorf((cx + 1024.0f) * 2.0f + .5f);
+    y = (uint32_t)floorf((cy + 1024.0f) * 2.0f + .5f);
+    speed = (uint32_t)floorf(motion * 127.0f + .5f);
+    /* Scene changes can allocate a new map at an old HUD centre. Retire
+     * its former snapshot instead of letting an old identity win lookup. */
+    for (i = 0; i < MAP_ZOOM_SLOTS; ++i) {
+        uint32_t snapshot = RECOMP_ATOMIC_CAS32(&s_map_motion[i], 0, 0);
+        if (i != slot && (snapshot & 0x80000000u) &&
+            fabsf(cx - ((float)(snapshot & 4095u) * .5f - 1024.0f)) <= .75f &&
+            fabsf(cy - ((float)((snapshot >> 12) & 4095u) * .5f - 1024.0f)) <= .75f)
+            map_motion_store(i, 0);
+    }
+    map_motion_store(slot, 0x80000000u | (speed << 24) | (y << 12) | x);
+}
+
+float mm3_minimap_motion(float cx, float cy)
+{
+    unsigned i;
+    if (!isfinite(cx) || !isfinite(cy)) return 0;
+    for (i = 0; i < MAP_ZOOM_SLOTS; ++i) {
+        uint32_t snapshot = RECOMP_ATOMIC_CAS32(&s_map_motion[i], 0, 0);
+        if (!(snapshot & 0x80000000u)) continue;
+        if (fabsf(cx - ((float)(snapshot & 4095u) * .5f - 1024.0f)) <= .75f &&
+            fabsf(cy - ((float)((snapshot >> 12) & 4095u) * .5f - 1024.0f)) <= .75f)
+            return (float)((snapshot >> 24) & 127u) / 127.0f;
+    }
+    return 0;
+}
 
 static unsigned map_zoom_slot(uint32_t node)
 {
@@ -23,6 +87,9 @@ static unsigned map_zoom_slot(uint32_t node)
     s_map_zoom[empty].node = node;
     s_map_zoom[empty].target = s_map_zoom[empty].span = 1.0f;
     s_map_zoom[empty].baseline = 0.0f;
+    s_map_zoom[empty].origin_valid = 0;
+    map_motion_store(empty, 0);
+    map_heading_publish(empty, 0);
     return empty;
 }
 
@@ -33,6 +100,56 @@ void mm3_map_zoom_reset(uint32_t node)
     slot = map_zoom_slot(node);
     s_map_zoom[slot].target = s_map_zoom[slot].span = 1.0f;
     s_map_zoom[slot].baseline = 0.0f;
+    s_map_zoom[slot].origin_valid = 0;
+    map_motion_store(slot, 0);
+    map_heading_publish(slot, 0);
+}
+
+int mm3_minimap_heading(uint32_t node, float *angle)
+{
+    unsigned i;
+    if (!node || !angle) return 0;
+    /* Race routing calls this on the title thread. Read the car's own
+     * heading, because an expanded/compass map can stop rotating. */
+    for (i = 0; i < MAP_ZOOM_SLOTS; ++i)
+        if (s_map_zoom[i].node == node) {
+            uint32_t bits = RECOMP_ATOMIC_CAS32(&s_map_heading[i], 0, 0);
+            float heading;
+            memcpy(&heading, &bits, sizeof heading);
+            if (!isfinite(heading)) return 0;
+            *angle = heading;
+            return 1;
+        }
+    return 0;
+}
+
+int mm3_minimap_origin(uint32_t node, float *origin)
+{
+    unsigned i;
+    if (!node || !origin) return 0;
+    for (i = 0; i < MAP_ZOOM_SLOTS; ++i)
+        if (s_map_zoom[i].node == node && s_map_zoom[i].origin_valid) {
+            memcpy(origin, s_map_zoom[i].origin, sizeof s_map_zoom[i].origin);
+            return 1;
+        }
+    return 0;
+}
+
+void mm3_map_zoom_window(uint32_t node, uint32_t clip)
+{
+    unsigned slot;
+    float width, height;
+    if (!node || !clip) return;
+    slot = map_zoom_slot(node);
+    width = MEMF(clip + 8); height = MEMF(clip + 12);
+    if (!mm3_minimap_improved() || !s_map_zoom[slot].origin_valid ||
+        !isfinite(width) || !isfinite(height) || width < 1 || height < 1) {
+        map_motion_store(slot, 0); return;
+    }
+    /* Native +94/+98 animate the car/map centre during layout transitions.
+     * The renderer identifies the actual mask window instead; publish that
+     * submitted clip rectangle so expanding and split maps keep their tilt. */
+    map_motion_publish(slot, MEMF(clip) + width * .5f, MEMF(clip + 4) + height * .5f);
 }
 
 /* Native 11DB57 rotates the road geometry. Keep its square axis aligned and
@@ -64,7 +181,7 @@ void mm3_map_square_geometry(uint32_t vertices, uint32_t center, float angle)
 
 uint32_t mm3_map_square_begin(uint32_t texture, uint32_t quad)
 {
-    uint32_t match = texture && quad && quad == s_square_map.quad;
+    uint32_t match = mm3_minimap_improved() && texture && quad && quad == s_square_map.quad;
     s_square_map.quad = 0; /* Never classify a reused stack allocation. */
     return match;
 }
@@ -94,7 +211,7 @@ float mm3_map_square_marker_distance(uint32_t node, uint32_t layout, float x, fl
     float rx = MEMF(layout + 8) * 0.5f - inset;
     float ry = MEMF(layout + 12) * 0.5f - inset;
     float angle = MEMF(node + 0x4C), c = cosf(angle), s = sinf(angle);
-    if (!(rx > 0.0f) || !(ry > 0.0f) || !isfinite(angle)) return hypotf(x, y);
+    if (!mm3_minimap_improved() || !(rx > 0.0f) || !(ry > 0.0f) || !isfinite(angle)) return hypotf(x, y);
     /* Native range/clamp runs before the final camera rotation. Measure in
      * the visible map's screen axes; returning equivalent X-radius units
      * preserves its original hide/clamp styles and pulsing-icon margin. */
@@ -106,6 +223,7 @@ void mm3_map_zoom_update(uint32_t node, float dt)
     unsigned slot;
     float blend;
     if (!node || !isfinite(dt) || dt <= 0.0f) return;
+    if (!mm3_minimap_improved()) { mm3_map_zoom_reset(node); return; }
     /* Use simulation time, so pausing freezes the zoom. A long load/resume
      * update cannot snap it to the new target in a single frame. */
     if (dt > 0.1f) dt = 0.1f;
@@ -119,8 +237,23 @@ void mm3_map_zoom_apply(uint32_t node, uint32_t player_record)
 {
     unsigned slot;
     float speed, t, scale;
-    if (!node || !player_record) return;
+    if (!node) return;
     slot = map_zoom_slot(node);
+    s_map_zoom[slot].origin_valid = 0;
+    if (!player_record) { map_motion_store(slot, 0); map_heading_publish(slot, 0); return; }
+    if (!mm3_minimap_improved()) {
+        mm3_map_zoom_reset(node);
+        map_heading_publish(slot, player_record);
+        return;
+    }
+    map_heading_publish(slot, player_record);
+    /* Same absolute car position used by the native city texture window.
+     * Copy it at the live draw boundary so Cruise has roads without race data. */
+    s_map_zoom[slot].origin[0] = MEMF(player_record + 0x10);
+    s_map_zoom[slot].origin[1] = MEMF(player_record + 0x14);
+    s_map_zoom[slot].origin[2] = MEMF(player_record + 0x18);
+    s_map_zoom[slot].origin_valid = isfinite(s_map_zoom[slot].origin[0]) &&
+        isfinite(s_map_zoom[slot].origin[1]) && isfinite(s_map_zoom[slot].origin[2]);
     /* 218844 takes absolute forward velocity, multiplies by 3.6 (3860F8)
      * and stores integer km/h at +4. This same per-player HUD record supplies
      * varPl1Speed/varPl2Speed, independent of the displayed speed units. */
@@ -129,16 +262,18 @@ void mm3_map_zoom_apply(uint32_t node, uint32_t player_record)
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
     s_map_zoom[slot].target = 1.0f + 0.25f * t * t * (3.0f - 2.0f * t);
+    map_motion_publish(slot, MEMF(node + 0x94), MEMF(node + 0x98));
     scale = MEMF(node + 0x50);
     /* 11FE40 fits stock zoom to checkpoint proximity. That fit can zoom in
      * while accelerating and cancel the speed zoom. Preserve this layout's
      * initial framing (including native split-screen scaling), then hold it
      * as the speed curve's baseline. Roads and 11CAE8's marker positions all
      * read +50; the window calculations remain native. Checkpoint icon
-     * dimensions use the same span through mm3_map_zoom_checkpoint_scale. */
+     * dimensions use the same span through mm3_map_zoom_checkpoint_scale.
+     * The improved detail view starts 15% closer before the speed zoom. */
     if (isfinite(scale) && scale > 0.0f) {
         if (!s_map_zoom[slot].baseline) s_map_zoom[slot].baseline = scale;
-        MEMF(node + 0x50) = s_map_zoom[slot].baseline / s_map_zoom[slot].span;
+        MEMF(node + 0x50) = s_map_zoom[slot].baseline * 1.15f / s_map_zoom[slot].span;
     }
 }
 
@@ -150,7 +285,7 @@ float mm3_map_zoom_checkpoint_scale(uint32_t node, uint32_t flags)
      * TagMagIcon. Scale the checkpoint's pulse-adjusted half-size before
      * native quad creation, rotation and translation, keeping its centre.
      * Use a smaller base size even before the speed zoom starts. */
-    if (!node || (style != 0 && style != 3)) return 1.0f;
+    if (!mm3_minimap_improved() || !node || (style != 0 && style != 3)) return 1.0f;
     slot = map_zoom_slot(node);
     if (!s_map_zoom[slot].baseline) return icon_scale;
     return icon_scale / s_map_zoom[slot].span;

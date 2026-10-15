@@ -20,8 +20,9 @@ static const unsigned char graphics_settings[] = { 0x53, 0x45, 0x54, 0x00, 0x10 
 static const MM3MenuResource mm3_menu_resources[] = {
     { "MainMenu.men", main_menu, sizeof main_menu },
     { "GraphicsSettings.men", graphics_settings, sizeof graphics_settings }
+    ,{ "Pausemenu/menuHud", graphics_settings, sizeof graphics_settings }
 };
-#define MM3_MENU_RESOURCE_COUNT 2u
+#define MM3_MENU_RESOURCE_COUNT 3u
 #endif
 """
 

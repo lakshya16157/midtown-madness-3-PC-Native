@@ -95,6 +95,8 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
     CHECK(blocked);
     if (stage == 0) {
         capture(dialog);
+        CHECK(combo_value(dialog, IDC_DISPLAY_MINIMAP) == 1);
+        CHECK(mm3_minimap_improved() == 1);
         CHECK(combo_value(dialog, IDC_DISPLAY_ANISO) == 3);
         CHECK(combo_value(dialog, IDC_DISPLAY_ASPECT) == 5);
         CHECK(combo_float(dialog, IDC_DISPLAY_SCALE) == 5.f);
@@ -102,6 +104,7 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
         combo_select(dialog, IDC_DISPLAY_ASPECT, 1); /* Live 4:3 selection. */
         combo_select(dialog, IDC_DISPLAY_MSAA, 2);
         combo_select(dialog, IDC_DISPLAY_SCALE, float_value(2.5f));
+        combo_select(dialog, IDC_DISPLAY_MINIMAP, 0);
         CheckDlgButton(dialog, IDC_DISPLAY_VSYNC, BST_CHECKED);
         combo_select(dialog, IDC_DISPLAY_MODE, 1);
         notify(dialog, IDC_DISPLAY_MODE, CBN_SELCHANGE);
@@ -113,6 +116,7 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
         CHECK(published_fps == 45 && published_vsync == 1 && published_scale == 2.5f);
         CHECK(fabsf(published_aspect - 4.f / 3.f) < 0.0001f);
         CHECK(published_width == 1280);
+        CHECK(mm3_minimap_improved() == 0);
         GetDlgItemTextA(dialog, IDC_DISPLAY_STATUS, text, sizeof text);
         CHECK(strstr(text, "Saved.") && strstr(text, "Restart") && strstr(text, "anti-aliasing"));
         CHECK(!strstr(text, "aspect ratio"));
@@ -121,6 +125,7 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
         CHECK(strcmp(text, "45") == 0);
         CHECK(combo_value(dialog, IDC_DISPLAY_MSAA) == 2);
         CHECK(combo_value(dialog, IDC_DISPLAY_ASPECT) == 1);
+        CHECK(combo_value(dialog, IDC_DISPLAY_MINIMAP) == 0);
         SetDlgItemTextA(dialog, IDC_DISPLAY_FPS, "999");
         notify(dialog, IDC_DISPLAY_FPS, CBN_EDITCHANGE);
         GetDlgItemTextA(dialog, IDC_DISPLAY_STATUS, text, sizeof text);
@@ -130,6 +135,8 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
         notify(dialog, IDC_DISPLAY_DEFAULTS, BN_CLICKED);
         CHECK(combo_value(dialog, IDC_DISPLAY_MSAA) == 4);
         CHECK(combo_float(dialog, IDC_DISPLAY_SCALE) == 2.f);
+        CHECK(combo_value(dialog, IDC_DISPLAY_MINIMAP) == 1);
+        CHECK(mm3_minimap_improved() == 0); /* Restore stays pending until Apply. */
     }
     PostMessageA(dialog, WM_COMMAND, IDCANCEL, 0);
     return 0;
@@ -165,6 +172,7 @@ int main(int argc, char **argv)
     CHECK(mm3_display_settings_load(&loaded, error, sizeof error));
     CHECK(loaded.fps_limit == 45 && loaded.msaa == 2 && loaded.vsync == 1);
     CHECK(loaded.render_scale == 2.5f && loaded.aniso == 3);
+    CHECK(loaded.minimap_improved == 0);
     CHECK(strcmp(loaded.aspect, "4:3") == 0);
     strcpy(loaded.aspect, "auto");
     CHECK(mm3_display_settings_commit(&loaded, error, sizeof error));
