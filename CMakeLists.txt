@@ -101,6 +101,9 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001DE752)
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00093770)
 # The hot visibility leaf keeps its balanced x87 scratch stack in native locals.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001C793A)
+# Scope even world lighting to the native full-scene composite and its colors.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000FF19A)
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000FF324 sub_000FF15C sub_00230DEE)
 # Factory profiles bind the real constructed controller and leave retail cars
 # on their original torque and gearbox paths, including same-chunk calls.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0021ED64 sub_001D0E2D sub_001CB7E8 sub_001CB881 sub_001CB9A5 sub_001CF7B4)
@@ -281,6 +284,7 @@ add_executable(${PROJECT_NAME}
  src/recomp_manual.c
  src/mm3_widescreen.c
  src/mm3_map_zoom.c
+ src/mm3_world_lighting.c
  src/mm3_race_guidance.c
  src/mm3_render_distance.c
  src/mm3_facade_capacity.c

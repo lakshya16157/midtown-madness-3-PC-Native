@@ -69,6 +69,9 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   Ctrl expands it into a flat overview, retaining checkpoints around the car
   throughout the transition. Narrow streets have a wider visibility floor
   so small Washington DC roads remain readable after perspective scaling.
+  World illumination now covers ambient, diffuse and backlight materials
+  across the scene; the localized light-buffer overlay is disabled by
+  default, removing the concentrated bright patch ahead of the car.
   The top HUD direction arrows are hidden. Original cars retain their retail
   speedometers by default, including the numeric readout in numeric-only HUD layouts.
   Cubic B-spline sampling smooths the distant skyline, and corrected frame/depth
@@ -745,6 +748,8 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `RECOMP_FULLSCREEN` | off | Start fullscreen. |
 | `RECOMP_WINDOW_SIZE` | auto | Initial window client size, `WxH`. |
 | `RECOMP_ASPECT` | `auto` | Follow the window, or pin `16:10`, `16:9`, `4:3`, or a numeric ratio (0.5–4). Gameplay adapts its view; menus retain their proportions. |
+| `MM3_EVEN_LIGHTING` | `1` | Illuminate the entire scene with a shared minimum on ambient, diffuse and backlight colors and bypass localized light accumulation. Keeps material alpha, UI and emissive lamp meshes. Set `0` for legacy directional/local lighting. Requires restart. |
+| `MM3_AMBIENT_LIFT` | `3` | Additional packed-RGB ambient lift, integer 0-16. Set both this and `MM3_EVEN_LIGHTING` to `0` for retail lighting. Requires restart. |
 | `MM3_FOV_DEGREES` | unset | Driving horizontal FOV at the display aspect, 60–110 degrees; unset or invalid values retain the existing widescreen FOV. Set with `scripts\play.ps1 -Fov 100`. |
 | `RECOMP_SUPERSAMPLE` | `2` | In auto resolution mode, render N×N pixels per window pixel (1–4). |
 | `RECOMP_RENDER_SCALE` | profile: `2.0` | Internal height as a multiple of 480 lines (0.5–8): Balanced 960, Quality 1440, LowPower 720; `2.25` = 1080. `auto` follows the window and uses supersampling. |
