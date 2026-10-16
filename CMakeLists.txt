@@ -116,6 +116,8 @@ list(JOIN MM3_DEFINITION_ONLY_FUNCTIONS "|" distance_names)
 set(MM3_SEAM_FUNCTIONS sub_00344900 sub_003449B0 sub_0013FE96 sub_0014E808)
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_dma_publish_seam.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_collision_call_seam.cmake")
+list(APPEND MM3_SEAM_FUNCTIONS sub_00224A07)
+include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_city_streaming_seam.cmake")
 list(APPEND MM3_SEAM_FUNCTIONS sub_0023F09B)
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_speedometer_seam.cmake")
 list(APPEND MM3_SEAM_FUNCTIONS sub_0011CA25 sub_0011D1E8 sub_0011D808 sub_0011CAE8 sub_0011DCBF)
@@ -221,6 +223,9 @@ foreach(distance_input IN LISTS distance_owners)
     if(owner_sub_0023F09B STREQUAL distance_input)
         mm3_add_speedometer_readout(distance_content)
     endif()
+    if(owner_sub_00224A07 STREQUAL distance_input)
+        mm3_add_city_streaming_limit(distance_content)
+    endif()
     foreach(map_owner sub_0011CA25 sub_0011D1E8 sub_0011D808 sub_0011CAE8 sub_0011DCBF sub_00116535)
         if(owner_${map_owner} STREQUAL distance_input)
             mm3_add_map_zoom(distance_content ${map_owner})
@@ -284,11 +289,11 @@ add_executable(${PROJECT_NAME}
  src/recomp_manual.c
  src/mm3_widescreen.c
  src/mm3_map_zoom.c
- src/mm3_world_lighting.c
  src/mm3_race_guidance.c
  src/mm3_render_distance.c
  src/mm3_facade_capacity.c
  src/mm3_building_diagnostics.c
+ src/mm3_producer_diagnostics.c
  src/mm3_tree_diagnostics.c
  src/mm3_tree_body.c
  src/mm3_tree_audio.c
@@ -300,6 +305,7 @@ add_executable(${PROJECT_NAME}
  src/mm3_speedometer.c
  src/mm3_factory_physics.c
  src/mm3_cpu_compat.c
+ src/mm3_world_lighting.c
  src/recomp_trace_probe.c
  ${RECOMP_GEN_SOURCES})
 

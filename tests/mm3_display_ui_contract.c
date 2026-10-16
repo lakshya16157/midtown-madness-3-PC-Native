@@ -100,11 +100,15 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
         CHECK(combo_value(dialog, IDC_DISPLAY_ANISO) == 3);
         CHECK(combo_value(dialog, IDC_DISPLAY_ASPECT) == 5);
         CHECK(combo_float(dialog, IDC_DISPLAY_SCALE) == 5.f);
+        CHECK(combo_float(dialog, IDC_DISPLAY_DISTANCE) == 1.25f);
+        CHECK(combo_float(dialog, IDC_DISPLAY_VIEW_DISTANCE) == 3.25f);
         SetDlgItemTextA(dialog, IDC_DISPLAY_FPS, "45");
         combo_select(dialog, IDC_DISPLAY_ASPECT, 1); /* Live 4:3 selection. */
         combo_select(dialog, IDC_DISPLAY_MSAA, 2);
         combo_select(dialog, IDC_DISPLAY_SCALE, float_value(2.5f));
         combo_select(dialog, IDC_DISPLAY_MINIMAP, 0);
+        combo_select(dialog, IDC_DISPLAY_DISTANCE, float_value(1.5f));
+        combo_select(dialog, IDC_DISPLAY_VIEW_DISTANCE, float_value(4.f));
         CheckDlgButton(dialog, IDC_DISPLAY_VSYNC, BST_CHECKED);
         combo_select(dialog, IDC_DISPLAY_MODE, 1);
         notify(dialog, IDC_DISPLAY_MODE, CBN_SELCHANGE);
@@ -119,6 +123,7 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
         CHECK(mm3_minimap_improved() == 0);
         GetDlgItemTextA(dialog, IDC_DISPLAY_STATUS, text, sizeof text);
         CHECK(strstr(text, "Saved.") && strstr(text, "Restart") && strstr(text, "anti-aliasing"));
+        CHECK(strstr(text, "object detail distance") && strstr(text, "building view distance"));
         CHECK(!strstr(text, "aspect ratio"));
     } else if (stage == 1) {
         GetDlgItemTextA(dialog, IDC_DISPLAY_FPS, text, sizeof text);
@@ -126,6 +131,8 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
         CHECK(combo_value(dialog, IDC_DISPLAY_MSAA) == 2);
         CHECK(combo_value(dialog, IDC_DISPLAY_ASPECT) == 1);
         CHECK(combo_value(dialog, IDC_DISPLAY_MINIMAP) == 0);
+        CHECK(combo_float(dialog, IDC_DISPLAY_DISTANCE) == 1.5f);
+        CHECK(combo_float(dialog, IDC_DISPLAY_VIEW_DISTANCE) == 4.f);
         SetDlgItemTextA(dialog, IDC_DISPLAY_FPS, "999");
         notify(dialog, IDC_DISPLAY_FPS, CBN_EDITCHANGE);
         GetDlgItemTextA(dialog, IDC_DISPLAY_STATUS, text, sizeof text);
@@ -136,6 +143,8 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
         CHECK(combo_value(dialog, IDC_DISPLAY_MSAA) == 4);
         CHECK(combo_float(dialog, IDC_DISPLAY_SCALE) == 2.f);
         CHECK(combo_value(dialog, IDC_DISPLAY_MINIMAP) == 1);
+        CHECK(combo_float(dialog, IDC_DISPLAY_DISTANCE) == 2.f);
+        CHECK(combo_float(dialog, IDC_DISPLAY_VIEW_DISTANCE) == 2.f);
         CHECK(mm3_minimap_improved() == 0); /* Restore stays pending until Apply. */
     }
     PostMessageA(dialog, WM_COMMAND, IDCANCEL, 0);
@@ -153,6 +162,8 @@ int main(int argc, char **argv)
     CHECK(_putenv_s("RECOMP_ASPECT", "1.77778") == 0);
     CHECK(_putenv_s("RECOMP_ANISO", "3") == 0);
     CHECK(_putenv_s("RECOMP_RENDER_SCALE", "5") == 0);
+    CHECK(_putenv_s("RECOMP_DRAW_DISTANCE", "1.25") == 0);
+    CHECK(_putenv_s("RECOMP_VIEW_DISTANCE", "3.25") == 0);
     mm3_display_settings_init();
     CHECK(settings_handler);
     CHECK(fabsf(published_aspect - 1.77778f) < 0.0001f);
@@ -172,6 +183,7 @@ int main(int argc, char **argv)
     CHECK(mm3_display_settings_load(&loaded, error, sizeof error));
     CHECK(loaded.fps_limit == 45 && loaded.msaa == 2 && loaded.vsync == 1);
     CHECK(loaded.render_scale == 2.5f && loaded.aniso == 3);
+    CHECK(loaded.draw_distance == 1.5f && loaded.view_distance == 4.f);
     CHECK(loaded.minimap_improved == 0);
     CHECK(strcmp(loaded.aspect, "4:3") == 0);
     strcpy(loaded.aspect, "auto");

@@ -27,7 +27,33 @@
         "max_kmh": 360,
         "max_mph": 240
       },
-      "model_package": "../../out/car-models/packages/Panoz"
+      "model_package": "../../out/car-models/packages/Panoz",
+      "native_overrides": [
+        {
+          "section": "CarWheel0",
+          "key": "RollStiffness",
+          "occurrence": 0,
+          "value": "44200.0"
+        },
+        {
+          "section": "CarWheel1",
+          "key": "RollStiffness",
+          "occurrence": 0,
+          "value": "44200.0"
+        },
+        {
+          "section": "CarWheel2",
+          "key": "RollStiffness",
+          "occurrence": 0,
+          "value": "44200.0"
+        },
+        {
+          "section": "CarWheel3",
+          "key": "RollStiffness",
+          "occurrence": 0,
+          "value": "44200.0"
+        }
+      ]
     },
     {
       "id": 9005,
@@ -81,7 +107,33 @@
         "max_kmh": 380,
         "max_mph": 240
       },
-      "model_package": "../../out/car-models/packages/Form1"
+      "model_package": "../../out/car-models/packages/Form1",
+      "native_overrides": [
+        {
+          "section": "CarWheel0",
+          "key": "RollStiffness",
+          "occurrence": 0,
+          "value": "44200.0"
+        },
+        {
+          "section": "CarWheel1",
+          "key": "RollStiffness",
+          "occurrence": 0,
+          "value": "44200.0"
+        },
+        {
+          "section": "CarWheel2",
+          "key": "RollStiffness",
+          "occurrence": 0,
+          "value": "44200.0"
+        },
+        {
+          "section": "CarWheel3",
+          "key": "RollStiffness",
+          "occurrence": 0,
+          "value": "44200.0"
+        }
+      ]
     },
     {
       "id": 9009,

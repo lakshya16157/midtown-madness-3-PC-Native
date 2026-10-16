@@ -53,7 +53,8 @@ static const SettingField s_fields[] = {
     {"aspect", "RECOMP_ASPECT", SETTING_ASPECT, offsetof(MM3DisplaySettings, aspect), 0, 0, 0},
     INT_FIELD(msaa, "RECOMP_MSAA", 1, 8, CHOICE(1) | CHOICE(2) | CHOICE(4) | CHOICE(8)),
     INT_FIELD(aniso, "RECOMP_ANISO", 1, 16, 0),
-    FLOAT_FIELD(draw_distance, "RECOMP_DRAW_DISTANCE", 1.0f, 4.0f)
+    FLOAT_FIELD(draw_distance, "RECOMP_DRAW_DISTANCE", 1.0f, 4.0f),
+    FLOAT_FIELD(view_distance, "RECOMP_VIEW_DISTANCE", 1.0f, 4.0f)
 };
 
 static void error_clear(char *error, size_t capacity)
@@ -172,6 +173,7 @@ void mm3_display_settings_defaults(MM3DisplaySettings *settings, const char *pro
     settings->msaa = atoi(profile->msaa);
     settings->aniso = atoi(profile->aniso);
     settings->draw_distance = (float)atof(profile->draw_distance);
+    settings->view_distance = settings->draw_distance;
 }
 
 #ifdef _WIN32
@@ -244,12 +246,15 @@ static char *trim(char *text)
     return text;
 }
 
-int mm3_display_settings_load(MM3DisplaySettings *settings, char *error, size_t error_capacity)
+static int settings_load_fields(MM3DisplaySettings *settings, int *view_configured,
+                                char *error, size_t error_capacity)
 {
     char path[MM3_CONFIG_PATH_CAPACITY];
     char line[1024];
     FILE *file;
     int failed;
+    /* -1 means no file was opened, so the public load API retains its input. */
+    *view_configured = -1;
     if (!mm3_display_settings_path(path, sizeof path, error, error_capacity)) return 0;
 #ifdef _WIN32
     {
@@ -268,6 +273,7 @@ int mm3_display_settings_load(MM3DisplaySettings *settings, char *error, size_t 
         error_set(error, error_capacity, "Cannot read display settings: %s.", strerror(errno));
         return 0;
     }
+    *view_configured = 0;
     while (fgets(line, sizeof line, file)) {
         char *key, *value, *separator, *comment;
         size_t i;
@@ -293,7 +299,9 @@ int mm3_display_settings_load(MM3DisplaySettings *settings, char *error, size_t 
         value = trim(value);
         for (i = 0; i < sizeof s_fields / sizeof s_fields[0]; ++i)
             if (strcmp(key, s_fields[i].name) == 0) {
-                field_assign(settings, &s_fields[i], value);
+                if (field_assign(settings, &s_fields[i], value) &&
+                    s_fields[i].offset == offsetof(MM3DisplaySettings, view_distance))
+                    *view_configured = 1;
                 break;
             }
     }
@@ -301,6 +309,14 @@ int mm3_display_settings_load(MM3DisplaySettings *settings, char *error, size_t 
     if (fclose(file)) failed = 1;
     if (failed) error_set(error, error_capacity, "Cannot finish reading display settings.");
     return !failed;
+}
+
+int mm3_display_settings_load(MM3DisplaySettings *settings, char *error, size_t error_capacity)
+{
+    int view_configured;
+    int loaded = settings_load_fields(settings, &view_configured, error, error_capacity);
+    if (view_configured == 0) settings->view_distance = settings->draw_distance;
+    return loaded;
 }
 
 static int create_config_directory(char *error, size_t error_capacity)
@@ -402,11 +418,12 @@ int mm3_display_settings_save(const MM3DisplaySettings *settings, char *error, s
                 "# MM3 display settings. Changes made in the game are saved here.\n"
                 "[display]\nwindow_width=%d\nwindow_height=%d\nfullscreen=%d\n"
                 "fps_limit=%d\nvsync=%d\nshow_fps=%d\nminimap_improved=%d\nrender_scale=%s\n"
-                "aspect=%s\nmsaa=%d\naniso=%d\ndraw_distance=%.9g\n",
+                "aspect=%s\nmsaa=%d\naniso=%d\ndraw_distance=%.9g\nview_distance=%.9g\n",
                 settings->window_width, settings->window_height, settings->fullscreen,
                 settings->fps_limit, settings->vsync, settings->show_fps, settings->minimap_improved,
                 scale_value, settings->aspect, settings->msaa,
-                settings->aniso, (double)settings->draw_distance) < 0) failed = 1;
+                settings->aniso, (double)settings->draw_distance,
+                (double)settings->view_distance) < 0) failed = 1;
     if (fflush(file)) failed = 1;
 #ifdef _WIN32
     if (_commit(_fileno(file))) failed = 1;
@@ -489,9 +506,9 @@ int mm3_display_settings_startup(MM3DisplaySettings *settings, char *error, size
     char load_error[256];
     const char *value, *failed;
     size_t i;
-    int loaded;
+    int loaded, view_configured;
     mm3_display_settings_defaults(settings, getenv("MM3_PERFORMANCE_PROFILE"));
-    loaded = mm3_display_settings_load(settings, load_error, sizeof load_error);
+    loaded = settings_load_fields(settings, &view_configured, load_error, sizeof load_error);
     error_clear(error, error_capacity);
     if (!loaded) error_set(error, error_capacity, "%s", load_error);
     value = getenv("RECOMP_WINDOW_SIZE");
@@ -500,11 +517,18 @@ int mm3_display_settings_startup(MM3DisplaySettings *settings, char *error, size
     for (i = 0; i < sizeof s_fields / sizeof s_fields[0]; ++i) {
         if (!s_fields[i].environment) continue;
         value = getenv(s_fields[i].environment);
-        if (value && *value && !field_assign(settings, &s_fields[i], value) && loaded &&
-            (!error || !error_capacity || !*error))
-            error_set(error, error_capacity, "Ignoring invalid %s; using its saved/default setting.",
-                      s_fields[i].environment);
+        if (value && *value) {
+            int valid = field_assign(settings, &s_fields[i], value);
+            if (valid && s_fields[i].offset == offsetof(MM3DisplaySettings, view_distance))
+                view_configured = 1;
+            if (!valid && loaded && (!error || !error_capacity || !*error))
+                error_set(error, error_capacity, "Ignoring invalid %s; using its saved/default setting.",
+                          s_fields[i].environment);
+        }
     }
+    /* Resolve legacy inheritance after explicit DRAW overrides, and before
+     * publishing either environment key. A saved VIEW remains independent. */
+    if (view_configured <= 0) settings->view_distance = settings->draw_distance;
     failed = mm3_display_settings_apply_environment(settings, 1);
     if (failed) {
         error_set(error, error_capacity, "Cannot initialize display environment setting %s.", failed);

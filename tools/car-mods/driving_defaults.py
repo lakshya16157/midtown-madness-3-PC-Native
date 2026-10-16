@@ -2,11 +2,20 @@
 
 TorqueScale values are native MM3 tuning units, not manufacturer Nm. Lower
 weights use moderate torque to limit wheelspin with the donor's road-speed
-automatic shifting. Everything except weight and engine power is inherited.
+automatic shifting. The two lightweight race cars also retain their explicit
+anti-roll suspension profile; other fields inherit the original donor.
 """
 from __future__ import annotations
 
 import copy
+import importlib.util
+from pathlib import Path
+import re
+
+_spec = importlib.util.spec_from_file_location(
+    "mm3_race_stability_defaults", Path(__file__).with_name("race_stability.py"))
+stability = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(stability)
 
 # Alias: (mass in kg, native MM3 torque scale). Keep reset presets separate from
 # editable manifests so saving custom tuning cannot overwrite the reset target.
@@ -37,4 +46,11 @@ def apply_preset(car: dict) -> dict:
     result["physics"] = {"Mass": mass, "TorqueScale": torque}
     result.pop("engine_profile", None)
     result.pop("driving_base", None)
-    return result
+    if "native_overrides" in result:
+        remaining = [item for item in result["native_overrides"]
+                     if not re.fullmatch(r"Car(?:Body|Wheel\d+)", item["section"], re.I)]
+        if remaining:
+            result["native_overrides"] = remaining
+        else:
+            result.pop("native_overrides")
+    return stability.apply_profile(result)

@@ -69,6 +69,39 @@ def shadow_template():
 
 
 class MM3ModelWriterTest(unittest.TestCase):
+    def test_reference_only_wheels_resolve_opaque_header_instead_of_first_glass_mesh(self):
+        model = read_model(model_for(115, template_block(115)))
+
+        def group(name, blocks):
+            prefix = struct.pack("<I", 1) + name.encode() + b"\0"
+            offset = len(prefix)
+            prefix += transformation() + struct.pack("<i6f", -1, -1, -1, -1, 1, 1, 1)
+            shape_name = name + "Shape"
+            child = Node(2, shape_name, struct.pack("<I", 2) + shape_name.encode() + b"\0" + b"\0" * 16,
+                         meshes=blocks, terminator=b"\0" if len(blocks) == 1 else b"")
+            return Node(1, name, prefix, [child], transform_offset=offset, bounds_offset=offset + 120)
+
+        glass = bytearray(template_block(115).payload)
+        struct.pack_into("<4f", glass, 48, .3, .4, .5, .02)
+        opaque = MeshBlock("opaque_wheel.dob", template_block(115).payload)
+        body = group("body", [MeshBlock("body.dob", template_block(115).payload), shadow_template()])
+        # Put the reference before its definition: lookup must inspect the
+        # complete donor, not depend on traversal order.
+        names = ("tireFrontLeft", "tireFrontRight", "tireBackLeft", "tireBackRight")
+        wheels = [group(name, [MeshBlock(opaque.name, b"") if "Left" in name else opaque]) for name in names]
+        model.root.children = [group("glass", [MeshBlock("glass.dob", bytes(glass))]), body, *wheels]
+        source = {"meshes": [dict(name=name,
+            positions=[[0, 0, 0], [.1, 0, 0], [0, .1, 0]], normals=[[0, 0, 1]] * 3,
+            uvs=[[0, 0], [.8, 0], [0, .8]], triangles=[[0, 1, 2, 0]])
+            for name in ("BODY_H", "WHL0_H", "WHL1_H", "WHL2_H", "WHL3_H")]}
+        blob, _ = convert_exterior(model.write(), source, keep_interior=False)
+        count = 0
+        for path, node in read_model(blob).root.walk():
+            if "/tire" in path and node.meshes:
+                count += 1
+                self.assertEqual(mesh_metadata(node.meshes[0], 115)["color"], struct.pack("<4f", 1, 1, 1, 1))
+        self.assertEqual(count, 4)
+
     def test_versions_and_quantized_geometry(self):
         positions = np.array([[-.8, -.2, -1.5], [.9, .7, 1.4], [.4, -.1, .3]])
         normals = np.tile([0, 1, 0], (3, 1))

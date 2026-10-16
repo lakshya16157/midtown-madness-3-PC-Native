@@ -401,6 +401,8 @@ new lamp midpoint, retaining its donor's small forward offset, orientation,
 brightness and beam settings. This prevents the imported nose from hiding the
 donor's lamps and road beam. Ferrari F2007 has no front lamps; its phantom
 Lotus donor headlights and road beam are disabled without removing handles.
+Disabled road projectors also have zero packed color: the native road-light
+branch ignores brightness and size, so those fields alone leave a stray beam.
 Dedicated `TLIGHT`, `BLIGHT` and `RLIGHT` helpers supply positions where present.
 McLaren F1 GTR and both Sennas have their rear lamps baked into the body;
 [`light_anchors.json`](light_anchors.json) records positions measured from
@@ -408,6 +410,53 @@ those source surfaces. The Senna anchors follow the upper lamp strips rather
 than the lower bumper reflectors. Ford's center brake bar is excluded from
 its side ring centers. Formula 1 uses its single central rear lamp, with
 surplus Lotus donor effects disabled while retaining their native handles.
+
+Rear anchors are projected onto rear-facing exterior triangles at the lamp's
+X/Y, then kept one centimetre outside the lens. This corrects averaged centers
+that fall inside a curved lens and hide the native flare. Projection only
+accepts a surface within ten centimetres of the authored lamp and never moves
+an already external anchor inward. Reports record every correction. Source
+geometry, lamp normals, brightness and material payloads stay unchanged.
+
+The converter also resolves payloadless donor wheel references by mesh name.
+This preserves the referenced wheel's opaque RGBA header instead of copying
+an unrelated glass mesh. Older Panoz packages copied glass alpha into both left
+wheels at near and far detail; seven Koenigsegg-based imports had the same
+problem on their far left wheels. To repair older prepared wheel headers while
+keeping their geometry, shadows and lamp fixes:
+
+```powershell
+python tools/car-models/repair_wheel_headers.py out/car-models/packages `
+    --backup out/car-models/wheel-header-backups/my-new-backup
+```
+
+Then close MM3 and reapply the selected packages through Car Workshop. The
+repair resolves each original donor wheel reference and copies only its RGBA
+header; it preserves vertex/index buffers, material sets and native effects.
+The converter applies the correct reference resolution to future builds.
+
+The current installation audit covers **58 cars** (35 retail, 14 official DLC,
+9 imports), including every supplied near/far and numbered model variant:
+245 CMPs, 1,028 wheel meshes, 650 resolved payloadless references, 2,081 wheel
+material records and 238 textures. All effective wheel mesh RGBA headers are
+opaque after repair. Authored chrome/cutout material modes in retail/DLC cars
+are preserved; those texture alpha masks are separate from the imported mesh
+header defect. Detailed local evidence is saved in
+`out/car-fixes-qa/all-car-opacity-audit.json`. This asset audit does not replace
+dynamic driving or screenshot checks.
+
+The authored-light audit of the same 245 models found active headlights and
+road illumination on 56 cars and rear lamps on all 58. The two cars without
+headlights are the official and imported Formula Midtown designs. This checks
+effect presence and nonzero brightness/size, not rendered visibility on every
+car; details are in `out/car-fixes-qa/all-car-authored-lamps-audit.json`.
+
+Separate sole-instance driving checks confirmed opaque Panoz left tyres in the
+native showroom and upright left/right turns for Panoz and Formula 1 on a clear
+flat avenue. Telemetry includes actual curved trajectories and minimum up-axis
+values above 0.9997; these short moderate-speed tests do not establish stability
+at every speed or after impacts. See `out/car-fixes-qa/handling-live-summary.json`
+and the full-size PNGs under `out/user-fixes-20261016/screenshots`.
 
 To update existing packages without regenerating their geometry or textures:
 

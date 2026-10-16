@@ -15,7 +15,8 @@ typedef struct MM3DisplaySettings {
     char aspect[32]; /* auto, a familiar ratio, or a normalized numeric ratio. */
     int msaa;
     int aniso;
-    float draw_distance;
+    float draw_distance; /* Object detail/LOD distance; retains the legacy key. */
+    float view_distance; /* City/building visibility; legacy configurations inherit draw_distance. */
 } MM3DisplaySettings;
 
 void mm3_display_settings_defaults(MM3DisplaySettings *settings, const char *profile);
@@ -26,7 +27,8 @@ int mm3_display_settings_path(char *path, size_t capacity,
                               char *error, size_t error_capacity);
 
 /* Missing files succeed. Invalid/unknown individual fields are ignored, and
- * fields absent from the file retain their incoming values. */
+ * fields absent from the file retain their incoming values. A legacy file
+ * without view_distance inherits its draw_distance for compatibility. */
 int mm3_display_settings_load(MM3DisplaySettings *settings,
                               char *error, size_t error_capacity);
 

@@ -298,10 +298,11 @@ int main(void)
         return 1;
     }
 
-    fprintf(stderr, "[MM3_PERFORMANCE] profile=%s scale=%s msaa=%s distance=%s aniso=%s fps=%s\n",
+    fprintf(stderr, "[MM3_PERFORMANCE] profile=%s scale=%s msaa=%s object_distance=%s view_distance=%s aniso=%s fps=%s\n",
             mm3_performance_profile(getenv("MM3_PERFORMANCE_PROFILE"))->name,
             getenv("RECOMP_RENDER_SCALE"), getenv("RECOMP_MSAA"),
-            getenv("RECOMP_DRAW_DISTANCE"), getenv("RECOMP_ANISO"), getenv("RECOMP_FPS_LIMIT"));
+            getenv("RECOMP_DRAW_DISTANCE"), getenv("RECOMP_VIEW_DISTANCE"),
+            getenv("RECOMP_ANISO"), getenv("RECOMP_FPS_LIMIT"));
 
     if (!load_file(MM3_XBE_PATH, &xbe_data, &xbe_size)) {
         fprintf(stderr, "cannot load %s\n", MM3_XBE_PATH);

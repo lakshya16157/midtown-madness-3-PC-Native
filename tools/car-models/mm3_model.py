@@ -709,7 +709,13 @@ def convert_exterior(template: bytes, source: dict, *, body_names=("BODY_H",),
                   split_meshes=[], wheel_pivots={}, bounds_min=all_positions.min(0).tolist(),
                   bounds_max=all_positions.max(0).tolist())
     found_body, found_wheels = False, set()
-    fallback = next((block for _, node in model.root.walk() for block in node.meshes if block.payload), None)
+    # Retail donors often reuse a right wheel's payload on its left partner.
+    # Resolve that named reference before replacing the geometry. A generic
+    # first-mesh fallback can be glass, leaking its translucent color/alpha
+    # into an otherwise opaque imported wheel.
+    templates = {block.name.casefold(): block for _, node in model.root.walk()
+                 for block in node.meshes if block.payload}
+    fallback = next(iter(templates.values()), None)
     if fallback is None:
         raise FormatError("Donor has no mesh template")
     shadow_template = next((b for _, node in model.root.walk() for b in node.meshes
@@ -758,7 +764,8 @@ def convert_exterior(template: bytes, source: dict, *, body_names=("BODY_H",),
                     report["hidden"].append(path)
                 if wheel or "/body/" in path.lower():
                     report["replaced"].append(path)
-                donor_block = next((b for b in node.meshes if b.payload), fallback)
+                donor_block = next((templates[b.name.casefold()] for b in node.meshes
+                                    if b.name.casefold() in templates), fallback)
                 original_meshes, original_prefix = list(node.meshes), node.prefix
                 added_shadow = bool(wheel and len(original_meshes) == 1)
                 if added_shadow:

@@ -26,7 +26,9 @@ def original(ident, alias, display_name, mass, torque):
             "GearRatioVector -3.3 2.90 1.77 1.21 0.92 0.81\r\n"
             "MinRPM 1000\r\nCutRPM 8000\r\nMaxRPM 10000\r\n"
             "End(CarBody)\r\n"
-            "Begin(CarWheel0)\r\nSpringK 70000\r\nEnd(CarWheel0)\r\n"
+            "Begin(CarWheel0)\r\nSpringK 70000\r\nRollStiffness 14200.0\r\nEnd(CarWheel0)\r\n" +
+            "".join(f"Begin(CarWheel{i})\r\nRollStiffness 14200.0\r\nEnd(CarWheel{i})\r\n"
+                    for i in range(1, 4)) +
             "Begin(CarCamera)\r\nHoodPos 0 0.727769 0.547450\r\n"
             "SpeedometerMaxKmh 620.0\r\nSpeedometerMaxMph 500.0\r\nEnd(CarCamera)\r\n"
             "Begin(CarCameraSS)\r\nSpeedometerMaxKmh 620.0\r\n"
@@ -63,7 +65,9 @@ def full_original(ident, alias, display_name, physics_id=None, **driving):
             "Begin(CarBody)\r\n\tNWheels\t4\r\n" +
             "".join(f"\t{key}\t{value}\r\n" for key, value in body.items()) +
             "End(CarBody)\r\n"
-            "Begin(CarWheel0)\r\nSpringK 70000\r\nEnd(CarWheel0)\r\n"
+            "Begin(CarWheel0)\r\nSpringK 70000\r\nRollStiffness 14200.0\r\nEnd(CarWheel0)\r\n" +
+            "".join(f"Begin(CarWheel{i})\r\nRollStiffness 14200.0\r\nEnd(CarWheel{i})\r\n"
+                    for i in range(1, 4)) +
             "Begin(CarCamera)\r\nHoodPos 0 0.727769 0.547450\r\n"
             "SpeedometerMaxKmh 620.0\r\nSpeedometerMaxMph 500.0\r\nEnd(CarCamera)\r\n")
     sections = editor.original_stats.parse_sections(text)

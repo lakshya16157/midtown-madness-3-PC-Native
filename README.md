@@ -71,9 +71,17 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   so small Washington DC roads remain readable after perspective scaling.
   Connected street segments share rounded joins at bends, right-angle turns
   and closed-loop seams, removing sharp bevels and small gaps between roads.
-  World illumination now covers ambient, diffuse and backlight materials
-  across the scene; the localized light-buffer overlay is disabled by
-  default, removing the concentrated bright patch ahead of the car.
+  Daylight retains its authored colors. Night ambient, diffuse and backlight
+  use 25% of their authored strength, with no global brightness floor or added
+  ambient lift. Headlights and street lamps keep their normal local strength
+  while unlit streets stay dark and emissive lights remain bright.
+  Local illumination samples the native 3D attenuation textures and reconstructs
+  surfaces from raw scene depth, restoring light pools on roads and buildings.
+  Lamp glows use the scene depth buffer's encoding when testing occlusion.
+  Imported wheel references retain their opaque donor headers, and rear lamp
+  effects sit outside the imported lens surfaces.
+  Road spline addressing uses an unbiased floor, keeping its control-point
+  index consistent with the fractional interpolation at road seams.
   The top HUD direction arrows are hidden. Original cars retain their retail
   speedometers by default, including the numeric readout in numeric-only HUD layouts.
   Cubic B-spline sampling smooths the distant skyline, and corrected frame/depth
@@ -136,14 +144,14 @@ source locations, dependencies, integration steps and acceptance tests.
 | [Bounded push-buffer run-ahead](https://github.com/MattSG/mm3-recomp/commit/fdc33ea): one-frame dark/tunnel-lighting flicker | Missing | Our WBC flush only uses `_mm_sfence()`; it lacks upstream's 256 KiB producer-distance bound. Native command/fence waits do not implement that bound. |
 | [White rims on silhouettes](https://github.com/MattSG/xboxrecomp/commit/d62ae29) | Implemented after this audit | Display passes use aligned translation; Y16 depth taps compensate their quarter-pixel offset. |
 | [Bright top/left frame strip](https://github.com/MattSG/xboxrecomp/commit/4d9d178) | Implemented after this audit | Display-sized passes remove the Xbox screen offset while offscreen targets retain pixel-zero snapping. |
-| [Extended-distance haze](https://github.com/MattSG/xboxrecomp/commit/d448358) and [distant-tree fade](https://github.com/MattSG/xboxrecomp/commit/060122c) | Missing | The old linear depth remap remains. There is no post-haze foliage coverage fade or final ordered coverage pattern that removes the earlier visible white flicker at default supersampling. |
+| [Extended-distance haze](https://github.com/MattSG/xboxrecomp/commit/d448358) and [distant-tree fade](https://github.com/MattSG/xboxrecomp/commit/060122c) | Implemented after this audit | Depth-as-Y16 uses the exponential haze tail. Eligible depth-writing foliage drawn after haze uses matching coverage fading with the final ordered 2×2 distribution. Gameplay motion and different scaling modes still need visual review. |
 | [Smooth horizon panorama](https://github.com/MattSG/xboxrecomp/commit/0e63cf0) | Implemented after this audit | Four bilinear taps reconstruct the skyline with cubic B-spline weights; MM3 opts in its panorama blend and texture signature. |
 | [Reset fade keeps the damage bar on the gauge](https://github.com/MattSG/xboxrecomp/commit/76192ee) | Implemented after this audit | HUD-atlas fades preserve edge anchors; fullscreen fade pieces stay separate and cover wide and tall displays. |
 | [Pause/post-race button caps remain joined](https://github.com/MattSG/xboxrecomp/commit/7367dca) | Partial | Our pause-state callback preserves the pause layout. Upstream also detects missing minimap/start rectangles across current and previous frames; equivalent post-race coverage is not established here. |
 | [Audio queue cushion](https://github.com/MattSG/xboxrecomp/commit/9b9a37c) and [audio producer priority](https://github.com/MattSG/xboxrecomp/commit/a4c2800) | Missing | `apu_xaudio2.c` lacks the silent cushion, and `apu_core.c` lacks the new time-critical frame-thread priority. Our PCM queue optimization is a separate change. |
-| [Device interrupts preempt DISPATCH](https://github.com/MattSG/xboxrecomp/commit/d359ee0): half-second freezes | Missing | The APU still holds off delivery while DISPATCH exclusion is owned. Our DPC ordering and interrupt-synchronization repairs do not implement this preemption change. |
-| [Facade slabs and capacity](https://github.com/MattSG/mm3-recomp/commit/31451f6) | Partial | Our allocation-time repair enlarges three capacities by `ceil(draw_distance^2)`, capped at 4x, with failure rollback. Upstream enlarges four fields by 5x and caps facade-zone distance at 2x. Local zones can still scale to 4x; these are different implementations. |
-| [Quiet hot-path logging](https://github.com/MattSG/xboxrecomp/commit/4f4dbc6) | Partial | Summary, path, successful-read and push-buffer logs are reduced or opt-in here. Loose asset search misses use bounded samples; actual file failures include host and guest context. Upstream's spike-stage split is absent. Focused building traces add work; disable them for performance comparisons. |
+| [Device interrupts preempt DISPATCH](https://github.com/MattSG/xboxrecomp/commit/d359ee0): half-second freezes | Implemented after this audit | Known level-16 host ISRs can acknowledge completion while a guest holds DISPATCH. A separate device lock retains ISR/synchronization exclusion; nested DPCs still acquire DISPATCH before claiming work. Five new regressions cover completion, nesting, cancellation, restoration and device exclusion. |
+| [Facade slabs and capacity](https://github.com/MattSG/mm3-recomp/commit/31451f6) | Partial | Facade zones and their fade widths now use `min(view_distance, 2)`. Actual buffer storage and limits grow by `ceil(facade_scale^2)`, capped at 4×, with failure rollback and custom capacities preserved. Upstream enlarges four fields by 5×; this fork retains its tested three-pool strategy. |
+| [Quiet hot-path logging](https://github.com/MattSG/xboxrecomp/commit/4f4dbc6) | Partial | Summary, path, successful-read and push-buffer logs are reduced or opt-in here; empty or `0` wrap-trace settings now stay quiet. Loose asset search misses use bounded samples; actual file failures include host and guest context. Upstream's spike-stage split is absent. Focused building traces add work; disable them for performance comparisons. |
 
 The main implementation evidence is in `src/recomp_manual.c`,
 `src/mm3_widescreen.c`, `src/mm3_facade_capacity.c`,
@@ -168,11 +176,15 @@ rebuilt locally from the supported disc rather than bundled in this repository.
 - **Developer tools off by default:** local developer features already require
   opt-in flags. The public play script also leaves focused building traces off
   by default; use `-TraceBuildings` only for a diagnostic capture.
+- **Separate object/detail and building/view distance:** `RECOMP_DRAW_DISTANCE`
+  controls object LODs, pedestrians and blob shadows; `RECOMP_VIEW_DISTANCE`
+  controls city visibility, camera far plane and haze. Existing preferences
+  inherit the old combined setting when no separate view value is present.
+  Balanced/Quality retain 2×/2× defaults, rather than adopting upstream's
+  increased 4× object-detail default.
 
 ### Other upstream improvements still absent
 
-- Separate `RECOMP_VIEW_DISTANCE` from detail/LOD distance, with upstream's
-  updated default distances. This fork currently uses one draw-distance control.
 - The RmlUi settings launcher, saved key/mouse bindings, menu hover/click control
   and switchable mod registry introduced in upstream `9118262`/runtime `b666568`.
   Our performance profiles, car workshop and driving controls are separate features.
@@ -399,7 +411,8 @@ Choose **Graphics Settings** below **Options** and above **Profile** in the
 main menu. Select a setting to open its choice list, move to the exact value,
 and press **A/Enter** once to select it. The current choice is marked.
 **Advanced Graphics** contains aspect ratio,
-anti-aliasing, texture filtering and draw distance. **Apply** saves both pages;
+anti-aliasing, texture filtering, **Object Detail Distance** and **Building View
+Distance**. **Apply** saves both pages;
 **Restore Defaults** changes the pending choices, and **B/Back** from the main
 graphics page discards changes made since the last Apply. Restart requirements
 appear in the help text. These pages use the game's original layout, font,
@@ -419,13 +432,21 @@ proportions, and the gameplay HUD stays proportionate. An explicit aspect ratio
 fits inside the window with bars where needed. Saved explicit ratios remain
 available; choose Automatic to follow resolution changes.
 
-MSAA, anisotropic filtering and draw distance are also available in the dialog.
+MSAA, anisotropic filtering and both distance controls are also available in the dialog.
 These changes are saved for the next launch, and the dialog shows when a
 restart is required. Settings are stored per Windows user in
 `%LOCALAPPDATA%\MM3Recomp\display.ini`. Set `MM3_DISPLAY_CONFIG` to use another
 settings file, for example for a separate benchmark configuration. At launch,
 saved settings override profile defaults; explicit environment settings take
 priority over saved settings.
+
+Object Detail Distance changes object and pedestrian LOD ranges and blob
+shadows. Building View Distance changes city visibility and the camera far
+plane. Both accept 1×–4× and require a restart. Existing `draw_distance`
+preferences also supply the building value until a separate `view_distance`
+is saved. Facade detail zones stay capped at 2× to match their allocated
+buffers, even when the city view is farther away; different asset types still
+retain their authored visibility and LOD thresholds.
 
 F11 or Alt+Enter toggles fullscreen. The default **Balanced** profile renders at
 960 vertical pixels and an automatic aspect ratio that follows the window or
@@ -439,11 +460,11 @@ pwsh scripts\play.ps1 -Profile Quality
 pwsh scripts\play.ps1 -Profile LowPower
 ```
 
-| Profile | Internal height | MSAA | Draw distance | FPS cap |
-|---|---|---|---|---|
-| Balanced (default) | 960 | 4× | 2× Xbox | 60 |
-| Quality | 1440 | 8× | 2× Xbox | 60 |
-| LowPower | 720 | Off | Xbox | 30 |
+| Profile | Internal height | MSAA | Object detail | Building view | FPS cap |
+|---|---|---|---|---|---|
+| Balanced (default) | 960 | 4× | 2× Xbox | 2× Xbox | 60 |
+| Quality | 1440 | 8× | 2× Xbox | 2× Xbox | 60 |
+| LowPower | 720 | Off | Xbox | Xbox | 30 |
 
 All three retain 16× anisotropic filtering. LowPower reduces resolution, edge
 smoothing and view distance and caps motion at 30 FPS. Balanced and Quality
@@ -514,10 +535,14 @@ markers over the game. Roads, route and markers share a tilted perspective,
 with distant roads narrowing and the player positioned below the center.
 The driving frame is 37.5% larger than the previous improved map, with the
 car around 70% down the visible road plane. The stopped view shows nearby
-streets more closely, while the player marker keeps its original size.
+streets with an additional 10% zoom, while the player marker keeps its original size.
 It stays in the bottom-left corner. Holding Ctrl opens a flat, centered
 overview; its roads and checkpoints share the same expanded window.
+The north-letter sprite is hidden in both map styles.
 The map rotates with your heading. Cruise also shows roads without race data.
+Washington's reviewed park, plaza and block paths include their complete native
+networks and adjoining continuations, with no cutoffs at review-grid boundaries.
+They appear as gray map coverage while race guidance follows the car street graph.
 Paris roundabouts include their native traffic lanes and street entrances,
 while pedestrian paths through their center islands stay clear.
 Street thickness follows the road's lane layout: side streets stay thin,
@@ -752,15 +777,18 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `RECOMP_FULLSCREEN` | off | Start fullscreen. |
 | `RECOMP_WINDOW_SIZE` | auto | Initial window client size, `WxH`. |
 | `RECOMP_ASPECT` | `auto` | Follow the window, or pin `16:10`, `16:9`, `4:3`, or a numeric ratio (0.5–4). Gameplay adapts its view; menus retain their proportions. |
-| `MM3_EVEN_LIGHTING` | `1` | Illuminate the entire scene with a shared minimum on ambient, diffuse and backlight colors and bypass localized light accumulation. Keeps material alpha, UI and emissive lamp meshes. Set `0` for legacy directional/local lighting. Requires restart. |
-| `MM3_AMBIENT_LIFT` | `3` | Additional packed-RGB ambient lift, integer 0-16. Set both this and `MM3_EVEN_LIGHTING` to `0` for retail lighting. Requires restart. |
+| `MM3_NIGHT_WORLD_LIGHT` | `25` | Night-only world fill, as an integer percentage of authored ambient, diffuse and backlight colors (0-100). Daytime, local lights and emissive materials retain their normal strength. Set `100` with both boosts below at `0` for retail lighting. Requires restart. |
+| `MM3_EVEN_LIGHTING` | `0` | Optional readability boost: `1` imposes a 48/255 minimum on world ambient, diffuse and backlight colors (75% unlit texture brightness). Default `0` lets night lighting come mainly from local sources. Native local lights, material alpha, UI and emissive lamps are preserved. Requires restart. |
+| `MM3_AMBIENT_LIFT` | `0` | Optional added packed-RGB ambient lift, integer 0-16. Default `0` adds no artificial ambient light. Both lighting boosts are disabled by default. Requires restart. |
 | `MM3_FOV_DEGREES` | unset | Driving horizontal FOV at the display aspect, 60–110 degrees; unset or invalid values retain the existing widescreen FOV. Set with `scripts\play.ps1 -Fov 100`. |
 | `RECOMP_SUPERSAMPLE` | `2` | In auto resolution mode, render N×N pixels per window pixel (1–4). |
 | `RECOMP_RENDER_SCALE` | profile: `2.0` | Internal height as a multiple of 480 lines (0.5–8): Balanced 960, Quality 1440, LowPower 720; `2.25` = 1080. `auto` follows the window and uses supersampling. |
 | `RECOMP_MSAA` | profile: `4` | MSAA sample count (1/2/4/8); 1 disables it. Quality uses 8; LowPower uses 1. Unsupported counts fall back. |
 | `RECOMP_ANISO` | `16` | Anisotropic filtering (1–16). |
-| `RECOMP_DRAW_DISTANCE` | profile: `2` | View/LOD distance multiplier (1 = Xbox, up to 4). LowPower uses 1. |
+| `RECOMP_DRAW_DISTANCE` | profile: `2` | Object/pedestrian LOD and blob-shadow distance multiplier, 1–4. LowPower uses 1. Requires restart. |
+| `RECOMP_VIEW_DISTANCE` | saved setting or resolved draw distance | Requested city/building visibility and camera far-plane multiplier, 1–4, bounded by the native resident-cell range. Unset values inherit the legacy draw setting; Balanced/Quality start at 2, LowPower at 1. Facade detail zones are capped at 2. Requires restart. |
 | `MM3_PARTICLE_MAX_OVERDRAW` | `24` | Particle overlap budget at extended draw distances, 1–255. The Xbox distance retains its original budget of 12. |
+| `RECOMP_BUFFERED_ASSET_READS` | `1` | Allow Windows file caching for existing read-only assets on `d:`/`z:` that deny write/delete sharing. All writable, device and other opens keep their original flags. `0` restores unbuffered asset reads; requires restart. Generic runtime default is off. |
 | `RECOMP_SHARP_POINT` | `1` | `0`: plain point filtering for fonts and menu art instead of sharp outlines. |
 | `RECOMP_PS_SPEC` | `1` | `0`: skip specialised pixel shaders (slow; for debugging). |
 | `RECOMP_PS_PREWARM` | `1` | Prepare previously used pixel shader states during startup; `0` disables learning and prewarming. |
@@ -784,6 +812,7 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `RECOMP_CS_COUNTERS` | `1`: count critical-section entries/exits for contention diagnostics (off during normal play). |
 | `RECOMP_CS_TRACE_CONTENTION` | `1`: print the first 16 contended lock waits, holder sites, guest stacks and matching acquisitions. Off during normal play to avoid synchronous logging around allocator/audio locks. |
 | `RECOMP_HITCH_TRACE` | `1`: report slow command submissions, shader compilation, GPU waits, and file reads with QPC timestamps (off during normal play). |
+| `RECOMP_FILE_READ_CPU_TRACE` | `1`: add thread CPU-cycle samples around file reads when hitch tracing is enabled. Full diagnostics enables it; light diagnostics clears it. Slow reads include their actual path and native caching mode after timing ends. CPU cycles are not elapsed milliseconds. |
 | `RECOMP_PB_CAPTURE=<prefix>` | Diagnose the first bounded-parser limit by saving fetched command words, parser state, and guest RAM; disabled during normal play. |
 | `RECOMP_PRESENT_CAPTURE=<prefix>` | With `<prefix>.flag` containing N, save the next N frames as `<prefix>-*.bmp`. |
 | `RECOMP_CAPTURE_SURFACE` | Capture at internal resolution instead of the window. |
@@ -875,17 +904,39 @@ allocator's data.
 MM3 enables NT heap reclamation before startup so scene destruction returns
 large car-model buffers to the guest heap. Repeated race/menu changes reuse
 those buffers instead of exhausting the heap. Facade detail fades also retain
-their retail proportions when draw distance is extended.
-Facade vertex buffers grow at allocation time with extended draw distance,
+their retail proportions when building view distance is extended.
+Facade zones use the city view multiplier capped at 2×, independently of
+object detail. Their vertex buffers grow at allocation time with that same scale,
 using the same increased counts for their real storage and allocation limits.
 The default 2x distance receives four times the original capacity; growth is
 capped at four times to preserve the guest's 16-bit vertex offsets. The Xbox
 distance and custom buffer capacities retain their original sizes.
+The native depth view uses an exponential haze tail above the original knee.
+Later eligible depth-tested, depth-writing w-buffer draws use matching foliage
+coverage fading after the real depth-as-Y16 haze view was sampled. The final
+ordered 2×2 coverage distribution preserves existing alpha-test cutouts and
+excludes sky draws without depth writes. Its appearance in motion still needs
+manual review across MSAA, fixed render scales and window sizes.
+The `nv2a_graphics_quality` GPU cases `haze_depth`, `haze_gates` and
+`haze_coverage` pass on the updated renderer and fail on the preserved old
+renderer. They check 6,144 depth-view pixels, 1,200 exact sky-depth pixels and
+2,592 coverage pixels, including the title's 0.78 knee; these are isolated
+rendering checks rather than gameplay motion tests.
 The hot city visibility test uses native scratch variables while preserving
 the original floating-point operations and guest state. Its differential
 regression compares 200,000 complete state and memory cases with the generated
 Xbox function: `python tests/mm3_visibility_regression.py` after entering the
-build environment. The facade fade contract is checked with
+build environment. Independent distance ownership, original PAL setters,
+the original city-loader clamp, temporary restores, matching facade capacities and the custom-pedestrian
+initialization order are checked with
+`python tests/mm3_render_distance_regression.py`. A successful custom pedestrian
+setting is marked initialized so later object-manager construction cannot scale
+it twice. City visibility and camera range retain the native limit of 95% of
+one streaming cell: loading and drawing still visit only the camera cell and
+its eight neighbors. Extending this limit made distant rows of buildings appear
+at cell crossings. Haze now uses the effective far plane relative to the native
+range, including cities whose requested range fits without clamping. The default
+object detail and 560 m facade detail remain unchanged. The facade fade contract is checked with
 `python tests/mm3_facade_fade_regression.py`.
 The buffer creation and allocation contract is checked with
 `python tests/mm3_facade_capacity_regression.py`.
@@ -1227,10 +1278,65 @@ contact and collision-event reports for lighter driving captures.
 
 Every `scripts/play.ps1` launch now writes a unique `logs/play-*.log` and a
 matching `.json`. Both output streams are captured concurrently with UTC line
-timestamps, and the log stays readable while the game runs. The JSON records
+timestamps. Pipe callbacks enqueue records; a dedicated writer batches output
+and flushes every 100 ms, keeping the log readable during play. The bounded
+queue applies backpressure at capacity and never drops records; exit waits for
+the final batch. `-NoConsoleLog` saves every record without echoing it to the
+console. The JSON records
 the executable hash, launch options, runtime environment, profile defaults,
 installed car configuration and exit status. Existing environment overrides
 still take priority.
+
+`Play with full diagnostics.cmd` starts an interactive keyboard session with
+frame CSV, hitch/parser capture, file probes, texture/building traces and lock
+diagnostics. It uses `-NoConsoleLog` and saves a separate
+`logs/full-diagnostics-*` folder. After rendering has begun, its observer captures
+a dump, bounded guest RAM, registers and matching symbols if frame progress
+stops for 15 seconds. This can also trigger during a long loading transition;
+the capture is evidence, not proof of a deadlock. It does not close the game.
+Full tracing still adds work; use normal `scripts/play.ps1` for ordinary play
+and lighter frame/hitch tracing for performance comparisons.
+
+For the next manual driving check, use **Play with performance diagnostics.cmd**.
+It selects `play-diagnostics.ps1 -Light`, retains frame/hitch measurements,
+producer-gap timings and the passive hang observer, and removes high-volume tracing. Results go to
+`logs/diagnostics-*`. Change one distance control at a time, restart, and compare
+the same approach to objects and buildings. Use the full-diagnostics shortcut
+when detailed command, texture or building evidence is needed.
+
+The later `play-20261015-182224-716-2bc3afaa.log` capture contains seven
+post-load frames above 40 ms, with a maximum of 121.98 ms. The corresponding
+game-thread submission gaps last 46–120 ms; the following renderer submissions
+take less than 0.6 ms. Five gaps contain no main-thread file reads, and the
+other two spend about 0.05 ms reading. These records locate the delay before
+submission but do not identify every remaining cause. Full building tracing
+performed 283,058 deep samples and roughly two million sampled allocation
+observations. Building-cache lookups now examine at most 32 entries, and a
+renewable deep-sample budget limits this diagnostic work. Gaps also occur with
+little building activity, so these changes are not evidence that every hitch
+is eliminated. The log review is saved in
+`logs/stutter-log-review-20261015-182224.json`. These are log/source findings;
+the performance effect of these changes has not been measured in gameplay.
+
+The 2026-10-15 diagnostic drive confirmed gameplay spikes up to 97.77 ms.
+All 18 texture records above 8 ms immediately followed a summary flush: the
+old duration calculation included that output. Upload duration now ends before
+any diagnostic output; a slow-sink regression reports 1.5 ms instead of the
+old 301.5 ms for the same synthetic upload. This corrects attribution, while
+broader draw timings still include tracing overhead. The earlier permanent
+pushbuffer/CALL hang did not recur in this drive and remains unproven as fixed.
+
+The later intended light-mode manual capture, `logs/play-20261015-152930-318-6e4d70f2.log`,
+recorded 12,615 gameplay frames over 218.8 seconds: 57.66 FPS, p99 24.66 ms,
+maximum 80.23 ms, with five frames above 50 ms. Those five gaps occurred between
+submissions; this does not identify their remaining cause. This capture predates
+the separate-distance, haze/foliage and explicit-zero wrap-logging changes.
+PowerShell 7 left disabled diagnostic variables present but empty, which the
+old presence-only wrap check treated as enabled, producing 20,525 unwanted wrap
+records. Light mode now removes those variables, and the native wrap check
+rejects empty and `0` values. That capture is therefore not a fully quiet
+benchmark or a before/after result for these changes. The earlier permanent
+hang remains open pending a reproduction with command/RAM capture.
 
 Loose asset searches log `[FILE_PROBE]` with one example per logical asset
 (up to 256 assets) and a count every 1024 misses. A missing cache, platform or
@@ -1289,8 +1395,13 @@ their actual values at launch:
   Both 28-byte vertex streams report their native head, tail and capacity,
   before/after read validity, and middle-detail/upper-floor allocation attempts,
   successes, failures and requested quad totals. Checked guest reads are sampled at
-  most ten times per second per facade, with 64 change events per second per
-  render thread and summaries each second. Allocation failures have a separate
+  most ten times per second per facade, with a default limit of 256 deep
+  samples per second per render thread. `MM3_BUILDING_SAMPLE_BUDGET=0` restores
+  unlimited deep sampling; a positive integer sets the per-second limit.
+  Summaries report samples skipped because of this budget, so unobserved
+  allocations must not be interpreted as successful or absent. Output retains
+  64 change events per second per render thread and summaries each second.
+  Allocation failures observed in sampled facades have a separate
   eight-event-per-second budget and suppressed-failure counts. Counter deltas do not prove that
   an asset is loaded or absent.
 - `RECOMP_TEXTURE_STREAM_TRACE=1`: real uploads, changed texture content, upload

@@ -3,11 +3,12 @@
 Run the recompiled Midtown Madness 3 built by scripts\setup.ps1.
 
 .DESCRIPTION
-  pwsh scripts\play.ps1 [-Keyboard] [-Fullscreen] [-Profile Balanced|Quality|LowPower] [-FpsLimit 60] [-Fov 100] [-TraceBuildings | -NoTraceBuildings] [-Exe <path>]
+  pwsh scripts\play.ps1 [-Keyboard] [-Fullscreen] [-Profile Balanced|Quality|LowPower] [-FpsLimit 60] [-Fov 100] [-TraceBuildings | -NoTraceBuildings] [-NoConsoleLog] [-Exe <path>]
 
 Any RECOMP_*/MM3_* variable already set in your shell overrides these
 defaults (see README "Options"). F11 or Alt+Enter toggles fullscreen.
 Every launch saves combined, timestamped output and launch metadata under logs\.
+Use -NoConsoleLog to keep game output in the log without console echo.
 Normal launches leave focused building/texture/stream-wait diagnostics off.
 Use -TraceBuildings to enable them for a pop-in investigation.
 #>
@@ -19,6 +20,7 @@ param(
     [ValidateRange(60, 110)][double]$Fov,
     [switch]$TraceBuildings,
     [switch]$NoTraceBuildings,
+    [switch]$NoConsoleLog,
     [string]$Exe
 )
 $ErrorActionPreference = 'Stop'
@@ -62,23 +64,47 @@ if ($TraceBuildings) {
 
 # Drain both native pipes concurrently. PowerShell's native stderr redirection
 # differs between Windows PowerShell and pwsh; treating it as an error pipeline
-# can abort a healthy game or block when one pipe fills. Each complete line is
-# flushed immediately and retains its source. This never changes game buffering.
+# can abort a healthy game or block when one pipe fills. Pipe callbacks enqueue
+# complete timestamped lines; a writer batches disk/console output and flushes
+# at short intervals. This never changes game buffering.
 if (-not ('MM3LoggedProcess' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 public sealed class MM3LoggedProcess : IDisposable {
     readonly object gate = new object();
     readonly Process process;
     readonly StreamWriter writer;
+    readonly Thread writerThread;
+    readonly Queue<LogLine> pending = new Queue<LogLine>();
+    readonly bool echoConsole;
+    // Roughly 8 MiB of UTF-16 text, plus bounded record/batch overhead. At
+    // capacity callbacks wait rather than dropping output, including errors.
+    // One unusually long line is admitted on an empty queue to ensure progress.
+    const int QueueCharacters = 4 * 1024 * 1024;
+    const int BatchCharacters = 64 * 1024;
+    const int FlushMilliseconds = 100;
+    long pendingCharacters;
+    bool finishing, disposed;
     string captureError;
     long errorLineCount;
     string lastErrorLine, lastErrorSource, lastErrorUtc;
+    sealed class LogLine {
+        public readonly string Text;
+        public readonly int ConsoleOffset;
+        public readonly int Characters;
+        public LogLine(string source, string line, string utc) {
+            Text = utc + " [" + source + "] " + line;
+            ConsoleOffset = utc.Length + source.Length + 4;
+            Characters = Text.Length + Environment.NewLine.Length;
+        }
+    }
     // Count explicit runtime failure records, never words such as "error" in
     // expected file probes or successful worker shutdown. A crash can emit
     // several context lines; this is a diagnostic-line count, not incidents.
@@ -105,10 +131,10 @@ public sealed class MM3LoggedProcess : IDisposable {
         return result.Append('"').ToString();
     }
 
-    MM3LoggedProcess(string executable, string[] arguments, string directory, string log) {
+    MM3LoggedProcess(string executable, string[] arguments, string directory, string log, bool echo) {
         writer = new StreamWriter(new FileStream(log, FileMode.CreateNew,
-            FileAccess.Write, FileShare.ReadWrite), new UTF8Encoding(false));
-        writer.AutoFlush = true;
+            FileAccess.Write, FileShare.ReadWrite, 65536), new UTF8Encoding(false), 65536);
+        echoConsole = echo;
         var command = new StringBuilder();
         foreach (string argument in arguments) {
             if (command.Length != 0) command.Append(' ');
@@ -120,31 +146,93 @@ public sealed class MM3LoggedProcess : IDisposable {
             RedirectStandardOutput = true, RedirectStandardError = true,
             CreateNoWindow = true
         };
-        process.OutputDataReceived += (sender, e) => Write("stdout", e.Data);
-        process.ErrorDataReceived += (sender, e) => Write("stderr", e.Data);
+        process.OutputDataReceived += (sender, e) => Enqueue("stdout", e.Data);
+        process.ErrorDataReceived += (sender, e) => Enqueue("stderr", e.Data);
+        writerThread = new Thread(WritePending) { IsBackground = true, Name = "MM3 game log" };
+        writerThread.Start();
     }
 
-    void Write(string source, string line) {
+    void Enqueue(string source, string line) {
         if (line == null) return;
+        bool isError = ErrorRecord.IsMatch(line);
         lock (gate) {
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            if (ErrorRecord.IsMatch(line)) {
+            string utc = DateTimeOffset.UtcNow.ToString("o");
+            var entry = new LogLine(source, line, utc);
+            while (!finishing && pending.Count != 0 &&
+                   pendingCharacters + entry.Characters > QueueCharacters)
+                Monitor.Wait(gate);
+            if (finishing) {
+                if (captureError == null) captureError = "Output arrived after capture completed.";
+                return;
+            }
+            if (isError) {
                 ++errorLineCount;
                 lastErrorLine = line;
                 lastErrorSource = source;
-                lastErrorUtc = now.ToString("o");
+                lastErrorUtc = utc;
             }
-            try {
-                writer.WriteLine("{0:o} [{1}] {2}", now, source, line);
-                Console.WriteLine(line);
-            } catch (Exception error) {
-                if (captureError == null) captureError = error.ToString();
+            pending.Enqueue(entry);
+            pendingCharacters += entry.Characters;
+            Monitor.PulseAll(gate);
+        }
+    }
+
+    void RecordCaptureError(Exception error) {
+        lock (gate) {
+            if (captureError == null) captureError = error.ToString();
+        }
+    }
+
+    void WritePending() {
+        var flushClock = Stopwatch.StartNew();
+        var logBatch = new StringBuilder(BatchCharacters);
+        var consoleBatch = echoConsole ? new StringBuilder(BatchCharacters) : null;
+        for (;;) {
+            bool complete;
+            lock (gate) {
+                while (pending.Count == 0 && !finishing) {
+                    long remaining = FlushMilliseconds - flushClock.ElapsedMilliseconds;
+                    if (remaining <= 0) break;
+                    Monitor.Wait(gate, (int)remaining);
+                }
+                // Disk and console calls stay outside the pipe callback lock.
+                while (pending.Count != 0 && logBatch.Length < BatchCharacters) {
+                    var entry = pending.Dequeue();
+                    pendingCharacters -= entry.Characters;
+                    logBatch.AppendLine(entry.Text);
+                    if (consoleBatch != null) {
+                        consoleBatch.Append(entry.Text, entry.ConsoleOffset, entry.Text.Length - entry.ConsoleOffset);
+                        consoleBatch.AppendLine();
+                    }
+                }
+                complete = finishing && pending.Count == 0;
+                Monitor.PulseAll(gate);
             }
+            if (logBatch.Length != 0) {
+                try { writer.Write(logBatch.ToString()); }
+                catch (Exception error) { RecordCaptureError(error); }
+                logBatch.Length = 0;
+            }
+            if (complete || flushClock.ElapsedMilliseconds >= FlushMilliseconds) {
+                try { writer.Flush(); }
+                catch (Exception error) { RecordCaptureError(error); }
+                flushClock.Restart();
+            }
+            if (consoleBatch != null && consoleBatch.Length != 0) {
+                try { Console.Write(consoleBatch.ToString()); }
+                catch (Exception error) { RecordCaptureError(error); }
+                consoleBatch.Length = 0;
+            }
+            if (complete) return;
         }
     }
 
     public static MM3LoggedProcess Start(string executable, string[] arguments, string directory, string log) {
-        var session = new MM3LoggedProcess(executable, arguments, directory, log);
+        return Start(executable, arguments, directory, log, true);
+    }
+
+    public static MM3LoggedProcess Start(string executable, string[] arguments, string directory, string log, bool echo) {
+        var session = new MM3LoggedProcess(executable, arguments, directory, log, echo);
         try {
             session.process.Start();
             session.process.BeginOutputReadLine();
@@ -156,11 +244,23 @@ public sealed class MM3LoggedProcess : IDisposable {
     public int Wait() {
         // The parameterless wait also waits for the final asynchronous pipe events.
         process.WaitForExit();
+        FinishCapture();
         return process.ExitCode;
     }
 
+    void FinishCapture() {
+        lock (gate) {
+            finishing = true;
+            Monitor.PulseAll(gate);
+        }
+        writerThread.Join(); // Every final line and the last batch are persisted.
+    }
+
     public void Dispose() {
-        lock (gate) { writer.Dispose(); }
+        if (disposed) return;
+        FinishCapture();
+        disposed = true;
+        writer.Dispose();
         process.Dispose();
     }
 }
@@ -225,10 +325,12 @@ try {
     # These are the runtime profile's defaults for unset settings; the complete
     # environment above records overrides, including invalid values verbatim.
     $profileDefaults = switch ($settings.MM3_PERFORMANCE_PROFILE) {
-        'Quality' { @{ render_scale = '3.0'; msaa = '8'; draw_distance = '2'; aniso = '16'; fps_limit = '60' } }
-        'LowPower' { @{ render_scale = '1.5'; msaa = '1'; draw_distance = '1'; aniso = '16'; fps_limit = '30' } }
-        default { @{ render_scale = '2.0'; msaa = '4'; draw_distance = '2'; aniso = '16'; fps_limit = '60' } }
+        'Quality' { @{ render_scale = '3.0'; msaa = '8'; draw_distance = '2'; view_distance = '2'; aniso = '16'; fps_limit = '60' } }
+        'LowPower' { @{ render_scale = '1.5'; msaa = '1'; draw_distance = '1'; view_distance = '1'; aniso = '16'; fps_limit = '30' } }
+        default { @{ render_scale = '2.0'; msaa = '4'; draw_distance = '2'; view_distance = '2'; aniso = '16'; fps_limit = '60' } }
     }
+    $profileDefaults.buffered_asset_reads = '1'
+    $profileDefaults.world_ambient_lift = '3'
     $configFiles = @('game_files\default.xbe', 'game_files\Data\mm3_factory_physics.ini',
         'game_files\Data\mm3_speedometers.ini', 'game_files\.mm3-car-mods\state.json',
         'tools\car-mods\cars.local.json', 'tools\car-mods\cars.json', 'build\CMakeCache.txt')
@@ -266,15 +368,24 @@ try {
         build_configuration = (Split-Path (Split-Path $Exe -Parent) -Leaf)
         build_context_at_launch = @{ cmake_cache = Get-LaunchFile $cachePath; cmake_options = $cmakeOptions
             source_files = @(@('CMakeLists.txt', 'src\mm3_render_distance.c', 'src\mm3_widescreen.c',
-                'src\mm3_performance_profile.h', 'src\mm3_building_diagnostics.c', 'src\mm3_facade_capacity.c', 'src\main.c',
+                'src\mm3_performance_profile.h', 'src\mm3_display_config.c', 'src\mm3_display_settings.c',
+                'src\mm3_building_diagnostics.c', 'src\mm3_facade_capacity.c', 'src\main.c',
                 'src\recomp_manual.c', 'src\mm3_crash_diagnostics.h', 'src\mm3_map_zoom.c',
+                'src\mm3_world_lighting.c', 'src\mm3_world_lighting.h',
+                'src\mm3_producer_diagnostics.c', 'src\mm3_producer_diagnostics.h',
+                'scripts\mm3_speedometer_seam.cmake',
+                'scripts\mm3_city_streaming_seam.cmake',
                 'src\mm3_race_guidance.c', 'scripts\mm3_map_zoom_seam.cmake',
                 'tools\xboxrecomp\src\kernel\kernel_bridge.c', 'tools\xboxrecomp\src\kernel\kernel_file.c',
+                'tools\xboxrecomp\src\kernel\kernel.h',
                 'tools\xboxrecomp\src\kernel\kernel_file_probe.h',
+                'tools\xboxrecomp\src\kernel\kernel_file_buffering.h', 'tools\xboxrecomp\src\kernel\kernel_hal.c',
+                'tools\xboxrecomp\src\kernel\xbox_memory_layout.c', 'tools\xboxrecomp\src\apu\apu_core.c',
                 'tools\xboxrecomp\src\video\nv2a_d3d11.c', 'tools\xboxrecomp\src\video\nv2a_map_mask.h') | ForEach-Object { Get-LaunchFile (Join-Path $repo $_) } | Where-Object { $null -ne $_ }) }
         command = $command; arguments = $commandArguments
         launch_options = @{ profile = $Profile; keyboard = [bool]$Keyboard; fullscreen = [bool]$Fullscreen
-            trace_buildings = [bool]$TraceBuildings; fps_limit = if ($PSBoundParameters.ContainsKey('FpsLimit')) { $FpsLimit } else { $null }
+            trace_buildings = [bool]$TraceBuildings; no_console_log = [bool]$NoConsoleLog
+            fps_limit = if ($PSBoundParameters.ContainsKey('FpsLimit')) { $FpsLimit } else { $null }
             fov = if ($PSBoundParameters.ContainsKey('Fov')) { $Fov } else { $null } }
         environment = $settings; profile_defaults_for_unset_settings = $profileDefaults
         configuration_files = $files; installed_car_configuration = $installedConfig
@@ -288,7 +399,7 @@ try {
             ForEach-Object { '{0}={1}' -f $_, $settings[$_] }
         Write-Host "Building diagnostics: $($traceValues -join ' ')"
     }
-    $loggedProcess = [MM3LoggedProcess]::Start($command, [string[]]$commandArguments, $repo, $logPath)
+    $loggedProcess = [MM3LoggedProcess]::Start($command, [string[]]$commandArguments, $repo, $logPath, -not $NoConsoleLog)
     $metadata.state = 'running'
     $metadata.process_id = $loggedProcess.Id
     try { Save-LaunchMetadata } catch { Write-Warning "Cannot update launch metadata: $_" }

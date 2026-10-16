@@ -64,7 +64,7 @@ RETAIL_DRIVING = {
 BODY_ONLY = {"NWheels": "4", "NColPoints": "12", "vInertia": "3.25 2.45 1.5", "BrakeBalance": "1.0"}
 
 
-def retail_tweak(ident, alias, driving=None, omit=()):
+def retail_tweak(ident, alias, driving=None, omit=(), *, stability_fields=True):
     """A complete retail-style tweak with every driving key and its quirks."""
     values = {**BODY_ONLY, **RETAIL_DRIVING, **(driving or {})}
     lines = ["Begin(CarInfo)", f"\tID\t{ident}", "\tCOLOR\t0 0x443322 0x443322", "\tLOCKED",
@@ -83,6 +83,14 @@ def retail_tweak(ident, alias, driving=None, omit=()):
               "\tSpringK\t70000.0", "End(CarWheel0)", "Begin(CarCamera)", "\tHoodPos\t0 1 2",
               "\tSpeedometerMaxKmh\t620", "\tSpeedometerMaxMph\t500", "End(CarCamera)",
               "Begin(CarCameraSS)", "\tOutFarStartZ\t6", "End(CarCameraSS)"]
+    if stability_fields:
+        index = lines.index("End(CarWheel0)")
+        lines[index:index] = ["\tRollStiffness\t14200.0"]
+        index += 2
+        for wheel in range(1, 4):
+            lines[index:index] = [f"Begin(CarWheel{wheel})", "\tRollStiffness\t14200.0",
+                                  f"End(CarWheel{wheel})"]
+            index += 3
     return ("\r\n".join(lines) + "\r\n").encode("ascii")
 
 
@@ -166,7 +174,9 @@ class CarModsTest(unittest.TestCase):
             text += "".join(f"\t{k}\t1\r\n" for k in MOD.RATINGS)
             text += f"\tVEHICLECLASS\t1\r\n\tSPEEDOMETERTYPE\t{stock_id % 3}\r\nEnd(CarInfo)\r\nBegin(CarBody)\r\n"
             text += "\tMass\t1500\r\n\tTorqueScale\t300\r\n\tNWheels\t4\r\nEnd(CarBody)\r\n"
-            text += "Begin(CarWheel0)\r\n\tMass\t9\r\nEnd(CarWheel0)\r\n"
+            text += "Begin(CarWheel0)\r\n\tRollStiffness\t14200.0\r\n\tMass\t9\r\nEnd(CarWheel0)\r\n"
+            text += "".join(f"Begin(CarWheel{i})\r\n\tRollStiffness\t14200.0\r\nEnd(CarWheel{i})\r\n"
+                            for i in range(1, 4))
             text += "Begin(CarCamera)\r\n\tHoodPos\t0 1 2\r\n\tSpeedometerMaxKmh\t620\r\n\tSpeedometerMaxMph\t500\r\nEnd(CarCamera)\r\n"
             text += "Begin(CarCameraSS)\r\n\tOutFarStartZ\t6\r\nEnd(CarCameraSS)\r\n"
             hd[f"Cars/Tweak/{donor}.txt"] = text.encode()
@@ -958,7 +968,12 @@ class CarModsTest(unittest.TestCase):
         cars = self.config["cars"] + MOD.factory_specs.apply_presets(self.config)["cars"]
         digest = hashlib.sha256()
         for car in cars:
-            digest.update(MOD.tweak_variant(retail_tweak(ids[car["donor"]], car["donor"]), car))
+            # The explicit suspension profile is a new opt-in native edit;
+            # legacy manifests without it must retain the original bytes.
+            legacy = copy.deepcopy(car)
+            legacy.pop("native_overrides", None)
+            digest.update(MOD.tweak_variant(retail_tweak(ids[car["donor"]], car["donor"],
+                                                       stability_fields=False), legacy))
         self.assertEqual(len(cars), 18)
         self.assertEqual(digest.hexdigest(), NO_BASE_TWEAK_DIGEST)
 

@@ -43,6 +43,13 @@ static struct {
     RoadLine *lines;
     unsigned count, generation, edges;
 } s_road_lines;
+/* Complete park/plaza paths are map artwork, independent of the car graph.
+ * Keeping their copied samples separate also keeps route snapping unchanged. */
+static struct {
+    RoadPoint *points;
+    RoadLine *lines;
+    unsigned count, point_count;
+} s_map_areas;
 static int s_road_layer;
 typedef struct {
     RaceCheckpoint checkpoints[RACE_CHECKPOINTS];
@@ -71,9 +78,16 @@ static int road_point_valid(RoadPoint p)
         fabsf(p.x) < 100000.0f && fabsf(p.y) < 100000.0f && fabsf(p.z) < 100000.0f;
 }
 
+static void road_map_areas_clear(void)
+{
+    free(s_map_areas.points); free(s_map_areas.lines);
+    memset(&s_map_areas, 0, sizeof s_map_areas);
+}
+
 static void road_graph_clear(void)
 {
     unsigned generation = s_roads.generation + 1;
+    road_map_areas_clear();
     free(s_roads.nodes); free(s_roads.edges); free(s_roads.distance);
     free(s_roads.previous); free(s_roads.heap); free(s_roads.heap_position);
     free(s_road_lines.points); free(s_road_lines.lines);
@@ -599,6 +613,81 @@ static RoadPoint road_traffic_point(uint32_t area, uint32_t geometry, unsigned i
     return (RoadPoint){component[0], component[1], component[2]};
 }
 
+/* Washington areas reviewed against its original HUD artwork. Select whole
+ * native areas rather than clipping their paths at review-grid boundaries:
+ * this preserves full garden networks, block outlines and their entrances.
+ * Area 141 completes the authored continuations from area 142. */
+static const unsigned s_map_area_indices[] = {
+    59, 60, 61, 62, 64, 65, 66, 69, 71, 72, 118, 133, 135, 136,
+    139, 140, 141, 142, 143, 153, 154, 155, 156, 157, 161, 166,
+    167, 168, 169, 170, 172, 190, 191, 192, 193, 194
+};
+
+static int road_map_areas_build(uint32_t city)
+{
+    /* Native 14BAE9/1C702C load the authored city.ai OBB at manager +0.
+     * Its center/extents identify the reviewed Washington data, alongside
+     * the area count; Paris can share area indices but must not inherit it. */
+    static const uint32_t washington_bounds[] = {
+        0xC47896DAu, 0x418BEEBBu, 0xC405C168u,
+        0x45361E52u, 0x428034E8u, 0x4521A816u
+    };
+    uint32_t base;
+    unsigned i, pass, point_count = 0, line_count = 0;
+    road_map_areas_clear();
+    if (!city || MEM32(city + 0xAC) != 198) return 0;
+    for (i = 0; i < sizeof washington_bounds / sizeof *washington_bounds; ++i)
+        if (MEM32(city + 0x24 + i * 4) != washington_bounds[i]) return 0;
+    base = MEM32(city + 0x4C);
+    if (!base) return 0;
+    for (pass = 0; pass < 2; ++pass) {
+        for (i = 0; i < sizeof s_map_area_indices / sizeof *s_map_area_indices; ++i) {
+            uint32_t area = base + s_map_area_indices[i] * 0xE8;
+            uint32_t first = MEM32(area + 0x78), end = MEM32(area + 0x7C), geometry;
+            float scale = MEMF(area + 0xE0);
+            if (!first || end < first || (end - first) % 7 || (end - first) / 7 > 4096 ||
+                !isfinite(scale) || scale <= 0 || scale > 50000) goto invalid;
+            for (geometry = first; geometry < end; geometry += 7) {
+                unsigned samples, j;
+                RoadLine *line;
+                if ((MEM8(geometry + 6) & 15) != 0) continue;
+                samples = MEM16(geometry);
+                if (samples < 2 || samples > 4096 || !MEM32(geometry + 2)) goto invalid;
+                if (samples == 2) samples = 6;
+                if (!pass) {
+                    if (line_count >= 4096 || samples > ROAD_NODES - point_count) goto invalid;
+                    ++line_count; point_count += samples;
+                    continue;
+                }
+                line = s_map_areas.lines + s_map_areas.count++;
+                line->first = s_map_areas.point_count; line->count = samples; line->width = 3.5f;
+                for (j = 0; j < samples; ++j) {
+                    RoadPoint point = road_traffic_point(area, geometry, j);
+                    if (!road_point_valid(point)) goto invalid;
+                    s_map_areas.points[s_map_areas.point_count++] = point;
+                    if (!j) {
+                        line->min_x = line->max_x = point.x;
+                        line->min_z = line->max_z = point.z;
+                    } else {
+                        line->min_x = fminf(line->min_x, point.x); line->max_x = fmaxf(line->max_x, point.x);
+                        line->min_z = fminf(line->min_z, point.z); line->max_z = fmaxf(line->max_z, point.z);
+                    }
+                }
+            }
+        }
+        if (!pass) {
+            if (!line_count || !point_count) goto invalid;
+            s_map_areas.points = (RoadPoint *)malloc(point_count * sizeof *s_map_areas.points);
+            s_map_areas.lines = (RoadLine *)calloc(line_count, sizeof *s_map_areas.lines);
+            if (!s_map_areas.points || !s_map_areas.lines) goto invalid;
+        }
+    }
+    return 1;
+invalid:
+    road_map_areas_clear();
+    return 0;
+}
+
 /* Polygon-area objects also own native traffic paths. In Paris these carry
  * the roundabout rings and their entry/exit arcs; using only street splines
  * loses those roads. The low nibble selects cars in native 1545E7/15467A.
@@ -844,6 +933,10 @@ void mm3_race_guidance_roads(uint32_t city, uint32_t loaded)
     if (!road_traffic_joins(traffic, traffic_count, curves, road_count, links, MEM32(city + 0xB0),
                             arrays[0], arrays[2], junction_count)) goto invalid;
     road_traffic_routing(street_nodes);
+    if (road_map_areas_build(city))
+        fprintf(stderr, "[RACE_ROUTE] map-only Washington areas=%u paths=%u samples=%u\n",
+                (unsigned)(sizeof s_map_area_indices / sizeof *s_map_area_indices),
+                s_map_areas.count, s_map_areas.point_count);
     fprintf(stderr, "[RACE_ROUTE] city=%08X roads=%u junctions=%u traffic_paths=%u nodes=%u links=%u edges=%u\n",
             city, road_count, junction_count, traffic_count, s_roads.node_count, MEM32(city + 0xB0), s_roads.edge_count / 2);
     free(traffic); free(curves);
@@ -1294,7 +1387,7 @@ static void route_polyline(uint32_t renderer, uint32_t clip, const RoadPoint *po
 void mm3_race_map_route(uint32_t node, uint32_t table,
                          uint32_t renderer, uint32_t clip, uint32_t layout)
 {
-    unsigned player, i;
+    unsigned player, i, layer;
     int improved = mm3_minimap_improved();
     RoadPoint origin;
     float scale, width, angle, cosine, sine, radius_x, radius_y, cx, cy, factor;
@@ -1314,18 +1407,29 @@ void mm3_race_map_route(uint32_t node, uint32_t table,
         !isfinite(radius_x) || radius_x <= 0 || !isfinite(radius_y) || radius_y <= 0) return;
     factor = scale * 1024.0f / width; cosine = cosf(angle); sine = sinf(angle);
     if (!isfinite(factor) || factor <= 0) return;
-    if (improved && road_lines_build()) {
+    if (improved) {
         float reach = hypotf(radius_x, radius_y) / factor;
         s_road_layer = 1;
-        for (i = 0; i < s_road_lines.count; ++i) {
-            RoadLine *line = &s_road_lines.lines[i];
-            float half_width = road_draw_half_width(line->width, factor);
-            float line_reach = reach + half_width / factor;
-            if (line->max_x < origin.x - line_reach || line->min_x > origin.x + line_reach ||
-                line->max_z < origin.z - line_reach || line->min_z > origin.z + line_reach) continue;
-            route_polyline_width(renderer, clip, s_road_lines.points + line->first, line->count,
-                origin, factor, cosine, sine, radius_x, radius_y, cx, cy, .82f,
-                half_width);
+        for (layer = 0; layer < 2; ++layer) {
+            RoadPoint *points;
+            RoadLine *lines;
+            unsigned count;
+            if (!layer) {
+                if (!road_lines_build()) continue;
+                points = s_road_lines.points; lines = s_road_lines.lines; count = s_road_lines.count;
+            } else {
+                points = s_map_areas.points; lines = s_map_areas.lines; count = s_map_areas.count;
+            }
+            for (i = 0; i < count; ++i) {
+                RoadLine *line = lines + i;
+                float half_width = road_draw_half_width(line->width, factor);
+                float line_reach = reach + half_width / factor;
+                if (line->max_x < origin.x - line_reach || line->min_x > origin.x + line_reach ||
+                    line->max_z < origin.z - line_reach || line->min_z > origin.z + line_reach) continue;
+                route_polyline_width(renderer, clip, points + line->first, line->count,
+                    origin, factor, cosine, sine, radius_x, radius_y, cx, cy, .82f,
+                    half_width);
+            }
         }
         s_road_layer = 0;
     }
@@ -1341,10 +1445,10 @@ void mm3_race_map_route(uint32_t node, uint32_t table,
         race_paths_update(player, heading);
     }
     for (i = 0; i + 1 < s_race[player].count; ++i) {
-        unsigned next = i + 1;
-        /* The brighter leg comes from the car's present road position. A
-         * wrong turn therefore gets fresh guidance to the current checkpoint. */
-        if (next == s_race[player].current && s_paths[player].active_count) continue;
+        /* Keep the complete pending course connected. The native target can
+         * be a late gate in a free-order race, and the brighter car-to-target
+         * reroute can approach it from another street. Replacing its incoming
+         * course leg would leave a gap when that target becomes active. */
         route_polyline(renderer, clip, s_paths[player].course + s_paths[player].starts[i],
                        s_paths[player].lengths[i], s_race[player].origin, factor,
                        cosine, sine, radius_x, radius_y, cx, cy, .8f);

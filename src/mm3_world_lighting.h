@@ -3,13 +3,26 @@
 
 #include <stdint.h>
 
-/* LightApply multiplies these normalized RGB channels by four. A 64/255
- * floor therefore keeps ordinary world materials at about 1.004 times their
- * unlit texture color, regardless of their encoded diffuse/backlight weight. */
-enum { MM3_WORLD_LIGHT_FLOOR = 64 };
+/* Optional accessibility/readability boost, disabled by default. LightApply
+ * multiplies these RGB channels by four, so 48/255 makes unlit surfaces about
+ * 75% as bright as their texture. Normal lighting preserves daylight and uses
+ * low night world fill so local lights provide most illumination. */
+enum { MM3_WORLD_LIGHT_FLOOR = 48 };
 
 /* RGB is returned as a packed native color. Alpha also carries material
  * information in this engine and must never change as part of illumination. */
+static inline uint32_t mm3_world_light_scale(uint32_t color, unsigned percent)
+{
+    uint32_t result = color & 0xFF000000u;
+    unsigned shift;
+    if (percent > 100u) percent = 100u;
+    for (shift = 0; shift < 24; shift += 8) {
+        unsigned channel = (color >> shift) & 255u;
+        result |= ((channel * percent + 50u) / 100u) << shift;
+    }
+    return result;
+}
+
 static inline uint32_t mm3_world_ambient_lift(uint32_t color, unsigned lift)
 {
     uint32_t result = color & 0xFF000000u;

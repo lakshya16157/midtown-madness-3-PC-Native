@@ -47,7 +47,7 @@ def native_source():
     source = source.replace('ptrdiff_t g_xbox_mem_offset;', 'void sub_001633B7(void);\nptrdiff_t g_xbox_mem_offset;')
     source = source.replace('int main(int argc,char**argv){', r'''
 #include "mm3_facade_capacity.c"
-float mm3_draw_distance_scale(void){return test_scale;}
+float mm3_facade_distance_scale(void){return fminf(test_scale,2.0f);}
 int main(int argc,char**argv){''')
     source = source.replace('g_fp_control_word=0x37F;', r'''
  g_fp_control_word=0x37F;

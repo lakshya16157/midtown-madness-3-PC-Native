@@ -66,6 +66,38 @@ def world_positions(model):
 
 
 class ImportedRearLightTest(unittest.TestCase):
+    def test_curved_rear_lens_projection_stays_local_and_preserves_geometry(self):
+        # At X=-.5 the sloped lens is at Z=2.02, ahead of the averaged anchor.
+        # A rear spoiler farther away and a nearer front-facing panel must not
+        # pull the lamp off its own lens.
+        source = {"meshes": [dict(name="BODY_H",
+            positions=[[-1, 0, 2], [0, 0, 2.04], [0, 1, 2.04], [-1, 1, 2],
+                       [-1, 0, 2.5], [0, 0, 2.5], [0, 1, 2.5],
+                       [-1, 0, 2.08], [0, 0, 2.08], [0, 1, 2.08]],
+            normals=[[0, 0, 1]] * 7 + [[0, 0, -1]] * 3,
+            uvs=[[0, 0]] * 10,
+            triangles=[[0, 1, 2, 0], [0, 2, 3, 0], [4, 5, 6, 0], [7, 8, 9, 0]])]}
+        anchors = {"backlight": [[-.5, .5, 2]], "headlight": [[0, .5, -2]]}
+        before, original = copy.deepcopy(source), copy.deepcopy(anchors)
+        projected, report = mm3_lights.rear_surface_anchors(source, anchors)
+        np.testing.assert_allclose(projected["backlight"], [[-.5, .5, 2.03]])
+        self.assertEqual(projected["headlight"], anchors["headlight"])
+        self.assertEqual(len(report), 1)
+        self.assertEqual(source, before)
+        self.assertEqual(anchors, original)
+        again, _ = mm3_lights.rear_surface_anchors(source, projected)
+        self.assertEqual(again, projected)
+
+    def test_rear_projection_preserves_external_anchor_and_ignores_unrelated_mesh(self):
+        mesh = dict(name="BODY_H", positions=[[-1, 0, 2], [1, 0, 2], [0, 1, 2]],
+                    normals=[[0, 0, 1]] * 3, uvs=[[0, 0]] * 3, triangles=[[0, 1, 2, 0]])
+        source = {"meshes": [mesh]}
+        anchors = {"backlight": [[0, .5, 2.04]], "brakelight": [[0, .5, 1.8]]}
+        self.assertEqual(mm3_lights.rear_surface_anchors(source, anchors), (anchors, []))
+        mesh["name"] = "SHADOW_H"
+        self.assertEqual(mm3_lights.rear_surface_anchors(source,
+                         {"backlight": [[0, .5, 1.99]]}), ({"backlight": [[0, .5, 1.99]]}, []))
+
     def test_front_pair_and_road_light_move_together_and_remain_idempotent(self):
         model = read_model(model_for(115, template_block(115)))
         model.root.children.extend([
@@ -104,6 +136,8 @@ class ImportedRearLightTest(unittest.TestCase):
                 offset = 4 + len(node.name) + 1
                 for delta in (12, 20, 32, 36):
                     self.assertEqual(struct.unpack_from("<f", node.prefix, offset + delta)[0], 0)
+                color = struct.unpack_from("<I", node.prefix, offset + 28)[0]
+                self.assertEqual(color, 0 if node.name == "beam" else 0xffff0000)
         self.assertEqual(mm3_lights.align_lights(blob, {"headlight": []})[0], blob)
 
     def test_front_beam_does_not_accumulate_float32_rounding_on_repair(self):

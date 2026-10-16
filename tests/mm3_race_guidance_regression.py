@@ -156,6 +156,9 @@ def retail_city_fixture(city, destination):
         struct.pack_into("<" + fmt, memory, address - address_base, *values)
 
     manager = allocate(0xD0)
+    # Native 14BAE9/1C702C copy this authored 15-float OBB into the AI manager.
+    # Preserve it for title-owned map-only area identity, not just road counts.
+    write(manager, "15f", *struct.unpack_from("<15f", data, base - 60))
     arrays = [allocate(count * stride) for count, stride in
               ((ordinary, 0xDC), (special, 0xDC), (junctions, 0xAC), (areas, 0xE8))]
     for group, count in enumerate((ordinary, special, junctions, areas)):
@@ -271,6 +274,18 @@ def ui_declaration_data():
     return "\nstatic void native_ui_declaration_data(void) {\n" + "\n".join(lines) + "\n}\n"
 
 
+def retail_big_one_checkpoints():
+    """Read the named retail race's ordered gates, without copying assets."""
+    with zipfile.ZipFile(ROOT / "game_files/Data/Data_hd.zip") as archive:
+        logic = archive.read("Scripts/Washington/Checkpoint/09Logic.lua").decode("latin1")
+        assert '"The big one"' in logic
+        setup = archive.read("Scripts/Washington/Checkpoint/09Setup.lua").decode("latin1")
+    gates = re.findall(r'objectCreate\(1,"CP-(\d+)"\).*?objectSetPos\(([^)]+)\)', setup, re.S)
+    assert [int(i) for i, _ in gates] == list(range(31))
+    points = ",\n".join("    {" + coordinates.replace(",", "f,") + "f}" for _, coordinates in gates)
+    return "\nstatic const RoadPoint retail_big_one_gates[] = {\n" + points + "\n};\n"
+
+
 def main():
     if not shutil.which("cl") or not shutil.which("cmake"):
         raise SystemExit("Run scripts/enter-env.ps1 first.")
@@ -336,7 +351,7 @@ def main():
         # retail file constants for them.
         file_constants = re.sub(r"MEMF\(0x4085F[8C]\)", "runtime_quantization_bias", body)
         (folder / "native_race_guidance.inc").write_text(
-            declarations + "\n" + body + constants(file_constants) + ui_declaration_data())
+            declarations + "\n" + body + constants(file_constants) + ui_declaration_data() + retail_big_one_checkpoints())
         shutil.copyfile(ROOT / "src/mm3_recomp_types.h", folder / "recomp_types.h")
         shutil.copyfile(ROOT / "src/mm3_race_guidance.c", folder / "production_race_guidance.c")
         executable = folder / "contract.exe"

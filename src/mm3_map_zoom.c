@@ -4,6 +4,7 @@
 extern int mm3_minimap_improved(void);
 
 #define MAP_SPEED_SPAN 0.60f
+#define MAP_DETAIL_ZOOM 1.10f
 
 void mm3_map_ui_capacity(void)
 {
@@ -386,24 +387,17 @@ void mm3_map_zoom_apply(uint32_t node, uint32_t player_record)
     if (t > 1.0f) t = 1.0f;
     s_map_zoom[slot].target = 1.0f + MAP_SPEED_SPAN * t * t * (3.0f - 2.0f * t);
     scale = MEMF(node + 0x50);
-    /* 11FE40 fits stock zoom to checkpoint proximity. That fit can zoom in
-     * while accelerating and cancel the speed zoom. Preserve this layout's
-     * initial framing (including native split-screen scaling), then hold it
-     * as the speed curve's baseline. Roads and 11CAE8's marker positions all
-     * read +50; the window calculations remain native. This changes world
-     * coverage within the fixed HUD frame, not the frame or icon dimensions.
-     * The renderer enlarges that frame by NV2A_MINIMAP_SCALE. Compensate the
-     * world scale independently of that enlargement. Make the former stopped
-     * view the high-speed endpoint, with a 60% closer view while stopped.
-     * Ctrl changes the window, never this world scale:
-     * restoring native scale/speed here made the expanded map zoom back in,
-     * dropping streets and moving visible checkpoints to the clamp edge.
-     * Keeping one world camera makes every expansion reveal more of the city
-     * and preserves speed zoom throughout the transition and its reversal. */
+    /* Hold the first native framing so checkpoint proximity cannot cancel
+     * speed zoom. The renderer blends its 2.2x driving frame back to 1x when
+     * Ctrl opens; compensate that changing display scale to remove the
+     * overview's additional 2.2x zoom-out. The additional
+     * detail factor brings both cameras 10% closer without resizing icons. */
     if (isfinite(scale) && scale > 0.0f) {
+        float display_scale = NV2A_MINIMAP_SCALE +
+            (1.0f - NV2A_MINIMAP_SCALE) * map_expansion(node);
         if (!s_map_zoom[slot].baseline) s_map_zoom[slot].baseline = scale;
-        MEMF(node + 0x50) = s_map_zoom[slot].baseline * (1.0f + MAP_SPEED_SPAN) /
-            (NV2A_MINIMAP_SCALE * s_map_zoom[slot].span);
+        MEMF(node + 0x50) = s_map_zoom[slot].baseline * (1.0f + MAP_SPEED_SPAN) * MAP_DETAIL_ZOOM /
+            (display_scale * s_map_zoom[slot].span);
     }
 }
 
@@ -425,19 +419,20 @@ float mm3_map_zoom_checkpoint_scale(uint32_t node, uint32_t flags)
 
 void mm3_map_zoom_compass_geometry(uint32_t node, uint32_t vertices)
 {
-    float scale = mm3_map_zoom_checkpoint_scale(node, 1), cx = 0, cy = 0;
+    float cx = 0, cy = 0;
     unsigned i;
-    if (!vertices || scale == 1.0f) return;
-    /* 11D808 draws MapNorth directly, outside 11CAE8's marker dispatch.
-     * Shrink its native quad about its own centre before the
-     * authored map rotation; its position, UVs, color and clip stay intact. */
+    (void)node;
+    if (!vertices) return;
+    /* MapNorth is a separate native submission, outside marker dispatch.
+     * Collapse only its quad before rotation; a zero-area triangle produces
+     * no pixels and leaves the native packing/clip lifetime intact. */
     for (i = 0; i < 4; ++i) {
         cx += MEMF(vertices + 0xC + i * 0x24) * .25f;
         cy += MEMF(vertices + 0x10 + i * 0x24) * .25f;
     }
     for (i = 0; i < 4; ++i) {
         uint32_t vertex = vertices + 0xC + i * 0x24;
-        MEMF(vertex) = cx + (MEMF(vertex) - cx) * scale;
-        MEMF(vertex + 4) = cy + (MEMF(vertex + 4) - cy) * scale;
+        MEMF(vertex) = cx;
+        MEMF(vertex + 4) = cy;
     }
 }

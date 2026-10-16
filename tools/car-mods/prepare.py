@@ -33,6 +33,10 @@ _original_spec = importlib.util.spec_from_file_location(
     "mm3_prepare_original_stats", Path(__file__).with_name("original_stats.py"))
 original_stats = importlib.util.module_from_spec(_original_spec)
 _original_spec.loader.exec_module(original_stats)
+_native_spec = importlib.util.spec_from_file_location(
+    "mm3_native_overrides", Path(__file__).with_name("native_overrides.py"))
+native_overrides = importlib.util.module_from_spec(_native_spec)
+_native_spec.loader.exec_module(native_overrides)
 
 
 def default_config_path(directory: Path | None = None) -> Path:
@@ -181,7 +185,7 @@ def validate_config(config: dict) -> dict:
     seen_ids, seen_aliases = set(), set()
     for car in config["cars"]:
         required = {"id", "alias", "donor", "display_name", "ratings", "physics", "colors"}
-        exact_keys(car, required | {"speedometer", "model_package", "engine_profile", "driving_base", "hud_style"}, "car")
+        exact_keys(car, required | {"speedometer", "model_package", "engine_profile", "driving_base", "hud_style", "native_overrides"}, "car")
         if not required <= set(car):
             raise ValueError("Each car requires id, alias, donor, display_name, ratings, physics, colors")
         ident = car["id"]
@@ -244,6 +248,8 @@ def validate_config(config: dict) -> dict:
             raise ValueError("Each car requires 1 to 3 colors in #rrggbb form")
         if "speedometer" in car:
             validate_speedometer(car["speedometer"])
+        if "native_overrides" in car:
+            native_overrides.validate_overrides(car["native_overrides"])
         if "model_package" in car:
             value = car["model_package"]
             if not isinstance(value, str) or "\x00" in value or len(value) > 4096:
@@ -529,6 +535,7 @@ def tweak_variant(original: bytes, car: dict, base: str | None = None,
         text = update_section(text, "CarCamera", gauges)
         if "Begin(CarCameraSS)" in text:
             text = update_section(text, "CarCameraSS", gauges)
+    text = native_overrides.apply_overrides(text, car.get("native_overrides", []))
     return text.encode("ascii")
 
 

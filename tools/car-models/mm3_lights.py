@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from itertools import permutations
 from pathlib import Path
+import re
 import struct
 
 import numpy as np
@@ -18,6 +19,61 @@ import mm3_model
 
 REAR_LIGHT_TYPES = {"backlight": 1, "brakelight": 2, "reverselight": 3}
 LIGHT_TYPES = {"headlight": 0, **REAR_LIGHT_TYPES, "headlightenv": 8}
+REAR_LAMP_CLEARANCE = .01
+MAX_REAR_LAMP_PROJECTION = .1
+
+
+def rear_surface_anchors(source: dict, anchors: dict) -> tuple[dict, list[dict]]:
+    """Place rear effects outside their nearby visible lens, in source metres.
+
+    Averaging a curved lamp puts its center behind its outer surface. Intersect
+    the rearward ray at the lamp's X/Y with rear-facing exterior triangles,
+    accepting only surfaces within ten centimetres of the authored anchor.
+    This avoids an unrelated spoiler/bumper moving the effect across the car.
+    Already external anchors keep their position, so reapplication is stable.
+    """
+    faces, outward = [], []
+    for mesh in source.get("meshes", []):
+        if not re.fullmatch(r"BODY_H|BREAK\d+_H|FNDR[01]_H", mesh["name"]):
+            continue
+        if not mesh.get("positions") or not mesh.get("triangles"):
+            continue
+        p, n, _, tri, _ = mm3_model._neutral_world(mesh, np.eye(4))
+        faces.append(p[tri[:, :3]])
+        normals = n[tri[:, :3]].mean(axis=1)
+        outward.append(normals[:, 2] > .2 * np.linalg.norm(normals, axis=1))
+    if not faces:
+        return anchors, []
+    faces = np.concatenate(faces)
+    outward = np.concatenate(outward)
+    a = faces[:, 0, :2]
+    b = faces[:, 1, :2] - a
+    c = faces[:, 2, :2] - a
+    determinant = b[:, 0] * c[:, 1] - b[:, 1] * c[:, 0]
+    valid = outward & (np.abs(determinant) > 1e-12)
+    faces, a, b, c, determinant = (value[valid] for value in (faces, a, b, c, determinant))
+    result = {name: [list(point) for point in points] for name, points in anchors.items()}
+    report = []
+    for kind in REAR_LIGHT_TYPES:
+        for index, position in enumerate(result.get(kind, [])):
+            point = np.asarray(position, dtype=float)
+            d = point[:2] - a
+            u = (d[:, 0] * c[:, 1] - d[:, 1] * c[:, 0]) / determinant
+            v = (b[:, 0] * d[:, 1] - b[:, 1] * d[:, 0]) / determinant
+            z = faces[:, 0, 2] + u * (faces[:, 1, 2] - faces[:, 0, 2]) + v * (faces[:, 2, 2] - faces[:, 0, 2])
+            hit = ((u >= -1e-7) & (v >= -1e-7) & (u + v <= 1 + 1e-7)
+                   & (np.abs(z - point[2]) <= MAX_REAR_LAMP_PROJECTION))
+            if not hit.any():
+                continue
+            surface = float(z[hit].max())
+            target = max(point[2], surface + REAR_LAMP_CLEARANCE)
+            if target - point[2] > MAX_REAR_LAMP_PROJECTION or target - point[2] <= 1e-9:
+                continue
+            position[2] = target
+            report.append({"type": kind, "index": index, "from": point.tolist(),
+                           "to": list(position), "surface_z": surface,
+                           "clearance": REAR_LAMP_CLEARANCE})
+    return result, report
 
 
 def _helper_anchors(source: dict, names: tuple[str, ...]) -> list[list[float]]:
@@ -97,6 +153,9 @@ def source_anchors(source: dict) -> tuple[dict, dict]:
     elif selected is not None and "headlight" in selected:
         anchors["headlight"] = selected["headlight"]
         evidence["headlight_method"] = "measured source lamp surfaces or confirmed absence"
+    anchors, projected = rear_surface_anchors(source, anchors)
+    if projected:
+        evidence["rear_surface_projection"] = projected
     return anchors, evidence
 
 
@@ -207,6 +266,12 @@ def align_lights(blob: bytes, anchors: dict, *, source_transform=None) -> tuple[
                 # brightness/size for the secondary effect at offsets 32/36.
                 for delta in (12, 20) + ((32, 36) if model.version >= 114 else ()):
                     struct.pack_into("<f", prefix, offset + delta, 0)
+                if name == "headlightenv":
+                    # Native CF2DA's road-projector branch bypasses lamp
+                    # brightness/size and submits the packed color directly.
+                    # Zero ARGB as well, otherwise a disabled donor beam can
+                    # still light the road from its old attachment position.
+                    struct.pack_into("<I", prefix, offset + 28, 0)
                 effect.prefix = bytes(prefix)
                 report["disabled"].append({"node": path, "type": name,
                     "reason": "no corresponding source lamp"})

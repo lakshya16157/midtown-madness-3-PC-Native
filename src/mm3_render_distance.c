@@ -7,36 +7,55 @@
 
 extern void nv2a_d3d_set_depth_view_remap(float scale, float knee);
 
-/* The sky fog ramps (Skies/<sky>_fog.cdds) are indexed by w-buffer depth as a
- * fraction of the far plane, authored for the 700 m city cap: Paris morning
- * haze starts near 0.47 and the sky mask at 0.78 (546 m). Scaling the far
- * plane would push that band past where the city's geometry ends (~900 m at
- * 2x), leaving crisp blocks against the sky. Keep the haze where the Xbox
- * had it and stretch the band from 0.78 out to the new far plane.
- * ponytail: one knee for every sky; read it per ramp if a sky's band differs. */
+/* Sky fog ramps (Skies/<sky>_fog.cdds) index w-buffer depth relative to the
+ * far plane and were authored for the 700 m city cap. The renderer anchors
+ * their haze while fading extended city geometry into the sky. Only the
+ * effective city/camera multiplier belongs in that remap: changing object
+ * LODs or requesting a range outside the resident cells must not move the
+ * haze. The ramp's common sky-mask knee remains 0.78. */
 #define FOG_KNEE 0.78f
 /* PAL MM3: increase the title's own visibility/LOD distances before its
  * native D3D11 translation sees geometry. Keep the original fade fractions,
  * frustum construction, streaming and temporary render-pass save/restore.
- * RECOMP_DRAW_DISTANCE=1 provides the Xbox baseline for comparisons. */
+ * Object/LOD and city/camera ranges are separate. Both at 1 provide the Xbox
+ * baseline; an unset view setting inherits the old combined draw setting. */
+static float env_scale(const char *name, float fallback)
+{
+    const char *env = getenv(name);
+    char *end = NULL;
+    float value = env && *env ? strtof(env, &end) : fallback;
+    if (env && *env && (end == env || *end || !isfinite(value) || value < 1.0f || value > 4.0f)) {
+        fprintf(stderr, "[MM3_DISTANCE] invalid %s; expected 1..4, using %.3g\n", name, fallback);
+        value = fallback;
+    }
+    return value;
+}
+
 static float distance_scale(void)
 {
     static float scale;
     if (!scale) {
-        const char *env = getenv("RECOMP_DRAW_DISTANCE");
-        char *end = NULL;
-        float value = env ? strtof(env, &end) : 2.0f;
-        if (env && (end == env || *end || !isfinite(value) || value < 1.0f || value > 4.0f)) {
-            fprintf(stderr, "[MM3_DISTANCE] invalid RECOMP_DRAW_DISTANCE; expected 1..4, using 2\n");
-            value = 2.0f;
-        }
-        scale = value;
-        /* MM3_FOG_REMAP=0 keeps the scaled band, for A/B comparisons. */
-        if (!getenv("MM3_FOG_REMAP") || strcmp(getenv("MM3_FOG_REMAP"), "0"))
-            nv2a_d3d_set_depth_view_remap(scale, FOG_KNEE);
-        fprintf(stderr, "[MM3_DISTANCE] draw/LOD distance multiplier %.3g\n", scale);
+        scale = env_scale("RECOMP_DRAW_DISTANCE", 2.0f);
+        fprintf(stderr, "[MM3_DISTANCE] object/LOD distance multiplier %.3g\n", scale);
     }
     return scale;
+}
+
+float mm3_view_distance_scale(void)
+{
+    static float scale;
+    if (!scale) {
+        scale = env_scale("RECOMP_VIEW_DISTANCE", distance_scale());
+        fprintf(stderr, "[MM3_DISTANCE] object_lod=%.3g city_view=%.3g facade_zones=%.3g facade_zone_cap=2\n",
+                distance_scale(), scale, scale > 2.0f ? 2.0f : scale);
+    }
+    return scale;
+}
+
+float mm3_facade_distance_scale(void)
+{
+    float scale = mm3_view_distance_scale();
+    return scale > 2.0f ? 2.0f : scale;
 }
 
 float mm3_draw_distance_scale(void)
@@ -44,16 +63,59 @@ float mm3_draw_distance_scale(void)
     return distance_scale();
 }
 
+static float s_city_stream_cap;
+static float s_city_authored_distance;
+static float s_haze_scale;
+
+/* Called once at the native loader's facade-renderer lookup, before its
+ * original clamp. Streaming and both facade draw entries visit only the
+ * camera cell +/-1 (nine cells, nine inline visibility records). The native
+ * 0.95*cell-size cap keeps the far plane inside that resident neighborhood.
+ * Scaling this cap exposed missing whole rows whenever the camera crossed a
+ * cell boundary. Record it even if the current range does not need clamping,
+ * and clear it when loading a city without that renderer. */
+void mm3_city_streaming_limit(uint32_t renderer)
+{
+    float cell_size = renderer ? MEMF(renderer + 0x1505Cu) : 0.0f;
+    s_city_stream_cap = isfinite(cell_size) && cell_size > 0.0f
+        ? (float)((double)cell_size * MEMF(0x003860E0u)) : 0.0f;
+    fprintf(stderr, "[MM3_DISTANCE] city resident renderer=0x%08X cell_size=%.3g cap=%.3g\n",
+            renderer, cell_size, s_city_stream_cap);
+}
+
+static float bounded_city_distance(float distance)
+{
+    return s_city_stream_cap > 0.0f && distance > s_city_stream_cap
+        ? s_city_stream_cap : distance;
+}
+
+static void update_city_haze(float effective, float authored)
+{
+    float baseline = bounded_city_distance(authored);
+    if (isfinite(effective) && effective > 0.0f && isfinite(baseline) && baseline > 0.0f) {
+        float scale = fmaxf(1.0f, effective / baseline);
+        if (scale != s_haze_scale) {
+            /* MM3_FOG_REMAP=0 retains the native depth ramp for A/B tests. */
+            if (!getenv("MM3_FOG_REMAP") || strcmp(getenv("MM3_FOG_REMAP"), "0"))
+                nv2a_d3d_set_depth_view_remap(scale, FOG_KNEE);
+            s_haze_scale = scale;
+            fprintf(stderr, "[MM3_DISTANCE] city authored=%.3g effective=%.3g resident_cap=%.3g haze_scale=%.3g\n",
+                    authored, effective, s_city_stream_cap, scale);
+        }
+    }
+}
+
+static int s_pedestrian_distances_initialized;
+
 static void pedestrian_defaults(void)
 {
-    static int done;
-    if (!done) {
+    if (!s_pedestrian_distances_initialized) {
         float scale = distance_scale();
         unsigned i;
         /* XBE defaults are {20,30,40,80,160}. The title's supersampled
          * passes save these effective values and restore them unchanged. */
         for (i = 0; i < 5; ++i) MEMF(0x0039ADC0u + 4 * i) *= scale;
-        done = 1;
+        s_pedestrian_distances_initialized = 1;
     }
 }
 
@@ -80,6 +142,9 @@ void sub_000D9E2E(void)
     if (LO8(g_eax)) {
         unsigned i;
         for (i = 0; i < 5; ++i) MEMF(0x0039ADC0u + 4 * i) *= distance_scale();
+        /* A custom pedestrian setter can precede object-manager creation.
+         * Those globals are already effective and must not be scaled again. */
+        s_pedestrian_distances_initialized = 1;
     }
 }
 
@@ -90,15 +155,17 @@ void sub_000FE71E(void)
     /* City construction, DSS loading and renderSetViewDistance. Exclude
      * cubemap passes (0x22CE39/0x22CFE3): their values come from the
      * effective camera distance and their restore must stay exact. */
-    if (caller == 0x001002CEu || caller == 0x00100ED6u || caller == 0x00210EDEu)
-        MEMF(g_esp + 4) *= distance_scale();
-    /* City loading applies a title-specific distance cap after reading the
-     * DSS. Its local is then passed straight to the camera projection, so
-     * update both together rather than leaving the camera at the Xbox cap. */
-    if (caller == 0x00224C4Eu) {
-        MEMF(g_esp + 4) *= distance_scale();
-        MEMF(g_ebp + 8) = MEMF(g_esp + 4);
+    if (caller == 0x001002CEu || caller == 0x00100ED6u || caller == 0x00210EDEu) {
+        float authored = MEMF(g_esp + 4);
+        MEMF(g_esp + 4) *= mm3_view_distance_scale();
+        if (caller == 0x00210EDEu)
+            MEMF(g_esp + 4) = bounded_city_distance(MEMF(g_esp + 4));
+        if (isfinite(authored) && authored > 0.0f)
+            s_city_authored_distance = authored;
     }
+    /* 0x224C4E already supplies the native resident-cell cap and writes the
+     * same value into the loader local used by camera projection. Keep both
+     * untouched. Temporary cubemap settings likewise remain effective. */
     sub_000FE71E_original();
 }
 
@@ -123,12 +190,12 @@ void sub_001661D0(void)
      * coefficients from the larger distances. The supersampled-pass
      * save/restore calls at 0x211220/0x21153D already use effective values. */
     if (caller == 0x0015FA1Du || caller == 0x0020FABAu) {
-        MEMF(g_esp + 4) *= distance_scale();
-        MEMF(g_esp + 8) *= distance_scale();
+        MEMF(g_esp + 4) *= mm3_facade_distance_scale();
+        MEMF(g_esp + 8) *= mm3_facade_distance_scale();
     }
     sub_001661D0_original();
     {
-        float scale = distance_scale();
+        float scale = mm3_facade_distance_scale();
         float near_distance = MEMF(0x003C04E0u);
         /* The native facade-detail fade uses squared camera distance and
          * fixed offsets of 10 m / 1 m below the near zone. Scaling only the
@@ -153,9 +220,14 @@ void sub_000F4AC3(void)
     uint32_t caller = MEM32(g_esp);
     /* Explicit view-distance settings supply an original distance. FOV
      * changes (0x210E1E) reuse the stored far plane. City loading
-     * (0x224C73) supplies the already scaled city distance and cap. */
-    if (caller == 0x00210EB4u)
-        MEMF(g_esp + 0x10) *= distance_scale();
+     * (0x224C73) supplies the already bounded effective city distance. */
+    if (caller == 0x00210EB4u) {
+        float authored = MEMF(g_esp + 0x10);
+        MEMF(g_esp + 0x10) = bounded_city_distance(authored * mm3_view_distance_scale());
+        update_city_haze(MEMF(g_esp + 0x10), authored);
+    } else if (caller == 0x00224C73u) {
+        update_city_haze(MEMF(g_esp + 0x10), s_city_authored_distance);
+    }
     sub_000F4AC3_original();
 }
 

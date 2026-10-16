@@ -1,4 +1,4 @@
-"""Read-only, searchable native car specifications for the car editor.
+"""Searchable native car specifications with optional host-managed editing.
 
 The widget intentionally knows nothing about manifests or the editor.  Cars use
 ``sections = [{"name": str, "entries": [(key, raw_value), ...]}, ...]`` so repeated
@@ -58,16 +58,27 @@ class StatsBrowser(ttk.Frame):
     def __init__(self, parent, original_cars: Iterable[dict] | Mapping,
                  tip_for: Callable[[str, str], str], show_heading: bool = True,
                  reference_var: tk.StringVar | None = None, show_reference_picker: bool = True,
-                 range_for: Callable[[str, str], str] | None = None, **kwargs):
+                 range_for: Callable[[str, str], str] | None = None,
+                 edit_for: Callable[[dict], str] | None = None,
+                 apply_edit: Callable[[dict, str | None], None] | None = None,
+                 edit_value_for: Callable[[dict], str | None] | None = None,
+                 edit_hint_for: Callable[[dict], str] | None = None, **kwargs):
         """``reference_var`` lets a host window share its own compare picker;
         ``show_reference_picker=False`` hides this widget's picker (it keeps
         working for programmatic use). ``range_for(section, key)`` may add a
         game-wide range sentence to the setting explanation. Reference cars
         with ``reference_group`` 0 (added cars) are listed first and never
-        become the default comparison."""
+        become the default comparison. ``edit_for(row)`` returns a read-only
+        reason, or an empty string to allow editing. ``apply_edit(row, text)``
+        validates and commits an edit (None restores inheritance); ValueError
+        leaves the dialog open. Without these callbacks this is read-only."""
         super().__init__(parent, **kwargs)
         self.tip_for = tip_for
         self.range_for = range_for
+        self.edit_for, self.apply_edit = edit_for, apply_edit
+        self.edit_value_for = edit_value_for
+        self.edit_hint_for = edit_hint_for
+        self._edit_window = None
         self.car: dict | None = None
         self.original_cars: list[dict] = []
         self._references: dict[str, dict] = {}
@@ -128,6 +139,11 @@ class StatsBrowser(ttk.Frame):
             status, text="Copy selected value", command=self.copy_selected_value,
             state="disabled")
         self.copy_button.grid(row=0, column=1, sticky="e")
+        self.edit_button = ttk.Button(status, text="Edit selected value", command=self.edit_selected_value,
+                                      state="disabled")
+        if edit_for is not None and apply_edit is not None:
+            self.edit_button.grid(row=0, column=1, sticky="e", padx=(8, 6))
+            self.copy_button.grid(column=2)
 
         table = ttk.Frame(self)
         table.grid(row=3, column=0, sticky="nsew")
@@ -157,6 +173,9 @@ class StatsBrowser(ttk.Frame):
         self.tree.bind("<<TreeviewSelect>>", self._selection_changed)
         self.tree.bind("<Control-c>", self.copy_selected_value)
         self.tree.bind("<Control-C>", self.copy_selected_value)
+        self.tree.bind("<Double-1>", self._double_click)
+        self.tree.bind("<Return>", self.edit_selected_value)
+        self.tree.bind("<F2>", self.edit_selected_value)
         for widget in (self.tree, self.search_entry, self.reference_combo):
             widget.bind("<Control-f>", self._focus_search)
 
@@ -179,7 +198,9 @@ class StatsBrowser(ttk.Frame):
         self.source_label.grid(
             row=5, column=0, sticky="w", pady=(8, 0))
         self.bind("<Configure>", lambda e: self.source_label.configure(wraplength=max(240, e.width - 20)))
-        status.bind("<Configure>", lambda e: self.count_label.configure(wraplength=max(140, e.width - self.copy_button.winfo_reqwidth() - 20)))
+        status.bind("<Configure>", lambda e: self.count_label.configure(wraplength=max(
+            140, e.width - self.copy_button.winfo_reqwidth()
+            - (self.edit_button.winfo_reqwidth() + 14 if self.edit_button.winfo_manager() else 0) - 20)))
         self.set_original_cars(original_cars)
 
     def set_original_cars(self, cars: Iterable[dict] | Mapping | None) -> None:
@@ -247,13 +268,16 @@ class StatsBrowser(ttk.Frame):
 
     def show_car(self, car: dict | None) -> None:
         """Render every native section entry, retaining repeated native keys."""
+        if self._edit_window is not None and self._car_id(car or {}) != self._car_id(self.car or {}):
+            self._close_edit()
         self.car = car
         self._rows = []
         if car:
             name = str(car.get("display_name") or car.get("alias") or car.get("id") or "Car")
             self.title_var.set(name)
             alias = str(car.get("alias") or car.get("id") or "")
-            subtitle = "Full specification · read-only values"
+            subtitle = ("Full specification · select a value to edit" if self.apply_edit is not None
+                        else "Full specification · read-only values")
             if alias and alias != name:
                 subtitle += f" · {alias}"
             self.subtitle_var.set(subtitle)
@@ -325,6 +349,8 @@ class StatsBrowser(ttk.Frame):
         selected = self.tree.selection()
         row = self._visible_rows.get(selected[0]) if selected else None
         self.copy_button.configure(state="normal" if row else "disabled")
+        reason = self._edit_reason(row) if row else "Select a setting."
+        self.edit_button.configure(state="disabled" if reason else "normal")
         if not row:
             self.detail_title_var.set("No matching settings" if self._rows else "Select a setting for a helpful tip")
             self.tip_var.set("Try a shorter search or clear the filter." if self._rows
@@ -337,7 +363,101 @@ class StatsBrowser(ttk.Frame):
             extra = self.range_for(row["section"], row["key"])
             if extra:
                 text += "\n" + str(extra)
+        if self.apply_edit is not None:
+            text += "\n" + (reason or "Double-click the Value cell, press Enter or choose Edit selected value. Save & Apply installs your changes.")
         self.tip_var.set(text)
+
+    def _edit_reason(self, row: dict) -> str:
+        if self.edit_for is None or self.apply_edit is None:
+            return "These values are read-only."
+        return self.edit_for(row)
+
+    def _double_click(self, event):
+        if self.tree.identify_region(event.x, event.y) != "cell" or self.tree.identify_column(event.x) != "#3":
+            return
+        item = self.tree.identify_row(event.y)
+        if item:
+            self.tree.selection_set(item)
+            self.tree.focus(item)
+            return self.edit_selected_value()
+
+    def edit_selected_value(self, _event=None):
+        selected = self.tree.selection()
+        row = self._visible_rows.get(selected[0]) if selected else None
+        if row is None:
+            return "break"
+        reason = self._edit_reason(row)
+        if reason:
+            self._selection_changed()
+            return "break"
+        if self._edit_window is not None:
+            self._edit_window.lift()
+            return "break"
+        self._edit_row = dict(row)
+        self._edit_car_id = self._car_id(self.car or {})
+        window = self._edit_window = tk.Toplevel(self)
+        window.title("Edit car stat")
+        window.transient(self.winfo_toplevel())
+        window.resizable(False, False)
+        window.protocol("WM_DELETE_WINDOW", self._close_edit)
+        frame = ttk.Frame(window, padding=18)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=f"{row['section'] or 'General'} · {row['key']}",
+                  font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        value = self.edit_value_for(row) if self.edit_value_for is not None else None
+        if value is None:
+            value = row["value"]
+        self.edit_var = tk.StringVar(value=value)
+        self.edit_entry = ttk.Entry(frame, textvariable=self.edit_var, width=58)
+        self.edit_entry.pack(fill="x", pady=(12, 8))
+        ttk.Label(frame, text="Enter a value. Leave blank or use Inherited value to clear your override.",
+                  style="Sub.TLabel", wraplength=460).pack(anchor="w")
+        if self.edit_hint_for is not None:
+            hint = self.edit_hint_for(row)
+            if hint:
+                ttk.Label(frame, text=hint, style="Sub.TLabel", wraplength=460).pack(anchor="w", pady=(6, 0))
+        self.edit_error_var = tk.StringVar()
+        ttk.Label(frame, textvariable=self.edit_error_var, foreground="#b91c1c",
+                  wraplength=460).pack(anchor="w", pady=(8, 0))
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(12, 0))
+        ttk.Button(buttons, text="Keep change", command=self._commit_edit).pack(side="left")
+        ttk.Button(buttons, text="Inherited value", command=self._reset_edit).pack(side="left", padx=8)
+        ttk.Button(buttons, text="Cancel", command=self._close_edit).pack(side="right")
+        window.bind("<Return>", lambda _event: self._commit_edit())
+        window.bind("<Escape>", lambda _event: self._close_edit())
+        window.update_idletasks()
+        window.grab_set()
+        self.edit_entry.focus_set()
+        self.edit_entry.selection_range(0, "end")
+        return "break"
+
+    def _commit_edit(self, reset: bool = False) -> bool:
+        if self._edit_window is None:
+            return False
+        try:
+            if self._car_id(self.car or {}) != self._edit_car_id:
+                raise ValueError("The selected car changed. Close this dialog and select the value again.")
+            reason = self._edit_reason(self._edit_row)
+            if reason:
+                raise ValueError(reason)
+            value = self.edit_var.get().strip()
+            self.apply_edit(self._edit_row, None if reset or not value else value)
+        except (ValueError, OSError) as error:
+            self.edit_error_var.set(str(error))
+            self.edit_entry.focus_set()
+            return False
+        self._close_edit()
+        return True
+
+    def _reset_edit(self) -> bool:
+        return self._commit_edit(reset=True)
+
+    def _close_edit(self) -> None:
+        if self._edit_window is not None:
+            self._edit_window.destroy()
+            self._edit_window = None
+        self.tree.focus_set()
 
     def copy_selected_value(self, _event=None):
         selected = self.tree.selection()

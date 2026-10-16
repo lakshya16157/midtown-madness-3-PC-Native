@@ -23,6 +23,7 @@ static SRWLOCK lock = SRWLOCK_INIT;
 static SRWLOCK request_lock = SRWLOCK_INIT;
 static HANDLE finished;
 static float position[3], destination[3];
+static float body_up_y;
 static float destination_heading = NAN;   /* radians; NAN keeps the car's */
 static DWORD sampled;
 static unsigned serial, pending, completed;
@@ -175,7 +176,13 @@ void sub_002203E5(void)
             float current[3];
             for (unsigned i = 0; i < 3; ++i) current[i] = MEMF(body + 0xC8 + i * 4);
             available = isfinite(current[0]) && isfinite(current[1]) && isfinite(current[2]);
-            if (available) memcpy(position, current, sizeof(current));
+            if (available) {
+                memcpy(position, current, sizeof(current));
+                /* Dot the rigid body's up axis with world up: 1 is upright,
+                 * 0 is on its side, and -1 is upside down. Sample on the game
+                 * thread for repeatable steering/rollover checks. */
+                body_up_y = MEMF(body + 0xB4);
+            }
         }
         sampled = GetTickCount();
         if (pending) {
@@ -260,9 +267,9 @@ static DWORD WINAPI pipe_thread(void *unused)
                     snprintf(reply + n, sizeof(reply) - n, "]}");
                 } else if (strcmp(command, "position") == 0) {
                     AcquireSRWLockShared(&lock);
-                    snprintf(reply, sizeof(reply), "{\"available\":%s,\"x\":%.9g,\"y\":%.9g,\"z\":%.9g}",
+                    snprintf(reply, sizeof(reply), "{\"available\":%s,\"x\":%.9g,\"y\":%.9g,\"z\":%.9g,\"up_y\":%.9g}",
                         available && GetTickCount() - sampled < 500 ? "true" : "false",
-                        position[0], position[1], position[2]);
+                        position[0], position[1], position[2], body_up_y);
                     ReleaseSRWLockShared(&lock);
                 } else strcpy_s(reply, sizeof(reply), "{\"error\":\"use position or teleport X Z [heading radians]; height is automatic; coordinates must be finite\"}");
                 if (WriteFile(pipe, reply, (DWORD)strlen(reply), &bytes, NULL))

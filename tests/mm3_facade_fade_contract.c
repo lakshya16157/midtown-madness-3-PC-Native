@@ -79,10 +79,10 @@ int main(int argc, char **argv)
 {
     float scale, saved_near, saved_far;
     uint32_t saved_fade[2];
-    assert(argc == 2);
-    scale = (float)atof(argv[1]);
-    assert(scale == 1.0f || scale == 2.0f || scale == 4.0f);
+    assert(argc == 2 || argc == 3);
+    scale = fminf(2.0f, (float)atof(argc == 3 ? argv[2] : argv[1]));
     _putenv_s("RECOMP_DRAW_DISTANCE", argv[1]);
+    _putenv_s("RECOMP_VIEW_DISTANCE", argc == 3 ? argv[2] : "");
     memset(memory, 0xA5, sizeof memory);
     g_xbox_mem_offset = (ptrdiff_t)memory;
     call_setter(0x0015FA1Du, 80.0f, 280.0f); /* construction */

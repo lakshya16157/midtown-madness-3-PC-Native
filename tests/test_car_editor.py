@@ -37,7 +37,9 @@ def tweak_text(ident, alias, **driving):
             "SteeringEndSpeed": "300.0", **{key: str(value) for key, value in driving.items()}}
     return (f"Begin(CarInfo)\r\n\tID\t{ident}\r\n\tTOPSPEED\t7\r\n\tPAINTJOBNAME\t{alias}\r\nEnd(CarInfo)\r\n"
             "Begin(CarBody)\r\n\tNWheels\t4\r\n" + "".join(f"\t{key}\t{value}\r\n" for key, value in body.items()) +
-            "End(CarBody)\r\nBegin(CarCamera)\r\n\tSpeedometerMaxKmh\t620\r\nEnd(CarCamera)\r\n")
+            "End(CarBody)\r\n" + "".join(f"Begin(CarWheel{i})\r\n\tRollStiffness\t14200.0\r\nEnd(CarWheel{i})\r\n"
+                                           for i in range(4)) +
+            "Begin(CarCamera)\r\n\tSpeedometerMaxKmh\t620\r\nEnd(CarCamera)\r\n")
 
 
 def car_body(text):

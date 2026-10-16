@@ -42,6 +42,7 @@ enum GraphicsSetting {
     SETTING_ANISO,
     SETTING_DISTANCE,
     SETTING_MINIMAP,
+    SETTING_VIEW_DISTANCE, /* Append to keep every existing guest action ID stable. */
     GRAPHICS_SETTING_COUNT
 };
 
@@ -51,14 +52,15 @@ static const char *const command_names[GRAPHICS_COMMAND_COUNT] = {
 };
 static const char *const setting_keys[GRAPHICS_SETTING_COUNT] = {
     "RESOLUTION", "MODE", "FPS", "VSYNC", "SCALE", "SHOW_FPS",
-    "ASPECT", "MSAA", "ANISO", "DISTANCE", "MINIMAP"
+    "ASPECT", "MSAA", "ANISO", "DISTANCE", "MINIMAP", "VIEW_DISTANCE"
 };
 static const char *const setting_titles[GRAPHICS_SETTING_COUNT] = {
     "Resolution", "Display Mode", "Maximum FPS", "VSync", "Render Scale",
-    "Show FPS", "Aspect Ratio", "Anti-aliasing", "Texture Filtering", "Draw Distance", "Minimap Style"
+    "Show FPS", "Aspect Ratio", "Anti-aliasing", "Texture Filtering", "Object Detail Distance", "Minimap Style",
+    "Building View Distance"
 };
-static const unsigned choice_counts[GRAPHICS_SETTING_COUNT] = {12, 2, 7, 2, 9, 2, 5, 4, 5, 5, 2};
-#define GRAPHICS_ACTION_COUNT (GRAPHICS_COMMAND_COUNT + 55u)
+static const unsigned choice_counts[GRAPHICS_SETTING_COUNT] = {12, 2, 7, 2, 9, 2, 5, 4, 5, 5, 2, 5};
+#define GRAPHICS_ACTION_COUNT (GRAPHICS_COMMAND_COUNT + 60u)
 static const int resolutions[][2] = {
     {800, 600}, {1024, 768}, {1280, 720}, {1280, 800}, {1366, 768},
     {1536, 960}, {1600, 900}, {1920, 1080}, {1920, 1200},
@@ -195,6 +197,7 @@ static void select_choice(unsigned setting, unsigned choice)
     case SETTING_MSAA: draft.msaa = msaa[choice]; break;
     case SETTING_ANISO: draft.aniso = aniso[choice]; break;
     case SETTING_DISTANCE: draft.draw_distance = distances[choice]; break;
+    case SETTING_VIEW_DISTANCE: draft.view_distance = distances[choice]; break;
     case SETTING_MINIMAP: draft.minimap_improved = (int)choice; break;
     default: return;
     }
@@ -214,6 +217,7 @@ static int choice_selected(unsigned setting, unsigned choice)
     case SETTING_MSAA: return draft.msaa == msaa[choice];
     case SETTING_ANISO: return draft.aniso == aniso[choice];
     case SETTING_DISTANCE: return fabsf(draft.draw_distance - distances[choice]) < 0.0001f;
+    case SETTING_VIEW_DISTANCE: return fabsf(draft.view_distance - distances[choice]) < 0.0001f;
     case SETTING_MINIMAP: return draft.minimap_improved == (int)choice;
     default: return 0;
     }
@@ -241,7 +245,8 @@ static void choice_label(unsigned setting, unsigned choice, char *label, size_t 
         if (!choice) strcpy(value, "Off");
         else snprintf(value, sizeof value, "%dx", aniso[choice]);
         break;
-    case SETTING_DISTANCE: snprintf(value, sizeof value, "%.3gx", distances[choice]); break;
+    case SETTING_DISTANCE:
+    case SETTING_VIEW_DISTANCE: snprintf(value, sizeof value, "%.3gx", distances[choice]); break;
     case SETTING_MINIMAP: snprintf(value, sizeof value, "%s", choice ? "Improved" : "Stock"); break;
     default: value[0] = 0; break;
     }
@@ -344,14 +349,15 @@ const char *mm3_graphics_menu_label(const char *key)
             "Automatic matches the window. Gameplay shows more scenery without stretching menus.",
             "Smooth jagged edges. Higher values use more GPU power.",
             "Sharpen distant road and building textures. Higher values use more GPU power.",
-            "Show scenery farther away. Higher values use more CPU and GPU power.",
-            "Stock uses the original map. Improved shows transparent gray roads and a blue race route."
+            "Keep detailed objects visible farther away. Higher values use more CPU and GPU power. Restart required.",
+            "Stock uses the original map. Improved shows transparent gray roads and a blue race route.",
+            "Show the city and buildings farther away. Object detail has its own distance. Restart required."
         };
         for (setting = 0; setting < GRAPHICS_SETTING_COUNT; ++setting)
             if (!strcmp(field + 5, setting_keys[setting])) return help[setting];
         if (!strcmp(field + 5, "APPLY")) return status;
         if (!strcmp(field + 5, "DEFAULTS")) return "Restore recommended defaults. Apply Settings saves them.";
-        if (!strcmp(field + 5, "ADVANCED")) return "Aspect ratio, anti-aliasing, texture filtering, draw distance and minimap style.";
+        if (!strcmp(field + 5, "ADVANCED")) return "Aspect ratio, anti-aliasing, texture filtering, building view, object detail and minimap style.";
         return NULL;
     }
     if (!strcmp(field, "MORE_RESOLUTIONS")) return "Other Resolutions...";
@@ -379,8 +385,9 @@ const char *mm3_graphics_menu_label(const char *key)
         if (draft.aniso == 1) strcpy(label, "Texture Filtering: Off");
         else snprintf(label, sizeof label, "Texture Filtering: %dx", draft.aniso);
     }
-    else if (!strcmp(field, "DISTANCE")) snprintf(label, sizeof label, "Draw Distance: %.3gx", draft.draw_distance);
+    else if (!strcmp(field, "DISTANCE")) snprintf(label, sizeof label, "Object Detail Distance: %.3gx", draft.draw_distance);
     else if (!strcmp(field, "MINIMAP")) snprintf(label, sizeof label, "Minimap Style: %s", draft.minimap_improved ? "Improved" : "Stock");
+    else if (!strcmp(field, "VIEW_DISTANCE")) snprintf(label, sizeof label, "Building View Distance: %.3gx", draft.view_distance);
     else return NULL;
     return label;
 }

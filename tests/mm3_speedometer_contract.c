@@ -171,10 +171,42 @@ static void check(void (*branch)(void), int modified, unsigned type,
     }
 }
 
+static void check_base(void (*branch)(void), int modified, int numeric)
+{
+    const uint32_t bounds = 0x7000;
+    memset(memory, 0, sizeof memory);
+    g_xbox_mem_offset = (ptrdiff_t)memory;
+    g_esp = stack; g_ebp = frame;
+    g_fp_top = 0; g_fp_control_word = 0x37F;
+    MEM32(frame - 344) = numeric ? 1 : 0;
+    MEM32(frame + 0x10) = bounds;
+    MEMF(bounds) = 450.0f; MEMF(bounds + 4) = 300.0f;
+    MEMF(bounds + 8) = 160.0f; MEMF(bounds + 12) = 144.0f;
+    MEMF(bounds + 16) = .25f;
+    MEMF(0x38614C) = 20.0f; MEMF(0x386454) = 73.0f;
+    branch();
+    assert(g_esp == stack && g_fp_top == 0);
+    /* The source/destination origins, vertical extent and native vertex
+     * rectangle stay exact. Only the analog base's right clip is reduced;
+     * separate warning/fuel/bar sprites are outside this isolated branch. */
+    assert(MEMF(frame - 76) == (numeric ? 470.0f : 450.0f));
+    assert(MEMF(frame - 72) == (numeric ? 373.0f : 300.0f));
+    assert(MEMF(frame - 68) == 160.0f && MEMF(frame - 64) == 144.0f);
+    assert(MEMF(frame - 56) == MEMF(frame - 76));
+    assert(MEMF(frame - 52) == MEMF(frame - 72));
+    assert(MEMF(frame - 48) == (numeric ? 125.0f : modified ? 156.0f : 160.0f));
+    assert(MEMF(frame - 44) == (numeric ? 69.0f : 144.0f));
+    assert(MEMF(frame - 60) == .25f && MEMF(frame - 40) == .25f);
+}
+
 int main(void)
 {
     static const double velocities[] = {0, 123.75, 420.25, 800, 1200, -40};
     unsigned type, split, units, i;
+    for (split = 0; split <= 1; ++split) {
+        check_base(base_original, 0, split);
+        check_base(base_modified, 1, split);
+    }
     for (type = 0; type <= 4; ++type)
         for (split = 0; split <= 1; ++split)
             for (units = 0; units <= 1; ++units)
@@ -196,7 +228,8 @@ int main(void)
             assert(g_ebx == speed_data && g_esi == renderer);
         }
     }
-    puts("PASS: retail numeric gauge restored for all gauge types/units; added-car readout unchanged; "
+    puts("PASS: analog base crop removes adjacent atlas columns; numeric base unchanged; "
+         "retail numeric gauge restored for all gauge types/units; added-car readout unchanged; "
          "analog continuation, units, custom-dial override, stack and text ownership");
     return 0;
 }

@@ -41,10 +41,12 @@ RECOMP_TLS uint16_t g_fp_control_word,g_fp_cc;
 RECOMP_TLS double g_fp_stack[8];
 RECOMP_TLS RecompMmx g_mm0,g_mm1,g_mm2,g_mm3,g_mm4,g_mm5,g_mm6,g_mm7;
 RECOMP_TLS RecompXmm g_xmm0,g_xmm1,g_xmm2,g_xmm3,g_xmm4,g_xmm5,g_xmm6,g_xmm7;
-static unsigned char memory[0x400000],expected_memory[sizeof memory];
+static unsigned char memory[0x500000],expected_memory[sizeof memory];
 static uint32_t original_color;
 static unsigned original_calls;
 static uint32_t observed_light_mode;
+static uint32_t time_of_day;
+static unsigned night_percent;
 static void sub_000FEE80(void)
 {
     assert(g_eax==0x00112233 && g_edx==0x00445566);
@@ -109,7 +111,19 @@ static void setup(uint32_t caller,uint32_t color)
     MEMF(0x386190)=0.005f;
     MEM32(g_eax+0x554)=0x00112233;MEM32(g_eax+0x57C)=0x00445566;
     MEMF(g_eax+0x568)=20;MEMF(g_eax+0x590)=30;
+    MEM32(0x407C30)=time_of_day;
     original_color=color;SetLastError(0x112233);errno=ERANGE;
+}
+static uint32_t expected_scale(uint32_t color,unsigned percent)
+{
+    unsigned shift;uint32_t result=color&0xFF000000u;
+    for(shift=0;shift<24;shift+=8)
+        result|=((((color>>shift)&255u)*percent+50u)/100u)<<shift;
+    return result;
+}
+static uint32_t expected_world_base(uint32_t color)
+{
+    return expected_scale(color,time_of_day==3u?night_percent:100u);
 }
 static uint32_t expected_lift(uint32_t color,unsigned lift)
 {
@@ -122,7 +136,7 @@ static uint32_t expected_floor(uint32_t color,unsigned even)
     unsigned shift;uint32_t result=color&0xFF000000u;
     for(shift=0;shift<24;shift+=8) {
         unsigned channel=(color>>shift)&255;
-        if(even&&channel<64) channel=64;
+        if(even&&channel<48) channel=48;
         result|=channel<<shift;
     }
     return result;
@@ -133,8 +147,9 @@ static void query(uint32_t caller,uint32_t color,unsigned lift,unsigned even)
     setup(caller,color);sub_000FF19A_original();snapshot(&expected);
     memcpy(expected_memory,memory,sizeof memory);
     setup(caller,color);sub_000FF19A();snapshot(&actual);
-    expected.regs[0]=caller==0x00230F75u?expected_floor(expected_lift(color,lift),even):color;
+    expected.regs[0]=caller==0x00230F75u?expected_floor(expected_lift(expected_world_base(color),lift),even):color;
     assert(!memcmp(&expected,&actual,sizeof expected));
+    if(!lift&&!even) assert(g_eax==(caller==0x00230F75u?expected_world_base(color):color));
     assert(!memcmp(expected_memory,memory,sizeof memory));
     assert(original_calls==before+2 && g_esp==0x1800C);
 }
@@ -146,19 +161,21 @@ static void directional_query(uint32_t caller,uint32_t color,unsigned even,unsig
     setup(caller,color);native();snapshot(&expected);
     memcpy(expected_memory,memory,sizeof memory);
     setup(caller,color);wrapped();snapshot(&actual);
-    expected.regs[0]=caller==(back?0x00230FA6u:0x00230F8Du)?expected_floor(color,even):color;
+    expected.regs[0]=caller==(back?0x00230FA6u:0x00230F8Du)?expected_floor(expected_world_base(color),even):color;
     assert(!memcmp(&expected,&actual,sizeof expected));
+    if(!even) assert(g_eax==(caller==(back?0x00230FA6u:0x00230F8Du)?expected_world_base(color):color));
     assert(!memcmp(expected_memory,memory,sizeof memory));
-    assert(original_calls==before+2 && g_esp==0x18000+(back?12:16));
+    assert(original_calls==before+2 && g_esp==0x18000u+(back?12u:16u));
 }
 static void composite(unsigned mode,unsigned even,unsigned view)
 {
     const uint32_t renderer=0x10000,unrelated=0x30000;
+    (void)even;
     setup(0x11223344,0);g_ecx=renderer;g_edi=unrelated;
     MEM32(renderer+4)=mode;MEM32(unrelated+4)=0xA1B2C3D4;
     MEM32(g_esp+4)=view;observed_light_mode=99;
     sub_00230DEE();
-    assert(observed_light_mode==(view?(even?1:mode):99));
+    assert(observed_light_mode==(view?mode:99u));
     assert(MEM32(renderer+4)==mode && MEM32(unrelated+4)==0xA1B2C3D4);
     assert(g_eax==0x1234 && g_ecx==0x5678 && g_edx==0x9ABC);
     assert(g_edi==unrelated && g_esp==0x18010);
@@ -170,7 +187,9 @@ static void quad(uint32_t color,unsigned lift,unsigned even)
     unsigned i;
     static const unsigned ambient[4]={0x58B0,0x58D8,0x5900,0x5928};
     static const unsigned diffuse[4]={0x58AC,0x58D4,0x58FC,0x5924};
-    uint32_t lit=expected_floor(expected_lift(color,lift),even),direct=expected_floor(color,even);
+    uint32_t base=expected_world_base(color);
+    uint32_t lit=expected_floor(expected_lift(base,lift),even),direct=expected_floor(base,even);
+    if(!lift&&!even) assert(lit==base && direct==base);
     g_edi=renderer;g_ebx=lit;g_esi=direct;g_fp_top=0;
     memset(g_fp_stack,0,sizeof g_fp_stack);MEMF(0x385088)=0.5f;
     native_quad();
@@ -185,36 +204,60 @@ static void quad(uint32_t color,unsigned lift,unsigned even)
         double front=fmax(0,fmin(1,(intensity-.25)*4));
         double back=fmax(0,fmin(1,(.25-intensity)*4));
         double weight=1-front-back;
-        double old=(color&255)/255.0,new_color=(lit&255)/255.0;
+        double old=(base&255)/255.0,new_color=(lit&255)/255.0;
         double directional=(direct&255)/255.0;
         double before=.35*4*old;
         double after=.35*4*(directional*(1-weight)+new_color*weight);
         assert(after>=before-1e-12);
-        if(even) assert(after>=.35*4*64/255.0-1e-12);
+        if(!lift&&!even) assert(fabs(after-before)<1e-12);
+        if(even) assert(after>=.35*4*48/255.0-1e-12);
         else assert(after-before<=.35*4*lift/255.0+1e-12);
     }
 }
 int main(int argc,char **argv)
 {
-    unsigned lift,even,i;uint32_t seed=1234567;
+    unsigned lift,even,i,time;uint32_t seed=1234567;
     static const uint32_t callers[]={0x00230F75u,0x00230F8Du,0x00230FA6u,0x0023101Cu,0x00123456u,0};
-    assert(argc==3);lift=(unsigned)atoi(argv[1]);even=(unsigned)atoi(argv[2]);
+    static const uint32_t times[]={0,1,2,3,4,0xFFFFFFFFu};
+    /* Explicit night and daylight samples catch any default floor or lift,
+     * including a black scene. Exercise every LightApply role and unrelated
+     * caller with exact day/night color/alpha, ABI and memory comparisons. */
+    static const uint32_t native_colors[]={0xA7000000u,0xB104060Au,0xC2102030u,
+        0xD3808080u,0xE4F0E0C0u,0xF5FFFFFFu};
+    assert(argc==4);lift=(unsigned)atoi(argv[1]);even=(unsigned)atoi(argv[2]);
+    night_percent=(unsigned)atoi(argv[3]);
+    assert(mm3_world_light_scale(0xAB010203u,25)==0xAB000101u);
+    assert(mm3_world_light_scale(0xA17E80FFu,25)==0xA1202040u);
+    assert(mm3_world_light_scale(0xA1234567u,0)==0xA1000000u);
+    assert(mm3_world_light_scale(0xA1234567u,100)==0xA1234567u);
     assert(mm3_world_ambient_lift(0xABFEFF01u,3)==0xABFFFF04u);
     assert(mm3_world_ambient_lift(0xFFFFFFFFu,16)==0xFFFFFFFFu);
     assert(mm3_world_ambient_lift(0xA1234567u,0)==0xA1234567u);
-    assert(mm3_world_light_floor(0xAB003FFFu,64)==0xAB4040FFu);
+    assert(mm3_world_light_floor(0xAB003FFFu,64)==0xAB303FFFu);
     assert(mm3_world_light_floor(0xA1FFFFFFu,64)==0xA1FFFFFFu);
     assert(mm3_world_light_floor(0xA1234567u,0)==0xA1234567u);
-    assert(mm3_world_light_floor(0xAB000000u,255)==0xAB404040u);
-    for(i=0;i<128;i++) {
-        seed=seed*1664525u+1013904223u;
-        query(callers[i%6],seed,lift,even);
-        directional_query(callers[i%6],seed,even,0);
-        directional_query(callers[i%6],seed,even,1);
+    assert(mm3_world_light_floor(0xAB000000u,255)==0xAB303030u);
+    for(time=0;time<sizeof times/sizeof *times;time++) {
+        unsigned sample,caller;
+        time_of_day=times[time];
+        for(sample=0;sample<sizeof native_colors/sizeof *native_colors;sample++) {
+            for(caller=0;caller<sizeof callers/sizeof *callers;caller++) {
+                query(callers[caller],native_colors[sample],lift,even);
+                directional_query(callers[caller],native_colors[sample],even,0);
+                directional_query(callers[caller],native_colors[sample],even,1);
+            }
+            quad(native_colors[sample],lift,even);
+        }
+        for(i=0;i<64;i++) {
+            seed=seed*1664525u+1013904223u;
+            query(callers[i%6],seed,lift,even);
+            directional_query(callers[i%6],seed,even,0);
+            directional_query(callers[i%6],seed,even,1);
+        }
+        for(i=0;i<3;i++) { composite(i,even,1);composite(i,even,0); }
+        for(i=0;i<256;i++) quad(0xA1000000u+i*0x010101u,lift,even);
     }
-    for(i=0;i<3;i++) { composite(i,even,1);composite(i,even,0); }
-    for(i=0;i<256;i++) quad(0xA1000000u+i*0x010101u,lift,even);
-    puts("PASS: native ambient ABI and LightApply vertices; scoped ambient/diffuse/backlight floor, restored composite mode and unrelated renderer, alpha/unrelated callers intact");
+    puts("PASS: night-only RGB scale, day/invalid-time identity, ambient ABI, optional scoped boosts, LightApply vertices, native composite mode and unrelated renderer, alpha/unrelated callers intact");
     return 0;
 }
 '''
@@ -269,13 +312,22 @@ def main():
                         "/I" + str(ROOT / "src"), "/I" + str(ROOT / "tools/xboxrecomp/include"),
                         "/Fo:" + str(folder / "contract.obj"), "/Fe:" + str(executable), str(source)],
                        check=True, cwd=folder)
-        cases = [(setting, "0", lift, 0) for setting, lift in
-                 ((None, 3), ("", 3), ("0", 0), ("3", 3), ("16", 16),
-                  ("-1", 3), ("17", 3), ("NaN", 3), ("3.5", 3),
-                  ("999999999999999999999999999999", 3))]
-        cases += [(None, setting, 3, even) for setting, even in
-                  ((None, 1), ("", 1), ("0", 0), ("1", 1), ("2", 1), ("off", 1))]
-        for setting, even_setting, lift, even in cases:
+        cases = [(None, None, 0, 0), ("", "", 0, 0)]
+        cases += [(setting, "0", lift, 0) for setting, lift in
+                  (("0", 0), ("1", 1), ("3", 3), ("16", 16),
+                   ("-1", 0), ("17", 0), ("NaN", 0), ("3.5", 0),
+                   ("999999999999999999999999999999", 0))]
+        cases += [(None, setting, 0, even) for setting, even in
+                  (("0", 0), ("1", 1), ("2", 0), ("off", 0))]
+        cases += [("3", "1", 3, 1), ("NaN", "off", 0, 0)]
+        cases = [(setting, even_setting, None, lift, even, 25)
+                 for setting, even_setting, lift, even in cases]
+        cases += [(None, None, setting, 0, 0, percent) for setting, percent in
+                  (("", 25), ("0", 0), ("25", 25), ("100", 100),
+                   ("-1", 25), ("101", 25), ("NaN", 25), ("25.5", 25),
+                   ("999999999999999999999999999999", 25))]
+        cases += [("3", "1", "0", 3, 1, 0), ("3", "1", "100", 3, 1, 100)]
+        for setting, even_setting, night_setting, lift, even, percent in cases:
             env = os.environ.copy()
             if setting is None:
                 env.pop("MM3_AMBIENT_LIFT", None)
@@ -285,10 +337,22 @@ def main():
                 env.pop("MM3_EVEN_LIGHTING", None)
             else:
                 env["MM3_EVEN_LIGHTING"] = even_setting
-            result = subprocess.run([str(executable), str(lift), str(even)], env=env,
+            if night_setting is None:
+                env.pop("MM3_NIGHT_WORLD_LIGHT", None)
+            else:
+                env["MM3_NIGHT_WORLD_LIGHT"] = night_setting
+            result = subprocess.run([str(executable), str(lift), str(even), str(percent)], env=env,
                                     capture_output=True, text=True, check=True)
             assert result.stderr.count("world ambient lift=") == 1
-        print("PASS: world-only illumination floor, native ambient ABI, restored composite mode, quad/material math, legacy opt-out and bounded settings")
+            assert f"world ambient lift={lift}/255 even_lighting={even}" in result.stderr
+            assert f"world_rgb_floor={48 if even else 0}/255" in result.stderr
+            if setting in ("-1", "17", "NaN", "3.5", "999999999999999999999999999999"):
+                assert "invalid MM3_AMBIENT_LIFT; expected integer 0..16, using 0" in result.stderr
+            if even_setting in ("2", "off"):
+                assert "invalid MM3_EVEN_LIGHTING; expected 0 or 1, using 0" in result.stderr
+            if night_setting in ("-1", "101", "NaN", "25.5", "999999999999999999999999999999"):
+                assert "invalid MM3_NIGHT_WORLD_LIGHT; expected integer 0..100, using 25" in result.stderr
+        print("PASS: night-only 25% world defaults, day/invalid-time identity, bounded night scale and optional lift/floor, all three roles, ambient ABI, native local-light modes and quad/material math")
 
 
 if __name__ == "__main__":

@@ -8,6 +8,40 @@ baseline and remain as verification references. MM3 registers the panorama
 blend explicitly; only its 256x256 DXT5 skyline receives B-spline sampling.
 The top navigation arrows and digital speed readout were intentionally removed
 at the user's request; analog gauges, map routes and checkpoint markers remain.
+Implementation update: 2026-10-15 (Europe/Paris).
+- G-09 now has independent object/detail and city/building view controls in
+  the runtime, native Advanced Graphics page and F10 dialog. Balanced/Quality
+  retain 2x/2x and LowPower 1x/1x; legacy settings inherit their former combined
+  value when a separate view setting is absent. Upstream's 4x object default
+  was not adopted.
+- G-08 now caps facade zones and fade widths at min(city view,2), using that
+  same scale for matching allocation-time storage/limits. The tested local
+  three-pool factor<=4 strategy and failure rollback remain; upstream's
+  four-pool factor5 policy is still a separate unresolved comparison.
+- R13/R15/R17 now have the exponential depth-as-Y16 haze tail and final ordered
+  post-haze foliage coverage in source. Production builds and the haze depth,
+  draw-gating and coverage GPU cases pass. Manual visual/motion acceptance is
+  separate; manual gameplay has not been launched for these changes.
+  All three GPU cases fail against the preserved earlier renderer. Together
+  they check 6,144 depth-view pixels, 1,200 exact sky-depth pixels and 2,592
+  coverage pixels at knees 0.5/0.78; the eight existing graphics-quality cases
+  also pass. These isolated checks do not establish motion quality.
+- Empty/zero wrap-trace flags now remain disabled. The light diagnostic launcher
+  removes high-volume environment flags and retains frame/hitch capture plus
+  the passive hang observer. Use Play with performance diagnostics.cmd for the
+  next manual check; full diagnostics remains available for detailed evidence.
+- The latest intended light-mode manual capture predates these changes:
+  logs/play-20261015-152930-318-6e4d70f2.log and
+  logs/diagnostics-20261015-172929-826/frames.csv. Its gameplay window has 12,615
+  frames/218.8 s, 57.66 FPS, p99 24.66 ms, maximum 80.23 ms and five frames over
+  50 ms. The five gaps occur between submissions; their cause is not established.
+  PowerShell 7 left disabled flags present but empty, enabling the old wrap
+  presence check and producing 20,525 unwanted wrap records. Explicit removal
+  plus native empty/zero rejection now fixes that light-mode logging bug.
+  The capture is not a fully quiet benchmark or a before/after measurement
+  of this update. The earlier permanent CALL hang remains open pending capture.
+Current dated status/evidence below supersedes the original audit descriptions.
+Historical upstream measurements and unchecked manual acceptance remain references.
 Purpose: a detailed implementation backlog for later work, based on code
 comparisons with MattSG's latest upstream sources. The entries distinguish
 missing fixes, partially covered fixes, independently covered fixes, optional
@@ -51,6 +85,8 @@ Status meanings:
   verify it instead of replacing it solely to match commit ancestry.
 - FEATURE: new functionality, not evidence of a bug in existing gameplay.
 - DOCUMENTATION: no gameplay repair to port by itself.
+- IMPLEMENTED after audit: the source behavior is present; consult its evidence
+  and remaining manual acceptance rather than assuming visual/performance proof.
 
 Suggested implementation order:
 1. Translation/correctness: missing 0x2534FF setter and unresolved-stub reports;
@@ -567,6 +603,9 @@ Concrete integration and acceptance:
 G-08. RECONCILE FACADE POOL CAPACITY AND ZONE SCALING
 Status: PARTIAL, independent allocation-time repair already present.
 Priority: building appearance; coordinate with G-09 and runtime distance haze.
+2026-10-15: zone/capacity ownership is now aligned. The remaining difference
+is the local three-pool factor<=4 policy versus upstream's four-pool factor5;
+manual appearance and workload comparisons remain pending.
 
 Upstream history:
 https://github.com/MattSG/mm3-recomp/commit/db6deeaf61343e1f5900813b9bdf9512f0eaf51c
@@ -590,12 +629,13 @@ Symptoms/cause, from upstream:
   spots, and a five-minute teleport soak reached 19.9k frames/max 18.7 ms.
 
 Local source and measured-evidence distinction:
-- src/mm3_facade_capacity.c:19 wraps sub_001633B7 at actual buffer creation.
-  It computes ceil(draw_scale squared), capped at four, changes only stock
+- src/mm3_facade_capacity.c wraps sub_001633B7 at actual buffer creation.
+  It computes ceil(facade_scale squared), capped at four, changes only stock
   +0x1ED0/+0x1F2C/+0x1F88, respects custom/already-expanded limits and restores
   counters on failed creation. It does not enlarge +0x48.
-- src/mm3_render_distance.c:118-147 scales facade zones with the single draw
-  scale (up to four) and recomputes squared-distance detail-fade offsets.
+- src/mm3_render_distance.c now derives facade_scale=min(view_scale,2),
+  independently of object LODs. Both zones and squared-distance detail-fade
+  offsets use it, while temporary pass install/restore retains effective values.
 - CMakeLists.txt:69-70 hooks sub_001633B7 and sub_001661D0, not upstream's
   sub_001630A7 constructor hook.
 - Existing tests/mm3_facade_capacity_regression.py verify creation byte counts,
@@ -606,27 +646,27 @@ Local source and measured-evidence distinction:
   establish upstream's exact 5x/four-field strategy already applied here.
 
 Concrete integration steps:
-[ ] Preserve the local safe creation-time checks/rollback and all already
+[x] Preserve the local safe creation-time checks/rollback and all already
     allocated VB sizes. Never increase counters after allocation without
     reallocating matching storage; that would invite out-of-bounds GPU writes.
 [ ] Inspect the fourth +0x48 pool's actual consumer, creation byte size and
     index format before deciding whether to expand it along with three streams.
-[ ] Decide an explicit facade-zone cap (upstream two) independently of LOD and
+[x] Decide an explicit facade-zone cap (upstream two) independently of LOD and
     city view settings. Derive pool headroom from that chosen cap, not from a
     knob that later has a different meaning after G-09.
 [ ] Compare 4x versus 5x pool capacities under identical default 2x zones,
     checking guest-memory budget and draw-index constraints. Do not replace
     the local strategy merely because the upstream commit hash is missing.
-[ ] Retain local fade-offset correction if appropriate to the final zone scale;
+[x] Retain local fade-offset correction if appropriate to the final zone scale;
     apply it once from validated effective zones, including pass restore.
-[ ] Preserve custom capacities and repeated creation without multiplying again.
+[x] Preserve custom capacities and repeated creation without multiplying again.
 [ ] Update facade diagnostics to report both active zone scale and actual
     allocation limits with bounded opt-in output, so insufficient capacity
     can be distinguished from visibility/fade/texture problems.
 
 Risks and edge cases:
-- Local draw=4 currently permits 4x zones while capacity factor is capped4;
-  upstream instead caps zones2. This difference needs explicit acceptance.
+- The former draw=4/4x-zone versus factor4 mismatch is removed: facade zones
+  now stop at 2, independently of the accepted city view or object LOD value.
 - Largest upstream 0x3000 * 5 is 61440, below a 16-bit vertex boundary. Local
   0x3000 * 4 is 49152; preserve safe index ranges for every expanded stream.
 - Failed partially allocated larger VBs do not justify keeping larger counters.
@@ -634,6 +674,11 @@ Risks and edge cases:
   final capacity+cap behavior; do not apply it over the local fade hook blindly.
 
 Planned acceptance:
+2026-10-15 deterministic evidence: 80 actual-XBE capacity/allocation cases and
+six fade-contract configurations pass. The new distance contract checks that
+object1/view2 grows the facade pools while object4/view1 retains stock pools;
+view4 stays within the same 2x facade scale. These tests do not replace the
+manual scene/motion and pool-policy comparisons below.
 [ ] Extend the real guest creation/allocation regression for the selected
     factors, fourth-pool handling, byte counts, repeated calls and failures.
 [ ] Exercise near/mid/far boundaries, exact capacities, custom small/large
@@ -649,7 +694,9 @@ Planned acceptance:
 
 
 G-09. SPLIT DETAIL/LOD DISTANCE FROM CITY VIEW/FAR PLANE
-Status: MISSING final split; current default two combined knob is different.
+Status: IMPLEMENTED after audit, preserving this fork's existing 2x/2x defaults.
+2026-10-15: source, saved settings and both native settings surfaces expose
+independent controls. Manual gameplay acceptance of the new build is pending.
 
 Upstream history:
 https://github.com/MattSG/mm3-recomp/commit/6078bbc5f11aab4bd09610dc7ab317f989bc7473
@@ -668,17 +715,25 @@ Symptoms and history from upstream:
 - 789cba6 changed final view default to two after exponential depth-haze remap
   faded far blocks into the sky; upstream reports roughly 63% haze at 700 m
   and 99.6% at 1400 m. Four was reported visually similar but more expensive.
-- These default changes are successive states, not three simultaneously
-  missing fixes to apply. The final target is detail4/view 2 plus final haze.
+- These default changes are successive states, not three simultaneous fixes.
+  Upstream's final default is detail4/view2 plus final haze. This fork keeps
+  detail2/view2 to preserve existing quality/workload preferences.
 
 Exact function ownership and current local evidence:
-- Local src/mm3_render_distance.c:22-39 uses one RECOMP_DRAW_DISTANCE default2
-  for all; RECOMP_VIEW_DISTANCE is absent.
+- Local src/mm3_render_distance.c now validates separate RECOMP_DRAW_DISTANCE
+  and RECOMP_VIEW_DISTANCE values 1..4. An absent view value inherits resolved
+  draw distance; saved legacy draw_distance migrates in the same way. Explicit
+  view settings remain independent, and both UI controls require restart.
 - LOD/detail users: sub_000E2D5B object distance, sub_000D9E2E/pedestrian array
   at 0x39ADC0, sub_0022F298 blob shadows and particle constructor 0x2256C7.
 - View users: sub_000FE71E scales original city settings at return addresses
-  0x1002CE/0x100ED6/0x210EDE, plus city-load cap at 0x224C4E and EBP+8;
-  sub_000F4AC3 scales the explicit far-plane call at 0x210EB4.
+  0x1002CE/0x100ED6/0x210EDE. The city-load cap at 0x224C4E and EBP+8
+  remains native: 0.95 times the facade grid cell size. Streaming and both
+  facade draw entries visit only camera-cell +/-1; multiplying this cap exposed
+  unloaded whole building rows at cell crossings on long straights.
+  A checked loader seam at 0x224C24 records the current resident limit, including
+  unclamped cities and a missing-renderer reset. sub_000F4AC3 scales the explicit
+  far-plane call at 0x210EB4; Lua city/camera settings share that resident cap.
 - Camera/cubemap/temporary-pass effective settings must remain unchanged when
   saved and restored. Facade zones belong to capped view scale after G-08.
 - The local particle-overdraw budget intentionally defaults to bounded24,
@@ -686,24 +741,36 @@ Exact function ownership and current local evidence:
   maximum255 path. Preserve this measured fork performance choice unless new
   evidence supports changing it; knob separation does not require raising it.
 - src/mm3_performance_profile.h supplies current draw2 for Balanced/Quality and
-  draw1 for LowPower. Profiles and environment override precedence must survive.
+  draw1 for LowPower; view defaults inherit them. Saved values and valid explicit
+  environment overrides retain priority. A successful custom pedestrian setter
+  also marks its globals initialized, preventing later object construction from
+  multiplying those already-effective distances again.
 
 Concrete integration steps:
-[ ] Add independently validated detail/view configuration helpers, values 1..4,
+[x] Add independently validated detail/view configuration helpers, values 1..4,
     clear fallback diagnostics and Xbox baseline1 for both.
-[ ] Route only the correct functions/callers to view_scale or detail_scale,
+[x] Route only the correct functions/callers to view_scale or detail_scale,
     preserving caller-owned arguments, city cap/local far-plane consistency.
-[ ] Coordinate view 2 default with runtime exponential haze and foliage fading;
+[x] Coordinate view 2 default with runtime exponential haze and foliage fading;
     enabling view 2 while retaining old linear haze is not the complete fix.
-[ ] Keep profile presets explicit for both knobs and decide migration of an
+[x] Preserve profile defaults for both knobs and migrate an
     existing user's RECOMP_DRAW_DISTANCE value. Document its changed meaning
     rather than silently applying old combined semantics twice.
-[ ] Cap facade zones independently and bind their capacity strategy to that
+[x] Cap facade zones independently and bind their capacity strategy to that
     cap. Update mm3_draw_distance_scale API consumers with clear semantics.
-[ ] Preserve bounded particle overdraw, local building-fade refinement, camera
+[x] Preserve bounded particle overdraw, local building-fade refinement, camera
     frustum matching, map ownership and all save/restore paths.
 
 Planned acceptance:
+2026-10-15 deterministic evidence: tests/mm3_render_distance_regression.py
+passes 28 configurations using the actual recovered PAL object, pedestrian,
+city and facade setters and the actual native loader clamp/camera handover.
+Coverage includes legacy/default/invalid settings, independent controls, ranges
+above/below the resident cap, city switches, effective haze, Lua/FOV/cubemap
+restore, native fades, bounded pools and custom-first pedestrian settings.
+Isolated versions with the former initialization omission or multiplied native
+cap fail on double scaling or unsupported range respectively. UI/config
+tests cover persistence/migration separately. Manual scenes below remain open.
 [ ] Cross-product settings detail1/2/4 and view1/2/4, explicit environment
     overrides, invalid/NaN/Inf/trailing-junk strings and each profile.
 [ ] Verify object/pedestrian/blob distances change with detail only, while city
@@ -1014,7 +1081,8 @@ Statuses below are source-audit states before planned integration, not new tests
    MISSING upstream spike diagnostics; own capture tools differ. G-07/runtime.
    https://github.com/MattSG/mm3-recomp/commit/d758603
 07 6078bbc - Combined distance default1 to hide far city.
-   SUPERSEDED final split/detail4/view 2 behavior not applied. G-09.
+   SUPERSEDED by separate controls; local split now preserves detail2/view2.
+   G-09.
    https://github.com/MattSG/mm3-recomp/commit/6078bbc
 08 dfd872f - Runtime bump: pause/post-race buttons joined.
    PARTIAL pause callback exists; missing previous/current HUD-start detection.
@@ -1068,16 +1136,19 @@ Statuses below are source-audit states before planned integration, not new tests
    MISSING launch option; local deliberately caps 60. G-10.
    https://github.com/MattSG/mm3-recomp/commit/965f6d0
 25 53d2e06 - Detail 4 / view 1 split.
-   MISSING split; view1 default superseded by next commit's2. G-09.
+   IMPLEMENTED split after audit with fork defaults2/2 and legacy migration.
+   Upstream view1 default was superseded by next commit's2. G-09.
    https://github.com/MattSG/mm3-recomp/commit/53d2e06
 26 789cba6 - View 2 and exponential distance haze.
-   MISSING final split/default and runtime remap d448358. G-09/runtime.
+   IMPLEMENTED view separation/remap after audit; retains object2 default.
+   Manual visual acceptance remains pending. G-09/runtime.
    https://github.com/MattSG/mm3-recomp/commit/789cba6
 27 a873420 - Runtime far-tree haze fade.
-   MISSING foliage fade; use final060122c rather than intermediate dither.
+   IMPLEMENTED final060122c coverage after audit, not intermediate dither.
    Runtime. https://github.com/MattSG/mm3-recomp/commit/a873420
 28 31451f6 - Facade vertex pools 5x and zones capped 2.
-   PARTIAL independent local allocation-time3-field factor <= 4 fix. G-08.
+   PARTIAL independent local allocation-time3-field factor<=4 fix; now zones
+   and fade widths use the matching capped view scale 2. G-08.
    https://github.com/MattSG/mm3-recomp/commit/31451f6
 29 7fc6d82 - Runtime smooth horizon panorama.
    MISSING B-spline sampling0e63cf0. Runtime.
@@ -1086,7 +1157,8 @@ Statuses below are source-audit states before planned integration, not new tests
    MISSING edge-placement shader logic4d9d178. Runtime.
    https://github.com/MattSG/mm3-recomp/commit/4b49dd3
 31 b176c55 - Runtime distant-tree fade without visible dither pattern.
-   MISSING final foliage implementation060122c. Commit subject describes
+   IMPLEMENTED final coverage060122c after audit; manual motion review pending.
+   Commit subject describes
    visible improvement; final code still uses ordered2x2 Bayer coverage,
    averaged at default supersampling, rather than removing all dithering.
    Runtime. https://github.com/MattSG/mm3-recomp/commit/b176c55
@@ -1148,11 +1220,11 @@ R09 76192ee  Reset fade / gauge placement              MISSING
 R10 af98ca0  Sixteen-frame guest sample chains         MISSING
 R11 d359ee0  ISR preemption of DISPATCH_LEVEL          MISSING
 R12 9d8716e  DSP fast path / inline fetch              EQUIVALENT Windows
-R13 d448358  Exponential extended-distance haze       MISSING
+R13 d448358  Exponential extended-distance haze       IMPLEMENTED after audit
 R14 4d9d178  Top/left edge coverage translation        IMPLEMENTED after audit
-R15 7f22d61  Post-haze foliage depth fade              MISSING
+R15 7f22d61  Post-haze foliage depth fade              IMPLEMENTED after audit
 R16 0e63cf0  B-spline panorama sampling                IMPLEMENTED after audit
-R17 060122c  Final ordered foliage coverage            MISSING
+R17 060122c  Final ordered foliage coverage            IMPLEMENTED after audit
 R18 b666568  Generic input/menu/overlay hooks          MISSING upstream API
 The R14/R15/R16 order groups final behaviors for review rather than reproducing
 the exact commit chronology. R17 supersedes the random threshold in R15.
@@ -1817,7 +1889,7 @@ behavior is already present.
 
 R13. EXPONENTIAL DEPTH-HAZE REMAP FOR EXTENDED DRAW DISTANCE
 ---------------------------------------------------------
-Classification: MISSING. Suggested priority: combined with R15/R17.
+Classification: IMPLEMENTED after audit with R15/R17; manual visual acceptance pending.
 Upstream commit: d4483589c2f8b19ad7584fe817195c35dbef7041
 https://github.com/MattSG/xboxrecomp/commit/d4483589c2f8b19ad7584fe817195c35dbef7041
 
@@ -1828,14 +1900,17 @@ past the original haze knee exponentially, preserving the original slope at
 the knee and keeping sky depth at one. It makes the extended region blend
 toward sky rather than exposing hard distant building bands.
 
-Local evidence:
-  tools/xboxrecomp/src/video/nv2a_d3d11.c, y16d_ps line 1008:
-    retains the linear scale/knee-to-new-far formula.
-  src/mm3_render_distance.c calls nv2a_d3d_set_depth_view_remap, uses FOG_KNEE
-  and validates RECOMP_DRAW_DISTANCE; the fork already widens visibility/LOD
-  range. Its comments still describe the earlier stretching policy.
+Current source evidence (2026-10-15):
+  tools/xboxrecomp/src/video/nv2a_d3d11.c y16d_ps now keeps the below-knee
+  branch and uses the exponential tail while preserving sky depth 1.
+  src/mm3_render_distance.c sends the effective city/camera range divided by
+  min(authored range, native resident-cell cap), plus FOG_KNEE, to
+  nv2a_d3d_set_depth_view_remap. Requested VIEW ranges beyond the resident
+  neighborhood stay capped; object LOD changes do not move haze. Baseline1
+  remains native even when an authored range already exceeds the resident cap.
+  The R01 tap alignment and existing shader cache machinery are retained.
 
-Later implementation steps:
+Implementation/reference checks (source integrated; manual acceptance below):
   a. Replace only the remap tail above the knee with the upstream exponential
      form, keeping the original branch below the knee and untouched sky depth.
   b. Retain input validation and the fork's extended visibility/LOD/camera
@@ -1912,7 +1987,7 @@ not demonstrate correct rasterized coverage.
 
 R15. POST-HAZE FOLIAGE MUST FADE USING ITS OWN DEPTH
 --------------------------------------------------
-Classification: MISSING. Suggested priority: with R13 and final R17.
+Classification: IMPLEMENTED after audit with R13 and final R17; manual motion review pending.
 Upstream commit: 7f22d613bdea4548c324c28b38d1f08ad3cb5056
 https://github.com/MattSG/xboxrecomp/commit/7f22d613bdea4548c324c28b38d1f08ad3cb5056
 
@@ -1924,13 +1999,15 @@ frame, then applies matching depth-based MSAA coverage reduction only to
 later depth-tested, depth-writing w-buffer draws. The existing hazed scene
 shows through the reduced coverage.
 
-Local evidence:
-  tools/xboxrecomp/src/video/nv2a_d3d11.c, ps_wdepth lines 927-933:
-    computes depth/bias/output only, with no post-haze coverage block.
-  No s_depth_hazed flag, depth_y16 marker, per-frame reset or zp1.z/w fade
-  constants exist in the local pipeline. s_zview_remap itself does exist.
+Current source evidence (2026-10-15):
+  tools/xboxrecomp/src/video/nv2a_d3d11.c tracks actual depth-as-Y16 sampling
+  with s_depth_hazed and resets it per frame. Later eligible depth-tested,
+  depth-writing w-buffer draws receive zp1.z/w scale/knee values. ps_wdepth
+  applies exponential distance coverage using final R17 ordered ranks while
+  retaining earlier alpha-test coverage. Sky draws without depth writes are
+  excluded. Source presence and production compilation do not prove motion quality.
 
-Later implementation steps:
+Implementation/reference checks (source integrated; manual acceptance below):
   a. Add a per-frame depth-haze marker when a real depth Y16 view is read;
      reset it at the appropriate flip/frame boundary.
   b. Configure scale/knee only for eligible later draws with depth_test and
@@ -2016,8 +2093,8 @@ local GPU cost or guaranteed performance improvement is established.
 
 R17. FINAL DISTANT-TREE DISTRIBUTION: REMOVE VISIBLE WHITE FLICKER
 ----------------------------------------------------------------
-Classification: MISSING because the complete post-haze fade is absent locally.
-Suggested priority: inseparable from R15; do not ship the superseded version.
+Classification: IMPLEMENTED after audit with R13/R15; manual motion review pending.
+The superseded random-threshold variant was not introduced.
 Upstream commit: 060122c457502908133e8660c16ff6713461311f
 https://github.com/MattSG/xboxrecomp/commit/060122c457502908133e8660c16ff6713461311f
 Parent pin update: b176c55cd9d645c1d3c6a42ec91384c20de4cb1e
@@ -2033,13 +2110,14 @@ visible pattern/white shimmer. The algorithm still uses dithering/coverage
 distribution; the parent description 'without a dither pattern' describes the
 visible result, not deletion of all dithering. Latest b666568 retains it.
 
-Local evidence:
-  The local ps_wdepth near 927-933 lacks any post-haze fade and either
-  threshold form. No q=(uint2(i.pos.xy)&1) rank or associated coverage branch
-  exists. This is a missing final feature, not a local regression introduced
-  by an already-installed noisy fade.
+Current source evidence (2026-10-15):
+  ps_wdepth now uses the final ordered 2x2 host-pixel ranks and floor-based
+  sample counts, intersected with existing alpha-test coverage. Per-frame
+  depth-haze state gates the effect with R15. Different host-pixel averaging,
+  MSAA and window sizes still require the manual acceptance below; this update
+  does not claim universally flicker-free gameplay.
 
-Later implementation steps:
+Implementation/reference checks (source integrated; manual acceptance below):
   a. Combine with R13/R15 using the final ordered q.x/q.y rank expression and
      floor-based sample count. Preserve earlier coverage from alpha testing.
   b. Verify the definition of host-pixel position and the actual downsampling

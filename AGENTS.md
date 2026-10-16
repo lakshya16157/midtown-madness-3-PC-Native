@@ -8,6 +8,17 @@ Git author name and GitHub credential username set to `lakshya16157` in this
 repository's local Git configuration; do not change global settings. Verify
 the selected account before pushing, and do not fall back to another account.
 
+## Generated files and disk usage
+
+Keep this workspace near its normal 5–6 GB footprint. Remove temporary test
+builds, diagnostic dumps, copied game data and scratch saves after validation;
+do not accumulate them under `out/`, `conformance_tmp/` or `logs/`. Reuse the
+main game data instead of copying it into each test run. Before recursive
+cleanup, unlink scratch junctions without following them and preserve any
+unique changes in temporary Git worktrees. Keep the current game executable
+and matching PDB, `game_files/` (including saves and mod backups), downloaded
+car inputs, and the installed tools in `tools/bin/` and `tools/venv/`.
+
 ## Running the game in xemu
 
 xemu is a per-machine tool, not committed to the repo: `tools/xemu/xemu.exe`

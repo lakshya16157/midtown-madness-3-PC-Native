@@ -61,6 +61,8 @@ class FactorySpecsTest(unittest.TestCase):
         self.assertEqual(set(FACTORY.load_specs()), {car["alias"] for car in config["cars"]})
         counts = set()
         template = b"Begin(CarInfo)\nEnd(CarInfo)\nBegin(CarBody)\nEnd(CarBody)\nBegin(CarCamera)\nEnd(CarCamera)\n"
+        template += "".join(f"Begin(CarWheel{i})\nRollStiffness 14200.0\nEnd(CarWheel{i})\n"
+                             for i in range(4)).encode()
         for car in config["cars"]:
             count = len(car["physics"]["GearRatioVector"]) - 1
             counts.add(count)

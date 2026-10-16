@@ -24,11 +24,12 @@ GRAPHICS_INFO_WIDGET = "graphics/infoBox"
 DISPLAY_ROWS = [("RESOLUTION", None), ("MODE", None), ("FPS", None),
                 ("VSYNC", None), ("SCALE", None), ("SHOW_FPS", None),
                 ("ADVANCED", None), ("APPLY", "graphicsApply"), ("DEFAULTS", "graphicsDefaults")]
-ADVANCED_ROWS = [("ASPECT", None), ("MSAA", None), ("ANISO", None), ("DISTANCE", None),
+ADVANCED_ROWS = [("ASPECT", None), ("MSAA", None), ("ANISO", None), ("VIEW_DISTANCE", None), ("DISTANCE", None),
                  ("MINIMAP", None),
                  ("APPLY", "graphicsApply"), ("DEFAULTS", "graphicsDefaults")]
 PICKER_COUNTS = {"RESOLUTION": 12, "MODE": 2, "FPS": 7, "VSYNC": 2, "SCALE": 9,
-                 "SHOW_FPS": 2, "ASPECT": 5, "MSAA": 4, "ANISO": 5, "DISTANCE": 5, "MINIMAP": 2}
+                 "SHOW_FPS": 2, "ASPECT": 5, "MSAA": 4, "ANISO": 5, "DISTANCE": 5, "MINIMAP": 2,
+                 "VIEW_DISTANCE": 5}
 PAUSE_OPTIONS = "Pausemenu/menuOptions"
 PAUSE_HUD = "Pausemenu/menuHud"
 PICKERS = {key: "graphics/picker" + key for key in PICKER_COUNTS}

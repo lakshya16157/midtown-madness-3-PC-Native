@@ -572,7 +572,9 @@ class CarEditor:
         # The header picker is the single compare control; Game stats shares it.
         self.stats_view = stats_browser.StatsBrowser(
             self.tabs["stats"], self.original_cars, field_help.tip_for, show_heading=False, padding=14,
-            reference_var=self.compare_var, show_reference_picker=False, range_for=self._range_for)
+            reference_var=self.compare_var, show_reference_picker=False, range_for=self._range_for,
+            edit_for=self._stat_edit_reason, apply_edit=self._edit_stat,
+            edit_value_for=self._stat_override_value, edit_hint_for=self._stat_edit_hint)
         self.stats_view.pack(fill="both", expand=True)
         self.compare_combo.configure(values=self.stats_view.reference_values())
         self.compare_var.trace_add("write", self._compare_changed)
@@ -1237,6 +1239,8 @@ class CarEditor:
             return
         count = sum(1 for variable in self.physics_vars.values() if variable.get().strip())
         count += 1 if self.gear_var.get().strip() else 0
+        native = self.model.config["cars"][self.current].get("native_overrides", [])
+        count += len(native) - len(prepare.native_overrides.without_driving(native))
         self.override_summary.configure(
             text=f"{count} value{'s' if count != 1 else ''} changed. Blank values use {self._base_name()}.")
 
@@ -1247,8 +1251,17 @@ class CarEditor:
         for variable in self.physics_vars.values():
             variable.set("")
         self.gear_var.set("")
+        car = self.model.config["cars"][self.current]
+        remaining = prepare.native_overrides.without_driving(car.get("native_overrides", []))
+        if remaining:
+            car["native_overrides"] = remaining
+        else:
+            car.pop("native_overrides", None)
         note = " The factory engine profile was switched off." if self.factory_engine.get() else ""
         self.factory_engine.set(False)
+        self._update_override_summary()
+        self._show_game_stats()
+        self.flush_validation()
         self.status.set(f"All driving values now come from {self._base_name()}.{note} Save to keep the change.")
 
     def copy_base_ratings(self) -> None:
@@ -1641,6 +1654,141 @@ class CarEditor:
             self._native_ranges[cache_key] = reference.native_extremes(self.original_cars, section, key)
         extreme = self._native_ranges[cache_key]
         return reference.long_range(extreme) if extreme is not None else ""
+
+    @staticmethod
+    def _stat_target(row: dict) -> tuple[str, str]:
+        """Route managed values to the same settings as the ordinary forms."""
+        section, key = row["section"].casefold(), row["key"]
+        if section in ("carinfo", "ratings") and key in RATING_ORDER:
+            return "rating", key
+        if section in ("carbody", "simulation"):
+            if key in prepare.PHYSICS:
+                return "physics", key
+            if key == "GearRatioVector":
+                return "gears", key
+        if section in ("carcamera", "carcamerass"):
+            for setting, native in reference.DIAL_KEYS.items():
+                if key == native:
+                    return "dial", setting
+        return "native", key
+
+    def _stat_edit_reason(self, row: dict) -> str:
+        if self.original_current is not None:
+            return "Original and DLC cars are read-only references. Select an Added car to edit its values."
+        kind, key = self._stat_target(row)
+        if kind != "native":
+            if row["identity"][2] != 0:
+                return "This repeated setting is managed by the matching tuning control."
+            if kind == "physics" and key != "WheelDrive" and self.physics_fields[key].instate(["readonly"]):
+                return "The factory engine profile controls this value. Turn it off in Gears & RPM to edit it."
+            return ""
+        if row["section"].casefold() in ("carbody", "simulation") and key == "NGears":
+            return "Gear count is calculated from GearRatioVector. Edit the gear ratios to change it."
+        if row["section"].casefold() == "carbody" and key == "TurboSpinup":
+            return "Turbo spin-up is inherited with the selected Base stats car's turbo setup."
+        if row["key"] == "SPEEDOMETERTYPE":
+            return "Choose HUD style under Appearance to change this value."
+        if row["key"] in ("COLOR", "SKIN"):
+            return "Use the paint controls under Appearance to change colors."
+        return prepare.native_overrides.edit_reason(row["section"], row["key"], row["value"])
+
+    def _stat_edit_hint(self, row: dict) -> str:
+        kind, key = self._stat_target(row)
+        if kind == "rating":
+            return "Enter a whole number from 0 to 9. Inherited value copies the base car's menu rating."
+        if kind == "physics":
+            if key == "WheelDrive":
+                return "0 = front wheels, 1 = rear wheels, 2 = all wheels."
+            low, high = reference.allowed_range(prepare.PHYSICS, key, self.factory_engine.get())
+            return f"Allowed range: {reference.format_number(low)} to {reference.format_number(high)}."
+        if kind == "gears":
+            return "Enter reverse, then 1 to 7 decreasing forward ratios, separated by spaces or commas. Gear count updates automatically."
+        if kind == "dial":
+            return "The other unit keeps its shown limit. Both camera modes update together. Inherited value clears BOTH custom limits: the HUD uses its native range and the interior needles use donor calibration."
+        return "For a vector, keep the same number of components, separated by spaces. Boolean values use true/false or 0/1 as shown."
+
+    def _stat_override_value(self, row: dict) -> str | None:
+        kind, key = self._stat_target(row)
+        if kind == "rating":
+            value = self.rating_vars[key].get()
+        elif kind == "physics":
+            value = self.physics_vars[key].get().split(" - ", 1)[0]
+        elif kind == "gears":
+            value = self.gear_var.get()
+        elif kind == "dial":
+            value = self.speed_vars[key].get()
+        else:
+            edits = self.model.config["cars"][self.current].get("native_overrides", [])
+            value = next((item["value"] for item in edits
+                          if (item["section"], item["key"], item["occurrence"]) == row["identity"]), "")
+        # Comments belong to the donor text, not to the editable number/vector.
+        return value or re.split(r"\s+(?://|#|;)", row["value"].strip(), maxsplit=1)[0]
+
+    def _edit_stat(self, row: dict, text: str | None) -> None:
+        """Validate the entire draft and effective native data before changing it."""
+        reason = self._stat_edit_reason(row)
+        if reason:
+            raise ValueError(reason)
+        car = self._draft_car()  # An unfinished edit in another tab must survive.
+        kind, key = self._stat_target(row)
+        text = text.strip() if text is not None else None
+        if not text:
+            text = None
+        if kind == "rating":
+            if text is None:
+                if key not in self.base_values["ratings"]:
+                    raise ValueError("The inherited rating is unavailable. Enter a rating from 0 to 9.")
+                value = self.base_values["ratings"][key]
+            else:
+                value = number(text, f"{key.title()} rating", True)
+            car["ratings"][key] = value
+        elif kind == "physics":
+            car["physics"].pop(key, None)
+            if text is not None:
+                car["physics"][key] = number(text, LABELS.get(key, key), key == "WheelDrive")
+        elif kind == "gears":
+            car["physics"].pop("GearRatioVector", None)
+            if text is not None:
+                tokens = re.split(r"[\s,]+", text.strip("[]").strip())
+                car["physics"]["GearRatioVector"] = [number(token, "Gear ratio") for token in tokens]
+        elif kind == "dial":
+            if text is None:
+                car.pop("speedometer", None)
+            else:
+                # A single native dial edit still produces the pair required by
+                # both the HUD and interior calibration contracts.
+                limits = car.get("speedometer")
+                if limits is None:
+                    native = reference.section_values(self.stats_view.car or {}, row["section"])
+                    limits = {setting: native[name] for setting, name in reference.DIAL_KEYS.items() if name in native}
+                    if not all(setting in limits for setting in prepare.SPEEDOMETER):
+                        source = self._hud_reference(car) if "hud_style" in car else self.original_by_alias.get(car["donor"])
+                        markings = reference.native_hud_markings(source)
+                        limits = {**markings, **limits}
+                limits = {setting: limits.get(setting) for setting in prepare.SPEEDOMETER}
+                limits[key] = number(text, "Speedometer limit")
+                car["speedometer"] = limits
+        else:
+            identity = row["identity"]
+            edits = [item for item in car.get("native_overrides", [])
+                     if (item["section"], item["key"], item["occurrence"]) != identity]
+            if text is not None:
+                value = prepare.native_overrides.validate_value(row["value"], text)
+                edits.append({"section": identity[0], "key": identity[1], "occurrence": identity[2], "value": value})
+            if edits:
+                car["native_overrides"] = edits
+            else:
+                car.pop("native_overrides", None)
+        candidate = copy.deepcopy(self.model.config)
+        candidate["cars"][self.current] = car
+        validated(candidate)
+        donor = self.original_by_alias.get(car["donor"])
+        if donor is not None:
+            effective_stats(car, donor, self._base_reference(car), self._hud_reference(car))
+        self.model.replace_car(self.current, car)
+        self._load_car(self.current)
+        action = "Restored the inherited value for" if text is None else "Updated"
+        self.status.set(f"{action} {row['section']}.{row['key']}. Save & Apply to install the change.")
 
     def _factory_changed(self, *_args) -> None:
         for key in ("MaxTorqueRPM", "MaxTurboTorqueRPM", "TurboSize"):

@@ -23,8 +23,8 @@ def main():
                         str(ROOT / "tests/mm3_facade_fade_contract.c"),
                         "/Fo:" + str(folder / "contract.obj"), "/Fe:" + str(executable)],
                        check=True, cwd=folder)
-        for scale in ("1", "2", "4"):
-            subprocess.run([str(executable), scale], check=True)
+        for setting in (("1",), ("2",), ("4",), ("1", "2"), ("4", "1"), ("2", "4")):
+            subprocess.run([str(executable), *setting], check=True)
 
 
 if __name__ == "__main__":

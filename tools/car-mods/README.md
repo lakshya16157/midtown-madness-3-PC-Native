@@ -72,9 +72,28 @@ original car or DLC car. Its values fill a Compare column on every tab and the
 Game stats table; click a Compare value to copy it into the car you are editing.
 
 **Game stats** shows every stored value, including engine, gearing, wheel,
-suspension, camera, paint and menu fields, beside the compared car. Search values
-or native setting names, and use **Copy selected value** to bring a reference value
-into an added-car field. Selecting a stat shows its explanation and its range
+suspension, camera, paint and menu fields, beside the compared car. For an **Added**
+car, double-click its **Value** cell, press Enter or F2, or choose **Edit selected
+value**. **Keep change** updates the draft; **Save & Apply** installs it with the
+game closed. Invalid edits stay open for correction. Leave the value blank or
+choose **Inherited value** to remove the override. Original and DLC cars remain
+read-only references.
+
+Driving values, ratings, gears and dial limits use the same settings and validation
+as their other tabs. Other numeric, vector and explicit true/false fields support
+edits, including suspension, wheel and camera tuning. Vectors keep their number
+of components and numeric boolean switches keep their 0/1 values. Identity, resource and
+structural fields stay managed by Workshop; the selected row explains any
+restriction. Gear count follows the gear ratios, paint uses Appearance, and the
+factory engine profile keeps its controlled settings locked.
+
+Editing either speedometer limit keeps the other unit's displayed limit and
+updates both camera modes. Resetting either limit to **Inherited value** clears
+both unit overrides: the on-screen HUD uses the selected style's native range,
+and the interior needles return to the donor's calibration.
+
+Search values or native setting names. **Copy selected value** copies the shown
+value to the clipboard for pasting into a field. Selecting a stat shows its explanation and its range
 across all original and DLC cars. Added-car previews combine your draft values
 with the base stats car and donor using the installer's rules; these are
 configuration values, not measured driving performance, and imported geometry
@@ -313,6 +332,16 @@ wheelspin. Regera is 1,590 kg with a torque scale of 1,250, compared with its
 donor's 1,526 kg and 1,000. These choices are starting points for driving feel,
 not measured acceleration or manufacturer torque claims.
 
+Panoz and Formula 1 also use `RollStiffness` **44200** at all four wheels,
+matching the retail Koenigsegg anti-roll setup. Choosing a driving base copies
+engine/driving values but leaves the Viper/Lotus suspension on the imported
+body; the explicit native overrides prevent those lightweight race cars from
+keeping the softer donor anti-roll setup. Restore default driving retains this
+profile. Wheel mounts, spring lengths, spring stiffness and damping stay with
+the body donor. `race_stability.apply_profile()` can repair a customized car
+without resetting its engine, gearbox, gauges, model or camera; its optional
+grip cap changes an excessive Formula 1 multiplier to 2.2.
+
 Advanced custom RPM edits are still supported. Keep `MinRPM`,
 `MinRPMGearChange`, `CutRPM` and `MaxRPM` in that order from lowest to highest;
 `CutRPM` can equal `MaxRPM`. Both peak torque RPM values must stay below the
@@ -371,6 +400,24 @@ Omit it to keep the MM3 donor's family. The fixed donor, identity, interior,
 sound, collision and driving values stay unchanged; `driving_base` does not
 select this style. Original-car custom
 HUD ranges in `original_speedometers` remain independent and are not copied.
+
+Additional Game stats edits are stored in the optional per-car `native_overrides`
+array. Each entry identifies an existing native field by `section`, `key`, and
+zero-based `occurrence` (counted across sections with the same name), with its
+replacement in `value` as text. For example:
+
+```json
+"native_overrides": [
+  {"section": "CarWheel0", "key": "SpringK", "occurrence": 0, "value": "80000"}
+]
+```
+
+These edits apply after the base stats and normal tuning overlays, and only to
+the added car's cloned tweak. They cannot override managed driving fields,
+ratings, identities, resource references or structural counts. The installer
+checks the existing field, value type and vector length before writing game
+data. **Restore shipped tuning** and **Clear all overrides** also clear body and
+wheel edits, keeping camera edits. An older installer does not support this field.
 
 The optional `speedometer` object contains `max_kmh` and `max_mph`. These set
 both the added car's on-screen HUD range and its interior needle calibration.

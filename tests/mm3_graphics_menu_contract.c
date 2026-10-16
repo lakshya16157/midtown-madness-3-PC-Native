@@ -41,6 +41,7 @@ void mm3_display_settings_defaults(MM3DisplaySettings *settings, const char *pro
     settings->minimap_improved = 1;
     strcpy(settings->aspect, "auto");
     settings->msaa = settings->aniso = 1; settings->draw_distance = 1;
+    settings->view_distance = 1;
 }
 
 void sub_0016FF04(void)
@@ -158,6 +159,9 @@ int main(void)
     char label[256];
     g_xbox_mem_offset = (ptrdiff_t)memory;
     mm3_display_settings_defaults(&saved_settings, NULL);
+    assert(choice_action(SETTING_DISTANCE, 0) == 54u);
+    assert(choice_action(SETTING_MINIMAP, 0) == 59u);
+    assert(choice_action(SETTING_VIEW_DISTANCE, 0) == 61u);
     saved_settings.window_width = 1920; saved_settings.window_height = 1080;
     saved_settings.render_scale = 0;
 
@@ -208,7 +212,7 @@ int main(void)
     assert(draft.window_width == 3840 && draft.window_height == 2160);
     assert(draft.fullscreen == 1 && draft.fps_limit == 60 && draft.vsync == 1 && draft.show_fps == 1);
     assert(draft.render_scale == 4 && !strcmp(draft.aspect, "21:9"));
-    assert(draft.msaa == 8 && draft.aniso == 16 && draft.draw_distance == 4);
+    assert(draft.msaa == 8 && draft.aniso == 16 && draft.draw_distance == 4 && draft.view_distance == 4);
     assert(draft.minimap_improved == 1);
     execute(choice_action(SETTING_RESOLUTION, 9));
     execute(choice_action(SETTING_FPS, 1));
@@ -220,14 +224,20 @@ int main(void)
     execute(choice_action(SETTING_MSAA, 2));
     execute(choice_action(SETTING_ANISO, 3));
     execute(choice_action(SETTING_DISTANCE, 2));
+    execute(choice_action(SETTING_VIEW_DISTANCE, 3));
     execute(choice_action(SETTING_MINIMAP, 0));
     assert(draft.fps_limit == 24 && draft.fullscreen == 0 && draft.render_scale == .75f);
     assert(draft.vsync == 0 && draft.show_fps == 0 && !strcmp(draft.aspect, "16:9"));
-    assert(draft.msaa == 4 && draft.aniso == 8 && draft.draw_distance == 2);
+    assert(draft.msaa == 4 && draft.aniso == 8 && draft.draw_distance == 2 && draft.view_distance == 3);
+    get_native_label("SID_MM3_GRAPHICS_DISTANCE", label, sizeof label);
+    assert(!strcmp(label, "Object Detail Distance: 2x"));
+    get_native_label("SID_MM3_GRAPHICS_VIEW_DISTANCE", label, sizeof label);
+    assert(!strcmp(label, "Building View Distance: 3x"));
     assert(draft.minimap_improved == 0 && saved_settings.minimap_improved == 1);
     execute(GRAPHICS_APPLY);
     assert(commits == 1 && saved_settings.fps_limit == 24 && saved_settings.window_width == 2560 && saved_settings.window_height == 1440);
     assert(saved_settings.minimap_improved == 0);
+    assert(saved_settings.draw_distance == 2.f && saved_settings.view_distance == 3.f);
     get_native_label("SID_MM3_GRAPHICS_HELP_APPLY", label, sizeof label);
     assert(!strcmp(label, "Saved. Display changes applied."));
 

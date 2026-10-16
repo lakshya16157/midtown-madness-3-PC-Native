@@ -30,6 +30,8 @@ extern void sub_00162F75_original(void);
  * the line budget is exhausted, so the next second can report them instead
  * of permanently losing a building encountered during a busy first frame. */
 #define BUILDING_SLOTS 1024u
+#define BUILDING_SLOT_PROBES 32u
+#define BUILDING_DEFAULT_SAMPLE_BUDGET 256u
 #define BUILDING_SAMPLE_MS 100u
 #define BUILDING_OBJECT_REPORT_MS 250u
 #define BUILDING_LINES_PER_SECOND 64u
@@ -78,24 +80,46 @@ typedef struct BuildingSummary {
     uint32_t calls, samples, tiers[4], frustum, auxiliary, empty_geometry, unknown_geometry, lines, suppressed;
     uint32_t allocation_successes, allocation_failures, cell_frustum_rejects, cell_auxiliary_rejects;
     uint32_t failure_lines, failure_suppressed;
+    uint32_t sample_budget_used, sample_budget_skipped;
 } BuildingSummary;
 
 static volatile LONG s_enabled = -1;
+static uint32_t s_sample_budget = BUILDING_DEFAULT_SAMPLE_BUDGET;
 static RECOMP_TLS BuildingSlot s_slots[BUILDING_SLOTS];
 static RECOMP_TLS BuildingFrame *s_active;
 static RECOMP_TLS BuildingSummary s_summary;
 
+/* Only decimal nonnegative values are accepted; zero restores unlimited
+ * diagnostic coverage. Invalid/overflowing settings retain the safe default. */
+static uint32_t configured_sample_budget(const char *value)
+{
+    uint32_t budget = 0;
+    if (!value || !*value) return BUILDING_DEFAULT_SAMPLE_BUDGET;
+    for (; *value; ++value) {
+        unsigned digit = (unsigned char)*value - (unsigned)'0';
+        if (digit > 9u || budget > (UINT32_MAX - digit) / 10u)
+            return BUILDING_DEFAULT_SAMPLE_BUDGET;
+        budget = budget * 10u + digit;
+    }
+    return budget;
+}
+
 void mm3_building_diagnostics_init(void)
 {
-    if (s_enabled < 0) {
+    /* Publish the budget before enabling wrappers on any other thread. */
+    if (InterlockedCompareExchange(&s_enabled, -2, -1) == -1) {
         const char *value = getenv("MM3_BUILDING_TRACE");
         LONG enabled = value && *value && strcmp(value, "0") != 0;
-        if (InterlockedCompareExchange(&s_enabled, enabled, -1) == -1 && enabled) {
-            MM3_BUILDING_LOG("[BUILDING_TRACE] enabled sample_ms=%u lines_per_second=%u failure_lines_per_second=%u tracked=%u clock=GetTickCount64 tier=actual_title_path geometry=guest_queue_delta streams=28byte_1EC8_1F24 alloc=mid_168070_upper_166441 allocation_fields=calls:successes:failures:requested_quads\n",
+        s_sample_budget = configured_sample_budget(getenv("MM3_BUILDING_SAMPLE_BUDGET"));
+        if (enabled) {
+            MM3_BUILDING_LOG("[BUILDING_TRACE] enabled sample_ms=%u lines_per_second=%u failure_lines_per_second=%u tracked=%u sample_budget=%u sample_budget_scope=thread_per_second clock=GetTickCount64 tier=actual_title_path geometry=guest_queue_delta streams=28byte_1EC8_1F24 alloc=mid_168070_upper_166441 allocation_fields=calls:successes:failures:requested_quads\n",
                              BUILDING_SAMPLE_MS, BUILDING_LINES_PER_SECOND,
-                             BUILDING_FAILURE_LINES_PER_SECOND, BUILDING_SLOTS);
+                             BUILDING_FAILURE_LINES_PER_SECOND, BUILDING_SLOTS, s_sample_budget);
             MM3_BUILDING_FLUSH();
         }
+        InterlockedExchange(&s_enabled, enabled);
+    } else {
+        while (s_enabled == -2) YieldProcessor();
     }
 }
 
@@ -130,7 +154,14 @@ static BuildingSlot *find_slot(uint32_t object)
 {
     unsigned home = ((object >> 4) ^ (object >> 14)) & (BUILDING_SLOTS - 1u), i;
     BuildingSlot *oldest = &s_slots[home];
-    for (i = 0; i < BUILDING_SLOTS; ++i) {
+    /* This is a lossy diagnostic cache, not guest state. Once all 1024
+     * entries were occupied, every new facade scanned the entire table on
+     * the render thread, including visits that produced no log line. Keep
+     * lookup work bounded and replace the oldest local entry instead. All
+     * entries are inserted within this same window, so existing hits remain
+     * discoverable until eviction. The independent line budgets still apply
+     * if a heavily colliding facade must be sampled again. */
+    for (i = 0; i < BUILDING_SLOT_PROBES; ++i) {
         BuildingSlot *slot = &s_slots[(home + i) & (BUILDING_SLOTS - 1u)];
         if (slot->object == object) return slot;
         if (!slot->object) { slot->object = object; return slot; }
@@ -154,6 +185,42 @@ static void snapshot_streams(BuildingFrame *frame, int after)
         else stream->before_read = valid;
         if (valid) memcpy(after ? stream->after : stream->before, values, sizeof values);
     }
+}
+
+/* These native queue fields occupy one small contiguous allocation. Reading
+ * them together avoids six self-process read syscalls per sampled facade.
+ * A failed wide read falls back to the original independently guarded fields,
+ * retaining partial/unreadable diagnostics instead of discarding the sample. */
+static int snapshot_queue(BuildingFrame *frame, int after)
+{
+    unsigned char values[0x144]; /* 1E4C..1F8F, including both 28-byte streams. */
+    DWORD previous_error = GetLastError();
+    unsigned i;
+    if (!frame->queue || frame->queue > UINT32_MAX - 0x1F90u ||
+        !read_guest(frame->queue + 0x1E4Cu, values, sizeof values)) {
+        SetLastError(previous_error);
+        return 0;
+    }
+    if (after) {
+        if (frame->queue_read) {
+            memcpy(&frame->head_after, values + 0x134, 4);
+            memcpy(&frame->tail_after, values + 0x138, 4);
+            memcpy(&frame->batch_after, values, 4);
+        }
+    } else {
+        frame->queue_read = 1;
+        memcpy(&frame->head_before, values + 0x134, 4);
+        memcpy(&frame->tail_before, values + 0x138, 4);
+        memcpy(&frame->vertex_cap, values + 0x13C, 4);
+        memcpy(&frame->batch_before, values, 4);
+    }
+    for (i = 0; i < 2; ++i) {
+        BuildingStream *stream = &frame->streams[i];
+        if (after) stream->after_read = 1;
+        else stream->before_read = 1;
+        memcpy(after ? stream->after : stream->before, values + (i ? 0xD8 : 0x7C), 12);
+    }
+    return 1;
 }
 
 static void snapshot(BuildingFrame *frame)
@@ -194,30 +261,34 @@ static void snapshot(BuildingFrame *frame)
         frame->descriptor_before = counters[0];
         frame->draw_before = counters[1];
     }
-    if (frame->queue && read_guest(frame->queue + 0x1F80u, queue, sizeof queue)) {
-        frame->queue_read = 1;
-        frame->head_before = queue[0];
-        frame->tail_before = queue[1];
-        frame->vertex_cap = queue[2];
-        frame->batch_before = read_word(frame->queue + 0x1E4Cu);
+    if (!snapshot_queue(frame, 0)) {
+        if (frame->queue && read_guest(frame->queue + 0x1F80u, queue, sizeof queue)) {
+            frame->queue_read = 1;
+            frame->head_before = queue[0];
+            frame->tail_before = queue[1];
+            frame->vertex_cap = queue[2];
+            frame->batch_before = read_word(frame->queue + 0x1E4Cu);
+        }
+        snapshot_streams(frame, 0);
     }
-    snapshot_streams(frame, 0);
 }
 
 static void finish_snapshot(BuildingFrame *frame)
 {
     uint32_t counters[2], queue[2];
+    int queue_snapshot;
     if (frame->counters_read && read_guest(0x003C57A0u, counters, sizeof counters)) {
         frame->descriptor_after = counters[0];
         frame->draw_after = counters[1];
     }
-    if (frame->queue_read && read_guest(frame->queue + 0x1F80u, queue, sizeof queue)) {
+    queue_snapshot = snapshot_queue(frame, 1);
+    if (!queue_snapshot && frame->queue_read && read_guest(frame->queue + 0x1F80u, queue, sizeof queue)) {
         frame->head_after = queue[0];
         frame->tail_after = queue[1];
         frame->batch_after = read_word(frame->queue + 0x1E4Cu);
     }
     frame->mask = read_word(frame->stack + 16u);
-    snapshot_streams(frame, 1);
+    if (!queue_snapshot) snapshot_streams(frame, 1);
 }
 
 static int64_t delta(uint32_t before, uint32_t after)
@@ -290,7 +361,7 @@ static void summary(uint64_t now)
 {
     if (!s_summary.start) s_summary.start = now;
     if (now - s_summary.start < 1000u) return;
-    MM3_BUILDING_LOG("[BUILDING_SUMMARY] ms=%llu calls=%u samples=%u culled=%u auxiliary_reject=%u near=%u mid=%u far=%u no_path=%u zero_queue_delta=%u unknown_queue_delta=%u allocation_successes=%u allocation_failures=%u cell_frustum_rejects=%u cell_auxiliary_rejects=%u failure_events=%u failure_suppressed=%u events=%u suppressed=%u\n",
+    MM3_BUILDING_LOG("[BUILDING_SUMMARY] ms=%llu calls=%u samples=%u culled=%u auxiliary_reject=%u near=%u mid=%u far=%u no_path=%u zero_queue_delta=%u unknown_queue_delta=%u allocation_successes=%u allocation_failures=%u cell_frustum_rejects=%u cell_auxiliary_rejects=%u failure_events=%u failure_suppressed=%u events=%u suppressed=%u sample_budget=%u sample_budget_skipped=%u\n",
         (unsigned long long)now, s_summary.calls, s_summary.samples,
         s_summary.frustum, s_summary.auxiliary, s_summary.tiers[1],
         s_summary.tiers[2], s_summary.tiers[3], s_summary.tiers[0],
@@ -298,7 +369,7 @@ static void summary(uint64_t now)
         s_summary.allocation_successes, s_summary.allocation_failures,
         s_summary.cell_frustum_rejects, s_summary.cell_auxiliary_rejects,
         s_summary.failure_lines, s_summary.failure_suppressed,
-        s_summary.lines, s_summary.suppressed);
+        s_summary.lines, s_summary.suppressed, s_sample_budget, s_summary.sample_budget_skipped);
     MM3_BUILDING_FLUSH();
     memset(&s_summary, 0, sizeof s_summary);
     s_summary.start = now;
@@ -409,6 +480,18 @@ void sub_00168A77(void)
     now = MM3_BUILDING_CLOCK();
     summary(now);
     ++s_summary.calls;
+    /* A line limit alone did not bound snapshots or the many per-cell guest
+     * reads: thousands of samples still ran after ordinary output was full.
+     * Spend a renewable deep-sample budget before lookup and guarded reads.
+     * Retail always runs, with nested diagnostics detached for skipped work. */
+    if (s_sample_budget && s_summary.sample_budget_used >= s_sample_budget) {
+        BuildingFrame *previous = s_active;
+        ++s_summary.sample_budget_skipped;
+        s_active = NULL;
+        sub_00168A77_original();
+        s_active = previous;
+        return;
+    }
     slot = find_slot(g_eax);
     if (slot->sampled && now - slot->sample_ms < BUILDING_SAMPLE_MS) {
         BuildingFrame *previous = s_active;
@@ -419,6 +502,7 @@ void sub_00168A77(void)
     }
     slot->sampled = 1;
     slot->sample_ms = now;
+    ++s_summary.sample_budget_used;
     memset(&frame, 0, sizeof frame);
     frame.previous = s_active;
     frame.slot = slot;
@@ -502,15 +586,20 @@ void sub_00162F75(void)
 {
     BuildingFrame *frame = s_active;
     BuildingAllocation *allocation = NULL;
-    uint32_t caller, queue_address, quads;
-    unsigned char stream_flag;
-    int stream = -1;
+    uint32_t caller, queue_address, quads, arguments[2];
+    unsigned char stream_flag = 0;
+    int stream = -1, arguments_read;
+    DWORD previous_error;
     if (!frame) { sub_00162F75_original(); return; }
-    caller = read_word(g_esp);
+    previous_error = GetLastError();
+    arguments_read = read_guest(g_esp, arguments, sizeof arguments);
+    if (!arguments_read) SetLastError(previous_error);
+    caller = arguments_read ? arguments[0] : read_word(g_esp);
     queue_address = g_eax;
     quads = g_edx;
     if (caller == 0x00168070u || caller == 0x00166441u) {
-        if (read_guest(g_esp + 4u, &stream_flag, sizeof stream_flag)) {
+        if (arguments_read) stream_flag = (unsigned char)arguments[1];
+        if (arguments_read || read_guest(g_esp + 4u, &stream_flag, sizeof stream_flag)) {
             stream = stream_flag ? 0 : 1;
             allocation = caller == 0x00168070u ? &frame->mid_alloc[stream] : &frame->upper_alloc[stream];
         } else ++frame->alloc_unknown_stream;

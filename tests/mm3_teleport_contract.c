@@ -209,6 +209,7 @@ int main(int argc, char **argv) {
     check_keyboard_context();
     enabled = 1;
     sub_002203E5(); assert(available && position[0] == 9 && position[1] == 10 && position[2] == 11);
+    assert(body_up_y == 1.0f);
     if (argc == 2 && strcmp(argv[1], "--serve") == 0) {
         HANDLE server = CreateThread(NULL, 0, pipe_thread, NULL, 0, NULL);
         assert(server); CloseHandle(server);

@@ -21,6 +21,14 @@ def prepare(package_dir: Path):
     report_path = package_dir / "conversion-report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     source_path = Path(report["source"])
+    if not source_path.is_file():
+        # Packages can be moved with the checkout; old reports contain the
+        # original machine's absolute source path.
+        relocated = (Path(__file__).resolve().parents[2] / "out/car-models/source"
+                     / source_path.parent.name / source_path.name)
+        if relocated.is_file():
+            source_path = relocated
+    report["source"] = str(source_path.resolve())
     source = json.loads(source_path.read_text(encoding="utf-8"))
     anchors, evidence = mm3_lights.source_anchors(source)
     if not anchors:

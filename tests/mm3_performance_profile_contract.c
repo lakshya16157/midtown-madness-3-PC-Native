@@ -6,8 +6,8 @@
 #include "mm3_frame_limit.h"
 
 static const char *keys[] = {
-    "RECOMP_RENDER_SCALE", "RECOMP_MSAA", "RECOMP_DRAW_DISTANCE",
-    "RECOMP_ANISO", "RECOMP_FPS_LIMIT"
+    "RECOMP_RENDER_SCALE", "RECOMP_MSAA", "RECOMP_DRAW_DISTANCE", "RECOMP_VIEW_DISTANCE",
+    "RECOMP_ANISO", "RECOMP_FPS_LIMIT", "RECOMP_BUFFERED_ASSET_READS"
 };
 
 static void setting(const char *key, const char *value)
@@ -34,15 +34,17 @@ static void profile(const char *name, const char *scale, const char *msaa,
     assert(strcmp(getenv("RECOMP_RENDER_SCALE"), scale) == 0);
     assert(strcmp(getenv("RECOMP_MSAA"), msaa) == 0);
     assert(strcmp(getenv("RECOMP_DRAW_DISTANCE"), distance) == 0);
+    assert(strcmp(getenv("RECOMP_VIEW_DISTANCE"), distance) == 0);
     assert(strcmp(getenv("RECOMP_ANISO"), "16") == 0);
     assert(strcmp(getenv("RECOMP_FPS_LIMIT"), fps) == 0);
+    assert(strcmp(getenv("RECOMP_BUFFERED_ASSET_READS"), "1") == 0);
     assert(mm3_frame_limit(getenv("RECOMP_FPS_LIMIT")) == atoi(fps));
 }
 
 int main(void)
 {
     const char *names[] = {"Balanced", "Quality", "LowPower"};
-    const char *overrides[] = {"2.25", "8", "1.25", "4", "45"};
+    const char *overrides[] = {"2.25", "8", "1.25", "3.5", "4", "45", "0"};
     size_t i, j;
     profile(NULL, "2.0", "4", "2", "60");
     profile("", "2.0", "4", "2", "60");
@@ -71,6 +73,14 @@ int main(void)
     assert(mm3_apply_performance_defaults("LowPower") == NULL);
     assert(strcmp(getenv("RECOMP_FPS_LIMIT"), "0") == 0);
     assert(mm3_frame_limit(getenv("RECOMP_FPS_LIMIT")) == 60);
+    clear_settings();
+    setting("RECOMP_DRAW_DISTANCE", "1.25");
+    assert(mm3_apply_performance_defaults("Quality") == NULL);
+    assert(strcmp(getenv("RECOMP_VIEW_DISTANCE"), "1.25") == 0);
+    setting("RECOMP_VIEW_DISTANCE", "3.25");
+    assert(mm3_apply_performance_defaults("LowPower") == NULL);
+    assert(strcmp(getenv("RECOMP_DRAW_DISTANCE"), "1.25") == 0);
+    assert(strcmp(getenv("RECOMP_VIEW_DISTANCE"), "3.25") == 0);
     puts("Performance profile contracts passed.");
     return 0;
 }

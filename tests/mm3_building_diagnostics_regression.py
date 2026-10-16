@@ -17,6 +17,8 @@ SOURCE = r'''
 #include <windows.h>
 #include <assert.h>
 #include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,7 +38,20 @@ static void trace_log(const char *format,...){
 #define MM3_BUILDING_CLOCK clock_now
 #define MM3_BUILDING_LOG trace_log
 #define MM3_BUILDING_FLUSH() (++flushes)
+static unsigned diagnostic_reads, batch_failures;
+static int fail_wide_reads;
+extern ptrdiff_t g_xbox_mem_offset;
+static BOOL counted_read(HANDLE process,LPCVOID address,LPVOID out,SIZE_T size,SIZE_T *copied){
+ ++diagnostic_reads;
+ if(fail_wide_reads && (size==0x144 ||
+    (size==8 && (uintptr_t)address==(uintptr_t)g_xbox_mem_offset+0x200000-100))){
+  ++batch_failures;*copied=0;SetLastError(ERROR_PARTIAL_COPY);return FALSE;
+ }
+ return ReadProcessMemory(process,address,out,size,copied);
+}
+#define ReadProcessMemory counted_read
 #include "mm3_building_diagnostics.c"
+#undef ReadProcessMemory
 
 ptrdiff_t g_xbox_mem_offset;
 RECOMP_TLS uint32_t g_eax,g_ecx,g_edx,g_esp,g_ebx,g_esi,g_edi,g_ebp,g_seh_ebp,g_fs_base,g_eflags;
@@ -45,6 +60,7 @@ RECOMP_TLS uint16_t g_fp_control_word,g_fp_cc;
 RECOMP_TLS double g_fp_stack[8];
 static unsigned char *ram,*expected;
 static int scenario;
+static unsigned facade_calls;
 static const uint32_t stack=0x200000,object=0x120000,owner=0x130000;
 static const uint32_t renderer=0x140000,queue=0x160000,camera=0x170000;
 
@@ -107,6 +123,7 @@ void sub_00167DA5_original(void){
 }
 void sub_00166B3E_original(void){MEM32(queue+0x1F84)+=4;g_esp+=8;}
 void sub_00168A77_original(void){
+ ++facade_calls;
  allocation_index=0;
  if(scenario==5){result_state();return;}
  g_esp=stack-80;MEM32(g_esp)=0x168A92;sub_001C7B15();
@@ -168,9 +185,78 @@ static unsigned count_failures(void){
  return count;
 }
 
+static void check_batch_fallback(int tracing){
+ char *first=malloc(sizeof logs);size_t first_size=0;unsigned fast_reads=0;
+ assert(first);
+ for(int fallback=0;fallback<2;fallback++){
+  memset(s_slots,0,sizeof s_slots);memset(&s_summary,0,sizeof s_summary);
+  s_active=NULL;log_size=0;flushes=0;clock_ms=1000000;diagnostic_reads=0;
+  batch_failures=0;fail_wide_reads=fallback;
+  for(scenario=0;scenario<9;scenario++){
+   setup(object);sub_00168A77_original();memcpy(expected,ram,0x400000);
+   setup(object);if(scenario==5)g_eax=0x480000;
+   clock_ms+=300;sub_00168A77();check_state();
+   assert(memcmp(ram,expected,0x400000)==0);
+  }
+  if(!fallback){memcpy(first,logs,log_size);first_size=log_size;fast_reads=diagnostic_reads;}
+  else{
+   /* Every emitted byte and guest result survives failed wide reads. This
+    * includes individually readable fields, invalid queues and allocations. */
+   assert(first_size==log_size && memcmp(first,logs,log_size)==0);
+   if(tracing){assert(batch_failures>0 && diagnostic_reads>fast_reads);}
+   else assert(!batch_failures && !diagnostic_reads && !fast_reads);
+  }
+ }
+ fail_wide_reads=0;free(first);
+}
+
+static void check_sample_budget(int tracing){
+ uint32_t saved_budget=s_sample_budget;BuildingFrame parent={0};
+ assert(configured_sample_budget(NULL)==BUILDING_DEFAULT_SAMPLE_BUDGET);
+ assert(configured_sample_budget("")==BUILDING_DEFAULT_SAMPLE_BUDGET);
+ assert(configured_sample_budget("-1")==BUILDING_DEFAULT_SAMPLE_BUDGET);
+ assert(configured_sample_budget("12x")==BUILDING_DEFAULT_SAMPLE_BUDGET);
+ assert(configured_sample_budget("4294967296")==BUILDING_DEFAULT_SAMPLE_BUDGET);
+ assert(configured_sample_budget("0")==0 && configured_sample_budget("2")==2);
+ assert(configured_sample_budget("4294967295")==UINT32_MAX);
+ for(unsigned unlimited=0;unlimited<2;unlimited++){
+  s_sample_budget=unlimited?0:2;
+  memset(s_slots,0,sizeof s_slots);memset(&s_summary,0,sizeof s_summary);
+  s_active=NULL;log_size=0;clock_ms=2000000;scenario=2;diagnostic_reads=0;
+  for(unsigned i=0;i<5;i++){
+   uint32_t facade=object+i*0x100;unsigned reads,calls;
+   setup(facade);sub_00168A77_original();memcpy(expected,ram,0x400000);
+   setup(facade);reads=diagnostic_reads;calls=facade_calls;
+   /* A skipped nested facade must not attribute its cells/allocations to
+    * the parent frame, and the parent must be restored on return. */
+   if(tracing && !unlimited && i>=2)s_active=&parent;
+   sub_00168A77();check_state();
+   assert(facade_calls==calls+1 && memcmp(ram,expected,0x400000)==0);
+   if(tracing && !unlimited && i>=2){
+    assert(s_active==&parent);s_active=NULL;
+    assert(diagnostic_reads==reads);
+   }else if(tracing)assert(diagnostic_reads>reads);
+  }
+  if(tracing){
+   assert(s_summary.samples==(unlimited?5u:2u));
+   assert(s_summary.sample_budget_skipped==(unlimited?0u:3u));
+   assert(!parent.tier && !parent.cell_frustum_calls && !parent.mid_alloc[0].calls);
+  }else assert(!s_summary.samples && !diagnostic_reads);
+  /* A fresh second admits new deep samples and reports lost coverage. */
+  clock_ms+=1001;setup(object+0x1000);sub_00168A77();check_state();
+  if(tracing){
+   assert(s_summary.samples==1 && !s_summary.sample_budget_skipped);
+   assert(strstr(logs,unlimited?"sample_budget=0 sample_budget_skipped=0":
+                               "sample_budget=2 sample_budget_skipped=3"));
+  }
+ }
+ s_sample_budget=saved_budget;s_active=NULL;
+}
+
 int main(int argc,char**argv){
  int tracing;unsigned before,first_window;
  assert(argc==2);tracing=atoi(argv[1]);_putenv_s("MM3_BUILDING_TRACE",argv[1]);
+ _putenv_s("MM3_BUILDING_SAMPLE_BUDGET","");
  ram=VirtualAlloc(NULL,0x500000,MEM_RESERVE,PAGE_NOACCESS);
  assert(ram && VirtualAlloc(ram,0x400000,MEM_COMMIT,PAGE_READWRITE)==ram);
  expected=malloc(0x400000);assert(expected);g_xbox_mem_offset=(ptrdiff_t)ram;
@@ -181,6 +267,7 @@ int main(int argc,char**argv){
   assert(memcmp(ram,expected,0x400000)==0);
  }
  if(tracing){
+  assert(strstr(logs,"sample_budget=256 sample_budget_scope=thread_per_second"));
   assert(strstr(logs,"tier=none frustum_reject=1") && strstr(logs,"auxiliary_reject=1"));
   assert(strstr(logs,"tier=near") && strstr(logs,"tier=mid") && strstr(logs,"tier=far"));
   assert(strstr(logs,"closest_distance=150.000 grid=6x18 detail_floor_cap=2"));
@@ -218,8 +305,10 @@ int main(int argc,char**argv){
  /* Identical visits inside the sample interval delegate without another log. */
  before=count_events();setup(object+0x20000+99*0x100);sub_00168A77();check_state();
  assert(count_events()==before);
+ check_batch_fallback(tracing);
+ check_sample_budget(tracing);
  free(expected);VirtualFree(ram,0,MEM_RELEASE);
- printf("PASS: building diagnostics tracing=%d, original ABI/memory, native28-byte allocator success/failure, cell culls, guarded reads and renewable rate limit\n",tracing);
+ printf("PASS: building diagnostics tracing=%d, original ABI/memory, native28-byte allocator success/failure, cell culls, guarded batch/scalar identical logs, renewable line/sample budgets and unlimited coverage\n",tracing);
  return 0;
 }
 '''

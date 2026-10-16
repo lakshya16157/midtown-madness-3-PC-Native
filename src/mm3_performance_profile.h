@@ -57,10 +57,14 @@ static inline const char *mm3_apply_performance_defaults(const char *name)
         return "RECOMP_MSAA";
     if (mm3_performance_default("RECOMP_DRAW_DISTANCE", profile->draw_distance))
         return "RECOMP_DRAW_DISTANCE";
+    if (mm3_performance_default("RECOMP_VIEW_DISTANCE", getenv("RECOMP_DRAW_DISTANCE")))
+        return "RECOMP_VIEW_DISTANCE";
     if (mm3_performance_default("RECOMP_ANISO", profile->aniso))
         return "RECOMP_ANISO";
     if (mm3_performance_default("RECOMP_FPS_LIMIT", profile->fps_limit))
         return "RECOMP_FPS_LIMIT";
+    if (mm3_performance_default("RECOMP_BUFFERED_ASSET_READS", "1"))
+        return "RECOMP_BUFFERED_ASSET_READS";
     return NULL;
 }
 

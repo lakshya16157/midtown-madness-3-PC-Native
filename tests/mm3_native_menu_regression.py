@@ -213,6 +213,19 @@ class NativeMenuTests(unittest.TestCase):
             self.assertTrue(any(obj.kind == "WSidData" and sid_text(obj) == "SID_MM3_GRAPHICS_PICKER_HELP"
                                 for obj in resource.root.walk()))
 
+    def test_building_view_and_object_detail_have_independent_native_pickers(self):
+        resource = self.resources[ADVANCED]
+        labels = [label for label, _, _ in rows(resource)]
+        self.assertIn("SID_MM3_GRAPHICS_VIEW_DISTANCE", labels)
+        self.assertIn("SID_MM3_GRAPHICS_DISTANCE", labels)
+        self.assertLess(labels.index("SID_MM3_GRAPHICS_VIEW_DISTANCE"),
+                        labels.index("SID_MM3_GRAPHICS_DISTANCE"))
+        self.assertEqual(len(labels), 8)
+        self.assertLessEqual(max(90 + rect[1] + rect[3] for _, rect, _ in rows(resource)), 298)
+        self.assertEqual(PICKER_COUNTS["VIEW_DISTANCE"], 5)
+        self.assertEqual(PICKER_COUNTS["DISTANCE"], 5)
+        self.assertNotEqual(PICKERS["VIEW_DISTANCE"], PICKERS["DISTANCE"])
+
     def test_header_and_determinism(self):
         self.assertEqual(len(self.encoded), 7 + 2 * len(PICKER_COUNTS) + 1 + 2)
         self.assertEqual(generate_resources(self.archive), self.encoded)

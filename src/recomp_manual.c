@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include "recomp_types.h"
+#include "mm3_producer_diagnostics.h"
 
 typedef void (*recomp_func_t)(void);
 
@@ -18,6 +19,7 @@ static int g_mm3_frontend_icall_trace;
  * querying the CRT environment on each no-op serializes those workers. */
 void mm3_configure_diagnostics(void)
 {
+    mm3_producer_diagnostics_init();
     const char *trap = getenv("RECOMP_UNIMPL_TRAP");
     g_mm3_unimpl_trap = trap && *trap && *trap != '0';
     g_mm3_frontend_icall_trace = getenv("MM3_FRONTEND_ICALL_TRACE") != NULL;
@@ -1272,6 +1274,7 @@ void sub_00358FAC(void) {}
  * Registers are left as the guest routine leaves them. */
 void sub_00344AB0(void)
 {
+    mm3_producer_diagnostics_kick();
     g_eax = MEM32(MEM32(0x351F48u) + 0x17C8u);
     g_ecx = MEM32(g_eax + 0x100410u) | 0x10000u;
     _mm_sfence();

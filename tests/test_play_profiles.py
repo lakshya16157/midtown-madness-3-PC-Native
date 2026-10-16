@@ -12,7 +12,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SHELL = shutil.which("pwsh") or shutil.which("powershell")
 KEYS = ("MM3_PERFORMANCE_PROFILE", "RECOMP_RENDER_SCALE", "RECOMP_MSAA",
-        "RECOMP_DRAW_DISTANCE", "RECOMP_ANISO", "RECOMP_FPS_LIMIT",
+        "RECOMP_DRAW_DISTANCE", "RECOMP_VIEW_DISTANCE", "RECOMP_ANISO", "RECOMP_FPS_LIMIT",
         "RECOMP_ASPECT",
         "RECOMP_PB_EXEC", "RECOMP_FB_WINDOW", "RECOMP_USB", "RECOMP_APU_DSP_ACK",
         "MM3_FOV_DEGREES", "MM3_BUILDING_TRACE", "RECOMP_TEXTURE_STREAM_TRACE",
@@ -87,10 +87,12 @@ class LauncherProfileTest(unittest.TestCase):
                     for path in sorted((self.folder / "logs").glob("play-*.json"))]
         self.assertEqual([row["profile_defaults_for_unset_settings"]["msaa"] for row in metadata],
                          ["8", "1", "4", "4"])
+        self.assertEqual([row["profile_defaults_for_unset_settings"]["view_distance"] for row in metadata],
+                         ["2", "1", "2", "2"])
 
     def test_individual_environment_overrides_take_priority_and_survive_launch(self):
         overrides = {"MM3_PERFORMANCE_PROFILE": "Quality", "RECOMP_RENDER_SCALE": "2.25",
-                     "RECOMP_MSAA": "8", "RECOMP_DRAW_DISTANCE": "1.25", "RECOMP_ANISO": "4",
+                     "RECOMP_MSAA": "8", "RECOMP_DRAW_DISTANCE": "1.25", "RECOMP_VIEW_DISTANCE": "2.5", "RECOMP_ANISO": "4",
                      "RECOMP_FPS_LIMIT": "47", "RECOMP_USB": "0", "MM3_FOV_DEGREES": "97"}
         result = self.run_launcher(["-Profile LowPower -FpsLimit 30 -Fov 100"], overrides)
         for key, value in overrides.items():
@@ -297,11 +299,106 @@ class LauncherProfileTest(unittest.TestCase):
         self.assertEqual(metadata["error_line_count"], 0)
         self.assertIsNone(metadata["last_error_line"])
         self.assertEqual(metadata["state"], "exited")
+        self.assertFalse(metadata["launch_options"]["no_console_log"])
         self.assertNotIn("capture_error", metadata)
         log = Path(metadata["log_path"]).read_text(encoding="utf-8")
         self.assertEqual(log.count("[stdout] output-"), 2500)
         self.assertEqual(log.count("[stderr] error-"), 2500)
-        self.assertTrue(log.endswith("[stderr] final stderr without newline\n"))
+        # Relative order between two pipes is not guaranteed. Per-stream EOF
+        # still retains its final fragment, and default console echo is intact.
+        stderr_lines = [line for line in log.splitlines() if "[stderr] " in line]
+        self.assertTrue(stderr_lines[-1].endswith("[stderr] final stderr without newline"))
+        console = (self.folder / "outer.out").read_text(encoding="utf-8")
+        self.assertEqual(console.count("output-"), 2500)
+        self.assertEqual(console.count("error-"), 2500)
+        self.assertIn("stdout before hold\n", console)
+        self.assertIn("stderr before hold\n", console)
+        self.assertIn("final stderr without newline\n", console)
+
+    def test_concurrent_flood_is_preserved_and_visible_without_console_echo(self):
+        release = self.folder / "release flood"
+        count = 6000
+        payload = "x" * 512
+        # Native .NET threads write both streams simultaneously, each well
+        # beyond pipe capacity. The outer stdout pipe is deliberately unread
+        # until exit: -NoConsoleLog must not echo this flood into that pipe.
+        self.collector.write_text("""Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Threading;
+public static class FloodLogFixture {
+    public static void Run(string release) {
+        Console.Out.WriteLine("stdout before flood");
+        Console.Error.WriteLine("[FILE_ERROR] flood fixture initial error");
+        string payload = new string('x', 512);
+        var output = new Thread(() => {
+            for (int i = 0; i < 6000; ++i)
+                Console.Out.WriteLine("flood-out-{0:D5} {1}", i, payload);
+        });
+        var error = new Thread(() => {
+            for (int i = 0; i < 6000; ++i)
+                Console.Error.WriteLine("flood-err-{0:D5} {1}", i, payload);
+        });
+        output.Start(); error.Start(); output.Join(); error.Join();
+        Console.Out.WriteLine("stdout flood complete; waiting");
+        Console.Error.WriteLine("stderr flood complete; waiting");
+        while (!File.Exists(release)) Thread.Sleep(20);
+        Console.Out.WriteLine("final stdout after release");
+        Console.Error.Write("[CRASH_CONTEXT] final stderr without newline");
+    }
+}
+'@
+[FloodLogFixture]::Run(""" + quoted(release) + ")\nexit 37\n", encoding="utf-8")
+        process = subprocess.Popen(
+            [SHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+             str(self.launcher), "-NoConsoleLog", "-Exe", str(self.collector)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=self.environment, cwd=self.folder)
+        try:
+            deadline = time.monotonic() + 30
+            observed = ""
+            while time.monotonic() < deadline:
+                logs = list((self.folder / "logs").glob("play-*.log"))
+                if logs:
+                    observed = logs[0].read_text(encoding="utf-8")
+                if ("[stdout] stdout flood complete; waiting" in observed and
+                        "[stderr] stderr flood complete; waiting" in observed):
+                    break
+                if process.poll() is not None:
+                    output, error = process.communicate(timeout=5)
+                    self.fail("launcher exited before the live flood capture: " + output + error)
+                time.sleep(.05)
+            self.assertIn("[stdout] stdout flood complete; waiting", observed)
+            self.assertIn("[stderr] stderr flood complete; waiting", observed)
+            self.assertIsNone(process.poll(), "live file was only flushed at exit")
+            release.touch()
+            output, error = process.communicate(timeout=30)
+            self.assertEqual(process.returncode, 37, output + error)
+        finally:
+            release.touch()
+            if process.poll() is None:
+                process.communicate(timeout=30)
+        self.assertNotIn("flood-out-", output)
+        self.assertNotIn("flood-err-", output)
+        metadata = json.loads(next((self.folder / "logs").glob("play-*.json")).read_text(encoding="utf-8"))
+        self.assertTrue(metadata["launch_options"]["no_console_log"])
+        self.assertEqual(metadata["state"], "exited")
+        self.assertEqual(metadata["exit_code"], 37)
+        self.assertEqual(metadata["exit_code_hex"], "0x00000025")
+        self.assertEqual(metadata["error_line_count"], 2)
+        self.assertEqual(metadata["last_error_line"], "[CRASH_CONTEXT] final stderr without newline")
+        self.assertEqual(metadata["last_error_source"], "stderr")
+        self.assertNotIn("capture_error", metadata)
+        log = Path(metadata["log_path"]).read_text(encoding="utf-8")
+        stdout = [line.split("[stdout] ", 1)[1] for line in log.splitlines() if "[stdout] " in line]
+        stderr = [line.split("[stderr] ", 1)[1] for line in log.splitlines() if "[stderr] " in line]
+        self.assertEqual(stdout, ["stdout before flood"] +
+                         [f"flood-out-{i:05d} {payload}" for i in range(count)] +
+                         ["stdout flood complete; waiting", "final stdout after release"])
+        self.assertEqual(stderr, ["[FILE_ERROR] flood fixture initial error"] +
+                         [f"flood-err-{i:05d} {payload}" for i in range(count)] +
+                         ["stderr flood complete; waiting", "[CRASH_CONTEXT] final stderr without newline"])
+        self.assertEqual(len(log.splitlines()), 2 * (count + 3))
 
 
 if __name__ == "__main__":

@@ -236,17 +236,16 @@ def main():
                 "Stock also requests a larger UI pool": production.replace(
                     "mm3_minimap_improved() && MEM32(0x3A0EC0u) < 160000u", "MEM32(0x3A0EC0u) < 160000u"),
                 "missing common map scale": production.replace(
-                    "MEMF(node + 0x50) = s_map_zoom[slot].baseline * (1.0f + MAP_SPEED_SPAN) /\n            (NV2A_MINIMAP_SCALE * s_map_zoom[slot].span);",
+                    "MEMF(node + 0x50) = s_map_zoom[slot].baseline * (1.0f + MAP_SPEED_SPAN) * MAP_DETAIL_ZOOM /\n            (display_scale * s_map_zoom[slot].span);",
                     "MEMF(node + 0x50) = scale;"),
-                "Ctrl restores native world scale and hides visible checkpoints": production.replace(
-                    "MEMF(node + 0x50) = s_map_zoom[slot].baseline * (1.0f + MAP_SPEED_SPAN) /\n            (NV2A_MINIMAP_SCALE * s_map_zoom[slot].span);",
-                    "MEMF(node + 0x50) = s_map_zoom[slot].baseline * (1.0f + MAP_SPEED_SPAN) / "
-                    "((NV2A_MINIMAP_SCALE + (1 - NV2A_MINIMAP_SCALE) * map_expansion(node)) * "
-                    "(s_map_zoom[slot].span + (1 - s_map_zoom[slot].span) * map_expansion(node)));"),
+                "Ctrl shrinks streets by retaining driving-frame compensation": production.replace(
+                    "(display_scale * s_map_zoom[slot].span);", "(NV2A_MINIMAP_SCALE * s_map_zoom[slot].span);"),
                 "Ctrl drops speed zoom": production.replace(
-                    "(NV2A_MINIMAP_SCALE * s_map_zoom[slot].span);",
-                    "(NV2A_MINIMAP_SCALE * (s_map_zoom[slot].span + "
+                    "(display_scale * s_map_zoom[slot].span);",
+                    "(display_scale * (s_map_zoom[slot].span + "
                     "(1 - s_map_zoom[slot].span) * map_expansion(node)));"),
+                "missing ten percent closer view": production.replace(
+                    "#define MAP_DETAIL_ZOOM 1.10f", "#define MAP_DETAIL_ZOOM 1.00f"),
                 "immediate zoom jump": production.replace(
                     "blend = 1.0f - expf(-dt / 0.6f);", "blend = 1.0f;"),
                 "missing speed target": production.replace(
@@ -290,7 +289,7 @@ def main():
             (folder / "production_map_zoom.c").write_text(production)
             for label, replacement, original in (("missing square geometry", SQUARE_REPLACEMENT, SQUARE_ORIGINAL),
                                                  ("retained circular border", BORDER_REPLACEMENT, BORDER_ORIGINAL),
-                                                 ("unscaled map compass sprite", COMPASS_REPLACEMENT, COMPASS_ORIGINAL),
+                                                 ("visible map north sprite", COMPASS_REPLACEMENT, COMPASS_ORIGINAL),
                                                  ("missing native UI capacity seam", calls[SEAMS[4]], ""),
                                                  ("missing native viewport publication seam", publish_window, ""),
                                                  ("missing native city UV seam", city_uv, "")):

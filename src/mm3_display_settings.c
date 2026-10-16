@@ -75,7 +75,8 @@ int mm3_display_settings_commit(const MM3DisplaySettings *settings,
     CHANGED(!mode_applied, "window mode/resolution");
     CHANGED(settings->msaa != s_boot.msaa, "anti-aliasing");
     CHANGED(settings->aniso != s_boot.aniso, "texture filtering");
-    CHANGED(fabsf(settings->draw_distance - s_boot.draw_distance) > 0.0001f, "draw distance");
+    CHANGED(fabsf(settings->draw_distance - s_boot.draw_distance) > 0.0001f, "object detail distance");
+    CHANGED(fabsf(settings->view_distance - s_boot.view_distance) > 0.0001f, "building view distance");
 #undef CHANGED
     if (capacity)
         snprintf(status, capacity, *changes ? "Saved. Restart to apply: %s." : "Saved. Display changes applied.", changes);
@@ -158,7 +159,8 @@ static void populate(HWND dialog, const MM3DisplaySettings *settings)
 {
     static const int ids[] = { IDC_DISPLAY_RESOLUTION, IDC_DISPLAY_MODE,
         IDC_DISPLAY_FPS, IDC_DISPLAY_SCALE, IDC_DISPLAY_ASPECT,
-        IDC_DISPLAY_MSAA, IDC_DISPLAY_ANISO, IDC_DISPLAY_DISTANCE, IDC_DISPLAY_MINIMAP };
+        IDC_DISPLAY_MSAA, IDC_DISPLAY_ANISO, IDC_DISPLAY_DISTANCE, IDC_DISPLAY_MINIMAP,
+        IDC_DISPLAY_VIEW_DISTANCE };
     static const int resolutions[][2] = { {800,600}, {1024,768}, {1280,720},
         {1280,800}, {1366,768}, {1536,960}, {1600,900}, {1920,1080},
         {1920,1200}, {2560,1440}, {2560,1600}, {3840,2160} };
@@ -223,8 +225,10 @@ static void populate(HWND dialog, const MM3DisplaySettings *settings)
     for (i = 0; i < sizeof distances / sizeof distances[0]; ++i) {
         snprintf(label, sizeof label, distances[i] == 1.f ? "1x (stock)" : "%.3gx", distances[i]);
         float_choice(dialog, IDC_DISPLAY_DISTANCE, distances[i], label);
+        float_choice(dialog, IDC_DISPLAY_VIEW_DISTANCE, distances[i], label);
     }
     select_float(dialog, IDC_DISPLAY_DISTANCE, settings->draw_distance, " (custom)");
+    select_float(dialog, IDC_DISPLAY_VIEW_DISTANCE, settings->view_distance, " (custom)");
     CheckDlgButton(dialog, IDC_DISPLAY_VSYNC, settings->vsync ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dialog, IDC_DISPLAY_SHOW_FPS, settings->show_fps ? BST_CHECKED : BST_UNCHECKED);
     combo_add(dialog, IDC_DISPLAY_MINIMAP, "Stock", 0);
@@ -258,6 +262,7 @@ static int read_controls(HWND dialog, MM3DisplaySettings *settings)
     settings->msaa = (int)combo_value(dialog, IDC_DISPLAY_MSAA);
     settings->aniso = (int)combo_value(dialog, IDC_DISPLAY_ANISO);
     settings->draw_distance = combo_float(dialog, IDC_DISPLAY_DISTANCE);
+    settings->view_distance = combo_float(dialog, IDC_DISPLAY_VIEW_DISTANCE);
     return 1;
 }
 
@@ -272,7 +277,8 @@ static void update_status(HWND dialog, int saved)
 #define CHANGED(test, label) if (test) { if (*changes) strcat(changes, ", "); strcat(changes, label); }
     CHANGED(pending.msaa != s_boot.msaa, "anti-aliasing");
     CHANGED(pending.aniso != s_boot.aniso, "texture filtering");
-    CHANGED(fabsf(pending.draw_distance - s_boot.draw_distance) > 0.0001f, "draw distance");
+    CHANGED(fabsf(pending.draw_distance - s_boot.draw_distance) > 0.0001f, "object detail distance");
+    CHANGED(fabsf(pending.view_distance - s_boot.view_distance) > 0.0001f, "building view distance");
 #undef CHANGED
     if (*changes)
         snprintf(text, sizeof text, "%sRestart the game to apply: %s.", saved ? "Saved. " : "", changes);

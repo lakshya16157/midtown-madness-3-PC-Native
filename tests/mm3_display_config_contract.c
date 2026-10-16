@@ -11,7 +11,7 @@
 static const char *s_environment[] = {
     "RECOMP_WINDOW_SIZE", "RECOMP_FULLSCREEN", "RECOMP_FPS_LIMIT", "RECOMP_VSYNC",
     "MM3_SHOW_FPS", "MM3_MINIMAP_IMPROVED", "RECOMP_RENDER_SCALE", "RECOMP_ASPECT", "RECOMP_MSAA",
-    "RECOMP_ANISO", "RECOMP_DRAW_DISTANCE", "MM3_PERFORMANCE_PROFILE"
+    "RECOMP_ANISO", "RECOMP_DRAW_DISTANCE", "RECOMP_VIEW_DISTANCE", "MM3_PERFORMANCE_PROFILE"
 };
 
 static void environment(const char *key, const char *value)
@@ -40,6 +40,7 @@ static void equal_settings(const MM3DisplaySettings *a, const MM3DisplaySettings
     assert(a->msaa == b->msaa);
     assert(a->aniso == b->aniso);
     assert(a->draw_distance == b->draw_distance);
+    assert(a->view_distance == b->view_distance);
 }
 
 static void write_config(const char *contents)
@@ -71,6 +72,9 @@ static void persistence(void)
     assert(!*error);
     equal_settings(&loaded, &expected);
     assert(GetFileAttributesA("display.ini") == INVALID_FILE_ATTRIBUTES);
+    loaded.view_distance = 3.25f;
+    assert(mm3_display_settings_load(&loaded, error, sizeof error));
+    assert(loaded.view_distance == 3.25f); /* An absent file does not modify an incoming snapshot. */
 
     expected.window_width = 1366;
     expected.window_height = 768;
@@ -84,6 +88,7 @@ static void persistence(void)
     expected.msaa = 2;
     expected.aniso = 3;
     expected.draw_distance = 2.25f;
+    expected.view_distance = 3.25f;
 
     /* A stale temp from a previous interrupted save cannot be overwritten or
      * block saving, even when its PID/sequence match the first attempt. */
@@ -99,6 +104,10 @@ static void persistence(void)
     assert(mm3_display_settings_load(&loaded, error, sizeof error));
     equal_settings(&loaded, &expected);
 
+    invalid = expected;
+    invalid.view_distance = NAN;
+    assert(!mm3_display_settings_save(&invalid, error, sizeof error));
+    assert(strstr(error, "view_distance"));
     invalid = expected;
     invalid.fps_limit = 61;
     assert(!mm3_display_settings_save(&invalid, error, sizeof error));
@@ -258,6 +267,61 @@ static void precedence(void)
     clear_environment();
 }
 
+static void distance_compatibility(void)
+{
+    MM3DisplaySettings loaded, saved;
+    char error[256], config[256];
+    const int legacy[] = {1, 4};
+    size_t i;
+    for (i = 0; i < sizeof legacy / sizeof legacy[0]; ++i) {
+        clear_environment();
+        snprintf(config, sizeof config, "draw_distance=%d\nfps_limit=42\nrender_scale=1.875\n", legacy[i]);
+        write_config(config);
+        assert(mm3_display_settings_startup(&loaded, error, sizeof error));
+        assert(!*error && loaded.draw_distance == legacy[i] && loaded.view_distance == legacy[i]);
+        assert(loaded.fps_limit == 42 && loaded.render_scale == 1.875f);
+        saved = loaded;
+        assert(mm3_display_settings_save(&saved, error, sizeof error));
+        clear_environment();
+        assert(mm3_display_settings_startup(&loaded, error, sizeof error));
+        equal_settings(&loaded, &saved); /* A second save/startup must not reset legacy values. */
+
+        clear_environment();
+        write_config(config);
+        environment("RECOMP_DRAW_DISTANCE", "2.25");
+        assert(mm3_display_settings_startup(&loaded, error, sizeof error));
+        assert(loaded.draw_distance == 2.25f && loaded.view_distance == 2.25f);
+        assert(!strcmp(getenv("RECOMP_VIEW_DISTANCE"), "2.25"));
+        clear_environment();
+        environment("RECOMP_DRAW_DISTANCE", "2.25");
+        environment("RECOMP_VIEW_DISTANCE", "3.5");
+        assert(mm3_display_settings_startup(&loaded, error, sizeof error));
+        assert(loaded.draw_distance == 2.25f && loaded.view_distance == 3.5f);
+    }
+    clear_environment();
+    write_config("draw_distance=4\nview_distance=1.5\n");
+    environment("RECOMP_DRAW_DISTANCE", "1");
+    assert(mm3_display_settings_startup(&loaded, error, sizeof error));
+    assert(!*error && loaded.draw_distance == 1.f && loaded.view_distance == 1.5f);
+    clear_environment();
+    environment("RECOMP_VIEW_DISTANCE", "3.25");
+    assert(mm3_display_settings_startup(&loaded, error, sizeof error));
+    assert(!*error && loaded.draw_distance == 4.f && loaded.view_distance == 3.25f);
+    clear_environment();
+    environment("RECOMP_VIEW_DISTANCE", "nan");
+    assert(mm3_display_settings_startup(&loaded, error, sizeof error));
+    assert(strstr(error, "RECOMP_VIEW_DISTANCE"));
+    assert(loaded.draw_distance == 4.f && loaded.view_distance == 1.5f);
+    clear_environment();
+    write_config("draw_distance=4\nview_distance=99\n");
+    environment("RECOMP_DRAW_DISTANCE", "1.25");
+    environment("RECOMP_VIEW_DISTANCE", "0");
+    assert(mm3_display_settings_startup(&loaded, error, sizeof error));
+    assert(strstr(error, "RECOMP_VIEW_DISTANCE"));
+    assert(loaded.draw_distance == 1.25f && loaded.view_distance == 1.25f);
+    clear_environment();
+}
+
 static void paths(const char *folder)
 {
     MM3DisplaySettings expected, loaded;
@@ -306,6 +370,7 @@ int main(int argc, char **argv)
     persistence();
     malformed_fields();
     precedence();
+    distance_compatibility();
     paths(argv[1]);
     puts("Display configuration contracts passed.");
     return 0;

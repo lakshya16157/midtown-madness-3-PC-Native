@@ -11,15 +11,17 @@ extern void sub_001633B7_original(void);
  * two 28-byte opaque/alpha VBs and two 24-byte far VBs. Change them only there;
  * increasing an already allocated pool's counter would write beyond its VB.
  *
- * More visible facade cells need more space as the view area grows. Bound the
- * multiplier at four: the largest stream has 49,152 vertices, safely below the
+ * More visible facade cells need more space as the view area grows. Use the
+ * same capped city/facade scale as the near/far zones, independent of object
+ * LOD distance, so a 4x city view cannot exceed the allocated detail budget.
+ * Bound the multiplier at four: the largest stream has 49,152 vertices, below the
  * guest draw commands' 16-bit starting vertex. The six VBs together grow by
  * 2,482,176 bytes at the default 2x distance. Detail descriptors, shaders and
  * the separate 32-byte detail stream retain their original budgets. */
 void sub_001633B7(void)
 {
     uint32_t self = g_esi;
-    float scale = mm3_draw_distance_scale();
+    float scale = mm3_facade_distance_scale();
     uint32_t factor = (uint32_t)ceilf(scale * scale);
     uint32_t opaque, alpha, far_vertices;
 

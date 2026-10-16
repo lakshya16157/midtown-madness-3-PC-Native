@@ -9,6 +9,8 @@ player update, with GPR/x87/XMM state restored afterward. Disabled is default.
 
 The same operation uses the local pipe `\\.\pipe\MM3Teleport-<PID>`:
 `position` or `teleport X Z`, returning JSON with the actual resulting Y.
+`position` also reports `up_y`, the rigid body's up axis dotted with world up
+(1 upright, 0 on its side, -1 upside down), for steering and rollover checks.
 Requests that cannot reach the player update within two seconds are cancelled.
 The panel distinguishes ground misses, stalled updates and unavailable cars.
 
