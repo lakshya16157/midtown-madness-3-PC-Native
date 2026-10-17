@@ -41,9 +41,33 @@ space, and your own game image (it is not included).
 - **Something wrong?** The game writes `logs\last-run.log` in the install folder. Please
   [open an issue](https://github.com/lakshya16157/midtown-madness-3-PC-Native/issues)
   and attach it.
-- **Extra car credits:** the cars are community conversions by Aaro4130, Tsutarja495,
-  Matyii, Kunal, mm2mm1fan and BUGATTIMAN253MPH. Their original readmes are saved next to
-  the game as `Extra cars - credits.txt`. Please respect their terms.
+- **Extra car credits:** see [Extra car credits](#extra-car-credits) below. They are also
+  saved next to the game as `Extra cars - credits.txt`.
+
+## Extra car credits
+
+The nine extra cars were made by members of the Midtown Madness modding community. Thank
+you to every one of them. Each car was converted for Midtown Madness 2 by the person named
+in the table, from a model made by the studio named, and then converted again for Midtown
+Madness 3 by this project's tools. The links go to each author's original download page on
+[MM2X](https://www.mm2x.com/).
+
+| Car | Converted for Midtown Madness 2 by | Original model | Download page |
+|---|---|---|---|
+| Panoz GTR-1 | **Aaro4130** | ISI (original rFactor model); skins by Thunder-ice and Alexi99 | [Panoz GTR-1](https://www.mm2x.com/download-1336-panoz-gtr-1#1336) |
+| McLaren F1 GTR (1995) | **Tsutarja495** | Firemint (Real Racing 2 model and textures) | [1995 McLaren F1 GTR](https://www.mm2x.com/download-2214-1995-mclaren-f1-gtr#2214) |
+| Ferrari F2007 (Formula 1) | **Kunal** (Kunal2045) | Image Space Incorporated (original rFactor model); tested by Franch88, Riva and Sajmon14 | [Ferrari F2007 F1](https://www.mm2x.com/download-1220-ferrari-f2007-f1#1220) |
+| Ford GT (2017) | **mm2mm1fan** | Firemonkeys (Real Racing 3 model), extracted by Eclipse 72rus | [2017 Ford GT](https://www.mm2x.com/download-2049-2017-ford-gt#2049) |
+| McLaren Senna (2019) | **Tsutarja495** | Firemonkeys (Real Racing 3 model and textures) | [McLaren Senna 2-Pack](https://www.mm2x.com/download-2221-mclaren-senna-2-pack#2221) |
+| McLaren Senna GTR (2020) | **Tsutarja495** | Firemonkeys (Real Racing 3 model and textures) | [McLaren Senna 2-Pack](https://www.mm2x.com/download-2221-mclaren-senna-2-pack#2221) |
+| Ferrari FXX K (2015) | **Matyii** (Matyasd at MMArchive) | Firemonkeys Studios (Real Racing 3 model) | [2015 Ferrari FXX K](https://www.mm2x.com/download-1806-2015-ferrari-fxx-k#1806) |
+| Koenigsegg Regera (2015) | **Matyii** (Matyasd at MMArchive) | Firemonkeys Studios (Real Racing 3 model) | [2015 Koenigsegg Regera](https://www.mm2x.com/download-1715-2015-koenigsegg-regera#1715) |
+| Lamborghini Aventador LP700-4 | **BUGATTIMAN253MPH** | Firemonkeys (Real Racing 3 body); wheels, brake discs and calipers by Gameloft (GT Racing 2) | [Lamborghini Aventador LP700-4](https://www.mm2x.com/download-1465-lamborghini-aventador-lp700-4#1465) |
+
+Please respect the authors' wishes. Several ask that their cars are not modified or
+reposted without their permission, and each pack's original readme (including credits for
+the sounds in the original packs) is saved unchanged inside `Extra cars - credits.txt`.
+In the game these cars keep Midtown Madness 3's own engine sounds, interiors and collision.
 
 Developers: everything below the line is about building and changing the project.
 

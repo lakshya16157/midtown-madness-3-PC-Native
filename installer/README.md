@@ -18,7 +18,10 @@ things and then:
 2. copies the bundled `mm3_recomp.exe` next to it;
 3. **Add extra cars** (default off): runs `tools/car-mods/prepare.py`'s own plan/apply
    functions with the bundled car packages, or restores the original archives if the cars were
-   installed before and are now unticked;
+   installed before and are now unticked. The window names each car's author, and
+   `Extra cars - credits.txt` is written next to the game with every author, the original
+   model sources, the download pages and the authors' readmes unchanged (data lives in
+   `CAR_CREDITS` in `installer.py`; keep it in step with the table in the main README);
 4. **Add game improvements** (default on): writes `Play Midtown Madness 3.cmd` with the
    matching settings. Most fixes are compiled into the game and always on. The tickbox only
    chooses between the game's Balanced defaults (2x render scale, 4x MSAA, 16x anisotropic

@@ -52,17 +52,38 @@ GAME_EXE = "mm3_recomp.exe"
 LAUNCHER = "Play Midtown Madness 3.cmd"
 CARS_CONFIG = PAYLOAD / "tools" / "car-mods" / "cars.local.json"
 
-# Friendly names for the extra cars, by car id (falls back to the in-game name).
-CAR_NAMES = {
-    9004: "Panoz GTR-1",
-    9005: "McLaren F1 GTR (1995)",
-    9006: "Ferrari F2007 (Formula 1)",
-    9009: "Ford GT (2017)",
-    9010: "McLaren Senna (2019)",
-    9011: "McLaren Senna GTR (2020)",
-    9012: "Ferrari FXX K (2015)",
-    9013: "Koenigsegg Regera (2015)",
-    9014: "Lamborghini Aventador LP700-4",
+MM2X = "https://www.mm2x.com/"
+# Credits for the extra cars, by car id: (name, converted for Midtown Madness 2 by, original
+# model/texture sources, download page). Shown next to each car in the window and written to
+# "Extra cars - credits.txt". Checked against the original readmes and MM2X listings.
+CAR_CREDITS = {
+    9004: ("Panoz GTR-1", "Aaro4130",
+           "ISI (original rFactor model); skins by Thunder-ice and Alexi99",
+           MM2X + "download-1336-panoz-gtr-1#1336"),
+    9005: ("McLaren F1 GTR (1995)", "Tsutarja495",
+           "Firemint (Real Racing 2 model and textures)",
+           MM2X + "download-2214-1995-mclaren-f1-gtr#2214"),
+    9006: ("Ferrari F2007 (Formula 1)", "Kunal (Kunal2045)",
+           "Image Space Incorporated (original rFactor model); tested by Franch88, Riva and Sajmon14",
+           MM2X + "download-1220-ferrari-f2007-f1#1220"),
+    9009: ("Ford GT (2017)", "mm2mm1fan",
+           "Firemonkeys (Real Racing 3 model), extracted by Eclipse 72rus",
+           MM2X + "download-2049-2017-ford-gt#2049"),
+    9010: ("McLaren Senna (2019)", "Tsutarja495",
+           "Firemonkeys (Real Racing 3 model and textures)",
+           MM2X + "download-2221-mclaren-senna-2-pack#2221"),
+    9011: ("McLaren Senna GTR (2020)", "Tsutarja495",
+           "Firemonkeys (Real Racing 3 model and textures)",
+           MM2X + "download-2221-mclaren-senna-2-pack#2221"),
+    9012: ("Ferrari FXX K (2015)", "Matyii (Matyasd at MMArchive)",
+           "Firemonkeys Studios (Real Racing 3 model)",
+           MM2X + "download-1806-2015-ferrari-fxx-k#1806"),
+    9013: ("Koenigsegg Regera (2015)", "Matyii (Matyasd at MMArchive)",
+           "Firemonkeys Studios (Real Racing 3 model)",
+           MM2X + "download-1715-2015-koenigsegg-regera#1715"),
+    9014: ("Lamborghini Aventador LP700-4", "BUGATTIMAN253MPH",
+           "Firemonkeys (Real Racing 3 body); wheels, brake discs and calipers by Gameloft (GT Racing 2)",
+           MM2X + "download-1465-lamborghini-aventador-lp700-4#1465"),
 }
 
 # The game needs these to run at all; play.ps1 sets the same ones.
@@ -130,12 +151,22 @@ def extract_disc():
     return _extract_disc
 
 
-def extra_car_list() -> list[str]:
+def extra_cars() -> list[tuple[str, str]]:
+    """(car name, author who converted it) for each extra car in this build."""
     try:
         cars = json.loads(CARS_CONFIG.read_text(encoding="utf-8"))["cars"]
     except (OSError, ValueError, KeyError):
         return []
-    return [CAR_NAMES.get(car["id"], car.get("display_name", car.get("alias", "?"))) for car in cars]
+    result = []
+    for car in cars:
+        credit = CAR_CREDITS.get(car["id"])
+        result.append((credit[0], credit[1]) if credit else
+                      (car.get("display_name", car.get("alias", "?")), "see the credits file"))
+    return result
+
+
+def extra_car_list() -> list[str]:
+    return [f"{name}  –  by {author}" for name, author in extra_cars()]
 
 
 def check_iso(path) -> tuple[bool, str]:
@@ -295,15 +326,25 @@ def apply_cars(game_dir: Path, enable: bool, log) -> None:
 
 
 def write_credits(dest: Path) -> None:
-    source = PAYLOAD / "credits"
-    if not source.is_dir():
-        return
+    """Who made each extra car (summary first), then the authors' original readmes unchanged."""
     lines = ["EXTRA CARS - CREDITS AND TERMS", "=" * 30, "",
-             "These cars were made by the authors below. Their original readmes follow unchanged.",
-             "Please respect their terms (several ask that the cars are not modified or reposted).", ""]
-    for readme in sorted(source.glob("*.txt")):
-        lines += ["-" * 70, readme.stem, "-" * 70, readme.read_text(encoding="utf-8", errors="replace").strip(), ""]
-    (dest / "Extra cars - credits.txt").write_text("\r\n".join(lines), encoding="utf-8")
+             "These cars were made by the community members named below, who converted them",
+             "for Midtown Madness 2 from models made by the studios named. They were converted",
+             "again for Midtown Madness 3 by the tools in this project. Please respect the",
+             "authors' terms: several ask that their cars are not modified or reposted without",
+             "their permission.", "", "WHO MADE WHAT", "-" * 14, ""]
+    for name, converter, sources, page in CAR_CREDITS.values():
+        lines += [name, f"  Converted for Midtown Madness 2 by: {converter}", f"  Original model: {sources}",
+                  f"  Download page: {page}", ""]
+    source = PAYLOAD / "credits"
+    if source.is_dir():
+        lines += ["ORIGINAL READMES (unchanged)", "=" * 28, ""]
+        for readme in sorted(source.glob("*.txt")):
+            lines += ["-" * 70, readme.stem, "-" * 70,
+                      readme.read_text(encoding="utf-8", errors="replace").strip(), ""]
+    # utf-8 with a BOM so Notepad shows names like "Matyii" correctly; newline= does the CRLF
+    # conversion once (joining with "\r\n" here would have produced "\r\r\n" on Windows).
+    (dest / "Extra cars - credits.txt").write_text("\n".join(lines) + "\n", encoding="utf-8-sig", newline="\r\n")
 
 
 def launch_settings(improvements: bool) -> dict[str, str]:
@@ -337,7 +378,7 @@ def write_launcher(dest: Path, improvements: bool) -> None:
         "  pause",
         ")",
     ]
-    (dest / LAUNCHER).write_text("\r\n".join(lines) + "\r\n", encoding="ascii")
+    (dest / LAUNCHER).write_text("\n".join(lines) + "\n", encoding="ascii", newline="\r\n")
 
 
 def install(iso_path, dest, extra_cars: bool, improvements: bool, log, progress) -> Path:
@@ -447,7 +488,8 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
     cars_check.grid(row=3, column=0, sticky="w", padx=18)
     cars = extra_car_list()
     cars_label = tk.Label(frame, font=body, fg=grey, justify="left", anchor="w",
-                          text=("Adds %d cars:\n" % len(cars) + "\n".join("   \u2022 " + name for name in cars))
+                          text=("Adds %d community cars (credits are saved with the game):\n" % len(cars)
+                                + "\n".join("   \u2022 " + name for name in cars))
                           if cars else "The extra cars are not included in this build.")
     cars_label.grid(row=4, column=0, sticky="w", padx=(40, 18), pady=(2, 10))
 
