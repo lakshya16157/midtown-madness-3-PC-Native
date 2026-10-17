@@ -75,7 +75,8 @@ RECOMP_TLS RecompXmm g_xmm0,g_xmm1,g_xmm2,g_xmm3,g_xmm4,g_xmm5,g_xmm6,g_xmm7;
 static unsigned char memory[0x400000];
 enum { SOURCE=0x10000, MANAGER=0x11000, MATRIX=0x13000, POSITION=0x14000,
        DIRECTION=0x15000, FLAG=0x16000, QUEUE=0x20000, RECORD=0x30000,
-       MINIMUM=0x40000, MAXIMUM=0x41000, STACK=0x90000 };
+       MINIMUM=0x40000, MAXIMUM=0x41000, RETAIL_MINIMUM=0x42000,
+       RETAIL_MAXIMUM=0x43000, STACK=0x90000 };
 #include "mm3_lamp_lighting.c"
 #pragma warning(push)
 #pragma warning(disable:4101 4102 4127 4189 4702)
@@ -119,15 +120,44 @@ static unsigned produce(void)
     return MEM32(QUEUE+0x5810);
 }
 
+/* Run a bounds builder (the seamed one or the untouched retail copy). */
+static void run_bounds(void (*builder)(void), uint32_t minimum, uint32_t maximum)
+{
+    g_ecx=POSITION;g_edx=DIRECTION;g_esi=SOURCE;g_edi=maximum;g_esp=STACK;
+    MEM32(STACK)=0x12345678;MEM32(STACK+4)=minimum;
+    MEM32(STACK+8)=0;MEM32(STACK+12)=0;MEM32(STACK+16)=0;
+    builder();
+    assert(g_esp==STACK+20 && g_fp_top==0);
+}
+
+/* Point-style sources: a world-space box around the source position. */
 static void bounds(void)
 {
-    g_ecx=POSITION;g_edx=DIRECTION;g_esi=SOURCE;g_edi=MAXIMUM;g_esp=STACK;
-    MEM32(STACK)=0x12345678;MEM32(STACK+4)=MINIMUM;
-    MEM32(STACK+8)=0;MEM32(STACK+12)=0;MEM32(STACK+16)=0;
-    sub_000E10A5();
-    assert(g_esp==STACK+20 && g_fp_top==0);
+    run_bounds(sub_000E10A5,MINIMUM,MAXIMUM);
     printf("bounds min %.3f %.3f %.3f max %.3f %.3f %.3f\n",MEMF(MINIMUM),MEMF(MINIMUM+4),MEMF(MINIMUM+8),MEMF(MAXIMUM),MEMF(MAXIMUM+4),MEMF(MAXIMUM+8));fflush(stdout);
     assert(MEMF(MINIMUM)<MEMF(POSITION) && MEMF(MAXIMUM)>MEMF(POSITION));
+}
+
+/* Spot sources: the cone box is built by the game's own cone routine. Its frame
+ * is whatever that routine uses, so compare against the untouched retail
+ * builder on identical input: the tuned reach and widened angle must give a box
+ * that contains the retail box on every axis and is substantially larger. */
+static void spot_bounds_grow(void)
+{
+    unsigned axis;
+    float grown=0;
+    reset();MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;
+    run_bounds(sub_000E10A5,MINIMUM,MAXIMUM);
+    run_bounds(sub_000E10A5_retail,RETAIL_MINIMUM,RETAIL_MAXIMUM);
+    for(axis=0;axis<3;axis++) {
+        float tuned_low=MEMF(MINIMUM+4*axis),tuned_high=MEMF(MAXIMUM+4*axis);
+        float retail_low=MEMF(RETAIL_MINIMUM+4*axis),retail_high=MEMF(RETAIL_MAXIMUM+4*axis);
+        assert(isfinite(tuned_low) && isfinite(tuned_high) && tuned_low<tuned_high);
+        assert(tuned_low<=retail_low+.001f && tuned_high>=retail_high-.001f);
+        grown+=(tuned_high-tuned_low)-(retail_high-retail_low);
+    }
+    /* Retail reaches 7 m at 59.65 degrees; the tuned cone is 11.55 m at 65.65. */
+    assert(grown>10.0f);
 }
 
 static void direct_spot(uint32_t caller)
@@ -160,12 +190,15 @@ int main(void)
     assert(fabsf(MEMF(RECORD+0x48)-11.55f)<.001f);
     assert(MEMF(RECORD+0x40)>25 && MEM32(RECORD+0x4c)==0x00AD8256);
     reset();bounds();assert(MEMF(MINIMUM)<8 && MEMF(MAXIMUM)>16);
-    reset();MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;bounds();
-    assert(MEMF(MINIMUM)<-10 && MEMF(MAXIMUM)>34);
+    spot_bounds_grow();
     /* Native broken/off, time mask, pause and flicker gates execute intact. */
     reset();MEM32(STACK+28)=1;assert(!produce());
     reset();MEM8(SOURCE)=1;MEM8(MANAGER+0x15f4)=1;assert(!produce());
-    reset();MEMF(MANAGER+0x15dc)=0;assert(!produce());
+    /* The manager gate is fcomp/test ah,5/jnp against 0.0: only a negative value
+     * skips the light. Zero leaves both condition bits clear, so retail still
+     * produces it, and the seam must not change either decision. */
+    reset();MEMF(MANAGER+0x15dc)=-1;assert(!produce());
+    reset();MEMF(MANAGER+0x15dc)=0;assert(produce()==1);
     reset();MEMF(SOURCE+0x35)=1;MEMF(SOURCE+0x3d)=0;assert(!produce());
     reset();MEMF(SOURCE+0x49)=0;assert(!produce());
     reset();MEM8(SOURCE+0x4d)=0;assert(!produce());
@@ -205,6 +238,9 @@ def main():
     if not shutil.which("cl") or not cmake:
         raise SystemExit("Run scripts/enter-env.ps1 first so cl.exe and CMake are available.")
     native = generated()
+    # Untouched retail bounds builder, kept beside the seamed one for comparison.
+    retail_bounds = native["sub_000E10A5"].replace(
+        "void sub_000E10A5(void)", "void sub_000E10A5_retail(void)", 1)
     with tempfile.TemporaryDirectory(prefix="mm3-lamp-lighting-") as temporary:
         folder = Path(temporary)
         script = folder / "seam.cmake"
@@ -220,7 +256,7 @@ def main():
             native[owner] = modified.read_text()
         for owner in ("sub_000489A6", "sub_00021E18"):
             native[owner] = native[owner].replace("void " + owner + "(void)", "void " + owner + "_original(void)", 1)
-        body = "\n".join(native.values())
+        body = "\n".join(list(native.values()) + [retail_bounds])
         calls = set(re.findall(r"RECOMP_ABI_CALL\(0x[0-9A-Fa-f]+u, (sub_[0-9A-Fa-f]+)\)", body))
         declarations = "\n".join("void " + name + "(void);" for name in set(NATIVE) | calls)
         unused = "\n".join(f'void {name}(void) {{ assert(!"unused {name}"); }}' for name in calls - set(NATIVE))
