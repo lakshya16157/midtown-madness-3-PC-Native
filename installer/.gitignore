@@ -1,0 +1,6 @@
+# Build outputs and third-party material: never committed (publish MM3-Setup.exe as a GitHub Release asset)
+MM3-Setup.exe
+build-work/
+car-packages/
+downloads/
+__pycache__/

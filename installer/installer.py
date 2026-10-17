@@ -1,0 +1,647 @@
+"""Midtown Madness 3 setup: one window, three questions, one standalone .exe.
+
+  1. Where is your Xbox (Europe) game image?
+  2. Add the extra cars?            (default: no)
+  3. Add the game improvements?     (default: yes)
+
+The installer extracts the game from the image, drops in the native game build,
+optionally installs the extra cars, and writes a launcher that applies the chosen
+settings.  Everything it needs is packed inside this executable (`payload/`).
+
+Headless use (also how the build is tested):
+  MM3-Setup.exe --cli --iso <image> [--cars] [--no-improvements] [--dest <dir>] [--log-file <file>]
+"""
+from __future__ import annotations
+
+import argparse
+import collections
+import contextlib
+import copy
+import hashlib
+import importlib.util
+import io
+import json
+import math
+import os
+import queue
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import threading
+import zipfile
+import zlib
+from pathlib import Path
+
+# Modules that the bundled payload scripts import dynamically. Naming them here lets
+# PyInstaller see and include them (it only analyses this file's own imports).
+_PAYLOAD_STDLIB = (argparse, collections, copy, hashlib, math, re, struct, tempfile, zipfile, zlib)
+
+VERSION = "1.0"
+TITLE = "Midtown Madness 3 - Setup"
+
+FROZEN = getattr(sys, "frozen", False)
+HERE = Path(sys._MEIPASS) if FROZEN else Path(__file__).resolve().parent
+PAYLOAD = HERE / "payload"
+APP_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
+DEFAULT_DEST = APP_DIR / "Midtown Madness 3"
+
+GAME_EXE = "mm3_recomp.exe"
+LAUNCHER = "Play Midtown Madness 3.cmd"
+CARS_CONFIG = PAYLOAD / "tools" / "car-mods" / "cars.local.json"
+
+# Friendly names for the extra cars, by car id (falls back to the in-game name).
+CAR_NAMES = {
+    9004: "Panoz GTR-1",
+    9005: "McLaren F1 GTR (1995)",
+    9006: "Ferrari F2007 (Formula 1)",
+    9009: "Ford GT (2017)",
+    9010: "McLaren Senna (2019)",
+    9011: "McLaren Senna GTR (2020)",
+    9012: "Ferrari FXX K (2015)",
+    9013: "Koenigsegg Regera (2015)",
+    9014: "Lamborghini Aventador LP700-4",
+}
+
+# The game needs these to run at all; play.ps1 sets the same ones.
+LAUNCH_ESSENTIALS = {
+    "RECOMP_PB_EXEC": "1",
+    "RECOMP_FB_WINDOW": "1",
+    "RECOMP_USB": "1",
+    "RECOMP_APU_DSP_ACK": "0x80458810",
+    "RECOMP_KEYBOARD": "1",
+    "RECOMP_KEYBOARD_LAYOUT": "mm3",
+}
+# "Improvements on" keeps the game's own Balanced defaults (2x resolution, 4x MSAA,
+# 16x filtering, extended draw distance, widescreen) and leaves the in-game graphics
+# menu in charge. "Off" pins the original Xbox look.
+IMPROVED_SETTINGS = {"MM3_PERFORMANCE_PROFILE": "Balanced"}
+ORIGINAL_LOOK_SETTINGS = {
+    "MM3_PERFORMANCE_PROFILE": "Balanced",
+    "RECOMP_RENDER_SCALE": "1.0",
+    "RECOMP_MSAA": "1",
+    "RECOMP_ANISO": "1",
+    "RECOMP_DRAW_DISTANCE": "1",
+    "RECOMP_VIEW_DISTANCE": "1",
+    "RECOMP_ASPECT": "4:3",
+    "MM3_NIGHT_WORLD_LIGHT": "100",
+    "MM3_PARTICLE_MAX_OVERDRAW": "12",
+    "RECOMP_SHARP_POINT": "0",
+}
+
+IMPROVEMENTS_TEXT = (
+    "Sharper image (2x resolution, 4x anti-aliasing, 16x texture filtering), longer draw distance,\n"
+    "widescreen that fits your window and better night lighting.  Turn off for the original Xbox\n"
+    "look (4:3, 480p, retail distances).  Crash and gameplay bug fixes are always included."
+)
+
+
+class InstallError(Exception):
+    """A problem the user can act on; the message is shown as-is."""
+
+
+# ----------------------------------------------------------------------------- helpers
+
+def load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_extract_disc = None
+
+
+def extract_disc():
+    """The project's own disc checker/extractor, loaded from the payload."""
+    global _extract_disc
+    if _extract_disc is None:
+        scripts = PAYLOAD / "scripts"
+        if not (scripts / "extract_disc.py").is_file():
+            raise InstallError("This setup program is damaged (disc tools missing).")
+        sys.path.insert(0, str(scripts))
+        try:
+            _extract_disc = importlib.import_module("extract_disc")
+        finally:
+            sys.path.remove(str(scripts))
+    return _extract_disc
+
+
+def extra_car_list() -> list[str]:
+    try:
+        cars = json.loads(CARS_CONFIG.read_text(encoding="utf-8"))["cars"]
+    except (OSError, ValueError, KeyError):
+        return []
+    return [CAR_NAMES.get(car["id"], car.get("display_name", car.get("alias", "?"))) for car in cars]
+
+
+def check_iso(path) -> tuple[bool, str]:
+    """Is this an Xbox disc image holding a supported Midtown Madness 3?  Reads ~4 MB."""
+    ed = extract_disc()
+    path = Path(str(path).strip().strip('"'))
+    if not path.is_file():
+        return False, "File not found."
+    try:
+        with ed.Xiso(str(path)) as iso:
+            entry = iso.find("default.xbe")
+            if entry is None:
+                return False, "This image has no default.xbe, so it is not an Xbox game disc."
+            digest = ed.code_sha256(bytearray(iso.read(entry)))
+    except (OSError, ed.XisoError):
+        return False, "This is not a readable Xbox disc image (.iso)."
+    except Exception:  # truncated or garbage default.xbe
+        return False, "This image's default.xbe is damaged or is not an Xbox executable."
+    if digest != ed.CODE_SHA256:
+        return False, "This is not a Midtown Madness 3 release this setup supports (Europe/Australia or USA)."
+    return True, "Midtown Madness 3 image recognised."
+
+
+def shorten(path: str, limit: int = 52) -> str:
+    """Middle-ellipsis for display: keeps the drive/start and the final folder names."""
+    if len(path) <= limit:
+        return path
+    keep = limit - 3
+    head = keep // 3
+    return path[:head] + "..." + path[-(keep - head):]
+
+
+def free_bytes(path: Path) -> int:
+    probe = path
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    return shutil.disk_usage(probe).free
+
+
+def safe_target(root: Path, directory: str, name: str) -> Path:
+    """Destination for a file named inside the disc image, refusing anything that could
+    escape `root` (.., drive letters, backslashes, NTFS stream names...)."""
+    parts = [p for p in directory.split("/") if p] + [name]
+    for part in parts:
+        if part in (".", "..") or any(c in part for c in '\\:*?"<>|\x00') or part != part.strip():
+            raise InstallError(f"The disc image contains an unsafe file name: {'/'.join(parts)!r}")
+    target = root.joinpath(*parts)
+    if not target.resolve().is_relative_to(root.resolve()):
+        raise InstallError(f"The disc image contains an unsafe file name: {'/'.join(parts)!r}")
+    return target
+
+
+class LineSink(io.TextIOBase):
+    """File-like object that forwards complete lines (used to capture prepare.py's output)."""
+
+    def __init__(self, emit):
+        self.emit, self.buffer = emit, ""
+
+    def write(self, text):
+        self.buffer += text
+        while "\n" in self.buffer:
+            line, self.buffer = self.buffer.split("\n", 1)
+            if line.strip():
+                self.emit(line.rstrip())
+        return len(text)
+
+    def flush(self):
+        pass
+
+
+# ----------------------------------------------------------------------------- install steps
+
+def game_files_ready(game_dir: Path) -> bool:
+    xbe = game_dir / "default.xbe"
+    if not xbe.is_file() or not (game_dir / "Data" / "Data_hd.zip").is_file():
+        return False
+    ed = extract_disc()
+    try:
+        return ed.code_sha256(bytearray(xbe.read_bytes())) == ed.CODE_SHA256
+    except Exception:
+        return False
+
+
+def extract_game(iso_path: Path, dest: Path, extra_cars: bool, log, progress) -> None:
+    ed = extract_disc()
+    game_dir, partial = dest / "game_files", dest / "game_files.partial"
+    if game_dir.exists():
+        raise InstallError(
+            f"{game_dir} already exists but is not a complete Midtown Madness 3 install.\n"
+            "It may hold your saved games, so it was left untouched. Move or delete that folder "
+            "yourself, or pick another install folder.")
+    if partial.exists():  # leftover of an interrupted run; ours alone
+        log("Removing an unfinished earlier extraction...")
+        shutil.rmtree(partial)
+    with ed.Xiso(str(iso_path)) as iso:
+        files = list(iso.walk())
+        total = sum(entry.size for _, entry in files) or 1
+        needed = total + (1_500_000_000 if extra_cars else 300_000_000)
+        free = free_bytes(dest)
+        if free < needed:
+            raise InstallError(
+                f"Not enough disk space on that drive: about {needed / 1e9:.1f} GB needed, "
+                f"{free / 1e9:.1f} GB free.")
+        log(f"Extracting {len(files)} files ({total / 1e9:.1f} GB) from the disc image...")
+        done = 0
+        for index, (directory, entry) in enumerate(files, 1):
+            target = safe_target(partial, directory, entry.name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not directory and entry.name.lower() == "default.xbe":
+                # Pressed discs ask the drive to authenticate the media, which a PC cannot do;
+                # apply the standard media patch (same as scripts/extract_disc.py).
+                xbe = bytearray(iso.read(entry))
+                offset = ed.media_patch_offset(xbe)
+                if offset is None:
+                    raise InstallError("default.xbe does not have the expected layout.")
+                xbe[offset] = ed.MEDIA_PATCH_BYTES[1]
+                target.write_bytes(xbe)
+            else:
+                iso.extract(entry, str(target))
+            done += entry.size
+            progress(done / total, f"Extracting game files... {index}/{len(files)}")
+    os.replace(partial, game_dir)
+    log("Game files extracted.")
+
+
+def install_game_exe(dest: Path, log) -> None:
+    source = PAYLOAD / GAME_EXE
+    if not source.is_file():
+        raise InstallError("This setup program is damaged (game build missing).")
+    target = dest / GAME_EXE
+    temporary = dest / (GAME_EXE + ".new")
+    shutil.copyfile(source, temporary)
+    try:
+        os.replace(temporary, target)
+    except PermissionError:
+        temporary.unlink(missing_ok=True)
+        raise InstallError("Midtown Madness 3 is running. Close the game and run setup again.")
+    log(f"Installed {GAME_EXE}.")
+
+
+def apply_cars(game_dir: Path, enable: bool, log) -> None:
+    """Install the extra cars, or put the original game data back if they were installed before."""
+    prepare = load_module("mm3_prepare", PAYLOAD / "tools" / "car-mods" / "prepare.py")
+    sink = LineSink(lambda line: None)
+    state, originals = prepare.read_install(game_dir)
+    if not enable:
+        if state:
+            log("Removing the extra cars (restoring the original game data)...")
+            prepare.restore(game_dir, state, originals)
+        return
+    log("Adding the extra cars (this takes a minute)...")
+    config = prepare.load_config(CARS_CONFIG)
+    with contextlib.redirect_stdout(sink):
+        output, counts = prepare.build_plan(game_dir, originals, config, CARS_CONFIG.parent)
+        changed = prepare.apply_plan(game_dir, state, originals, output, config)
+    log(f"Extra cars installed: {counts['cars']} cars, {changed} files updated.")
+
+
+def write_credits(dest: Path) -> None:
+    source = PAYLOAD / "credits"
+    if not source.is_dir():
+        return
+    lines = ["EXTRA CARS - CREDITS AND TERMS", "=" * 30, "",
+             "These cars were made by the authors below. Their original readmes follow unchanged.",
+             "Please respect their terms (several ask that the cars are not modified or reposted).", ""]
+    for readme in sorted(source.glob("*.txt")):
+        lines += ["-" * 70, readme.stem, "-" * 70, readme.read_text(encoding="utf-8", errors="replace").strip(), ""]
+    (dest / "Extra cars - credits.txt").write_text("\r\n".join(lines), encoding="utf-8")
+
+
+def launch_settings(improvements: bool) -> dict[str, str]:
+    """Environment the game is started with (shared by the .cmd launcher and 'Play now')."""
+    settings = dict(LAUNCH_ESSENTIALS)
+    settings.update(IMPROVED_SETTINGS if improvements else ORIGINAL_LOOK_SETTINGS)
+    return settings
+
+
+def write_launcher(dest: Path, improvements: bool) -> None:
+    settings = launch_settings(improvements)
+    lines = [
+        "@echo off",
+        "rem Midtown Madness 3 launcher, written by MM3 Setup. Safe to edit.",
+        f"rem Game improvements: {'ON (native upgrades)' if improvements else 'OFF (original Xbox look)'}",
+        'cd /d "%~dp0"',
+        f'tasklist /fi "imagename eq {GAME_EXE}" 2>nul | find /i "{GAME_EXE}" >nul && (',
+        "  echo Midtown Madness 3 is already running. Close it first.",
+        "  pause",
+        "  exit /b 1",
+        ")",
+    ]
+    lines += [f'set "{name}={value}"' for name, value in settings.items()]
+    # Explicit, quoted paths: the install folder may contain spaces, and cmd may be configured
+    # (NoDefaultCurrentDirectoryInExePath) not to find programs in the current folder.
+    lines += [
+        'if not exist "%~dp0logs" mkdir "%~dp0logs"',
+        f'"%~dp0{GAME_EXE}" > "%~dp0logs\\last-run.log" 2>&1',
+        "if errorlevel 1 (",
+        '  echo The game stopped with an error. Details: "%~dp0logs\\last-run.log"',
+        "  pause",
+        ")",
+    ]
+    (dest / LAUNCHER).write_text("\r\n".join(lines) + "\r\n", encoding="ascii")
+
+
+def install(iso_path, dest, extra_cars: bool, improvements: bool, log, progress) -> Path:
+    iso_path, dest = Path(str(iso_path).strip().strip('"')), Path(dest).resolve()
+    ok, message = check_iso(iso_path)
+    if not ok:
+        raise InstallError(message)
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise InstallError(f"Cannot create the install folder {dest}: {error.strerror or error}")
+    game_dir = dest / "game_files"
+    progress(0.0, "Starting...")
+    if game_files_ready(game_dir):
+        log("Game files already present; skipping extraction.")
+    else:
+        extract_game(iso_path, dest, extra_cars, log, lambda f, text: progress(0.05 + 0.80 * f, text))
+    progress(0.86, "Installing the game...")
+    install_game_exe(dest, log)
+    progress(0.88, "Extra cars..." if extra_cars else "Checking car data...")
+    apply_cars(game_dir, extra_cars, log)
+    if extra_cars:
+        write_credits(dest)
+    else:
+        (dest / "Extra cars - credits.txt").unlink(missing_ok=True)
+    progress(0.98, "Writing the launcher...")
+    write_launcher(dest, improvements)
+    (dest / "setup-options.json").write_text(json.dumps(
+        {"setup_version": VERSION, "extra_cars": extra_cars, "game_improvements": improvements}, indent=2),
+        encoding="utf-8")
+    progress(1.0, "Done.")
+    log(f"Done. Start the game with '{LAUNCHER}' in {dest}")
+    return dest
+
+
+def game_running() -> bool:
+    shown = subprocess.run(["tasklist", "/fi", f"imagename eq {GAME_EXE}", "/nh"], capture_output=True,
+                           text=True, creationflags=subprocess.CREATE_NO_WINDOW).stdout
+    return GAME_EXE.lower() in shown.lower()
+
+
+def launch_game(dest: Path) -> None:
+    """Start the installed game directly (no console window), with the saved settings."""
+    if game_running():
+        raise InstallError("Midtown Madness 3 is already running. Close it first.")
+    try:
+        improvements = bool(json.loads((dest / "setup-options.json").read_text())["game_improvements"])
+    except (OSError, ValueError, KeyError):
+        improvements = True
+    (dest / "logs").mkdir(exist_ok=True)
+    env = dict(os.environ)
+    env.update(launch_settings(improvements))
+    with open(dest / "logs" / "last-run.log", "wb") as log:
+        subprocess.Popen([str(dest / GAME_EXE)], cwd=dest, env=env, stdout=log, stderr=subprocess.STDOUT,
+                         creationflags=subprocess.CREATE_NO_WINDOW)
+
+
+# ----------------------------------------------------------------------------- GUI
+
+def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements: bool = True,
+            install_now: bool = False) -> int:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+
+    try:  # crisp text on high-DPI screens
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
+
+    root = tk.Tk()
+    root.title(TITLE)
+    root.resizable(False, False)
+    try:
+        style = ttk.Style()
+        style.theme_use("vista")
+    except tk.TclError:
+        pass
+    pad = {"padx": 18}
+    heading = ("Segoe UI", 10, "bold")
+    body = ("Segoe UI", 9)
+    grey, green, red = "#777777", "#1a7f37", "#c62828"
+
+    iso_var = tk.StringVar()
+    cars_var = tk.BooleanVar(value=cars)                  # default: no extra cars
+    improvements_var = tk.BooleanVar(value=improvements)  # default: improvements on
+    dest_var = tk.StringVar(value=str(initial_dest))
+    events: queue.Queue = queue.Queue()
+    state = {"check_id": 0, "iso_ok": False, "busy": False, "done_dest": None, "auto_started": False}
+
+    frame = ttk.Frame(root)
+    frame.pack(fill="both", expand=True, pady=(14, 14))
+
+    # 1 - game image
+    ttk.Label(frame, text="1.  Xbox Europe game image (.iso)", font=heading).grid(row=0, column=0, sticky="w", **pad)
+    row = ttk.Frame(frame)
+    row.grid(row=1, column=0, sticky="we", padx=18, pady=(4, 0))
+    iso_entry = ttk.Entry(row, textvariable=iso_var, width=62)
+    iso_entry.pack(side="left", fill="x", expand=True)
+    browse = ttk.Button(row, text="Browse...", width=10)
+    browse.pack(side="left", padx=(8, 0))
+    iso_status = tk.Label(frame, text="Choose the disc image you also use for emulation.", font=body, fg=grey, anchor="w")
+    iso_status.grid(row=2, column=0, sticky="we", padx=18, pady=(2, 10))
+
+    # 2 - extra cars
+    cars_check = ttk.Checkbutton(frame, text="2.  Add extra cars", variable=cars_var)
+    cars_check.grid(row=3, column=0, sticky="w", padx=18)
+    cars = extra_car_list()
+    cars_label = tk.Label(frame, font=body, fg=grey, justify="left", anchor="w",
+                          text=("Adds %d cars:\n" % len(cars) + "\n".join("   \u2022 " + name for name in cars))
+                          if cars else "The extra cars are not included in this build.")
+    cars_label.grid(row=4, column=0, sticky="w", padx=(40, 18), pady=(2, 10))
+
+    # 3 - improvements
+    improvements_check = ttk.Checkbutton(frame, text="3.  Add game improvements", variable=improvements_var)
+    improvements_check.grid(row=5, column=0, sticky="w", padx=18)
+    tk.Label(frame, text=IMPROVEMENTS_TEXT, font=body, fg=grey, justify="left", anchor="w").grid(
+        row=6, column=0, sticky="w", padx=(40, 18), pady=(2, 10))
+
+    # destination
+    drow = ttk.Frame(frame)
+    drow.grid(row=7, column=0, sticky="we", padx=18, pady=(0, 8))
+    tk.Label(drow, text="Installs to:", font=body, fg=grey).pack(side="left")
+    dest_text = tk.StringVar()  # shortened copy, so a long path never widens the window
+    dest_var.trace_add("write", lambda *_: dest_text.set(shorten(dest_var.get())))
+    dest_text.set(shorten(dest_var.get()))
+    tk.Label(drow, textvariable=dest_text, font=body, anchor="w", width=52).pack(side="left", padx=(6, 0))
+    change = ttk.Button(drow, text="Change...", width=10)
+    change.pack(side="right")
+
+    # progress
+    bar = ttk.Progressbar(frame, maximum=1000, length=540)
+    bar.grid(row=8, column=0, sticky="we", padx=18, pady=(6, 0))
+    status = tk.Label(frame, text="", font=body, fg=grey, anchor="w", justify="left", wraplength=400)
+    status.grid(row=9, column=0, sticky="we", padx=18, pady=(2, 8))
+    # wrap long messages (errors) at the window's width, whatever the screen's DPI scaling
+    frame.bind("<Configure>", lambda event: status.configure(wraplength=max(200, event.width - 40)))
+
+    buttons = ttk.Frame(frame)
+    buttons.grid(row=10, column=0, sticky="e", padx=18)
+    play = ttk.Button(buttons, text="Play now")
+    install_button = ttk.Button(buttons, text="Install", width=14, state="disabled")
+    install_button.pack(side="right")
+    ttk.Button(buttons, text="Close", width=10, command=root.destroy).pack(side="right", padx=(0, 8))
+
+    def refresh_cars_colour(*_):
+        cars_label.configure(fg="#000000" if cars_var.get() else grey)
+
+    def set_controls(enabled: bool):
+        st = "normal" if enabled else "disabled"
+        for widget in (iso_entry, browse, change, cars_check, improvements_check):
+            widget.configure(state=st)
+
+    def validate(*_):
+        state["check_id"] += 1
+        token, path = state["check_id"], iso_var.get()
+        state["iso_ok"] = False
+        install_button.configure(state="disabled")
+        if not path.strip():
+            iso_status.configure(text="Choose the disc image you also use for emulation.", fg=grey)
+            return
+        iso_status.configure(text="Checking the image...", fg=grey)
+
+        def work():
+            ok, message = check_iso(path)
+            events.put(("iso", token, ok, message))
+        threading.Thread(target=work, daemon=True).start()
+
+    def pick_iso():
+        chosen = filedialog.askopenfilename(
+            title="Select the Midtown Madness 3 (Europe) disc image",
+            filetypes=[("Xbox disc image", "*.iso *.xiso"), ("All files", "*.*")])
+        if chosen:
+            iso_var.set(os.path.normpath(chosen))
+
+    def pick_dest():
+        chosen = filedialog.askdirectory(title="Where should the game be installed?", mustexist=False)
+        if chosen:
+            folder = Path(chosen)
+            # Use the folder itself if it is empty or already holds an install; otherwise make a
+            # "Midtown Madness 3" folder inside it so we never mix files into someone's folder.
+            reuse = (folder / "game_files").exists() or not folder.exists() or not any(folder.iterdir())
+            dest_var.set(os.path.normpath(folder if reuse else folder / "Midtown Madness 3"))
+
+    def start_install():
+        state["busy"] = True
+        set_controls(False)
+        install_button.configure(state="disabled")
+        play.pack_forget()
+        status.configure(text="Starting...", fg=grey)
+        args = (iso_var.get(), dest_var.get(), cars_var.get(), improvements_var.get())
+
+        def work():
+            try:
+                result = install(*args, log=lambda line: events.put(("log", line)),
+                                 progress=lambda f, text: events.put(("progress", f, text)))
+                events.put(("done", str(result)))
+            except InstallError as error:
+                events.put(("error", str(error)))
+            except Exception as error:  # unexpected: show something useful rather than vanish
+                events.put(("error", f"Unexpected problem: {type(error).__name__}: {error}"))
+        threading.Thread(target=work, daemon=True).start()
+
+    def finish_play():
+        try:
+            launch_game(Path(state["done_dest"]))
+        except (InstallError, OSError) as error:
+            messagebox.showerror(TITLE, f"Could not start the game: {error}")
+
+    def poll():
+        try:
+            while True:
+                event = events.get_nowait()
+                kind = event[0]
+                if kind == "iso" and event[1] == state["check_id"]:
+                    _, _, ok, message = event
+                    state["iso_ok"] = ok
+                    iso_status.configure(text=("\u2714  " if ok else "\u2716  ") + message, fg=green if ok else red)
+                    install_button.configure(state="normal" if ok and not state["busy"] else "disabled")
+                    if ok and install_now and not state["auto_started"]:
+                        state["auto_started"] = True
+                        start_install()
+                elif kind == "progress":
+                    bar["value"] = event[1] * 1000
+                    status.configure(text=event[2], fg=grey)
+                elif kind == "done":
+                    state["busy"], state["done_dest"] = False, event[1]
+                    bar["value"] = 1000
+                    status.configure(text=f"Done!  Installed to {shorten(event[1], 60)}\nStart it with \u201c{LAUNCHER}\u201d, or press Play now.", fg=green)
+                    set_controls(True)
+                    install_button.configure(text="Install again", state="normal")
+                    play.pack(side="right", padx=(0, 8))
+                    play.configure(command=finish_play)
+                elif kind == "error":
+                    state["busy"] = False
+                    bar["value"] = 0
+                    status.configure(text=event[1], fg=red)
+                    set_controls(True)
+                    install_button.configure(state="normal" if state["iso_ok"] else "disabled")
+        except queue.Empty:
+            pass
+        root.after(100, poll)
+
+    def on_close():
+        if state["busy"] and not messagebox.askyesno(TITLE, "Installation is still running. Quit anyway?"):
+            return
+        root.destroy()
+
+    browse.configure(command=pick_iso)
+    change.configure(command=pick_dest)
+    install_button.configure(command=start_install)
+    iso_var.trace_add("write", lambda *_: root.after(350, validate))
+    cars_var.trace_add("write", refresh_cars_colour)
+    refresh_cars_colour()
+    root.protocol("WM_DELETE_WINDOW", on_close)
+    root.after(100, poll)
+    if iso:
+        iso_var.set(iso)
+    root.mainloop()
+    return 0
+
+
+# ----------------------------------------------------------------------------- entry point
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--cli", action="store_true", help="install without opening the window")
+    parser.add_argument("--iso", help="Xbox game image (pre-fills the window; required with --cli)")
+    parser.add_argument("--dest", type=Path, default=DEFAULT_DEST, help="install folder")
+    parser.add_argument("--cars", action="store_true", help="add the extra cars (default: off)")
+    parser.add_argument("--no-improvements", action="store_true", help="skip the game improvements (default: on)")
+    parser.add_argument("--install-now", action="store_true", help="open the window and start at once (needs --iso)")
+    parser.add_argument("--log-file", type=Path, help="also write progress to this file (with --cli)")
+    args = parser.parse_args(argv)
+    if not args.cli:
+        return run_gui(args.dest, args.iso or "", args.cars, not args.no_improvements, args.install_now)
+    if not args.iso:
+        parser.error("--cli needs --iso")
+    log_stream = open(args.log_file, "w", encoding="utf-8", buffering=1) if args.log_file else None
+
+    def log(line):
+        if log_stream:
+            log_stream.write(line + "\n")
+        elif sys.stdout:
+            print(line, flush=True)
+
+    last = [-1]
+
+    def progress(fraction, text):
+        step = int(fraction * 20)
+        if step != last[0]:
+            last[0] = step
+            log(f"[{fraction * 100:3.0f}%] {text}")
+
+    try:
+        install(args.iso, args.dest, args.cars, not args.no_improvements, log, progress)
+        return 0
+    except InstallError as error:
+        log(f"ERROR: {error}")
+        return 1
+    finally:
+        if log_stream:
+            log_stream.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

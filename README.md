@@ -1,5 +1,60 @@
 # Midtown Madness 3 PC Native
 
+Play the Xbox racing game **Midtown Madness 3** on your Windows PC: widescreen, sharper
+graphics, keyboard controls, and optionally nine extra cars. You need your own copy of the
+game as a disc image. No building, no programming.
+
+## Install and play
+
+1. **Download [MM3-Setup.exe](https://github.com/lakshya16157/midtown-madness-3-PC-Native/releases/latest)**
+   from the latest release (under **Assets**).
+2. **Run it.** Windows may say "Windows protected your PC" because the file is not
+   code-signed. Choose **More info**, then **Run anyway**.
+3. **Pick your game image:** your own Midtown Madness 3 Xbox disc image (`.iso`). The
+   Europe/Australia and USA releases both work.
+4. **Choose your options:**
+   - **Add extra cars** (off by default). Adds nine community cars: Panoz GTR-1,
+     McLaren F1 GTR, Ferrari F2007 (Formula 1), Ford GT, McLaren Senna, McLaren Senna GTR,
+     Ferrari FXX K, Koenigsegg Regera and Lamborghini Aventador.
+   - **Add game improvements** (on by default). A sharper image (2x resolution, 4x
+     anti-aliasing, 16x texture filtering), longer draw distance, widescreen that fits your
+     window and better night lighting. Untick it for the original Xbox look.
+5. Click **Install**, then **Play now**. Later, start the game with
+   **Play Midtown Madness 3.cmd** in the install folder (by default a `Midtown Madness 3`
+   folder next to the installer).
+
+You need Windows 10 or 11 (64-bit), a Direct3D 11 graphics card, about 6 GB of free disk
+space, and your own game image (it is not included).
+
+**Good to know**
+
+- **The first start takes about 3 1/2 minutes** before the menu appears while the intro
+  movies play. The game has not frozen.
+- **Keyboard:** arrows drive and navigate menus, **Space** is the handbrake, **C** changes
+  the camera, **Z** confirms, **X** or **Escape** goes back, **Enter** pauses, hold **Ctrl**
+  to enlarge the race map, **Alt+F4** quits. Pick **Graphics Settings** in the main menu
+  (between Options and Profile), or press **F10** while playing, to change resolution,
+  fullscreen, FPS and quality.
+- **Changing your mind:** run the installer again with different options. Your saved games
+  are kept. They live in the install folder under `game_files\UDATA`. To uninstall, delete
+  the folder.
+- **Something wrong?** The game writes `logs\last-run.log` in the install folder. Please
+  [open an issue](https://github.com/lakshya16157/midtown-madness-3-PC-Native/issues)
+  and attach it.
+- **Extra car credits:** the cars are community conversions by Aaro4130, Tsutarja495,
+  Matyii, Kunal, mm2mm1fan and BUGATTIMAN253MPH. Their original readmes are saved next to
+  the game as `Extra cars - credits.txt`. Please respect their terms.
+
+Developers: everything below the line is about building and changing the project.
+
+---
+
+## For developers and contributors
+
+The Windows installer above is built from [installer/](installer/README.md), which packs
+the native build, the disc extractor and the optional car pack into one `MM3-Setup.exe`.
+The rest of this document covers building from source.
+
 **Midtown Madness 3 PC Native** brings the Xbox arcade racing game to Windows
 10 and Windows 11 x64 through static recompilation. This native MM3 PC port
 uses the [xboxrecomp](tools/xboxrecomp) runtime and a Direct3D 11 renderer.
@@ -63,8 +118,10 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   converter builds closed body and animated-wheel shadow proxies. Widescreen
   pause menus keep button caps, labels and controller prompts joined in one layout.
   Race maps and their checkpoint icons share one placement while expanding or turning.
-  Blue race guidance follows the cities' road curves and junctions, and updates
-  the path to the next checkpoint as the car moves.
+  Blue guidance follows the cities' road curves and junctions, and updates
+  the path to the next checkpoint or selected Undercover objective as the car moves.
+  Floating mission and opponent names retain their projected positions even
+  when their font texture is also used by the HUD.
   The improved minimap draws gray roads on a transparent, tilted plane.
   Ctrl expands it into a flat overview, retaining checkpoints around the car
   throughout the transition. Narrow streets have a wider visibility floor
@@ -73,8 +130,15 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   and closed-loop seams, removing sharp bevels and small gaps between roads.
   Daylight retains its authored colors. Night ambient, diffuse and backlight
   use 25% of their authored strength, with no global brightness floor or added
-  ambient lift. Headlights and street lamps keep their normal local strength
-  while unlit streets stay dark and emissive lights remain bright.
+  ambient lift. Vehicle lamps and world light effects illuminate nearby surfaces
+  with source-specific reach and strength, while unlit streets stay dark.
+  Front lamps supply road beams on player, opponent and traffic cars; a night
+  driving beam also covers the Formula 1 model without adding bodywork lenses.
+  Tail, brake and reversing lights cast smaller tinted pools. World fixtures
+  retain their authored color and aim, with wider coverage for large lamps and
+  bounded local pools for bulbs that previously supplied only a visible flare.
+  Traffic signals retain the active lens color. Native time, breakage and
+  flicker controls continue to govern world lights.
   Local illumination samples the native 3D attenuation textures and reconstructs
   surfaces from raw scene depth, restoring light pools on roads and buildings.
   Lamp glows use the scene depth buffer's encoding when testing occlusion.
@@ -103,6 +167,11 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   heap addresses as occupied. Extended-distance particle overlap is bounded to
   reduce effects load. CPU-drawn loading prompts continue updating after a race,
   so choosing Next Race displays the A/Start prompt instead of a black screen.
+  The CRT remainder helper completes independently of stale floating-point
+  comparison flags, fixing the captured Undercover taxi pickup hang.
+  Pedestrian paths use the recovered native point-count helper, preventing
+  passengers from walking past their boarding path. The native arrival query
+  also retains its zero-flag tests so completed walks can release mission waits.
 - **Driving and selection:** arrow-key driving, camera and manual-shift controls,
   focus-aware keyboard input, and selection of all 35 supported-disc car models.
 - **Car workshop:** nine extra tuned variants, optional prepared model
@@ -560,6 +629,9 @@ a blue path. The brighter leg updates from the car to the next checkpoint,
 including after a wrong turn. The remaining course stays visible through the final checkpoint. Checkpoint
 icons use 75% of their original width and height at every speed, retaining
 their colors and pulsing. World hoops retain their original size.
+Undercover jobs also route to the currently selected pickup, drop-off or other
+visible objective. The path updates when the mission selects its next stop and
+clears when the mission hides that objective.
 Both Blitz and Checkpoint races end at their final gate. Return legs only appear
 when the ordered checkpoints explicitly revisit a road.
 Choose **Manual** transmission in car setup, then tap **R** to shift up and **F** to shift down
@@ -777,7 +849,7 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `RECOMP_FULLSCREEN` | off | Start fullscreen. |
 | `RECOMP_WINDOW_SIZE` | auto | Initial window client size, `WxH`. |
 | `RECOMP_ASPECT` | `auto` | Follow the window, or pin `16:10`, `16:9`, `4:3`, or a numeric ratio (0.5–4). Gameplay adapts its view; menus retain their proportions. |
-| `MM3_NIGHT_WORLD_LIGHT` | `25` | Night-only world fill, as an integer percentage of authored ambient, diffuse and backlight colors (0-100). Daytime, local lights and emissive materials retain their normal strength. Set `100` with both boosts below at `0` for retail lighting. Requires restart. |
+| `MM3_NIGHT_WORLD_LIGHT` | `25` | Night-only world fill, as an integer percentage of authored ambient, diffuse and backlight colors (0-100). Daytime and emissive materials retain their normal strength; source-specific local illumination is independent of this setting. Set `100` with both boosts below at `0` for retail world fill. Requires restart. |
 | `MM3_EVEN_LIGHTING` | `0` | Optional readability boost: `1` imposes a 48/255 minimum on world ambient, diffuse and backlight colors (75% unlit texture brightness). Default `0` lets night lighting come mainly from local sources. Native local lights, material alpha, UI and emissive lamps are preserved. Requires restart. |
 | `MM3_AMBIENT_LIFT` | `0` | Optional added packed-RGB ambient lift, integer 0-16. Default `0` adds no artificial ambient light. Both lighting boosts are disabled by default. Requires restart. |
 | `MM3_FOV_DEGREES` | unset | Driving horizontal FOV at the display aspect, 60–110 degrees; unset or invalid values retain the existing widescreen FOV. Set with `scripts\play.ps1 -Fov 100`. |
@@ -1213,6 +1285,13 @@ Height helps distinguish bridges and roads below them. Both native race scripts
 remove passed gates and finish at the final checkpoint; a single remaining gate
 still receives guidance, without an invented return to the first gate.
 
+Undercover Work also publishes objectives through the native HUD's two other
+marker collections. Guidance copies the selected objective's live position
+after its native getter runs, including taxi pickup and drop-off zones. It
+clears hidden or unavailable targets and never joins future mission stops into
+an assumed course. Both map sizes share this behavior. `[RACE_ROUTE]` logs
+objective changes.
+
 Road geometry is copied after native city loading and cleared on unload.
 Unavailable or disconnected paths are omitted. The line uses the same map
 projection, rotation, zoom and viewport clipping as the checkpoint markers.
@@ -1296,6 +1375,12 @@ stops for 15 seconds. This can also trigger during a long loading transition;
 the capture is evidence, not proof of a deadlock. It does not close the game.
 Full tracing still adds work; use normal `scripts/play.ps1` for ordinary play
 and lighter frame/hitch tracing for performance comparisons.
+
+`python tools/diagnostics/analyze_hang.py <capture-directory>` inspects a saved
+AMD64 dump with its matching local symbols and writes `native-threads.json`.
+It resolves guest registers and x87 state from captured thread-local storage;
+stack scans are labeled as candidate return addresses. It never attaches to or
+changes a running process.
 
 For the next manual driving check, use **Play with performance diagnostics.cmd**.
 It selects `play-diagnostics.ps1 -Light`, retains frame/hitch measurements,
