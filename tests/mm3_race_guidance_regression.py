@@ -21,7 +21,7 @@ MATH = ("sub_0002DC95", "sub_0006ACC3", "sub_000C6ADC", "sub_0006AC61",
         "sub_00349470", "sub_0034C0E0", "sub_000C191C", "sub_0004DBC7", "sub_0013532D",
         "sub_0011DCBF")
 HOOKS = {
-    OWNERS[0]: ("loc_00201BCA", "loc_00201CC0", "loc_00201D55"),
+    OWNERS[0]: ("loc_00201BCA", "loc_00201CC0", "loc_00201DA0", "loc_00201E92", "loc_00201F06"),
     OWNERS[1]: ("loc_0011CB45",),
     OWNERS[2]: ("loc_00120091",),
     OWNERS[3]: ("loc_00116535", "loc_001171D4", "loc_0011726E", "loc_0011731C"),

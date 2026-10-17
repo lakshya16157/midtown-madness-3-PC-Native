@@ -99,11 +99,20 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001DDFC5)
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001DE752)
 # The CRT MMX probe must preserve the stack effects of PUSHFD/POPFD.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00093770)
+# The CRT remainder loop tests FPREM's C2, independently of a previous FCMP.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00253748)
+# Preserve the merged zero-flag tests in the native pedestrian arrival query.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001466D9)
+# Carry projected name-marker identity through the native UI vertex packer.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001093BB sub_00069807)
 # The hot visibility leaf keeps its balanced x87 scratch stack in native locals.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001C793A)
 # Scope even world lighting to the native full-scene composite and its colors.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000FF19A)
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000FF324 sub_000FF15C sub_00230DEE)
+# Local light sources retain native activation, with forward car beams and
+# source-sized illumination around vehicle and city lamps.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000CF2DA sub_000489A6 sub_00021E18)
 # Factory profiles bind the real constructed controller and leave retail cars
 # on their original torque and gearbox paths, including same-chunk calls.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0021ED64 sub_001D0E2D sub_001CB7E8 sub_001CB881 sub_001CB9A5 sub_001CF7B4)
@@ -124,6 +133,9 @@ list(APPEND MM3_SEAM_FUNCTIONS sub_0011CA25 sub_0011D1E8 sub_0011D808 sub_0011CA
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_map_zoom_seam.cmake")
 list(APPEND MM3_SEAM_FUNCTIONS sub_001EC352)
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_hud_cleanup_seam.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_name_marker_seam.cmake")
+list(APPEND MM3_SEAM_FUNCTIONS sub_000E10A5 sub_000E1F49 sub_000E2385 sub_000E247C)
+include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_lamp_lighting_seam.cmake")
 list(APPEND MM3_SEAM_FUNCTIONS sub_00201BCA sub_0011CAE8 sub_00120091 sub_00116535 sub_0014BAE9 sub_0014C121)
 list(REMOVE_DUPLICATES MM3_SEAM_FUNCTIONS)
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_race_guidance_seam.cmake")
@@ -234,6 +246,18 @@ foreach(distance_input IN LISTS distance_owners)
     if(owner_sub_001EC352 STREQUAL distance_input)
         mm3_hide_navigation_arrows(distance_content)
     endif()
+    if(owner_sub_001093BB STREQUAL distance_input)
+        mm3_add_name_marker_seam(distance_content sub_001093BB_original)
+    endif()
+    foreach(lamp_owner sub_000E10A5 sub_000E1F49 sub_000E2385 sub_000E247C)
+        if(owner_${lamp_owner} STREQUAL distance_input)
+            if(lamp_owner STREQUAL "sub_000E1F49")
+                mm3_add_lamp_lighting_seam(distance_content ${lamp_owner}_original)
+            else()
+                mm3_add_lamp_lighting_seam(distance_content ${lamp_owner})
+            endif()
+        endif()
+    endforeach()
     foreach(race_owner sub_00201BCA sub_0011CAE8 sub_00120091 sub_00116535 sub_0014BAE9 sub_0014C121)
         if(owner_${race_owner} STREQUAL distance_input)
             mm3_add_race_guidance(distance_content ${race_owner})
@@ -274,6 +298,7 @@ add_custom_command(OUTPUT "${MM3_MENU_HEADER}"
 
 add_executable(${PROJECT_NAME}
     src/main.c
+    src/mm3_pedestrian_compat.c
     src/mm3_display_config.c
     src/mm3_display_settings.c
     src/mm3_menu_resources.c
@@ -288,6 +313,7 @@ add_executable(${PROJECT_NAME}
  src/mm3_stream_compat.c
  src/recomp_manual.c
  src/mm3_widescreen.c
+ src/mm3_name_markers.c
  src/mm3_map_zoom.c
  src/mm3_race_guidance.c
  src/mm3_render_distance.c
@@ -306,6 +332,8 @@ add_executable(${PROJECT_NAME}
  src/mm3_factory_physics.c
  src/mm3_cpu_compat.c
  src/mm3_world_lighting.c
+ src/mm3_car_lighting.c
+ src/mm3_lamp_lighting.c
  src/recomp_trace_probe.c
  ${RECOMP_GEN_SOURCES})
 

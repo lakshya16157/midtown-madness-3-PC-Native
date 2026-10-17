@@ -18,15 +18,24 @@ function(mm3_add_race_guidance source_variable function_name)
     PUSH32(esp, ebp);]=])
         set(unload_call "    mm3_race_guidance_roads(ebx, 0);")
     elseif(function_name STREQUAL "sub_00201BCA")
-        set(hooks begin checkpoint end)
+        set(hooks begin checkpoint objective zone end)
         set(begin_original [=[loc_00201BCA: ;
     PUSH32(esp, ebp);]=])
         set(begin_call "    mm3_race_guidance_begin(MEM32(esp + 0x10));")
         set(checkpoint_original [=[loc_00201CC0: ;
     _fa = (uint32_t)(LO8(eax))]=])
         set(checkpoint_call "    mm3_race_guidance_checkpoint(MEM32(ebp + 0x14), MEM32(ebp + -76), MEM32(ebp + -76) + 0x48, ebp - 40, MEM32(ebp + -28));")
-        set(end_original [=[loc_00201D55: ;
-    eax = MEM32(ebx);]=])
+        # Undercover zones/objectives are in the two other native marker
+        # collections. Their position getter has already resolved the live
+        # object, so copy the selected target without guessing its layout.
+        set(objective_original [=[loc_00201DA0: ;
+    fp_push(MEMF(eax + 8)); /* fld float */]=])
+        set(objective_call "    mm3_race_guidance_target(MEM32(ebp + 0x14), MEM32(ebp + -20), eax, ebp - 40, MEM32(ebp + -28));")
+        set(zone_original [=[loc_00201E92: ;
+    fp_push(MEMF(eax + 8)); /* fld float */]=])
+        set(zone_call "${objective_call}")
+        set(end_original [=[loc_00201F06: ;
+    ecx = MEM32(ebp + 8);]=])
         set(end_call "    mm3_race_guidance_end(MEM32(ebp + 0x14));")
     elseif(function_name STREQUAL "sub_0011CAE8")
         set(hooks route)
@@ -98,7 +107,7 @@ function(mm3_add_race_guidance source_variable function_name)
     string(REPLACE "${body}" "${transformed}" content "${content}")
     string(FIND "${content}" "extern void mm3_race_guidance_begin(" declared)
     if(declared LESS 0)
-        set(declarations "#include <stdint.h>\nextern void mm3_race_guidance_frame_begin(void);\nextern void mm3_race_guidance_roads(uint32_t, uint32_t);\nextern void mm3_race_guidance_begin(uint32_t);\nextern void mm3_race_guidance_checkpoint(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\nextern void mm3_race_guidance_end(uint32_t);\nextern void mm3_race_map_route(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\nextern uint32_t mm3_race_route_quad_tagged(uint32_t, uint32_t);\nextern void mm3_race_route_tag_packed(uint32_t);\n")
+        set(declarations "#include <stdint.h>\nextern void mm3_race_guidance_frame_begin(void);\nextern void mm3_race_guidance_roads(uint32_t, uint32_t);\nextern void mm3_race_guidance_begin(uint32_t);\nextern void mm3_race_guidance_checkpoint(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\nextern void mm3_race_guidance_target(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\nextern void mm3_race_guidance_end(uint32_t);\nextern void mm3_race_map_route(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\nextern uint32_t mm3_race_route_quad_tagged(uint32_t, uint32_t);\nextern void mm3_race_route_tag_packed(uint32_t);\n")
         if(NOT crlf LESS 0)
             string(REPLACE "\n" "\r\n" declarations "${declarations}")
         endif()

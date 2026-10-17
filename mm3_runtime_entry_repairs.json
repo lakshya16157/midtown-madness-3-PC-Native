@@ -192,5 +192,10 @@
     "start": "0x00144ED9",
     "end": "0x00144EDE",
     "note": "Shared successful graph-edge lookup epilogue, reached by 0x00144EDE from vtable method 0x00144EAE. Original POP EDI; POP ESI; RET 4 restores both saved registers and eight bytes missing from the unresolved stub. Without these pops the outer 0x001F6349 frame restores its registers from the wrong stack words."
+  },
+  {
+    "start": "0x0006726A",
+    "end": "0x0006727D",
+    "note": "Pedestrian path point-count helper tail-called by 0x00135B2A during taxi boarding. Return max(vector length, 4) using original 0x0004DBC7; the unresolved stub leaves EAX as a guest pointer, so the locomotor advances beyond its path and never completes the pickup. Captured node 0x053D2874 contains five points while the segment index had reached twelve."
   }
 ]

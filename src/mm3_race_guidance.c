@@ -7,9 +7,9 @@ extern int mm3_minimap_improved(void);
 extern int mm3_minimap_origin(uint32_t, float *);
 extern int mm3_minimap_heading(uint32_t, float *);
 
-/* 201BCA publishes the native race's remaining ordered checkpoint list once
- * per player HUD update, before hiding passed/inactive checkpoint icons.
- * Copy positions and identities; never dereference a saved guest object. */
+/* 201BCA publishes the native race's remaining ordered checkpoint list and
+ * selected Undercover objective once per player HUD update. Copy positions
+ * and identities; never dereference a saved guest object. */
 enum { RACE_PLAYERS = 2, RACE_CHECKPOINTS = 128 };
 typedef struct { float x, y, z; } RoadPoint;
 typedef struct { uint32_t object; RoadPoint position; } RaceCheckpoint;
@@ -17,8 +17,9 @@ static struct {
     RaceCheckpoint checkpoints[RACE_CHECKPOINTS];
     RoadPoint origin;
     uint32_t current_object;
-    unsigned count, current, valid;
+    unsigned count, current, valid, objective;
 } s_race[RACE_PLAYERS];
+static uint32_t s_reported_objective[RACE_PLAYERS];
 
 enum { ROAD_NODES = 65536, ROAD_EDGES = 262144, COURSE_POINTS = 16384,
        ACTIVE_POINTS = 4096, NO_NODE = UINT32_MAX };
@@ -957,6 +958,7 @@ void mm3_race_guidance_begin(uint32_t player)
 {
     if (player < RACE_PLAYERS) {
         s_race[player].count = s_race[player].valid = 0;
+        s_race[player].objective = 0;
         s_race[player].current_object = 0;
         /* Both retail Blitz and Checkpoint scripts finish at total_targets.
          * A repeated start gate is explicit in the list, never inferred from
@@ -987,6 +989,25 @@ void mm3_race_guidance_checkpoint(uint32_t player, uint32_t object,
     s_race[player].count = count + 1;
 }
 
+void mm3_race_guidance_target(uint32_t player, uint32_t object,
+                              uint32_t position, uint32_t origin,
+                              uint32_t current)
+{
+    unsigned i;
+    RoadPoint point, player_origin;
+    if (player >= RACE_PLAYERS || !current || object != current || !position || !origin) return;
+    /* +EC/+F0 are unordered objectives, including Undercover pickup/drop-off
+     * zones. Route only to the native selected target; connecting every zone
+     * would expose future scripted stops and invent a course ordering. */
+    for (i = 0; i < s_race[player].count; ++i)
+        if (s_race[player].checkpoints[i].object == object) return;
+    point = road_control(position, 0); player_origin = road_control(origin, 0);
+    if (!road_point_valid(point) || !road_point_valid(player_origin)) return;
+    s_race[player].count = 0;
+    mm3_race_guidance_checkpoint(player, object, position, origin, current);
+    s_race[player].objective = 1;
+}
+
 void mm3_race_guidance_end(uint32_t player)
 {
     unsigned i;
@@ -997,6 +1018,11 @@ void mm3_race_guidance_end(uint32_t player)
     /* Native 20DA6F removes each passed gate from this list. The final
      * singleton still needs a car-to-checkpoint path. */
     s_race[player].valid = s_race[player].count > 0;
+    if (s_reported_objective[player] != (s_race[player].objective ? s_race[player].current_object : 0)) {
+        s_reported_objective[player] = s_race[player].objective ? s_race[player].current_object : 0;
+        fprintf(stderr, "[RACE_ROUTE] player=%u objective=%08X targets=%u\n",
+                player, s_reported_objective[player], s_race[player].count);
+    }
     for (i = 0; i < s_race[player].count; ++i)
         if (s_race[player].checkpoints[i].object == s_race[player].current_object) {
             s_race[player].current = i;

@@ -35,6 +35,7 @@ static unsigned native_submission;
 static unsigned native_submission_dropped, native_submission_gray, native_submission_blue;
 static unsigned native_submission_markers, native_pool_allocations, native_pool_frees;
 static uint32_t current_target;
+static int auxiliary_name_matches;
 static uint32_t world_color;
 static const char *check = "guidance";
 static int improved, cruise_origin_valid;
@@ -78,6 +79,12 @@ static void fake_icall(uint32_t address) {
     if (address == 0x106) { sub_0001BA6A(); return; }
     if (address == 0x107) { sub_0020BF9C(); return; }
     if (address == 0x108) { g_eax = viewport; g_esp += 4; return; }
+    if (address == 0x109) {
+        uint32_t result = MEM32(g_esp + 4);
+        memcpy((void *)XBOX_PTR(result), (void *)XBOX_PTR(g_ecx + 0x80), 12);
+        g_eax = result; g_esp += 8; return;
+    }
+    if (address == 0x10A) { g_eax = MEM32(g_esp + 4); g_esp += 8; return; }
     if (address == 0x0011964B) { sub_0011964B(); return; }
     fprintf(stderr, "unexpected guidance indirect call %08X\n", address); abort();
 }
@@ -134,8 +141,8 @@ void sub_001FB158(void) { g_esp += 32; }
 void sub_001C032D(void) { g_eax = 0; g_esp += 4; }
 void sub_001C0107(void) { g_eax = 0; g_esp += 4; }
 void sub_00012B8A(void) { g_esp += 20; }
-void sub_000127A9(void) { assert(!"unexpected auxiliary HUD collection"); }
-void sub_00015C02(void) { assert(!"unexpected auxiliary HUD collection"); }
+void sub_000127A9(void) { g_esp += 8; }
+void sub_00015C02(void) { g_eax = auxiliary_name_matches; g_esp += 8; }
 void sub_000160BC(void) { assert(!"unexpected auxiliary HUD collection"); }
 void sub_0001B8AD(void) { assert(!"unexpected auxiliary HUD collection"); }
 void sub_00095338(void) { assert(!"unexpected auxiliary HUD collection"); }
@@ -457,6 +464,9 @@ static void native_publication_lifecycle_contract(void) {
     hud_players = 0; MEM32(0x407C1C) = 2;
     MEM32(0x3C569C) = 0;
 }
+
+#include "mm3_undercover_guidance_contract.inc"
+
 static void native_submission_begin(void) {
     MEM32(0x25000) = renderer_vtable;
     MEM32(renderer_vtable + 0x88) = 0x0011964B;
@@ -1249,6 +1259,7 @@ int main(int argc, char **argv) {
     fixture_roads();
     native_contract(); clipping_and_state_contract(); course_finish_and_revisit_contract();
     native_publication_lifecycle_contract(); native_world_contract(); native_submission_contract();
+    native_undercover_guidance_contract();
     native_gpu_format_contract();
     road_navigation_contract();
     roundabout_traffic_contract();

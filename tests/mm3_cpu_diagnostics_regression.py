@@ -65,6 +65,9 @@ COMMON_NATIVE = r'''
 ptrdiff_t g_xbox_mem_offset;
 RECOMP_TLS uint32_t g_eax,g_ecx,g_edx,g_esp,g_ebx,g_esi,g_edi,g_ebp,g_seh_ebp,g_fs_base;
 RECOMP_TLS int g_df;
+RECOMP_TLS double g_fp_stack[8];
+RECOMP_TLS int g_fp_top,g_fp_cmp;
+RECOMP_TLS uint16_t g_fp_cc,g_fp_control_word;
 static unsigned char memory[0x1000000];
 '''
 
@@ -122,6 +125,7 @@ def diagnostics_fixture():
         assert body, name
         bodies.append(body.group())
     return (COMMON_NATIVE + '\nstatic int g_mm3_unimpl_trap,g_mm3_frontend_icall_trace;\n'
+            + 'void mm3_producer_diagnostics_init(void) {}\n'
             + '\n'.join(bodies) + r'''
 int main(int argc,char**argv){
  assert(argc==2);g_xbox_mem_offset=(ptrdiff_t)memory;
