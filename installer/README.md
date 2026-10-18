@@ -9,13 +9,13 @@ This folder holds the source for that installer, for developers.
 ## What it does
 
 `MM3-Setup.exe` is one self-contained Windows program (Python + tkinter, packed with
-PyInstaller). It needs no Python, .NET, Visual Studio or CMake on the target PC. It asks three
-things and then:
+PyInstaller). It needs no Python, .NET, Visual Studio or CMake on the target PC. It asks for
+your image, destination and optional content, then:
 
 1. checks the chosen disc image with the same code-hash gate as `scripts/extract_disc.py`
    (the Europe/Australia and USA releases share the same code) and extracts it to
    `game_files\`, applying the standard XISO media patch;
-2. copies the bundled `mm3_recomp.exe` next to it;
+2. copies the bundled `mm3_recomp.exe` and its app-local Visual C++ runtime next to it;
 3. **Add extra cars** (default off): runs `tools/car-mods/prepare.py`'s own plan/apply
    functions with the bundled car packages, or restores the original archives if the cars were
    installed before and are now unticked. The window names each car's author, and
@@ -31,6 +31,16 @@ things and then:
    `MM3_NIGHT_WORLD_LIGHT=100`, `MM3_PARTICLE_MAX_OVERDRAW=12`, `RECOMP_SHARP_POINT=0`).
    Both modes also set the variables `scripts/play.ps1` sets (`RECOMP_PB_EXEC`, `RECOMP_USB`,
    `RECOMP_FB_WINDOW`, `RECOMP_APU_DSP_ACK`, keyboard layout).
+5. **Official DLC** (optional local ZIP or folder): imports Midtown Madness 3 content
+   packs into `game_files\TDATA\4d53002a\$C` and reports which of the six official packs
+   are installed or missing. Xbox title updates are excluded: replacing the retail
+   executable would invalidate the native build's code hash. DLC is separate from
+   the community cars and is never downloaded or bundled by Setup.
+
+Players must already own the original Xbox game and supply lawfully obtained game
+and DLC files. Owning a disc does not automatically authorize third-party downloads
+or redistribution. The [main README](../README.md#ownership-disc-images-and-dlc) explains
+the preferred own-disc backup route, local-law limits and the requested source links.
 
 Safety rules: it never deletes or overwrites an existing `game_files\` that is not a complete
 install (saved games live there); it extracts into `game_files.partial` and renames only when
@@ -62,7 +72,8 @@ tools\venv\Scripts\python.exe installer\build_car_packages.py
 python installer\build.py
 ```
 
-`build.py` bundles the newest `mm3_recomp.exe` under `build\`, `scripts/extract_disc.py`,
+`build.py` bundles the newest `mm3_recomp.exe` under `build\`, `vcruntime140.dll` from the
+Windows Python installation, `scripts/extract_disc.py`,
 `xdvdfs.py`, the car-mods tools, `tools/car-mods/cars.local.json` (your tuned manifest; it
 falls back to `cars.imported.json`), the car packages and each pack's original readme.
 Rebuild whenever you rebuild the game.
@@ -70,14 +81,35 @@ Rebuild whenever you rebuild the game.
 ## Headless use and testing
 
 ```text
-MM3-Setup.exe --cli --iso <image> [--cars] [--no-improvements] [--dest <dir>] [--log-file <file>]
+MM3-Setup.exe --cli --iso <image> [--dlc <zip-or-folder>] [--cars] [--no-improvements] [--dest <dir>] [--log-file <file>]
 MM3-Setup.exe --iso <image> --cars --install-now      (opens the window and starts at once)
 ```
 
-`--cli` installs without a window. Without `--cli`, `--iso`, `--cars` and `--no-improvements`
+`--cli` installs without a window. Without `--cli`, `--iso`, `--dlc`, `--cars` and `--no-improvements`
 pre-fill the window. A quick way to test without a retail disc is to build a bare XDVDFS image
 from an existing `game_files` (pristine `Data_*.zip` from `.mm3-car-mods`, minus the files in
 its `state.json`).
+
+### Validation of Setup 1.1 (18 October 2026)
+
+- The supplied Europe/Australia multilingual redump (SHA-1
+  `3411caf817c8d63bfbd582d9a347da81ef652cb5`) passed the code check. All 456 extracted
+  files matched the image, allowing the documented one-byte media patch.
+- The rebuilt standalone executable imported the supplied `MidtownMadness3DLC.zip`
+  (SHA-256 `69ce447f8382b33b1a69eea7a5f77333f44d05ca386918c8c64350565a0bc647`), detected
+  all six packs, installed all nine optional cars and preserved an existing save file.
+- The installed game executable matches the newest local build; its required
+  `vcruntime140.dll` is included. Source tests cover DLC signatures, incomplete packs,
+  CRC failures, path traversal, repeat imports, saved data and incomplete disc extracts.
+- A second standalone run with Python removed from `PATH` restored the original cars,
+  selected the original graphics settings and preserved all 596 DLC files and the save.
+  The installed game reached rendered output at about 60 FPS and closed with exit code 0.
+  These checks used this Windows PC; a separate clean Windows VM and interactive gameplay
+  were not tested.
+
+```powershell
+tools\venv\Scripts\python.exe -m unittest discover -s tests -p test_installer.py -v
+```
 
 ## Publishing
 
@@ -93,6 +125,7 @@ Before publishing, remember what is inside:
   modified or reposted without permission (see the readmes under `Downloaded_Cars`, shipped
   with the cars as `Extra cars - credits.txt`).
 
-Check that you are comfortable redistributing both, and ask the car authors for permission,
-before sharing the installer widely. (Currently the exe always carries the cars; a build
-without them would need a small change to `build.py` and `installer.py`.)
+Obtain the necessary redistribution rights for both before sharing the installer.
+Requiring players to own a disc does not grant the publisher permission to redistribute
+translated game code or community assets. Currently the executable always carries the
+cars; unticking the installation option does not remove them from the download.

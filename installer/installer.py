@@ -1,6 +1,6 @@
 """Midtown Madness 3 setup: one window, three questions, one standalone .exe.
 
-  1. Where is your Xbox (Europe) game image?
+  1. Where is your Xbox Europe/Australia or USA game image?
   2. Add the extra cars?            (default: no)
   3. Add the game improvements?     (default: yes)
 
@@ -9,7 +9,7 @@ optionally installs the extra cars, and writes a launcher that applies the chose
 settings.  Everything it needs is packed inside this executable (`payload/`).
 
 Headless use (also how the build is tested):
-  MM3-Setup.exe --cli --iso <image> [--cars] [--no-improvements] [--dest <dir>] [--log-file <file>]
+  MM3-Setup.exe --cli --iso <image> [--dlc <zip-or-folder>] [--cars] [--no-improvements] [--dest <dir>] [--log-file <file>]
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import collections
 import contextlib
 import copy
 import hashlib
+import hmac
 import importlib.util
 import io
 import json
@@ -39,8 +40,12 @@ from pathlib import Path
 # PyInstaller see and include them (it only analyses this file's own imports).
 _PAYLOAD_STDLIB = (argparse, collections, copy, hashlib, math, re, struct, tempfile, zipfile, zlib)
 
-VERSION = "1.0"
+VERSION = "1.1"
 TITLE = "Midtown Madness 3 - Setup"
+OWNERSHIP_NOTICE = (
+    "Use your own original Xbox disc and a lawfully obtained game image and DLC. "
+    "Owning a disc does not automatically authorize third-party downloads."
+)
 
 FROZEN = getattr(sys, "frozen", False)
 HERE = Path(sys._MEIPASS) if FROZEN else Path(__file__).resolve().parent
@@ -51,6 +56,15 @@ DEFAULT_DEST = APP_DIR / "Midtown Madness 3"
 GAME_EXE = "mm3_recomp.exe"
 LAUNCHER = "Play Midtown Madness 3.cmd"
 CARS_CONFIG = PAYLOAD / "tools" / "car-mods" / "cars.local.json"
+DLC_TITLE_ID = "4d53002a"
+DLC_PACKS = {
+    "4d53002a00000001": ("Car Pack 1", (202, 203, 207, 210)),
+    "4d53002a00000002": ("Washington races", ()),
+    "4d53002a00000003": ("Paris races", ()),
+    "4d53002a00000004": ("Car Pack 2", (204, 205, 206)),
+    "4d53002a00000005": ("Car Pack 3", (213, 214, 215)),
+    "4d53002a00000006": ("Car Pack 4", (201, 208, 211, 212)),
+}
 
 MM2X = "https://www.mm2x.com/"
 # Credits for the extra cars, by car id: (name, converted for Midtown Madness 2 by, original
@@ -211,7 +225,8 @@ def safe_target(root: Path, directory: str, name: str) -> Path:
     escape `root` (.., drive letters, backslashes, NTFS stream names...)."""
     parts = [p for p in directory.split("/") if p] + [name]
     for part in parts:
-        if part in (".", "..") or any(c in part for c in '\\:*?"<>|\x00') or part != part.strip():
+        if (not part or part in (".", "..") or any(c in part for c in '/\\:*?"<>|\x00')
+                or part != part.strip() or part.endswith(".")):
             raise InstallError(f"The disc image contains an unsafe file name: {'/'.join(parts)!r}")
     target = root.joinpath(*parts)
     if not target.resolve().is_relative_to(root.resolve()):
@@ -239,13 +254,24 @@ class LineSink(io.TextIOBase):
 
 # ----------------------------------------------------------------------------- install steps
 
-def game_files_ready(game_dir: Path) -> bool:
+def game_files_ready(game_dir: Path, iso_path: Path | None = None) -> bool:
     xbe = game_dir / "default.xbe"
     if not xbe.is_file() or not (game_dir / "Data" / "Data_hd.zip").is_file():
         return False
     ed = extract_disc()
     try:
-        return ed.code_sha256(bytearray(xbe.read_bytes())) == ed.CODE_SHA256
+        if ed.code_sha256(bytearray(xbe.read_bytes())) != ed.CODE_SHA256:
+            return False
+        if iso_path is not None:
+            # A previous setup may have stopped after writing the two files above.
+            # Check every disc file before reusing it, without rejecting modified
+            # car archives or touching the user's saves and DLC.
+            with ed.Xiso(str(iso_path)) as iso:
+                for directory, entry in iso.walk():
+                    target = safe_target(game_dir, directory, entry.name)
+                    if not target.is_file() or (entry.size and not target.stat().st_size):
+                        return False
+        return True
     except Exception:
         return False
 
@@ -296,15 +322,175 @@ def install_game_exe(dest: Path, log) -> None:
     source = PAYLOAD / GAME_EXE
     if not source.is_file():
         raise InstallError("This setup program is damaged (game build missing).")
-    target = dest / GAME_EXE
-    temporary = dest / (GAME_EXE + ".new")
-    shutil.copyfile(source, temporary)
+    sources = [source]
+    runtime = PAYLOAD / "vcruntime140.dll"
+    if runtime.is_file():
+        sources.append(runtime)
+    for source in sources:
+        target = dest / source.name
+        temporary = dest / (source.name + ".new")
+        shutil.copyfile(source, temporary)
+        try:
+            os.replace(temporary, target)
+        except PermissionError:
+            temporary.unlink(missing_ok=True)
+            raise InstallError("Midtown Madness 3 is running. Close the game and run setup again.")
+        log(f"Installed {source.name}.")
+
+
+def dlc_required_files(pack: str) -> list[str]:
+    required = ["contentmeta.xbx", "contentimage.xbx"]
+    for car in DLC_PACKS[pack][1]:
+        required += [f"Cars/Tweak/car{car}.txt", f"Cars/car{car}/body.cmp",
+                     f"Cars/car{car}/data.ccol"]
+    city = {"4d53002a00000002": "Washington", "4d53002a00000003": "Paris"}.get(pack)
+    if city:
+        for mode in ("Blitz", "Checkpoint"):
+            for race in range(10, 20):
+                required.append(f"Menu/Gfx/races/{city}/{mode}/{race}.cdds")
+                required += [f"Scripts/{city}/{mode}/{race}{suffix}"
+                             for suffix in ("Config", "Logic.lua", "Setup.lua")]
+    return required
+
+
+def native_dlc_metadata(data: bytes, pack: str) -> bytes:
+    """Validate content identity and sign for this runtime's synthetic zero HDD key.
+
+    The native runtime exposes XboxHDKey = 16 zero bytes, not a console's key.
+    Offline installer archives leave this signature blank; a real console's
+    signature is also not valid for the native runtime. Never import title updates.
+    """
+    if len(data) < 108 or data[20:24] != b"XCSF":
+        raise InstallError(f"{pack}: invalid contentmeta.xbx.")
+    header_size = struct.unpack_from("<I", data, 24)[0]
+    title_id, content_index, content_title = struct.unpack_from("<III", data, 36)
+    if (not 108 <= header_size <= len(data) or data[32] != 1 or title_id != int(DLC_TITLE_ID, 16)
+            or content_title != title_id or content_index != int(pack[-8:], 16)):
+        raise InstallError(f"{pack}: contentmeta.xbx belongs to different or damaged content.")
+    title_key = hmac.new(bytes(16), data[36:40], hashlib.sha1).digest()
+    signature = hmac.new(title_key, data[20:header_size], hashlib.sha1).digest()
+    return signature + data[20:]
+
+
+def installed_dlc_packs(game_dir: Path) -> list[str]:
+    content = game_dir / "TDATA" / DLC_TITLE_ID / "$C"
+    present = []
+    for pack in DLC_PACKS:
+        folder = content / pack
+        try:
+            if not all((folder / name).is_file() and (folder / name).stat().st_size
+                       for name in dlc_required_files(pack)):
+                continue
+            data = (folder / "contentmeta.xbx").read_bytes()
+            if native_dlc_metadata(data, pack) == data:
+                present.append(pack)
+        except (OSError, InstallError):
+            continue
+    return present
+
+
+@contextlib.contextmanager
+def dlc_source(source: Path):
+    """Read only MM3's six content folders from a ZIP or extracted installer."""
+    archive = None
     try:
-        os.replace(temporary, target)
-    except PermissionError:
-        temporary.unlink(missing_ok=True)
-        raise InstallError("Midtown Madness 3 is running. Close the game and run setup again.")
-    log(f"Installed {GAME_EXE}.")
+        if source.is_dir():
+            members = [(path.relative_to(source).as_posix(), path.stat().st_size, path)
+                       for path in source.rglob("*") if path.is_file()]
+
+            def read(path):
+                if path.is_symlink() or any(parent.is_symlink() for parent in path.parents
+                                             if parent != source.parent):
+                    raise InstallError("DLC source contains a symbolic link.")
+                return path.read_bytes()
+        elif source.is_file() and zipfile.is_zipfile(source):
+            archive = zipfile.ZipFile(source)
+            members = [(info.filename, info.file_size, info) for info in archive.infolist()
+                       if not info.is_dir()]
+
+            def read(info):
+                if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                    raise InstallError("DLC ZIP contains a symbolic link.")
+                return archive.read(info)
+        else:
+            raise InstallError("Choose a DLC ZIP or an extracted DLC folder (extract RAR/7z files first).")
+        packs = {}
+        total = 0
+        for name, size, member in members:
+            parts = name.replace("\\", "/").split("/")
+            matches = [i for i, part in enumerate(parts) if part.lower() in DLC_PACKS]
+            if not matches:
+                continue  # Console installers and nNTSCJ/uNTSC/uPAL updates are excluded.
+            if len(matches) != 1 or any(part in ("", ".", "..") for part in parts):
+                raise InstallError("DLC source contains an unsafe or ambiguous path.")
+            index = matches[0]
+            pack, relative = parts[index].lower(), "/".join(parts[index + 1:])
+            safe_target(Path.cwd(), "/".join(parts[index + 1:-1]), parts[-1])
+            if not relative or Path(relative).suffix.lower() in (".xbe", ".exe", ".dll"):
+                raise InstallError("Executable files are not valid MM3 DLC assets.")
+            files = packs.setdefault(pack, {})
+            if relative.lower() in files:
+                raise InstallError(f"DLC source repeats a file in {pack}: {relative}")
+            total += size
+            if size > 128_000_000 or total > 512_000_000:
+                raise InstallError("DLC content is unexpectedly large; check the selected source.")
+            files[relative.lower()] = (relative, size, member)
+        if not packs:
+            raise InstallError("No Midtown Madness 3 DLC content folders found in that source.")
+        for pack, files in packs.items():
+            if any(name.lower() not in files or not files[name.lower()][1]
+                   for name in dlc_required_files(pack)):
+                raise InstallError(f"{DLC_PACKS[pack][0]} is incomplete in the DLC source.")
+            native_dlc_metadata(read(files["contentmeta.xbx"][2]), pack)
+        yield packs, read, total
+    except (OSError, ValueError, zipfile.BadZipFile, RuntimeError) as error:
+        raise InstallError(f"Cannot read the DLC source: {error}") from error
+    finally:
+        if archive is not None:
+            archive.close()
+
+
+def install_dlc(source: Path, game_dir: Path, log) -> None:
+    """Import local DLC without replacing saves, car edits, or the game's XBE."""
+    with dlc_source(Path(source)) as (packs, read, total):
+        content = game_dir / "TDATA" / DLC_TITLE_ID / "$C"
+        content.mkdir(parents=True, exist_ok=True)
+        if free_bytes(content) < total + 10_000_000:
+            raise InstallError("Not enough disk space to import the DLC.")
+        copied, preserved = 0, 0
+        with tempfile.TemporaryDirectory(prefix=".mm3-dlc-", dir=content) as scratch:
+            # Read and CRC-check every selected asset before touching existing content.
+            staged = Path(scratch)
+            for pack, files in packs.items():
+                for relative, _, member in files.values():
+                    data = read(member)
+                    if relative.lower() == "contentmeta.xbx":
+                        data = native_dlc_metadata(data, pack)
+                    target = safe_target(staged / pack, str(Path(relative).parent).replace("\\", "/")
+                                         if "/" in relative else "", Path(relative).name)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(data)
+            for pack, files in packs.items():
+                for relative, _, _ in files.values():
+                    target = safe_target(content / pack, "/".join(relative.split("/")[:-1]),
+                                         relative.split("/")[-1])
+                    if target.is_file() and target.stat().st_size and relative.lower() != "contentmeta.xbx":
+                        preserved += 1
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(staged / pack / relative, target)
+                    copied += 1
+        log(f"DLC import: {len(packs)} packs checked, {copied} files installed; "
+            f"{preserved} existing assets preserved.")
+
+
+def report_dlc(game_dir: Path, log) -> list[str]:
+    present = installed_dlc_packs(game_dir)
+    missing = [DLC_PACKS[pack][0] for pack in DLC_PACKS if pack not in present]
+    log(f"Official DLC: {len(present)}/{len(DLC_PACKS)} complete packs detected." +
+        (" Missing: " + ", ".join(missing) + ". Use --dlc or the optional DLC selector to import your files."
+         if missing else " All 14 DLC cars and both race packs are installed."))
+    return present
 
 
 def apply_cars(game_dir: Path, enable: bool, log) -> None:
@@ -381,7 +567,8 @@ def write_launcher(dest: Path, improvements: bool) -> None:
     (dest / LAUNCHER).write_text("\n".join(lines) + "\n", encoding="ascii", newline="\r\n")
 
 
-def install(iso_path, dest, extra_cars: bool, improvements: bool, log, progress) -> Path:
+def install(iso_path, dest, extra_cars: bool, improvements: bool, log, progress,
+            dlc_path: Path | None = None) -> Path:
     iso_path, dest = Path(str(iso_path).strip().strip('"')), Path(dest).resolve()
     ok, message = check_iso(iso_path)
     if not ok:
@@ -392,12 +579,16 @@ def install(iso_path, dest, extra_cars: bool, improvements: bool, log, progress)
         raise InstallError(f"Cannot create the install folder {dest}: {error.strerror or error}")
     game_dir = dest / "game_files"
     progress(0.0, "Starting...")
-    if game_files_ready(game_dir):
+    if game_files_ready(game_dir, iso_path):
         log("Game files already present; skipping extraction.")
     else:
         extract_game(iso_path, dest, extra_cars, log, lambda f, text: progress(0.05 + 0.80 * f, text))
     progress(0.86, "Installing the game...")
     install_game_exe(dest, log)
+    if dlc_path:
+        progress(0.87, "Importing official DLC...")
+        install_dlc(Path(dlc_path), game_dir, log)
+    dlc_packs = report_dlc(game_dir, log)
     progress(0.88, "Extra cars..." if extra_cars else "Checking car data...")
     apply_cars(game_dir, extra_cars, log)
     if extra_cars:
@@ -407,7 +598,8 @@ def install(iso_path, dest, extra_cars: bool, improvements: bool, log, progress)
     progress(0.98, "Writing the launcher...")
     write_launcher(dest, improvements)
     (dest / "setup-options.json").write_text(json.dumps(
-        {"setup_version": VERSION, "extra_cars": extra_cars, "game_improvements": improvements}, indent=2),
+        {"setup_version": VERSION, "extra_cars": extra_cars, "game_improvements": improvements,
+         "dlc_packs": dlc_packs}, indent=2),
         encoding="utf-8")
     progress(1.0, "Done.")
     log(f"Done. Start the game with '{LAUNCHER}' in {dest}")
@@ -439,7 +631,7 @@ def launch_game(dest: Path) -> None:
 # ----------------------------------------------------------------------------- GUI
 
 def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements: bool = True,
-            install_now: bool = False) -> int:
+            install_now: bool = False, dlc: str = "") -> int:
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
 
@@ -463,6 +655,7 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
     grey, green, red = "#777777", "#1a7f37", "#c62828"
 
     iso_var = tk.StringVar()
+    dlc_var = tk.StringVar(value=dlc)
     cars_var = tk.BooleanVar(value=cars)                  # default: no extra cars
     improvements_var = tk.BooleanVar(value=improvements)  # default: improvements on
     dest_var = tk.StringVar(value=str(initial_dest))
@@ -473,23 +666,28 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
     frame.pack(fill="both", expand=True, pady=(14, 14))
 
     # 1 - game image
-    ttk.Label(frame, text="1.  Xbox Europe game image (.iso)", font=heading).grid(row=0, column=0, sticky="w", **pad)
+    ttk.Label(frame, text="1.  Xbox Europe/Australia or USA game image (.iso)", font=heading).grid(row=0, column=0, sticky="w", **pad)
     row = ttk.Frame(frame)
     row.grid(row=1, column=0, sticky="we", padx=18, pady=(4, 0))
     iso_entry = ttk.Entry(row, textvariable=iso_var, width=62)
     iso_entry.pack(side="left", fill="x", expand=True)
     browse = ttk.Button(row, text="Browse...", width=10)
     browse.pack(side="left", padx=(8, 0))
-    iso_status = tk.Label(frame, text="Choose the disc image you also use for emulation.", font=body, fg=grey, anchor="w")
+    iso_status = tk.Label(frame, text="Choose a lawfully obtained image of your own Xbox disc.", font=body, fg=grey, anchor="w")
     iso_status.grid(row=2, column=0, sticky="we", padx=18, pady=(2, 10))
 
     # 2 - extra cars
     cars_check = ttk.Checkbutton(frame, text="2.  Add extra cars", variable=cars_var)
     cars_check.grid(row=3, column=0, sticky="w", padx=18)
     cars = extra_car_list()
+    cars_details = ttk.Button(frame, text="Car list and credits...",
+                              command=lambda: messagebox.showinfo("Extra cars and credits", "\n".join(cars)))
+    cars_details.grid(row=3, column=0, sticky="e", padx=18)
+    if not cars:
+        cars_details.state(["disabled"])
     cars_label = tk.Label(frame, font=body, fg=grey, justify="left", anchor="w",
-                          text=("Adds %d community cars (credits are saved with the game):\n" % len(cars)
-                                + "\n".join("   \u2022 " + name for name in cars))
+                          text=("Adds %d community cars. Review the names and authors with Car list and credits.\n"
+                                "The full credits are also saved with the game." % len(cars))
                           if cars else "The extra cars are not included in this build.")
     cars_label.grid(row=4, column=0, sticky="w", padx=(40, 18), pady=(2, 10))
 
@@ -499,9 +697,23 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
     tk.Label(frame, text=IMPROVEMENTS_TEXT, font=body, fg=grey, justify="left", anchor="w").grid(
         row=6, column=0, sticky="w", padx=(40, 18), pady=(2, 10))
 
+    # Official DLC is separate from community cars and is never downloaded by setup.
+    dlc_row = ttk.Frame(frame)
+    dlc_row.grid(row=7, column=0, sticky="we", padx=18, pady=(0, 4))
+    ttk.Label(dlc_row, text="Official DLC (optional):", font=heading).pack(side="left")
+    dlc_zip = ttk.Button(dlc_row, text="Choose ZIP...")
+    dlc_zip.pack(side="right")
+    dlc_folder = ttk.Button(dlc_row, text="Choose folder...")
+    dlc_folder.pack(side="right", padx=(8, 8))
+    dlc_entry = ttk.Entry(frame, textvariable=dlc_var, width=74)
+    dlc_entry.grid(row=8, column=0, sticky="we", padx=18, pady=(0, 4))
+    tk.Label(frame, text=OWNERSHIP_NOTICE + "\nExisting DLC is kept. Setup does not download game images or DLC.",
+             font=body, fg=grey, justify="left", wraplength=540).grid(
+                 row=9, column=0, sticky="w", padx=18, pady=(0, 10))
+
     # destination
     drow = ttk.Frame(frame)
-    drow.grid(row=7, column=0, sticky="we", padx=18, pady=(0, 8))
+    drow.grid(row=10, column=0, sticky="we", padx=18, pady=(0, 8))
     tk.Label(drow, text="Installs to:", font=body, fg=grey).pack(side="left")
     dest_text = tk.StringVar()  # shortened copy, so a long path never widens the window
     dest_var.trace_add("write", lambda *_: dest_text.set(shorten(dest_var.get())))
@@ -512,14 +724,14 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
 
     # progress
     bar = ttk.Progressbar(frame, maximum=1000, length=540)
-    bar.grid(row=8, column=0, sticky="we", padx=18, pady=(6, 0))
+    bar.grid(row=11, column=0, sticky="we", padx=18, pady=(6, 0))
     status = tk.Label(frame, text="", font=body, fg=grey, anchor="w", justify="left", wraplength=400)
-    status.grid(row=9, column=0, sticky="we", padx=18, pady=(2, 8))
+    status.grid(row=12, column=0, sticky="we", padx=18, pady=(2, 8))
     # wrap long messages (errors) at the window's width, whatever the screen's DPI scaling
     frame.bind("<Configure>", lambda event: status.configure(wraplength=max(200, event.width - 40)))
 
     buttons = ttk.Frame(frame)
-    buttons.grid(row=10, column=0, sticky="e", padx=18)
+    buttons.grid(row=13, column=0, sticky="e", padx=18)
     play = ttk.Button(buttons, text="Play now")
     install_button = ttk.Button(buttons, text="Install", width=14, state="disabled")
     install_button.pack(side="right")
@@ -530,8 +742,11 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
 
     def set_controls(enabled: bool):
         st = "normal" if enabled else "disabled"
-        for widget in (iso_entry, browse, change, cars_check, improvements_check):
+        for widget in (iso_entry, browse, change, cars_check, improvements_check,
+                       dlc_entry, dlc_zip, dlc_folder):
             widget.configure(state=st)
+        if cars:
+            cars_details.configure(state=st)
 
     def validate(*_):
         state["check_id"] += 1
@@ -539,7 +754,7 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
         state["iso_ok"] = False
         install_button.configure(state="disabled")
         if not path.strip():
-            iso_status.configure(text="Choose the disc image you also use for emulation.", fg=grey)
+            iso_status.configure(text="Choose a lawfully obtained image of your own Xbox disc.", fg=grey)
             return
         iso_status.configure(text="Checking the image...", fg=grey)
 
@@ -550,7 +765,7 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
 
     def pick_iso():
         chosen = filedialog.askopenfilename(
-            title="Select the Midtown Madness 3 (Europe) disc image",
+            title="Select the Midtown Madness 3 Europe/Australia or USA disc image",
             filetypes=[("Xbox disc image", "*.iso *.xiso"), ("All files", "*.*")])
         if chosen:
             iso_var.set(os.path.normpath(chosen))
@@ -564,6 +779,17 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
             reuse = (folder / "game_files").exists() or not folder.exists() or not any(folder.iterdir())
             dest_var.set(os.path.normpath(folder if reuse else folder / "Midtown Madness 3"))
 
+    def pick_dlc_zip():
+        chosen = filedialog.askopenfilename(title="Select your lawfully obtained MM3 DLC ZIP",
+                                           filetypes=[("DLC ZIP archive", "*.zip")])
+        if chosen:
+            dlc_var.set(os.path.normpath(chosen))
+
+    def pick_dlc_folder():
+        chosen = filedialog.askdirectory(title="Select your extracted MM3 DLC folder")
+        if chosen:
+            dlc_var.set(os.path.normpath(chosen))
+
     def start_install():
         state["busy"] = True
         set_controls(False)
@@ -571,12 +797,14 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
         play.pack_forget()
         status.configure(text="Starting...", fg=grey)
         args = (iso_var.get(), dest_var.get(), cars_var.get(), improvements_var.get())
+        chosen_dlc = dlc_var.get().strip().strip('"')
 
         def work():
             try:
                 result = install(*args, log=lambda line: events.put(("log", line)),
-                                 progress=lambda f, text: events.put(("progress", f, text)))
-                events.put(("done", str(result)))
+                                 progress=lambda f, text: events.put(("progress", f, text)),
+                                 dlc_path=Path(chosen_dlc) if chosen_dlc else None)
+                events.put(("done", str(result), len(installed_dlc_packs(result / "game_files"))))
             except InstallError as error:
                 events.put(("error", str(error)))
             except Exception as error:  # unexpected: show something useful rather than vanish
@@ -608,7 +836,9 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
                 elif kind == "done":
                     state["busy"], state["done_dest"] = False, event[1]
                     bar["value"] = 1000
-                    status.configure(text=f"Done!  Installed to {shorten(event[1], 60)}\nStart it with \u201c{LAUNCHER}\u201d, or press Play now.", fg=green)
+                    status.configure(text=f"Done!  Installed to {shorten(event[1], 60)}\n"
+                                     f"Official DLC: {event[2]}/{len(DLC_PACKS)} complete packs detected.\n"
+                                     f"Start it with \u201c{LAUNCHER}\u201d, or press Play now.", fg=green)
                     set_controls(True)
                     install_button.configure(text="Install again", state="normal")
                     play.pack(side="right", padx=(0, 8))
@@ -629,6 +859,8 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
         root.destroy()
 
     browse.configure(command=pick_iso)
+    dlc_zip.configure(command=pick_dlc_zip)
+    dlc_folder.configure(command=pick_dlc_folder)
     change.configure(command=pick_dest)
     install_button.configure(command=start_install)
     iso_var.trace_add("write", lambda *_: root.after(350, validate))
@@ -648,6 +880,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--cli", action="store_true", help="install without opening the window")
     parser.add_argument("--iso", help="Xbox game image (pre-fills the window; required with --cli)")
+    parser.add_argument("--dlc", type=Path, help="optional lawfully obtained MM3 DLC ZIP or extracted folder")
     parser.add_argument("--dest", type=Path, default=DEFAULT_DEST, help="install folder")
     parser.add_argument("--cars", action="store_true", help="add the extra cars (default: off)")
     parser.add_argument("--no-improvements", action="store_true", help="skip the game improvements (default: on)")
@@ -655,7 +888,8 @@ def main(argv=None) -> int:
     parser.add_argument("--log-file", type=Path, help="also write progress to this file (with --cli)")
     args = parser.parse_args(argv)
     if not args.cli:
-        return run_gui(args.dest, args.iso or "", args.cars, not args.no_improvements, args.install_now)
+        return run_gui(args.dest, args.iso or "", args.cars, not args.no_improvements, args.install_now,
+                       str(args.dlc) if args.dlc else "")
     if not args.iso:
         parser.error("--cli needs --iso")
     log_stream = open(args.log_file, "w", encoding="utf-8", buffering=1) if args.log_file else None
@@ -675,9 +909,10 @@ def main(argv=None) -> int:
             log(f"[{fraction * 100:3.0f}%] {text}")
 
     try:
-        install(args.iso, args.dest, args.cars, not args.no_improvements, log, progress)
+        log(OWNERSHIP_NOTICE)
+        install(args.iso, args.dest, args.cars, not args.no_improvements, log, progress, args.dlc)
         return 0
-    except InstallError as error:
+    except (InstallError, OSError) as error:
         log(f"ERROR: {error}")
         return 1
     finally:

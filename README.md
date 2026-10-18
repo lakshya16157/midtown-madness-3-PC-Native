@@ -1,8 +1,8 @@
 # Midtown Madness 3 PC Native
 
 Play the Xbox racing game **Midtown Madness 3** on your Windows PC: widescreen, sharper
-graphics, keyboard controls, and optionally nine extra cars. You need your own copy of the
-game as a disc image. No building, no programming.
+graphics, keyboard controls, and optionally nine extra cars. You must already own the original
+Xbox game and supply a lawfully obtained disc image. No building, no programming.
 
 ## Install and play
 
@@ -10,8 +10,9 @@ game as a disc image. No building, no programming.
    from the latest release (under **Assets**).
 2. **Run it.** Windows may say "Windows protected your PC" because the file is not
    code-signed. Choose **More info**, then **Run anyway**.
-3. **Pick your game image:** your own Midtown Madness 3 Xbox disc image (`.iso`). The
-   Europe/Australia and USA releases both work.
+3. **Pick your game image:** your lawfully obtained Midtown Madness 3 Xbox disc image
+   (`.iso` or `.xiso`). The Europe/Australia (English, French, German, Spanish, Italian)
+   and USA releases both work, including full redump images and bare XISOs.
 4. **Choose your options:**
    - **Add extra cars** (off by default). Adds nine community cars: Panoz GTR-1,
      McLaren F1 GTR, Ferrari F2007 (Formula 1), Ford GT, McLaren Senna, McLaren Senna GTR,
@@ -19,12 +20,48 @@ game as a disc image. No building, no programming.
    - **Add game improvements** (on by default). A sharper image (2x resolution, 4x
      anti-aliasing, 16x texture filtering), longer draw distance, widescreen that fits your
      window and better night lighting. Untick it for the original Xbox look.
+   - **Official Xbox Live DLC** (optional): select a local DLC ZIP or extracted folder
+     that you are entitled to use. Setup imports the content packs and reports missing
+     packs. The disc and the **Add extra cars** option do not include the official DLC.
 5. Click **Install**, then **Play now**. Later, start the game with
    **Play Midtown Madness 3.cmd** in the install folder (by default a `Midtown Madness 3`
    folder next to the installer).
 
 You need Windows 10 or 11 (64-bit), a Direct3D 11 graphics card, about 6 GB of free disk
 space, and your own game image (it is not included).
+
+## Ownership, disc images and DLC
+
+**Already owning the original Xbox disc is a requirement of this project.** The preferred
+route is to make an image from your own disc using compatible Xbox dumping hardware and
+tools, where local law permits, and select that image in Setup. Keep your original disc.
+Supply DLC from your own backup or another source that you have permission to use.
+
+Owning a disc does **not** automatically authorize downloading somebody else's copy,
+redistributing the game or DLC, or bypassing copy protection. An old game or a file hosted
+on an archive is not automatically public domain or authorized. Backup and copy-protection
+rules depend on your country and licence. See the
+[U.S. Copyright Office's software backup FAQ](https://www.copyright.gov/help/faq/faq-digital.html)
+and, for France, [Code de la propriété intellectuelle, Article L122-6-1](https://www.legifrance.gouv.fr/codes/section_lc/LEGITEXT000006069414/LEGISCTA000006161637/).
+This project cannot grant rights to Microsoft's game, DLC or community car assets.
+
+The following third-party links are supplied at the maintainer's request for identifying
+the tested image and the optional DLC package. Their availability is not proof of a licence;
+use downloads only when the rights holder permits your use:
+
+- [Europe/Australia multilingual Xbox image — Internet Archive](https://archive.org/details/midtown-madness-3-europe-australia-en-fr-de-es-it)
+  (open **Download options** on the item page).
+- [Offline Xbox Live DLC installers — Digiex](https://digiex.net/threads/xbox-offline-xbox-live-downloadable-content-dlc-installers.675/),
+  including the [Midtown Madness 3 DLC ZIP](https://download.digiex.net/Consoles/Xbox/DLC/MidtownMadness3DLC.zip).
+  Setup reads the data packs from this ZIP or an extracted copy; do not run its Xbox
+  installer on Windows. Console title-update executables are excluded because this
+  native build requires the supported retail code.
+
+DLC is optional and separate from the nine community cars. Setup imports local packs
+only when you select a source; it does not download or bundle the game or official DLC.
+It preserves existing DLC and saves. A complete official set contains six packs: four
+car packs (14 cars total) and two track packs. Run Setup again with your DLC source to
+add missing packs. Installed data lives under `game_files\TDATA\4d53002a\$C`.
 
 **Good to know**
 
@@ -489,6 +526,7 @@ supported disc translates identically. Images tested end to end:
 | SHA-1 | Image |
 |---|---|
 | `52cd998731eb67477b44c49c4152f56c0fc58a56` | Midtown Madness 3 (USA) — redump `.iso`, 7.8 GB |
+| `3411caf817c8d63bfbd582d9a347da81ef652cb5` | Midtown Madness 3 (Europe, Australia) (En,Fr,De,Es,It) — redump `.iso`, 7.8 GB |
 | `8ed003adaf504883afc980d2888df6125496d044` | Midtown Madness 3 (Europe, Australia) (En,Fr,De,Es,It) — XISO, 3.6 GB |
 
 An untested image with matching code is accepted with a note; anything else is refused with

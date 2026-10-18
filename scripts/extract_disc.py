@@ -25,6 +25,8 @@ CODE_SHA256 = '9c437324a42a8dbd2d7dd6852969f942ad2da3a6a513196b068db4776bbf8ba4'
 MEDIA_PATCH_VA, MEDIA_PATCH_BYTES = 0x87226, (0x7D, 0xEB)
 TESTED_IMAGES = {  # sha1 -> description
     '52cd998731eb67477b44c49c4152f56c0fc58a56': 'Midtown Madness 3 (USA) redump .iso',
+    '3411caf817c8d63bfbd582d9a347da81ef652cb5':
+        'Midtown Madness 3 (Europe, Australia) (En,Fr,De,Es,It) redump .iso',
     '8ed003adaf504883afc980d2888df6125496d044':
         'Midtown Madness 3 (Europe, Australia) (En,Fr,De,Es,It) XISO',
 }

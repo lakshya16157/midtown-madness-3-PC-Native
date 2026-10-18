@@ -51,6 +51,13 @@ def stage_payload(payload: Path, repo: Path, packages: Path, downloads: Path) ->
     print(f"game build: {exe}  sha256 {hashlib.sha256(exe.read_bytes()).hexdigest()[:16]}...")
     payload.mkdir(parents=True)
     shutil.copy2(exe, payload / "mm3_recomp.exe")
+    # The native build uses MSVC's shared C runtime. PyInstaller's private
+    # runtime disappears when Setup closes, so the installed game needs its own
+    # app-local copy even on PCs without the Visual C++ redistributable.
+    runtime = Path(sys.base_prefix) / "vcruntime140.dll"
+    if not runtime.is_file():
+        sys.exit(f"Missing {runtime}; build with an official Windows x64 Python installation.")
+    shutil.copy2(runtime, payload / runtime.name)
 
     (payload / "scripts").mkdir()
     shutil.copy2(repo / "scripts" / "extract_disc.py", payload / "scripts")
@@ -94,6 +101,10 @@ def main() -> int:
     args = parser.parse_args()
 
     repo = args.repo or find_repo()
+    repo = repo.resolve()
+    args.work = args.work.resolve()
+    if args.work in (repo, HERE) or args.work in repo.parents:
+        parser.error("--work must be a dedicated scratch directory, not the checkout or an ancestor.")
     payload = args.work / "payload"
     stage_payload(payload, repo, args.packages, find_downloads(args.downloads))
 
