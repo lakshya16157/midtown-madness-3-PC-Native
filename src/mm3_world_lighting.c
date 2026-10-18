@@ -15,6 +15,32 @@ extern void sub_000FF19A_original(void);
 extern void sub_000FF324_original(void);
 extern void sub_000FF15C_original(void);
 extern void sub_00230DEE_original(void);
+extern void nv2a_d3d_set_local_light_gain(float gain);
+extern void nv2a_d3d_set_local_light_softness(int enabled);
+extern void nv2a_d3d_set_local_light_overlap(int enabled);
+
+/* With scene-depth reconstruction working, the former 3x boost overexposes
+ * overlapping lamps. Keep a small lift for dark road materials; individual
+ * sources supply their own falloff and color. */
+void mm3_world_lighting_apply_gain(void)
+{
+    const char *setting = getenv("MM3_LOCAL_LIGHT_GAIN");
+    double gain = 1.3;
+    if (setting && *setting) {
+        char *end;
+        double value;
+        errno = 0;
+        value = strtod(setting, &end);
+        if (!errno && end != setting && !*end && value >= 1.0 && value <= 8.0)
+            gain = value;
+        else
+            fprintf(stderr, "[MM3_LIGHTING] invalid MM3_LOCAL_LIGHT_GAIN; expected 1..8, using 1.3\n");
+    }
+    nv2a_d3d_set_local_light_gain((float)gain);
+    nv2a_d3d_set_local_light_softness(1);
+    nv2a_d3d_set_local_light_overlap(1);
+    fprintf(stderr, "[MM3_LIGHTING] local light gain=%.2f accumulation=screen (MM3_LOCAL_LIGHT_GAIN; 1 keeps the retail composite gain)\n", gain);
+}
 
 static INIT_ONCE s_ambient_once = INIT_ONCE_STATIC_INIT;
 /* Keep daylight authored and night fill independent of local lights.
@@ -61,7 +87,7 @@ static BOOL CALLBACK ambient_configure(PINIT_ONCE once, PVOID parameter, PVOID *
             s_ambient_lift, s_even_lighting,
             s_even_lighting ? MM3_WORLD_LIGHT_FLOOR : 0,
             s_night_world_light,
-            "retail");
+            "screen");
     return TRUE;
 }
 

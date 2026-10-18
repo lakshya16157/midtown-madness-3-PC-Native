@@ -14,6 +14,7 @@
 #include "mm3_performance_profile.h"
 #include "mm3_display_settings.h"
 #include "mm3_crash_diagnostics.h"
+#include "mm3_world_lighting.h"
 #include <xbox_host.h>
 #include <xinput_xbox.h>
 #include <video/fb_present.h>
@@ -250,6 +251,7 @@ int main(void)
     SetUnhandledExceptionFilter(mm3_crash_report);
     xbox_FramebufferSetCloseHandler(mm3_close_game);
     nv2a_d3d_set_flare_depth_test(1);
+    mm3_world_lighting_apply_gain();
     nv2a_d3d_set_bspline_blend(0x304u, 0x305u);
     SetConsoleCtrlHandler(mm3_console_control, TRUE);
     puts("MM3 static recompilation");

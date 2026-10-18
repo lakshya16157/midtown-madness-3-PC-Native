@@ -16,7 +16,7 @@ KEYS = ("MM3_PERFORMANCE_PROFILE", "RECOMP_RENDER_SCALE", "RECOMP_MSAA",
         "RECOMP_ASPECT",
         "RECOMP_PB_EXEC", "RECOMP_FB_WINDOW", "RECOMP_USB", "RECOMP_APU_DSP_ACK",
         "MM3_FOV_DEGREES", "MM3_BUILDING_TRACE", "RECOMP_TEXTURE_STREAM_TRACE",
-        "RECOMP_ASYNC_WAIT_TRACE")
+        "RECOMP_ASYNC_WAIT_TRACE", "MM3_LIGHT_DUMP", "MM3_LIGHT_DEBUG")
 
 
 def quoted(path):
@@ -135,6 +135,49 @@ class LauncherProfileTest(unittest.TestCase):
         self.assertEqual(len(response["during"]), 1)
         metadata = json.loads(next((self.folder / "logs").glob("play-*.json")).read_text(encoding="utf-8"))
         self.assertEqual(metadata["executable"]["path"], str(self.collector))
+
+    def test_no_light_diagnostics_applies_only_to_selected_child_launches(self):
+        overrides = {"MM3_LIGHT_DUMP": str(self.folder / "lighting captures"),
+                     "MM3_LIGHT_DEBUG": "1"}
+        result = self.run_launcher(["-NoLightDiagnostics", "", "-NoLightDiagnostics", ""], overrides)
+        for index, row in enumerate(result["during"]):
+            for key, value in overrides.items():
+                self.assertEqual(row[key], value if index % 2 else None)
+        for key, value in overrides.items():
+            self.assertEqual(result["after"][key], value)
+        self.assertTrue(result["location_restored"])
+        manifests = sorted((self.folder / "logs").glob("play-*.json"))
+        self.assertEqual(len(manifests), 4)
+        for index, path in enumerate(manifests):
+            metadata = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(metadata["launch_options"]["no_light_diagnostics"], index % 2 == 0)
+            for key, value in overrides.items():
+                if index % 2:
+                    self.assertEqual(metadata["environment"][key], value)
+                else:
+                    self.assertNotIn(key, metadata["environment"])
+
+    def test_no_light_diagnostics_restores_inherited_settings_after_child_failure(self):
+        overrides = {"MM3_LIGHT_DUMP": str(self.folder / "lighting captures"),
+                     "MM3_LIGHT_DEBUG": "1"}
+        self.collector.write_text(self.collector.read_text(encoding="utf-8") +
+                                  "; throw 'intentional child failure'", encoding="utf-8")
+        result = self.run_launcher(["-NoLightDiagnostics", "", "-NoLightDiagnostics"], overrides,
+                                   expect_failure=True)
+        self.assertEqual(len(result["during"]), 3)
+        for index, row in enumerate(result["during"]):
+            for key, value in overrides.items():
+                self.assertEqual(row[key], value if index == 1 else None)
+        for key, value in overrides.items():
+            self.assertEqual(result["after"][key], value)
+        self.assertTrue(result["location_restored"])
+        manifests = sorted((self.folder / "logs").glob("play-*.json"))
+        self.assertEqual(len(manifests), 3)
+        for index, path in enumerate(manifests):
+            metadata = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(metadata["state"], "exited")
+            self.assertNotEqual(metadata["exit_code"], 0)
+            self.assertEqual(metadata["launch_options"]["no_light_diagnostics"], index != 1)
 
     def test_error_metadata_counts_runtime_failures_and_ignores_probe_noise(self):
         last = "[ICALL] non-code target 0x00000000 caller=0x00123456"

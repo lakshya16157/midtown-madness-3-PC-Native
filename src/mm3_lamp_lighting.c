@@ -17,16 +17,17 @@ float mm3_lamp_source_range(uint32_t source)
     if (range > 0.0f) {
         /* Small indicators retain small pools; road lamps gain enough reach
          * below their mounting height. Large architectural spots add at most
-         * 8m instead of multiplying their already long 40-50m throw. */
-        return range + fminf(range * 0.65f, 8.0f);
+         * 6m instead of multiplying their already long 40-50m throw. Keeping
+         * these pools local also limits how many fixtures overlap a surface. */
+        return range + fminf(range * 0.45f, 6.0f);
     }
     size = MEMF(source + 0x49);
     if (!isfinite(size) || size <= 0.0f || !MEM8(source + 0x4D) ||
         !(MEM32(source + 0x2B) & 0x00FFFFFFu)) return 0.0f;
     /* A visible bulb must illuminate its surroundings even when the retail
      * effect provided only a flare. Derive its reach from the authored flare
-     * extent and brightness: tiny bulbs about 1-2m, larger fixtures 4-10m. */
-    return fminf(10.0f, (1.0f + 12.0f * fminf(size, 2.0f)) *
+     * extent and brightness: tiny bulbs about 1-2m, larger fixtures 5-10m. */
+    return fminf(10.0f, (1.0f + 14.0f * fminf(size, 2.0f)) *
                         sqrtf((float)MEM8(source + 0x4D) / 255.0f));
 }
 
@@ -35,7 +36,7 @@ float mm3_lamp_source_cone(uint32_t source)
     float cone = (float)MEM8(source + 0x53) * (90.0f / 255.0f);
     /* Native spot volumes use a half-angle in degrees (clamped to 75).
      * Widen the ground footprint while retaining the authored aim/type. */
-    return cone > 0.0f ? fminf(cone + 6.0f, 75.0f) : 0.0f;
+    return cone > 0.0f ? fminf(cone + 5.0f, 75.0f) : 0.0f;
 }
 
 static uint32_t lamp_color_gain(uint32_t color, float gain)
@@ -56,33 +57,49 @@ static uint32_t lamp_color_gain(uint32_t color, float gain)
 
 static uint32_t lamp_source_color(uint32_t source, uint32_t color)
 {
+    unsigned red = (color >> 16) & 255u, green = (color >> 8) & 255u;
+    unsigned blue = color & 255u;
+    uint32_t authored = MEM32(source + 0x2B);
+    unsigned source_red = (authored >> 16) & 255u;
+    unsigned source_green = (authored >> 8) & 255u;
+    unsigned source_blue = authored & 255u;
+    unsigned peak = source_red > source_green ? source_red : source_green;
+    unsigned minimum = source_red < source_green ? source_red : source_green;
+    float warmth;
     float gain = MEMF(source + 0x4F) == 0.0f ?
-        0.8f * (float)MEM8(source + 0x4D) / 255.0f : 1.35f;
-    return lamp_color_gain(color, gain);
+        0.65f * (float)MEM8(source + 0x4D) / 255.0f : 0.85f;
+    if (source_blue > peak) peak = source_blue;
+    if (source_blue < minimum) minimum = source_blue;
+    if (!peak) return color;
+    /* Give neutral fixtures an amber incandescent cast. Blend continuously
+     * over the nearly-white authored range. Native fades quantize RGB before
+     * this call: deriving warmth from that dimmed color made some channels
+     * dip as the light brightened. A fixture's tint must stay fixed throughout
+     * its fade. Saturated signs and emergency hues retain authored ratios. */
+    warmth = fminf(1.0f, fmaxf(0.0f,
+        ((float)minimum / (float)peak - 0.75f) * 4.0f));
+    return (color & 0xFF000000u) |
+        ((uint32_t)((float)red * gain + 0.5f) << 16) |
+        ((uint32_t)((float)green * gain * (1.0f - 0.18f * warmth) + 0.5f) << 8) |
+        (uint32_t)((float)blue * gain * (1.0f - 0.40f * warmth) + 0.5f);
 }
 
 void sub_000489A6(void)
 {
     uint32_t stack = g_esp;
     uint32_t color = MEM32(stack + 8);
-    uint32_t range = MEM32(stack + 12), cone = MEM32(stack + 16);
     int world_source = MEM32(stack) == 0x000E2533u;
     int traffic_signal = MEM32(stack) == 0x0016945Au;
     if (world_source) MEM32(stack + 8) = lamp_source_color(g_ebx, color);
     if (traffic_signal) {
         /* The traffic-light producer selects only the currently lit lens,
          * tint and distance fade before its native 6m/30-degree submission.
-         * Signals cast a smaller colored pool than road/area lamps. */
-        MEM32(stack + 8) = lamp_color_gain(color, 1.35f);
-        MEMF(stack + 12) = 7.5f;
-        MEMF(stack + 16) = 45.0f;
+         * Preserve that small authored pool and its signal color, at a lower
+         * intensity so intersections do not accumulate oversized bright pools. */
+        MEM32(stack + 8) = lamp_color_gain(color, 0.8f);
     }
     sub_000489A6_original();
     if (world_source || traffic_signal) MEM32(stack + 8) = color;
-    if (traffic_signal) {
-        MEM32(stack + 12) = range;
-        MEM32(stack + 16) = cone;
-    }
 }
 
 void sub_00021E18(void)

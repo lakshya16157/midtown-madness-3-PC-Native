@@ -9,6 +9,12 @@
  * low night world fill so local lights provide most illumination. */
 enum { MM3_WORLD_LIGHT_FLOOR = 48 };
 
+/* Enable eased, bounded local-light accumulation and configure how strongly
+ * the world-lighting composite applies its
+ * local-light buffer (MM3_LOCAL_LIGHT_GAIN, 1..8, default 1.3; 1 is retail).
+ * Call once at startup, after stderr is set up. */
+void mm3_world_lighting_apply_gain(void);
+
 /* RGB is returned as a packed native color. Alpha also carries material
  * information in this engine and must never change as part of illumination. */
 static inline uint32_t mm3_world_light_scale(uint32_t color, unsigned percent)

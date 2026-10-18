@@ -113,6 +113,9 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000FF324 sub_000FF15C sub_00230DEE
 # Local light sources retain native activation, with forward car beams and
 # source-sized illumination around vehicle and city lamps.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000CF2DA sub_000489A6 sub_00021E18)
+# Expire car-light caches at the native queue reset rather than rescanning
+# every queued light at each lamp callback; retain same-chunk wrapper calls.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0022FDFD)
 # Factory profiles bind the real constructed controller and leave retail cars
 # on their original torque and gearbox paths, including same-chunk calls.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0021ED64 sub_001D0E2D sub_001CB7E8 sub_001CB881 sub_001CB9A5 sub_001CF7B4)
@@ -136,6 +139,8 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_hud_cleanup_seam.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_name_marker_seam.cmake")
 list(APPEND MM3_SEAM_FUNCTIONS sub_000E10A5 sub_000E1F49 sub_000E2385 sub_000E247C)
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_lamp_lighting_seam.cmake")
+list(APPEND MM3_SEAM_FUNCTIONS sub_000E01C2 sub_000E0277)
+include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_car_light_culling_seam.cmake")
 list(APPEND MM3_SEAM_FUNCTIONS sub_00201BCA sub_0011CAE8 sub_00120091 sub_00116535 sub_0014BAE9 sub_0014C121)
 list(REMOVE_DUPLICATES MM3_SEAM_FUNCTIONS)
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_race_guidance_seam.cmake")
@@ -258,6 +263,11 @@ foreach(distance_input IN LISTS distance_owners)
             endif()
         endif()
     endforeach()
+    foreach(car_light_owner sub_000E01C2 sub_000E0277)
+        if(owner_${car_light_owner} STREQUAL distance_input)
+            mm3_add_car_light_culling_seam(distance_content ${car_light_owner})
+        endif()
+    endforeach()
     foreach(race_owner sub_00201BCA sub_0011CAE8 sub_00120091 sub_00116535 sub_0014BAE9 sub_0014C121)
         if(owner_${race_owner} STREQUAL distance_input)
             mm3_add_race_guidance(distance_content ${race_owner})
@@ -333,6 +343,7 @@ add_executable(${PROJECT_NAME}
  src/mm3_cpu_compat.c
  src/mm3_world_lighting.c
  src/mm3_car_lighting.c
+ src/mm3_car_light_visibility.c
  src/mm3_lamp_lighting.c
  src/recomp_trace_probe.c
  ${RECOMP_GEN_SOURCES})

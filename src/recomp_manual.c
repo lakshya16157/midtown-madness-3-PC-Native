@@ -1264,19 +1264,25 @@ void sub_00317F5B(void) {}
 void sub_00319630(void) {}
 void sub_00358FAC(void) {}
 
-/* XDK write-back-cache flush (D3D's push-buffer kick): set NV_PFB_WBC_FLUSH
- * and spin until the GPU clears it. On hardware that only drains the CPU's
- * write-combined stores and waits for no GPU work; the host equivalent is a
- * store fence. Here the ack thread cleared the bit only between push-buffer
- * segments, so every kick-off waited for the executor to finish the previous
- * one (~25% of a race frame). That spin was also the only thing keeping D3D
- * off its GPU-notify wait, which xbox_Nv2aNotifyEvent (main.c) now answers.
- * Registers are left as the guest routine leaves them. */
+extern void xbox_Nv2aWbcWait(uint32_t register_va);
+
+/* Most kicks only publish CPU stores. Bound the producer's distance from GET
+ * to 256 KiB (and synchronize across a ring wrap), because later lighting
+ * decisions can otherwise race the executor's readbacks. WBC is acknowledged
+ * between executor passes; waiting at every kick would serialize the frame.
+ * Keep the guest EAX/ECX results and return-stack adjustment unchanged. */
 void sub_00344AB0(void)
 {
     mm3_producer_diagnostics_kick();
-    g_eax = MEM32(MEM32(0x351F48u) + 0x17C8u);
+    uint32_t device = MEM32(0x351F48u);
+    g_eax = MEM32(device + 0x17C8u);
     g_ecx = MEM32(g_eax + 0x100410u) | 0x10000u;
     _mm_sfence();
+    uint32_t current = MEM32(device) & 0x0FFFFFFFu;
+    uint32_t consumed = MEM32(MEM32(device + 0x17C0u) + 0x44u);
+    if (current < consumed || current - consumed > 0x40000u) {
+        MEM32(g_eax + 0x100410u) = g_ecx;
+        xbox_Nv2aWbcWait(g_eax + 0x100410u);
+    }
     g_esp += 4;
 }

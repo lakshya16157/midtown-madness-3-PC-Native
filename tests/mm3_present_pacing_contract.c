@@ -26,6 +26,8 @@ typedef struct XboxOverlay { int unused; } XboxOverlay;
 
 enum { PROF_PACE, PROF_WRITEBACK, PROF_PRESENT };
 static int s_prof_on, s_init_state, s_frame_bg_tex, s_frame_tag_window, s_wb_pending;
+/* Frame-local scene state read/reset by the actual flip implementation. */
+static int s_depth_hazed;
 static int64_t s_prof[3];
 static Surface *s_shown;
 static DWORD s_last_present, s_last_flip;
@@ -145,6 +147,7 @@ static void reset(void)
     init_ok = surface_ok = scan_ok = swap_ok = buffer_ok = view_ok = overlay_ok = 1;
     cpu_scanout = capture_surface = 0; present_result = 0;
     s_init_state = 1; s_last_present = s_last_flip = 0;
+    s_depth_hazed = 1;
     s_shown = &surface;
     if (s_frame_csv_file) fclose(s_frame_csv_file);
     s_frame_csv_file = tmpfile(); CHECK(s_frame_csv_file != NULL);
@@ -159,6 +162,25 @@ static void successful_flip(const char *expected)
     CHECK(pace_calls == 1 && present_calls == 1 && csv_calls == 1 && csv_ticks == 7);
     CHECK(s_prof[PROF_PACE] == 7 && s_prof[PROF_WRITEBACK] == 2);
     CHECK(s_frame == 1 && s_frame_tag_window == 1 && s_frame_bg_tex == 0);
+    CHECK(s_depth_hazed == 0);
+}
+
+static void depth_haze_cases(void)
+{
+    /* A guest flip starts a new scene even when presentation resources are
+     * unavailable. Failed initialization never begins that frame. */
+    reset(); surface_ok = scan_ok = 0;
+    nv2a_d3d_flip(0x10000, 2560); CHECK(s_depth_hazed == 0);
+    reset(); swap_ok = 0;
+    nv2a_d3d_flip(0x10000, 2560); CHECK(s_depth_hazed == 0);
+    reset(); init_ok = 0;
+    nv2a_d3d_flip(0x10000, 2560); CHECK(s_depth_hazed == 1);
+
+    /* Host movie/CPU scanout ticks do not begin a new guest scene and must
+     * retain its haze state, including when a tick advances s_frame. */
+    reset(); nv2a_d3d_tick(); CHECK(s_depth_hazed == 1);
+    reset(); cpu_scanout = 1;
+    nv2a_d3d_tick(); CHECK(s_frame == 1 && s_depth_hazed == 1);
 }
 
 static void flip_cases(void)
@@ -326,9 +348,9 @@ int main(int argc, char **argv)
 {
     CHECK(argc == 2);
     after_policy = strcmp(argv[1], "after") == 0;
-    flip_cases(); tick_cases(); idle_cpu_cases(); csv_cases();
+    flip_cases(); tick_cases(); idle_cpu_cases(); csv_cases(); depth_haze_cases();
     fclose(s_frame_csv_file);
-    printf("PASS: %s-present pacing; successful/failed/captured flips, missing resources/RTV failure, once-per-flip fallback, unpaced movie/idle CPU ticks, writeback ordering, failed/occluded display retries, guest-only CSV state and profiler accounting\n",
+    printf("PASS: %s-present pacing; successful/failed/captured flips, missing resources/RTV failure, once-per-flip fallback, unpaced movie/idle CPU ticks, writeback ordering, failed/occluded display retries, guest-only CSV state, profiler accounting and guest-frame haze reset\n",
            after_policy ? "after" : "before");
     return 0;
 }

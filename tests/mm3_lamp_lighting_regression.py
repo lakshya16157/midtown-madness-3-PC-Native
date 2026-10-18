@@ -141,7 +141,7 @@ static void bounds(void)
 /* Spot sources: the cone box is built by the game's own cone routine. Its frame
  * is whatever that routine uses, so compare against the untouched retail
  * builder on identical input: the tuned reach and widened angle must give a box
- * that contains the retail box on every axis and is substantially larger. */
+ * that contains the retail box on every axis and still reaches the road. */
 static void spot_bounds_grow(void)
 {
     unsigned axis;
@@ -156,7 +156,7 @@ static void spot_bounds_grow(void)
         assert(tuned_low<=retail_low+.001f && tuned_high>=retail_high-.001f);
         grown+=(tuned_high-tuned_low)-(retail_high-retail_low);
     }
-    /* Retail reaches 7 m at 59.65 degrees; the tuned cone is 11.55 m at 65.65. */
+    /* Retail reaches 7 m at 59.65 degrees; the tuned cone is 10.15 m at 64.65. */
     assert(grown>10.0f);
 }
 
@@ -170,25 +170,124 @@ static void direct_spot(uint32_t caller)
     assert(!memcmp(arguments,memory+STACK,20));
     assert(MEM32(QUEUE+0x5810)==1);
     if(caller==0x0016945a) {
-        assert(MEMF(RECORD+0x48)==7.5f && fabsf(MEMF(RECORD+0x40)-7.5f)<.001f);
-        assert(MEM32(RECORD+0x4c)==0x00552B00);
+        assert(MEMF(RECORD+0x48)==6.0f && fabsf(MEMF(RECORD+0x40)-6.0f*tanf(30.0f*3.14159265f/180.0f))<.01f);
+        assert(MEM32(RECORD+0x4c)==0x00321A00);
     } else {
         assert(MEMF(RECORD+0x48)==6 && MEM32(RECORD+0x4c)==0x003F2000);
     }
 }
 
+static unsigned channel(uint32_t color,unsigned shift)
+{
+    return (color>>shift)&255u;
+}
+
+static void source_colors(void)
+{
+    unsigned level,shift,i;
+    uint32_t previous=0;
+    const uint32_t colored[]={0xffff0000,0xff00ff00,0xff0000ff,
+        0xff806040,0xff40ffff,0xffff40ff};
+    reset();MEMF(SOURCE+0x4f)=7;MEM32(SOURCE+0x2b)=0x00ffffffu;
+    /* Both dim and bright neutral fixtures get warmth without channel clipping;
+     * each step of a native fade remains at most one output channel step. */
+    for(level=0;level<256;level++) {
+        uint32_t input=0xa0000000u|level|(level<<8)|(level<<16);
+        uint32_t output=lamp_source_color(SOURCE,input);
+        assert((output&0xff000000u)==0xa0000000u);
+        assert(channel(output,16)<=level);
+        assert(channel(output,16)>=channel(output,8));
+        assert(channel(output,8)>=channel(output,0));
+        for(shift=0;shift<=16;shift+=8) {
+            assert(channel(output,shift)>=channel(previous,shift));
+            assert(channel(output,shift)<=channel(previous,shift)+1);
+        }
+        previous=output;
+    }
+    assert(previous==0xa0d9b282u);
+    /* Different nearly-neutral authored shades cross the warmth blend smoothly. */
+    MEM32(SOURCE+0x2b)=0xffffff00u;
+    previous=lamp_source_color(SOURCE,0xffffff00u);
+    for(level=1;level<256;level++) {
+        MEM32(SOURCE+0x2b)=0xffffff00u|level;
+        uint32_t output=lamp_source_color(SOURCE,0xffffff00u|level);
+        for(shift=0;shift<=16;shift+=8)
+            assert(abs((int)channel(output,shift)-(int)channel(previous,shift))<=2);
+        previous=output;
+    }
+    /* Saturated authored hues receive only uniform dimming, including alpha. */
+    for(i=0;i<sizeof colored/sizeof colored[0];i++) {
+        MEM32(SOURCE+0x2b)=colored[i];
+        assert(lamp_source_color(SOURCE,colored[i])==lamp_color_gain(colored[i],.85f));
+    }
+    assert(lamp_source_color(SOURCE,0x7f000000u)==0x7f000000u);
+    /* Queue both native source types to verify the warm conversion is wired in. */
+    reset();MEM32(SOURCE+0x2b)=0x00ffffffu;assert(produce()==1);
+    assert(channel(MEM32(RECORD+0x4c),16)>channel(MEM32(RECORD+0x4c),8));
+    assert(channel(MEM32(RECORD+0x4c),8)>channel(MEM32(RECORD+0x4c),0));
+    assert(channel(MEM32(RECORD+0x4c),16)<100);
+    reset();MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;
+    MEM32(SOURCE+0x2b)=0x00ffffffu;assert(produce()==1);
+    assert(MEM32(RECORD+0x4c)==0x00d9b282u);
+}
+
+static void source_fade(void)
+{
+    uint32_t authored=MEM32(SOURCE+0x2b),previous=authored&0xff000000u;
+    unsigned level,shift;
+    /* Retail quantizes faded RGB to bytes before our tint conversion. Check
+     * every authored fixture through a complete fade, especially 0xD2E6F5 and
+     * 0x5A5A46: recomputing warmth from faded RGB made channels reverse here. */
+    for(level=0;level<256;level++) {
+        uint32_t input=authored&0xff000000u,output;
+        for(shift=0;shift<=16;shift+=8)
+            input|=(channel(authored,shift)*level/255u)<<shift;
+        output=lamp_source_color(SOURCE,input);
+        assert((output&0xff000000u)==(authored&0xff000000u));
+        for(shift=0;shift<=16;shift+=8) {
+            assert(channel(output,shift)>=channel(previous,shift));
+            assert(channel(output,shift)<=channel(previous,shift)+1);
+        }
+        assert(MEM32(SOURCE+0x2b)==authored);
+        previous=output;
+    }
+}
+
+static void queued_source_fades(void)
+{
+    const uint32_t colors[]={0x00d2e6f5u,0x005a5a46u,0x00f8fed5u};
+    unsigned i,spot,level,shift;
+    for(i=0;i<sizeof colors/sizeof colors[0];i++)for(spot=0;spot<2;spot++) {
+        uint32_t previous=0;
+        for(level=0;level<256;level++) {
+            uint32_t output;
+            reset();MEM32(SOURCE+0x2b)=colors[i];MEM8(SOURCE+0x11)=(uint8_t)level;
+            if(spot) {MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;}
+            assert(produce()==1);
+            output=MEM32(RECORD+0x4c);
+            for(shift=0;shift<=16;shift+=8) {
+                assert(channel(output,shift)>=channel(previous,shift));
+                /* Retail's final fully-lit step skips its divide-by-256 fade. */
+                assert(channel(output,shift)<=channel(previous,shift)+2);
+            }
+            previous=output;
+        }
+    }
+}
+
 int main(void)
 {
-    unsigned i,lights=0,fallbacks=0,dark=0;
+    unsigned i,lights=0,fallbacks=0,dark=0,warm=0,colored=0;
     float tiny,large;
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
     reset();assert(produce()==1);assert(MEM32(RECORD+0x50)==0);
-    assert(MEMF(RECORD+0x40)>9 && MEMF(RECORD+0x40)<10);
-    assert(MEM32(RECORD+0x4c)==0x00332619);
+    assert(MEMF(RECORD+0x40)>11 && MEMF(RECORD+0x40)<11.6f);
+    assert(MEM32(RECORD+0x4c)==0x00291F15);
     reset();MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;
     assert(produce()==1);assert(MEM32(RECORD+0x50)==1);
-    assert(fabsf(MEMF(RECORD+0x48)-11.55f)<.001f);
-    assert(MEMF(RECORD+0x40)>25 && MEM32(RECORD+0x4c)==0x00AD8256);
+    assert(fabsf(MEMF(RECORD+0x48)-10.15f)<.001f);
+    assert(MEMF(RECORD+0x40)>20 && MEMF(RECORD+0x40)<23);
+    assert(MEM32(RECORD+0x4c)==0x006D5236);
     reset();bounds();assert(MEMF(MINIMUM)<8 && MEMF(MAXIMUM)>16);
     spot_bounds_grow();
     /* Native broken/off, time mask, pause and flicker gates execute intact. */
@@ -207,25 +306,47 @@ int main(void)
     reset();MEM32(QUEUE+0x5810)=256;assert(produce()==256);
     reset();MEMF(SOURCE+0x49)=.1f;MEM8(SOURCE+0x4d)=25;tiny=mm3_lamp_source_range(SOURCE);
     MEMF(SOURCE+0x49)=.5f;MEM8(SOURCE+0x4d)=255;large=mm3_lamp_source_range(SOURCE);
-    assert(tiny>0 && tiny<1 && large>6 && large<8);
-    MEMF(SOURCE+0x4f)=50;assert(mm3_lamp_source_range(SOURCE)==58);
+    assert(tiny>0 && tiny<1 && large>7.9f && large<8.1f);
+    MEMF(SOURCE+0x4f)=50;assert(mm3_lamp_source_range(SOURCE)==56);
     MEMF(SOURCE+0x4f)=NAN;assert(mm3_lamp_source_range(SOURCE)==0);
     direct_spot(0x0016945a);direct_spot(0x000CF5ED);direct_spot(0x12345678);
+    source_colors();
+    queued_source_fades();
     /* All authored sources in both cities keep independent reach and tint.
      * Zero-radius bulbs become local sources; non-light effects stay dark. */
     for(i=0;i<sizeof retail/sizeof retail[0];i++) {
         float before,after,size;
+        uint32_t original_color,tuned_color;
+        unsigned shift,peak=0,minimum=255;
         reset();memcpy(memory+SOURCE,retail[i],0x56);
         before=MEMF(SOURCE+0x4f);size=MEMF(SOURCE+0x49);
         after=mm3_lamp_source_range(SOURCE);
+        original_color=MEM32(SOURCE+0x2b);
+        tuned_color=lamp_source_color(SOURCE,original_color);
         assert(!memcmp(memory+SOURCE,retail[i],0x56));
-        if(before>0) { assert(after>before && after<=before+8.001f);lights++; }
+        assert((original_color&0xff000000u)==(tuned_color&0xff000000u));
+        for(shift=0;shift<=16;shift+=8) {
+            unsigned value=channel(original_color,shift);
+            if(value>peak)peak=value;
+            if(value<minimum)minimum=value;
+            assert(channel(tuned_color,shift)<=value);
+        }
+        if(after>0 && peak) {
+            source_fade();
+            if(minimum*4>peak*3)warm++;
+            else {
+                float gain=before==0?.65f*(float)MEM8(SOURCE+0x4d)/255.0f:.85f;
+                assert(tuned_color==lamp_color_gain(original_color,gain));
+                colored++;
+            }
+        }
+        if(before>0) { assert(after>before && after<=before+6.001f);lights++; }
         else if(size>0 && MEM8(SOURCE+0x4d) && (MEM32(SOURCE+0x2b)&0xffffff)) {
-            assert(after>0 && after<=10);fallbacks++;lights++;
+            assert(after>0 && after<=10.001f);fallbacks++;lights++;
         } else {assert(after==0);dark++;}
     }
-    assert(lights==157 && dark==455 && fallbacks>25);
-    printf("PASS: %u city light descriptors (%u added local bulbs), %u dark effects; native source gates, source-sized reach, matched bounds, point/spot queues, traffic-signal tint and guest ABI\n",lights,fallbacks,dark);
+    assert(lights==157 && dark==455 && fallbacks>25 && warm>0 && colored>0);
+    printf("PASS: %u city light descriptors (%u added local bulbs), %u dark effects; fixed fixture warmth, monotone 256-step authored/queued fades, authored saturated hues, native source gates, source-sized reach, matched bounds, point/spot queues, traffic-signal tint and guest ABI\n",lights,fallbacks,dark);
     return 0;
 }
 '''

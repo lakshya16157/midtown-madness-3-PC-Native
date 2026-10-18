@@ -1187,6 +1187,32 @@ static float road_draw_half_width(float width, float factor)
     return isfinite(result) ? fmaxf(minimum, result) : minimum;
 }
 
+static float road_map_half_width(float width, float factor, unsigned path)
+{
+    /* Cartographic widths keep parallel lanes and broad avenues from merging
+     * into solid gray blocks. This affects only the background map artwork;
+     * the copied lane widths and blue guidance retain their native geometry. */
+    if (path) return fminf(.45f, fmaxf(.25f, width * factor * .25f));
+    return fminf(2.4f, .70f * road_draw_half_width(width, factor));
+}
+
+static float road_map_alpha(const RoadLine *line, float factor, unsigned path)
+{
+    float detail, extent;
+    if (!path) {
+        float hierarchy = fminf(1, fmaxf(0, (line->width - 3.5f) / 16.0f));
+        return .66f + .14f * hierarchy;
+    }
+    /* DC's optional park/plaza network is context, not another street layer.
+     * Fade its fine details continuously with zoom and omit paths too short
+     * to read. Keep the full cached network so zooming back in restores it. */
+    detail = fminf(1, fmaxf(0, (factor - .10f) / .30f));
+    extent = fmaxf(line->max_x - line->min_x, line->max_z - line->min_z) * factor;
+    extent = fminf(1, fmaxf(0, (extent - 2.0f) / 4.0f));
+    return .32f * detail * detail * (3 - 2 * detail) *
+        extent * extent * (3 - 2 * extent);
+}
+
 static void route_quad(uint32_t renderer, uint32_t clip, const float xy[4][2], float alpha)
 {
     uint32_t saved_eax, saved_ecx, saved_edx, saved_esp, saved_ebx, saved_esi, saved_edi;
@@ -1440,7 +1466,9 @@ void mm3_race_map_route(uint32_t node, uint32_t table,
             RoadPoint *points;
             RoadLine *lines;
             unsigned count;
-            if (!layer) {
+            unsigned path = !layer;
+            /* Put subdued paths underneath streets, including at crossings. */
+            if (!path) {
                 if (!road_lines_build()) continue;
                 points = s_road_lines.points; lines = s_road_lines.lines; count = s_road_lines.count;
             } else {
@@ -1448,12 +1476,14 @@ void mm3_race_map_route(uint32_t node, uint32_t table,
             }
             for (i = 0; i < count; ++i) {
                 RoadLine *line = lines + i;
-                float half_width = road_draw_half_width(line->width, factor);
+                float alpha = road_map_alpha(line, factor, path);
+                float half_width = road_map_half_width(line->width, factor, path);
                 float line_reach = reach + half_width / factor;
+                if (alpha < .035f) continue;
                 if (line->max_x < origin.x - line_reach || line->min_x > origin.x + line_reach ||
                     line->max_z < origin.z - line_reach || line->min_z > origin.z + line_reach) continue;
                 route_polyline_width(renderer, clip, points + line->first, line->count,
-                    origin, factor, cosine, sine, radius_x, radius_y, cx, cy, .82f,
+                    origin, factor, cosine, sine, radius_x, radius_y, cx, cy, alpha,
                     half_width);
             }
         }

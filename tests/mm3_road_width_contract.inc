@@ -113,7 +113,7 @@ static void road_width_live_map_contract(void)
     const RoadPoint streets[4] = {{-20,0,-10}, {20,0,-10}, {-20,0,10}, {20,0,10}};
     const unsigned offsets[7] = {0x50,0x54,0x58,0x4C,0x94,0x98,0xB4};
     const float factors[2] = {.5f,.25f};
-    const float expected[2][2] = {{1,3},{1,1.5f}};
+    const float expected[2][2] = {{.7f,2.1f},{.7f,1.05f}};
     unsigned char previous_race[sizeof s_race];
     float previous_fields[9], previous_origin[3];
     int previous_origin_valid = cruise_origin_valid;
@@ -207,7 +207,7 @@ static void road_ctrl_visibility_contract(void)
                 if (fabsf(centre(draws+i,0) - MEMF(node + 0x94) - x) < .001f &&
                     fabsf(centre(draws+i,1) - MEMF(node + 0x98) - y) < .001f) {
                     ++matches; near(edge(draws+i),10 * factor);
-                    near(road_width_draw_half(draws+i),1); near(draws[i].color[0],.62f);
+                    near(road_width_draw_half(draws+i),.7f); near(draws[i].color[0],.62f);
                 }
             assert(matches == 1);
         }
@@ -306,6 +306,84 @@ static void road_join_contract(void)
     s_road_layer = 1;
 }
 
+static void road_map_style_contract(void)
+{
+    const RoadPoint streets[] = {
+        {-20,0,-4}, {20,0,-4}, {-20,0,4}, {20,0,4}, {-20,0,20}, {20,0,20}
+    };
+    const unsigned offsets[] = {0x50,0x54,0x58,0x4C,0x94,0x98,0xB4};
+    unsigned char previous_race[sizeof s_race];
+    float previous_fields[9], previous_origin[3];
+    RoadNode saved_nodes[6];
+    RoadEdge saved_edges[6];
+    int previous_valid = cruise_origin_valid;
+    unsigned i, pass;
+    memcpy(previous_race,s_race,sizeof s_race);
+    memcpy(previous_origin,cruise_origin,sizeof cruise_origin);
+    for (i = 0; i < 7; ++i) previous_fields[i] = MEMF(node + offsets[i]);
+    previous_fields[7] = MEMF(layout + 8); previous_fields[8] = MEMF(layout + 12);
+    road_width_fixture(streets,6);
+    assert(road_graph_edge_width(0,1,600,600,3.5f));
+    assert(road_graph_edge_width(2,3,700,700,3.5f));
+    assert(road_graph_edge_width(4,5,800,800,80));
+    memcpy(saved_nodes,s_roads.nodes,sizeof saved_nodes);
+    memcpy(saved_edges,s_roads.edges,sizeof saved_edges);
+    s_map_areas.points = (RoadPoint *)malloc(4 * sizeof(RoadPoint));
+    s_map_areas.lines = (RoadLine *)calloc(2,sizeof(RoadLine));
+    assert(s_map_areas.points && s_map_areas.lines);
+    s_map_areas.count = 2; s_map_areas.point_count = 4;
+    s_map_areas.points[0] = (RoadPoint){-20,0,-18};
+    s_map_areas.points[1] = (RoadPoint){20,0,-18};
+    s_map_areas.points[2] = (RoadPoint){0,0,-12};
+    s_map_areas.points[3] = (RoadPoint){6,0,-12};
+    for (i = 0; i < 2; ++i) {
+        RoadLine *line = s_map_areas.lines + i;
+        line->first = i * 2; line->count = 2; line->width = 3.5f;
+        line->min_x = s_map_areas.points[i*2].x;
+        line->max_x = s_map_areas.points[i*2+1].x;
+        line->min_z = line->max_z = s_map_areas.points[i*2].z;
+    }
+    memset(s_race,0,sizeof s_race); memset(cruise_origin,0,sizeof cruise_origin);
+    cruise_origin_valid = 1;
+    MEMF(node + 0x54) = 0; MEMF(node + 0x58) = 1024;
+    MEMF(node + 0x4C) = MEMF(node + 0x94) = MEMF(node + 0x98) = 0;
+    MEMF(node + 0xB4) = 1; MEMF(layout + 8) = MEMF(layout + 12) = 128;
+    check = "map hierarchy keeps lane gaps, caps avenues and subdues tiny park paths";
+    for (pass = 0; pass < 3; ++pass) {
+        float factor = pass == 1 ? .25f : .5f;
+        unsigned paths = pass == 1 ? 1 : 2;
+        MEMF(node + 0x50) = factor;
+        abi_start(0); mm3_race_map_route(node,0x407F78,0x25000,0,layout);
+        assert(draw_count == 3 + paths && !s_road_layer);
+        assert(g_esp == stack && g_fp_top == 0);
+        for (i = 0; i < paths; ++i) {
+            assert(draws[i].color[3] >= .035f && draws[i].color[3] <= .32f);
+            assert(road_width_draw_half(draws + i) <= .45f);
+        }
+        for (i = paths; i < draw_count; ++i) {
+            if (centre(draws+i,1) > 10 * factor) {
+                near(road_width_draw_half(draws+i),2.4f);
+                near(draws[i].color[3],.80f);
+            } else {
+                near(road_width_draw_half(draws+i),.7f);
+                near(draws[i].color[3],.66f);
+            }
+        }
+        /* A clear pixel between adjacent native lanes catches the former
+         * minimum-width clutter. Optional paths must not fill this gap. */
+        assert(!road_join_covers(0,0));
+        assert(s_map_areas.count == 2 && s_map_areas.point_count == 4);
+        assert(!memcmp(saved_nodes,s_roads.nodes,sizeof saved_nodes));
+        assert(!memcmp(saved_edges,s_roads.edges,sizeof saved_edges));
+    }
+    road_graph_clear();
+    memcpy(s_race,previous_race,sizeof s_race);
+    memcpy(cruise_origin,previous_origin,sizeof cruise_origin); cruise_origin_valid = previous_valid;
+    for (i = 0; i < 7; ++i) MEMF(node + offsets[i]) = previous_fields[i];
+    MEMF(layout + 8) = previous_fields[7]; MEMF(layout + 12) = previous_fields[8];
+    puts("PASS gray map hierarchy: thinner parallel lanes, capped avenues, paths beneath streets, zoom filtering/restoration, unchanged route graph and guest ABI");
+}
+
 static void road_width_contract(void)
 {
     const RoadPoint chain[4] = {{0,0,0}, {10,0,0}, {20,0,0}, {30,0,0}};
@@ -379,6 +457,7 @@ static void road_width_contract(void)
 
     check = "road width real Cruise gray-layer wiring at two zoom levels";
     road_width_live_map_contract();
+    road_map_style_contract();
     check = "Ctrl road visibility through repeated square/rectangular expansion and collapse";
     road_ctrl_visibility_contract();
     s_road_layer = 1;

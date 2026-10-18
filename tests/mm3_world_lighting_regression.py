@@ -43,6 +43,12 @@ RECOMP_TLS RecompMmx g_mm0,g_mm1,g_mm2,g_mm3,g_mm4,g_mm5,g_mm6,g_mm7;
 RECOMP_TLS RecompXmm g_xmm0,g_xmm1,g_xmm2,g_xmm3,g_xmm4,g_xmm5,g_xmm6,g_xmm7;
 static unsigned char memory[0x500000],expected_memory[sizeof memory];
 static uint32_t original_color;
+static float requested_gain;
+static int requested_softness;
+static int requested_overlap;
+void nv2a_d3d_set_local_light_gain(float gain) { requested_gain=gain; }
+void nv2a_d3d_set_local_light_softness(int enabled) { requested_softness=enabled; }
+void nv2a_d3d_set_local_light_overlap(int enabled) { requested_overlap=enabled; }
 static unsigned original_calls;
 static uint32_t observed_light_mode;
 static uint32_t time_of_day;
@@ -226,6 +232,19 @@ int main(int argc,char **argv)
         0xD3808080u,0xE4F0E0C0u,0xF5FFFFFFu};
     assert(argc==4);lift=(unsigned)atoi(argv[1]);even=(unsigned)atoi(argv[2]);
     night_percent=(unsigned)atoi(argv[3]);
+    /* Local-light gain: gentle default, valid 1..8 (1 = retail). */
+    _putenv("MM3_LOCAL_LIGHT_GAIN=");mm3_world_lighting_apply_gain();assert(requested_gain==1.3f);
+    _putenv("MM3_LOCAL_LIGHT_GAIN=1.3");mm3_world_lighting_apply_gain();assert(requested_gain==1.3f);
+    _putenv("MM3_LOCAL_LIGHT_GAIN=1");mm3_world_lighting_apply_gain();assert(requested_gain==1.0f);
+    _putenv("MM3_LOCAL_LIGHT_GAIN=2.5");mm3_world_lighting_apply_gain();assert(requested_gain==2.5f);
+    _putenv("MM3_LOCAL_LIGHT_GAIN=8");mm3_world_lighting_apply_gain();assert(requested_gain==8.0f);
+    _putenv("MM3_LOCAL_LIGHT_GAIN=0.5");mm3_world_lighting_apply_gain();assert(requested_gain==1.3f);
+    _putenv("MM3_LOCAL_LIGHT_GAIN=9");mm3_world_lighting_apply_gain();assert(requested_gain==1.3f);
+    _putenv("MM3_LOCAL_LIGHT_GAIN=3x");mm3_world_lighting_apply_gain();assert(requested_gain==1.3f);
+    _putenv("MM3_LOCAL_LIGHT_GAIN=nan");mm3_world_lighting_apply_gain();assert(requested_gain==1.3f);
+    assert(requested_softness==1);
+    assert(requested_overlap==1);
+    _putenv("MM3_LOCAL_LIGHT_GAIN=");
     assert(mm3_world_light_scale(0xAB010203u,25)==0xAB000101u);
     assert(mm3_world_light_scale(0xA17E80FFu,25)==0xA1202040u);
     assert(mm3_world_light_scale(0xA1234567u,0)==0xA1000000u);

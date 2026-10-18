@@ -156,15 +156,47 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   use 25% of their authored strength, with no global brightness floor or added
   ambient lift. Vehicle lamps and world light effects illuminate nearby surfaces
   with source-specific reach and strength, while unlit streets stay dark.
-  Front lamps supply road beams on player, opponent and traffic cars; a night
+  Player, opponent and traffic cars have warm-white, restrained road beams
+  with a soft, elongated fill ahead of the bumper. Front lamps on the same
+  vehicle share their beam and fill at their center, retaining both lamps'
+  placement as their rendering order changes. Fading lamps smoothly reduce
+  their strength and contribution to that center, avoiding an abrupt switch
+  or sideways jump. Nearby cars keep independent lights. Beams use the car's
+  current-frame straight-ahead axis, so steering and reappearing cars do not
+  inherit an old direction. Ordinary vehicle lamps are collected from the live
+  model hierarchy before the body's visibility rejection, so an overtaken
+  car's headlights can keep illuminating the road after its body leaves the
+  screen. This pass respects current lamp switches, broken/hidden groups and
+  owner flags without drawing hidden meshes or flares. Whole light volumes
+  are tested against the camera planes; a bulb behind the camera remains
+  relevant when its beam reaches the visible road. Every beam follows its
+  vehicle's axis, so models whose lamp nodes are authored toed-out (Audi TT,
+  Escalade, Avalanche,
+  ambulances, armoured cars) no longer throw their light sideways. A night
   driving beam also covers the Formula 1 model without adding bodywork lenses.
-  Tail, brake and reversing lights cast smaller tinted pools. World fixtures
-  retain their authored color and aim, with wider coverage for large lamps and
-  bounded local pools for bulbs that previously supplied only a visible flare.
-  Traffic signals retain the active lens color. Native time, breakage and
-  flicker controls continue to govern world lights.
+  Tail, brake and reversing lights cast smaller tinted pools. Neutral street
+  fixtures cast warm amber gradients with modest extra reach, and bulbs that
+  previously supplied only a visible flare have bounded local pools. Colored
+  fixtures and traffic signals retain their intended hues. Soft attenuation
+  eases the edges and centers of street and vehicle light gradients without
+  adding more lights to the queue. Street-lamp warmth comes from the fixture's
+  authored color, keeping its fade monotonic through rounded brightness steps.
+  Overlapping local lights use screen accumulation: each source adds a smaller
+  share as that pixel brightens, preserving a lone beam while reducing washed-out
+  intersections. Unrelated lights do not change a beam's brightness, and this
+  uses the existing GPU blend unit without another pass or texture. The primary
+  player's front beam and near field can reclaim dim non-player records when
+  the shared queue fills, keeping traffic submission order from dropping them.
+  Push-buffer kicks also synchronize when the producer is more than 256 KiB
+  ahead or crosses the ring boundary, with host waits for the actual WBC
+  acknowledgment rather than serializing every kick. This targets a separate
+  one-frame lighting race; driving validation remains necessary.
+  Native time, breakage and authored flicker
+  controls continue to govern world lights.
   Local illumination samples the native 3D attenuation textures and reconstructs
-  surfaces from raw scene depth, restoring light pools on roads and buildings.
+  surfaces from raw scene depth. The light shader receives the constant and
+  separate high/low depth bytes its reconstruction rows require, so nearby
+  roads and walls stay in the correct light volumes as the camera moves.
   Lamp glows use the scene depth buffer's encoding when testing occlusion.
   Imported wheel references retain their opaque donor headers, and rear lamp
   effects sit outside the imported lens surfaces.
@@ -234,7 +266,7 @@ source locations, dependencies, integration steps and acceptance tests.
 |---|---|---|
 | [Collision-cell bounds](https://github.com/MattSG/mm3-recomp/commit/9ad1762): freezes, crashes and falling through roads | Missing | No grid/index sanitizer around `sub_0015A929`. Our collision-call stack repair fixes a separate fault. |
 | [Two unresolved functions](https://github.com/MattSG/mm3-recomp/commit/c91d8f1): corrupted guest registers | Partial | The graph epilogue at `0x144ED9` is repaired. The camera-related setter at `0x2534FF` is still an unresolved stub referenced by six generated thunk-tail sites. Direct unresolved-stub reporting is also absent. |
-| [Bounded push-buffer run-ahead](https://github.com/MattSG/mm3-recomp/commit/fdc33ea): one-frame dark/tunnel-lighting flicker | Missing | Our WBC flush only uses `_mm_sfence()`; it lacks upstream's 256 KiB producer-distance bound. Native command/fence waits do not implement that bound. |
+| [Bounded push-buffer run-ahead](https://github.com/MattSG/mm3-recomp/commit/fdc33ea): one-frame dark/tunnel-lighting flicker | Implemented after this audit | Kicks retain the store fence and guest register effects, synchronizing above 256 KiB or across a wrap. The host waiter observes the real WBC clear with shutdown/self-wait guards; threshold, ABI and acknowledgment regressions cover it. Cruise/mission visual acceptance remains open. |
 | [White rims on silhouettes](https://github.com/MattSG/xboxrecomp/commit/d62ae29) | Implemented after this audit | Display passes use aligned translation; Y16 depth taps compensate their quarter-pixel offset. |
 | [Bright top/left frame strip](https://github.com/MattSG/xboxrecomp/commit/4d9d178) | Implemented after this audit | Display-sized passes remove the Xbox screen offset while offscreen targets retain pixel-zero snapping. |
 | [Extended-distance haze](https://github.com/MattSG/xboxrecomp/commit/d448358) and [distant-tree fade](https://github.com/MattSG/xboxrecomp/commit/060122c) | Implemented after this audit | Depth-as-Y16 uses the exponential haze tail. Eligible depth-writing foliage drawn after haze uses matching coverage fading with the final ordered 2×2 distribution. Gameplay motion and different scaling modes still need visual review. |
@@ -494,6 +526,57 @@ $env:RECOMP_APU_DSP_ACK='0x80458810'
 build\RelWithDebInfo\mm3_recomp.exe
 ```
 
+Use `scripts\play.ps1 -Keyboard -NoLightDiagnostics -NoConsoleLog` for ordinary
+play after a lighting investigation. `-NoLightDiagnostics` clears inherited
+`MM3_LIGHT_DUMP` and `MM3_LIGHT_DEBUG` for that launch and restores the shell's
+settings afterwards. Lighting captures synchronously read GPU textures and
+write images at three intervals, then keep checking for capture requests; they
+can cause brief frame-time spikes even with console output hidden.
+
+Car-light caches now expire once at the native light-queue reset, including
+frames with no car callbacks. Each lamp's frame check uses constant time;
+masked lamps no longer rescan every cached light record as traffic grows.
+Same-frame beam alignment, source fades and warm colors are retained.
+
+The 18 October 2026 release-mode car-light replay measured 20 cars at
+0.091 to 0.028 ms/frame and 80 cars at 1.097 to 0.130 ms/frame, before/after
+the reset-hook change. Each car had eight additional masked lamp callbacks;
+51 native fixture records shared the queue. The crowded case eliminates
+155,629 whole-record comparisons (13,072,836 bytes) per replayed frame.
+This measures producer CPU cost, not complete gameplay frame times. Run
+`python tests/mm3_car_lighting_performance.py --variants baseline current`
+after `scripts/enter-env.ps1` to repeat the native producer replay. The
+car-light regression separately checks native reset ABI, skipped-frame reuse,
+paired fades and current-frame alignment.
+
+Crowded-source lookup uses a bounded hash table and cached native record
+positions, with pointer/image validation when the queue changes. Failed
+allocations do not create repeated empty groups, and unchanged source callbacks
+reuse their records. The native 256-light limit remains enforced. Run
+`python tests/mm3_car_lighting_performance.py --variants current --stress --prepass`
+to measure source emission with both light-only and visible callbacks; this
+excludes hierarchy traversal and GPU time. The visibility regression
+`python tests/mm3_car_light_visibility_regression.py` replays both native
+rejected-body entries, live motion and lamp controls, all installed lamp
+ancestries, conservative volume culling and 320-model queue pressure.
+Add `--benchmark` to that visibility regression to time the complete source
+hierarchy walk and emission in `/O2`, using installed retail hierarchy shapes,
+transforms and lamp parameters. The 18 October run measured medians of
+0.168 ms/frame for 80 visible models and 0.171 ms with their bodies behind the
+camera; 320 models measured 0.748 and 0.719 ms respectively. Seven samples
+include the native queue reset and 51 scene slots, but exclude body drawing
+and GPU work. Fully rejected models leave those 51 slots and no car groups.
+
+The player-priority regression in `tests/mm3_car_lighting_regression.py` also
+fills every native slot, varies traffic order over 24 frames, and checks that
+the player's beam/fill survive subsequent paired, environment and displaced
+traffic callbacks without aliasing records. Native queue order and all reusable
+record pointers stay intact. `python tests/mm3_pushbuffer_run_ahead_regression.py`
+checks the conditional 256 KiB/wrap handshake and guest ABI at `/Od` and `/O2`;
+the runtime `nv2a-wbc-wait` test exercises the actual acknowledgment and host
+wait, including completion races and shutdown. GPU local-light fixtures cover
+bounded overlap with 1 through 32 sources in both shader paths and MSAA/scales.
+
 The game enforces a maximum of **60 FPS** for presentation and emulated vblank.
 `RECOMP_FPS_LIMIT` may select an integer limit from 1 to 60. When unset, it uses
 saved setting, or the selected profile's cap when no setting has been saved:
@@ -633,13 +716,14 @@ It stays in the bottom-left corner. Holding Ctrl opens a flat, centered
 overview; its roads and checkpoints share the same expanded window.
 The north-letter sprite is hidden in both map styles.
 The map rotates with your heading. Cruise also shows roads without race data.
-Washington's reviewed park, plaza and block paths include their complete native
-networks and adjoining continuations, with no cutoffs at review-grid boundaries.
-They appear as gray map coverage while race guidance follows the car street graph.
+Washington's park, plaza and block paths use thin, subdued strokes underneath
+the streets. Fine path details fade as the map zooms out, keeping dense areas
+readable; zooming back in restores them from the complete native networks.
 Paris roundabouts include their native traffic lanes and street entrances,
 while pedestrian paths through their center islands stay clear.
-Street thickness follows the road's lane layout: side streets stay thin,
-avenues draw wider, and the widths scale with the map zoom.
+Both cities use narrower minor streets and a limit on avenue thickness so
+overlapping roads stay clearer. Street weight still follows the lane layout
+and map zoom, while blue race guidance remains prominent.
 Stock restores the native city artwork, circular border, marker sizes and zoom,
 and retains the existing amber race guidance.
 The driving map smoothly shows more road as speed rises above 20 km/h, reaching
@@ -863,6 +947,8 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `RECOMP_FB_WINDOW` | off | Open the game window. **Required.** |
 | `RECOMP_USB` | off | Emulate the USB controller ports so pads (XInput) reach the game. **Required** for input. |
 | `RECOMP_APU_DSP_ACK` | unset | DSP acknowledgement address(es) the audio needs; use `0x80458810`. |
+| `MM3_APU_IDLE_TRAP_FIX` | `0` | Experimental, for the report that engine and ambient sound vanish after several collisions: `1` re-reports the idle voice to DirectSound each frame, keeps guest threads from overwriting its trap registers and passes over an idle voice DirectSound keeps declining. Unproven; default off keeps the idle-voice handling unchanged. |
+| `RECOMP_APU_IRQ_HOLDOFF` | `0` | Diagnostic: delay the audio interrupt up to this many frames while a guest thread runs at DISPATCH_LEVEL or above (0 = never delay). |
 | `MM3_DISPLAY_CONFIG` | `%LOCALAPPDATA%\MM3Recomp\display.ini` | Override the saved display-settings file. F10 opens the settings dialog. |
 | `MM3_SHOW_FPS` | saved setting or `1` | Show the FPS counter in the window title; `0` hides it. Can also change live in Display Settings. |
 | `RECOMP_KEYBOARD` | off | `1`: keyboard as a pad (arrows drive/navigate, Z X A S = A B X Y, Enter = Start, Backspace = Back; MM3 layout also maps Escape to B/menu back). |
@@ -876,6 +962,7 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `MM3_NIGHT_WORLD_LIGHT` | `25` | Night-only world fill, as an integer percentage of authored ambient, diffuse and backlight colors (0-100). Daytime and emissive materials retain their normal strength; source-specific local illumination is independent of this setting. Set `100` with both boosts below at `0` for retail world fill. Requires restart. |
 | `MM3_EVEN_LIGHTING` | `0` | Optional readability boost: `1` imposes a 48/255 minimum on world ambient, diffuse and backlight colors (75% unlit texture brightness). Default `0` lets night lighting come mainly from local sources. Native local lights, material alpha, UI and emissive lamps are preserved. Requires restart. |
 | `MM3_AMBIENT_LIFT` | `0` | Optional added packed-RGB ambient lift, integer 0-16. Default `0` adds no artificial ambient light. Both lighting boosts are disabled by default. Requires restart. |
+| `MM3_LOCAL_LIGHT_GAIN` | `1.3` | Strength of the local-light buffer (headlights, street lamps, tail lights, signals), 1-8; `1` uses the retail composite gain. Overlap uses bounded screen accumulation per pixel, so intersections brighten progressively without changing isolated beams or adding render passes. Daylight, night world fill and emissive lamps are unaffected. Requires restart. |
 | `MM3_FOV_DEGREES` | unset | Driving horizontal FOV at the display aspect, 60–110 degrees; unset or invalid values retain the existing widescreen FOV. Set with `scripts\play.ps1 -Fov 100`. |
 | `RECOMP_SUPERSAMPLE` | `2` | In auto resolution mode, render N×N pixels per window pixel (1–4). |
 | `RECOMP_RENDER_SCALE` | profile: `2.0` | Internal height as a multiple of 480 lines (0.5–8): Balanced 960, Quality 1440, LowPower 720; `2.25` = 1080. `auto` follows the window and uses supersampling. |

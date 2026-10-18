@@ -16,7 +16,10 @@ def main():
         parser.error('Initialize tools/xboxrecomp with git submodule update --init --recursive.')
 
     def apply(*options):
-        return subprocess.run(['git', '-C', str(toolkit), 'apply', *options, str(patch)],
+        # Windows editors can leave LF files beside the pinned CRLF sources.
+        # Match equivalent context without rewriting local line endings.
+        return subprocess.run(['git', '-C', str(toolkit), 'apply', '--ignore-whitespace',
+                               *options, str(patch)],
                               text=True, capture_output=True)
 
     forward = apply('--check')

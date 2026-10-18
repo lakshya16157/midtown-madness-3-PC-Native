@@ -494,7 +494,8 @@ Planned regression acceptance:
 
 
 G-06. BOUND PUSH-BUFFER PRODUCER RUN-AHEAD TO AVOID DARK FRAMES
-Status: MISSING. Historical unconditional-spin fix is SUPERSEDED by the bound.
+Status: IMPLEMENTED 18 October 2026; visual cruise/mission acceptance remains open.
+Historical unconditional-spin fix is SUPERSEDED by the bound.
 Priority: visible one-frame lighting errors while preserving performance.
 
 Upstream history:
@@ -527,33 +528,35 @@ Exact final algorithm and local evidence:
 - Preserve _mm_sfence, EAX/ECX effects and ESP += 4. If cur < get or
   cur-get > 0x40000, write WBC bit 0x10000 at flush bank +0x100410, then wait
   until the NV2A acknowledgment clears it.
-- Local src/recomp_manual.c:1273 has only EAX/ECX calculation, _mm_sfence and
-  ESP += 4. There is no lag bound or WBC handshake wait.
+- Local src/recomp_manual.c now retains EAX/ECX, _mm_sfence and ESP += 4,
+  with the 0x40000-byte/wrap condition and actual WBC acknowledgment wait.
+  xbox_Nv2aWbcWait uses the existing completion generation and host wait;
+  inactive acknowledgment, executor-self waits and shutdown are guarded.
 - The fork's command-mode fence publication, GPU notify bridge and existing
   DMA/fence seams are important independent work. They do not bound this
   producer's distance. An executor scanning limit does not bound producer lag.
 
 Concrete integration steps:
-[ ] Import the final fdc33ea behavior directly; retain 3188791 only as history
+[x] Import the final fdc33ea behavior directly; retain 3188791 only as history
     and an opt-in diagnostic comparison, not the final unconditional default.
-[ ] Verify device/register offsets and WBC ack behavior against this pinned
+[x] Verify device/register offsets and WBC ack behavior against this pinned
     runtime before enabling waits. An uncleared bit would create a new hang.
-[ ] Preserve the fork's command/fence publication and semaphore ordering;
+[x] Preserve the fork's command/fence publication and semaphore ordering;
     expose checked state if needed rather than publishing false completion.
-[ ] Recheck memory ordering/volatile semantics and GET units (bytes here), ring
+[x] Recheck memory ordering/volatile semantics and GET units (bytes here), ring
     wrap handling and masked producer address. Avoid overflow subtraction by
     preserving the cur < get branch.
-[ ] Keep sampling registration independent; importing G-07 requires its runtime
+[x] Keep sampling registration independent; importing G-07 requires its runtime
     API and is not necessary to invent a host symbol for the lighting fix.
-[ ] Retain GPU-notify event registration in src/main.c and existing fence/DMA
+[x] Retain GPU-notify event registration in src/main.c and existing fence/DMA
     seams until evidence establishes they can be safely consolidated.
-[ ] Diagnose an executor-stop/exit while waiting; any additional shutdown or
+[x] Diagnose an executor-stop/exit while waiting; any additional shutdown or
     timeout policy must fail clearly and must not pretend GPU work completed.
 
 Planned acceptance:
-[ ] Native fixture exercises lag below/exactly/above 256 KiB, zero lag and ring
+[x] Native fixture exercises lag below/exactly/above 256 KiB, zero lag and ring
     wrap, asserting handshake frequency and exact EAX/ECX/ESP behavior.
-[ ] A controlled acknowledgment completes waits; stalled acknowledgment is
+[x] A controlled acknowledgment completes waits; stalled acknowledgment is
     detected in a bounded diagnostic/shutdown test rather than hanging CI.
 [ ] Repeat at least five 1200-frame noon captures in cruise and missions with
     headlights/reset/collisions. Count dark frames from actual image/lighting
@@ -2236,6 +2239,12 @@ must be evaluated against the fork's existing optimized paths.
 
 RELATED TITLE-LEVEL DEPENDENCY: BOUNDED KICK RUN-AHEAD IS NOT ALREADY COVERED
 -------------------------------------------------------------------------
+Implementation update, 18 October 2026: the conditional 256 KiB/wrap WBC guard
+and host acknowledgment wait are now implemented. Title boundary/ABI fixtures
+pass at /Od and /O2, and WBC/notify/fence/DMA/command-completion regressions pass.
+The remaining text records the earlier audit baseline. Actual cruise/mission
+pixel acceptance remains open; this mitigation does not identify the raced read.
+
 This is outside the 18 toolkit commits, but it matters when integrating their
 timing/fence improvements. Parent commit:
 fdc33ea50553fa47aa146931ce189acf478afd85

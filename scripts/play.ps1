@@ -3,12 +3,13 @@
 Run the recompiled Midtown Madness 3 built by scripts\setup.ps1.
 
 .DESCRIPTION
-  pwsh scripts\play.ps1 [-Keyboard] [-Fullscreen] [-Profile Balanced|Quality|LowPower] [-FpsLimit 60] [-Fov 100] [-TraceBuildings | -NoTraceBuildings] [-NoConsoleLog] [-Exe <path>]
+  pwsh scripts\play.ps1 [-Keyboard] [-Fullscreen] [-Profile Balanced|Quality|LowPower] [-FpsLimit 60] [-Fov 100] [-TraceBuildings | -NoTraceBuildings] [-NoLightDiagnostics] [-NoConsoleLog] [-Exe <path>]
 
 Any RECOMP_*/MM3_* variable already set in your shell overrides these
 defaults (see README "Options"). F11 or Alt+Enter toggles fullscreen.
 Every launch saves combined, timestamped output and launch metadata under logs\.
 Use -NoConsoleLog to keep game output in the log without console echo.
+Use -NoLightDiagnostics to disable inherited lighting captures for this launch.
 Normal launches leave focused building/texture/stream-wait diagnostics off.
 Use -TraceBuildings to enable them for a pop-in investigation.
 #>
@@ -20,6 +21,7 @@ param(
     [ValidateRange(60, 110)][double]$Fov,
     [switch]$TraceBuildings,
     [switch]$NoTraceBuildings,
+    [switch]$NoLightDiagnostics,
     [switch]$NoConsoleLog,
     [string]$Exe
 )
@@ -307,6 +309,12 @@ try {
             throw 'Another Midtown Madness 3 launcher is active. Close the existing game/launcher before starting another copy; they share an exclusive game cache.'
         }
     }
+    if ($NoLightDiagnostics) {
+        foreach ($k in @('MM3_LIGHT_DUMP', 'MM3_LIGHT_DEBUG')) {
+            $previous[$k] = [Environment]::GetEnvironmentVariable($k, 'Process')
+            Remove-Item -LiteralPath "Env:\$k" -ErrorAction SilentlyContinue
+        }
+    }
     foreach ($k in $defaults.Keys) {
         $value = [Environment]::GetEnvironmentVariable($k, 'Process')
         if (-not $value) {
@@ -385,6 +393,7 @@ try {
         command = $command; arguments = $commandArguments
         launch_options = @{ profile = $Profile; keyboard = [bool]$Keyboard; fullscreen = [bool]$Fullscreen
             trace_buildings = [bool]$TraceBuildings; no_console_log = [bool]$NoConsoleLog
+            no_light_diagnostics = [bool]$NoLightDiagnostics
             fps_limit = if ($PSBoundParameters.ContainsKey('FpsLimit')) { $FpsLimit } else { $null }
             fov = if ($PSBoundParameters.ContainsKey('Fov')) { $Fov } else { $null } }
         environment = $settings; profile_defaults_for_unset_settings = $profileDefaults
