@@ -30,10 +30,17 @@ extern void sub_0022FDFD_original(void);
 #define CAR_POOL_AHEAD 5.0f
 #define CAR_POOL_DROP 0.45f
 #define CAR_POOL_GAIN 0.10f
-/* Keep the red tail-light gradient close to the vehicle in daylight. The
- * centre intensity stays authored; evening/night retain the wider spill. */
-#define CAR_TAIL_RADIUS_DAY 1.1f
+/* Sunlight overwhelms the rear lamps' illumination of nearby surfaces. Keep
+ * only a faint, tight field in morning/noon; native visible lenses retain
+ * their authored appearance and evening/night retain their wider spill. */
+#define CAR_TAIL_RADIUS_DAY 0.35f
 #define CAR_TAIL_RADIUS_NIGHT 2.2f
+#define CAR_TAIL_GAIN_DAY 0.015f
+#define CAR_TAIL_GAIN_NIGHT 0.22f
+#define CAR_BRAKE_RADIUS_DAY 0.5f
+#define CAR_BRAKE_RADIUS_NIGHT 3.4f
+#define CAR_BRAKE_GAIN_DAY 0.04f
+#define CAR_BRAKE_GAIN_NIGHT 0.40f
 /* Records per frame are scarce (256 slots shared with every street lamp), and
  * when the queue fills the later cars lose lights from frame to frame, which
  * reads as flicker. Same-kind lamps of one car share a record; its front uses
@@ -655,11 +662,15 @@ void mm3_car_lighting_emit(uint32_t node, uint32_t mask, const float source[12])
     }
     if (brightness > 1) brightness = 1;
     if (kind == 1) {
-        car_light_submit(owner, node, kind, source, NULL, color, brightness * .22f,
-                          mm3_car_lighting_dark_period(time_of_day) ?
-                          CAR_TAIL_RADIUS_NIGHT : CAR_TAIL_RADIUS_DAY);
+        int dark = mm3_car_lighting_dark_period(time_of_day);
+        car_light_submit(owner, node, kind, source, NULL, color,
+                          brightness * (dark ? CAR_TAIL_GAIN_NIGHT : CAR_TAIL_GAIN_DAY),
+                          dark ? CAR_TAIL_RADIUS_NIGHT : CAR_TAIL_RADIUS_DAY);
     } else if (kind == 2) {
-        car_light_submit(owner, node, kind, source, NULL, color, brightness * .40f, 3.4f);
+        int dark = mm3_car_lighting_dark_period(time_of_day);
+        car_light_submit(owner, node, kind, source, NULL, color,
+                          brightness * (dark ? CAR_BRAKE_GAIN_NIGHT : CAR_BRAKE_GAIN_DAY),
+                          dark ? CAR_BRAKE_RADIUS_NIGHT : CAR_BRAKE_RADIUS_DAY);
     } else if (kind == 3) {
         car_light_submit(owner, node, kind, source, NULL, color, brightness * .35f, 4.5f);
     } else if (kind == 4 || kind == 9) {

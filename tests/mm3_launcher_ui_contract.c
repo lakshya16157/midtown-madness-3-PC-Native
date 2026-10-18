@@ -5,6 +5,96 @@
 #define CHECK(test) do { if (!(test)) { fprintf(stderr, "FAIL launcher UI line %d: %s\n", __LINE__, #test); ExitProcess(1); } } while (0)
 static int s_play;
 
+typedef struct HelpText {
+    char title[256], value[512], body[2048], effect[2048];
+} HelpText;
+
+static void help_text(HWND window, HelpText *text)
+{
+    GetDlgItemTextA(window, ID_HELP_TITLE, text->title, sizeof text->title);
+    GetDlgItemTextA(window, ID_HELP_VALUE, text->value, sizeof text->value);
+    GetDlgItemTextA(window, ID_HELP_BODY, text->body, sizeof text->body);
+    GetDlgItemTextA(window, ID_HELP_EFFECT, text->effect, sizeof text->effect);
+    CHECK(strlen(text->title) >= 3);
+    CHECK(strlen(text->body) >= 24 && strlen(text->effect) >= 12);
+}
+
+static int contains(const char *text, const char *part)
+{
+    size_t length = strlen(part);
+    for (; *text; ++text) if (!_strnicmp(text, part, length)) return 1;
+    return 0;
+}
+
+static int help_contains(HWND window, const char *part)
+{
+    HelpText text;
+    help_text(window, &text);
+    return contains(text.title, part) || contains(text.value, part) ||
+        contains(text.body, part) || contains(text.effect, part);
+}
+
+static RECT child_bounds(HWND window, int id)
+{
+    RECT bounds;
+    CHECK(GetWindowRect(GetDlgItem(window, id), &bounds));
+    MapWindowPoints(NULL, window, (POINT *)&bounds, 2);
+    return bounds;
+}
+
+static void help_layout(HWND window)
+{
+    static const int ids[] = {ID_HELP_TITLE, ID_HELP_VALUE, ID_HELP_BODY, ID_HELP_EFFECT};
+    RECT client, tabs = child_bounds(window, ID_TABS), footer = child_bounds(window, ID_STATUS);
+    LONG previous_bottom = tabs.top;
+    GetClientRect(window, &client);
+    for (int i = 0; i < (int)(sizeof ids / sizeof ids[0]); ++i) {
+        HWND child = GetDlgItem(window, ids[i]);
+        RECT bounds = child_bounds(window, ids[i]), measured;
+        char text[2048];
+        CHECK(IsWindowVisible(child));
+        CHECK(bounds.left > tabs.right && bounds.right <= client.right);
+        CHECK(bounds.top >= previous_bottom && bounds.bottom <= footer.top);
+        CHECK(bounds.bottom <= client.bottom && bounds.top >= client.top);
+        previous_bottom = bounds.bottom;
+        GetWindowTextA(child, text, sizeof text);
+        measured.left = measured.top = 0;
+        measured.right = bounds.right - bounds.left; measured.bottom = 0;
+        HDC dc = GetDC(child);
+        HFONT previous = SelectObject(dc, (HFONT)SendMessageA(child, WM_GETFONT, 0, 0));
+        DrawTextA(dc, text, -1, &measured, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+        SelectObject(dc, previous); ReleaseDC(child, dc);
+        CHECK(measured.bottom <= bounds.bottom - bounds.top + 2);
+    }
+}
+
+static void focus_control(HWND window, int id)
+{
+    static HWND previous;
+    HWND child = GetDlgItem(window, id);
+    CHECK(child);
+    /* Deliver to the real child subclass, on its owner thread, without global
+     * keyboard/mouse input or dependence on the desktop's foreground window. */
+    if (previous != child && IsWindow(previous)) SendMessageA(previous, WM_KILLFOCUS, (WPARAM)child, 0);
+    SendMessageA(child, WM_SETFOCUS, 0, 0);
+    previous = child;
+}
+
+static void choose(HWND window, int id, int value)
+{
+    HWND child = GetDlgItem(window, id);
+    combo_select(child, value);
+    CHECK(combo_value(child) == value);
+    SendMessageA(window, WM_COMMAND, MAKEWPARAM(id, CBN_SELCHANGE), (LPARAM)child);
+}
+
+static void edit_value(HWND window, int id, const char *value)
+{
+    HWND child = GetDlgItem(window, id);
+    CHECK(SetWindowTextA(child, value));
+    SendMessageA(window, WM_COMMAND, MAKEWPARAM(id, id == ID_FPS ? CBN_EDITCHANGE : EN_CHANGE), (LPARAM)child);
+}
+
 static void controllers_layout(HWND window)
 {
     RECT client, count, status, bindings;
@@ -25,10 +115,12 @@ static HWND wait_launcher(void)
 {
     DWORD start = GetTickCount();
     while (GetTickCount() - start < 10000) {
-        HWND window = FindWindowA("MM3NativeLauncher", NULL);
-        DWORD pid = 0;
-        if (window) GetWindowThreadProcessId(window, &pid);
-        if (pid == GetCurrentProcessId() && IsWindowVisible(window) && GetDlgItem(window, IDOK)) return window;
+        HWND window = NULL;
+        while ((window = FindWindowExA(NULL, window, "MM3NativeLauncher", NULL)) != NULL) {
+            DWORD pid = 0;
+            GetWindowThreadProcessId(window, &pid);
+            if (pid == GetCurrentProcessId() && IsWindowVisible(window) && GetDlgItem(window, IDOK)) return window;
+        }
         Sleep(10);
     }
     CHECK(0); return NULL;
@@ -40,6 +132,136 @@ static void select_page(HWND window, int page)
     SendMessageA(tabs, TCM_SETCURSEL, page, 0);
     SendMessageA(window, WM_NOTIFY, ID_TABS, (LPARAM)&notification);
 }
+
+static void contextual_help(HWND window)
+{
+    static const int settings[] = {ID_RESOLUTION, ID_MODE, ID_FPS, ID_VSYNC, ID_SCALE,
+        ID_ASPECT, ID_MSAA, ID_ANISO, ID_DRAW, ID_VIEW, ID_SHOW_FPS, ID_MINIMAP,
+        ID_PORT, ID_PEERS};
+    static const int choices[] = {ID_RESOLUTION, ID_MODE, ID_SCALE, ID_ASPECT,
+        ID_MSAA, ID_ANISO, ID_DRAW, ID_VIEW, ID_MINIMAP};
+    static const int controls[] = {ID_KEYBOARD, ID_PAD_COUNT, ID_GROUP, ID_BINDINGS,
+        ID_SOURCE, ID_PAD_PORT, ID_CAPTURE, ID_UNBIND};
+    static const int buttons[] = {ID_DEFAULTS, IDOK, IDCANCEL};
+    HelpText text, previous;
+    char page_titles[3][256];
+    for (int page = 0; page < 3; ++page) {
+        select_page(window, page);
+        help_text(window, &text); help_layout(window);
+        snprintf(page_titles[page], sizeof page_titles[page], "%s", text.title);
+    }
+    CHECK(strcmp(page_titles[0], page_titles[1]) && strcmp(page_titles[1], page_titles[2]));
+
+    select_page(window, 0);
+    for (int i = 0; i < (int)(sizeof settings / sizeof settings[0]); ++i) {
+        focus_control(window, settings[i]); help_text(window, &text); help_layout(window);
+        CHECK(*text.value);
+        CHECK(strcmp(text.title, page_titles[0]));
+    }
+    /* A keyboard focus change and pointer hover both update the same panel. */
+    focus_control(window, ID_ANISO); help_text(window, &previous);
+    SendMessageA(GetDlgItem(window, ID_RESOLUTION), WM_MOUSEMOVE, 0, MAKELPARAM(5, 5));
+    help_text(window, &text); CHECK(strcmp(previous.title, text.title));
+    focus_control(window, ID_ANISO); help_text(window, &text);
+    CHECK(!strcmp(previous.title, text.title));
+
+    for (int i = 0; i < (int)(sizeof choices / sizeof choices[0]); ++i) {
+        HWND child = GetDlgItem(window, choices[i]);
+        int count = (int)SendMessageA(child, CB_GETCOUNT, 0, 0);
+        previous.value[0] = 0;
+        CHECK(count >= 2);
+        for (int at = 0; at < count; ++at) {
+            SendMessageA(child, CB_SETCURSEL, at, 0);
+            SendMessageA(window, WM_COMMAND, MAKEWPARAM(choices[i], CBN_SELCHANGE), (LPARAM)child);
+            help_text(window, &text); help_layout(window);
+            CHECK(strcmp(previous.value, text.value));
+            snprintf(previous.value, sizeof previous.value, "%s", text.value);
+        }
+    }
+    choose(window, ID_RESOLUTION, 2560 * 10000 + 1440);
+    CHECK(help_contains(window, "2560") && help_contains(window, "1440"));
+    choose(window, ID_MSAA, 4);
+    CHECK(help_contains(window, "4x"));
+    CHECK(help_contains(window, "edge") || help_contains(window, "jagged") || help_contains(window, "smooth"));
+    choose(window, ID_SCALE, 3000);
+    CHECK(help_contains(window, "1440p"));
+    CHECK(help_contains(window, "pixel") || help_contains(window, "resolution"));
+    edit_value(window, ID_FPS, "30"); help_text(window, &previous);
+    CHECK(help_contains(window, "30"));
+    edit_value(window, ID_FPS, "abc"); help_text(window, &text);
+    CHECK(strcmp(previous.value, text.value));
+    CHECK(help_contains(window, "1") && help_contains(window, "60"));
+    CHECK(help_contains(window, "invalid") || help_contains(window, "enter") || help_contains(window, "between"));
+    edit_value(window, ID_FPS, "60"); CHECK(help_contains(window, "60"));
+    edit_value(window, ID_PORT, "3076"); CHECK(help_contains(window, "3076"));
+    edit_value(window, ID_PORT, "0");
+    CHECK(help_contains(window, "65535"));
+    edit_value(window, ID_PEERS, "localhost:3075"); help_text(window, &text);
+    CHECK(contains(text.value, "1") && contains(text.value, "peer"));
+    const char *peers = "192.168.1.11:3075,192.168.1.12:3075,192.168.1.13:3075,192.168.1.14:3075,"
+        "192.168.1.15:3075,192.168.1.16:3075,192.168.1.17:3075,192.168.1.18:3075";
+    edit_value(window, ID_PEERS, peers); help_text(window, &text); help_layout(window);
+    CHECK(contains(text.value, "8") && contains(text.value, "peer"));
+    char full_peers[512]; GetDlgItemTextA(window, ID_PEERS, full_peers, sizeof full_peers);
+    CHECK(!strcmp(full_peers, peers));
+
+    HWND vsync = GetDlgItem(window, ID_VSYNC);
+    for (int on = 0; on < 2; ++on) {
+        SendMessageA(vsync, BM_SETCHECK, on ? BST_UNCHECKED : BST_CHECKED, 0);
+        SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_VSYNC, BN_CLICKED), (LPARAM)vsync);
+        help_text(window, &text);
+        CHECK(contains(text.value, on ? "On" : "Off"));
+    }
+
+    select_page(window, 1);
+    for (int i = 0; i < (int)(sizeof controls / sizeof controls[0]); ++i) {
+        focus_control(window, controls[i]); help_text(window, &text); help_layout(window);
+        CHECK(*text.value);
+        CHECK(strcmp(text.title, page_titles[1]));
+    }
+    choose(window, ID_PAD_COUNT, 4); CHECK(help_contains(window, "4"));
+    choose(window, ID_GROUP, 2);
+    HWND list = GetDlgItem(window, ID_BINDINGS);
+    SendMessageA(list, LB_SETCURSEL, 1, 0);
+    SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_BINDINGS, LBN_SELCHANGE), (LPARAM)list);
+    CHECK(help_contains(window, "Brake"));
+    choose(window, ID_GROUP, 0);
+
+    select_page(window, 2);
+    edit_value(window, ID_FOV, "95"); help_text(window, &previous);
+    CHECK(help_contains(window, "95"));
+    CHECK(help_contains(window, "wide") || help_contains(window, "view"));
+    edit_value(window, ID_FOV, "25"); help_text(window, &text);
+    CHECK(strcmp(previous.value, text.value));
+    CHECK(help_contains(window, "60") && help_contains(window, "110"));
+    CHECK(help_contains(window, "invalid") || help_contains(window, "enter") || help_contains(window, "must"));
+    edit_value(window, ID_FOV, "0");
+    CHECK(help_contains(window, "retail") || help_contains(window, "original"));
+    focus_control(window, ID_REQUIRED); help_text(window, &text); help_layout(window);
+    CHECK(!IsWindowEnabled(GetDlgItem(window, ID_REQUIRED)));
+    CHECK(help_contains(window, "required") || help_contains(window, "always"));
+
+    for (int i = 1; i < MM3_LAUNCH_OPTION_COUNT; ++i) {
+        int id = ID_OPTION + i;
+        HWND child = GetDlgItem(window, id);
+        select_page(window, i == MM3_LAUNCH_DSP || i == MM3_LAUNCH_NETWORK ? 0 : 2);
+        CHECK(child && IsWindowVisible(child));
+        focus_control(window, id); help_text(window, &previous); help_layout(window);
+        CHECK(*previous.value);
+        CHECK(strstr(previous.title, mm3_launcher_options[i].label));
+        int before = SendMessageA(child, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        SendMessageA(window, WM_COMMAND, MAKEWPARAM(id, BN_CLICKED), (LPARAM)child);
+        help_text(window, &text); help_layout(window);
+        CHECK(strcmp(previous.value, text.value));
+        CHECK(contains(text.value, before ? "Off" : "On"));
+    }
+    for (int i = 0; i < (int)(sizeof buttons / sizeof buttons[0]); ++i) {
+        focus_control(window, buttons[i]); help_text(window, &text); help_layout(window);
+    }
+    SendMessageA(window, WM_COMMAND, ID_DEFAULTS, 0);
+    select_page(window, 0);
+}
+
 static void capture_page(HWND window, const char *name)
 {
     const char *directory = getenv("MM3_LAUNCHER_CAPTURE_DIR");
@@ -81,6 +303,7 @@ static DWORD WINAPI exercise(void *unused)
     HWND play = GetDlgItem(window, IDOK); RECT footer;
     GetWindowRect(play, &footer);
     CHECK(footer.bottom <= bounds.bottom && footer.top >= bounds.top && IsWindowVisible(play));
+    contextual_help(window);
     select_page(window, 1);
     controllers_layout(window);
     HWND count = GetDlgItem(window, ID_PAD_COUNT);
@@ -106,6 +329,7 @@ static DWORD WINAPI exercise(void *unused)
     PostMessageA(window, WM_KEYDOWN, 'W', 0);
     Sleep(80);
     GetDlgItemTextA(window, ID_BIND_LABEL, status, sizeof status); CHECK(strstr(status, "W"));
+    HelpText hint; help_text(window, &hint); CHECK(strstr(hint.value, "<- W"));
     capture_page(window, "controls");
     SendMessageA(group, CB_SETCURSEL, 0, 0);
     SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_GROUP, CBN_SELCHANGE), (LPARAM)group);
@@ -114,15 +338,18 @@ static DWORD WINAPI exercise(void *unused)
     SendMessageA(source, CB_SETCURSEL, 15, 0);
     SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_SOURCE, CBN_SELCHANGE), (LPARAM)source);
     GetDlgItemTextA(window, ID_BIND_LABEL, status, sizeof status); CHECK(strstr(status, "RT"));
+    help_text(window, &hint); CHECK(strstr(hint.value, "<- RT"));
     select_page(window, 2);
     CHECK(IsWindowVisible(GetDlgItem(window, ID_FOV)));
     SetDlgItemTextA(window, ID_FOV, "95");
     SendMessageA(GetDlgItem(window, ID_OPTION + MM3_LAUNCH_WIDESCREEN), BM_SETCHECK, BST_UNCHECKED, 0);
     SendMessageA(GetDlgItem(window, ID_OPTION + MM3_LAUNCH_DISTANCE), BM_SETCHECK, BST_UNCHECKED, 0);
+    focus_control(window, ID_OPTION + MM3_LAUNCH_CAR_LIGHT);
     capture_page(window, "mods");
     select_page(window, 0);
     SetDlgItemTextA(window, ID_FPS, "30");
     SendMessageA(GetDlgItem(window, ID_VSYNC), BM_SETCHECK, BST_CHECKED, 0);
+    choose(window, ID_MSAA, 4);
     capture_page(window, "settings");
     SendMessageA(window, WM_COMMAND, s_play ? IDOK : IDCANCEL, 0);
     return 0;
@@ -134,9 +361,11 @@ static void smaller_layout(void)
     memset(&ui, 0, sizeof ui);
     mm3_launcher_config_defaults(&ui.config);
     mm3_display_settings_defaults(&ui.display, NULL);
+    ui.display.aniso = 3; /* Valid saved values need not be predefined choices. */
     ui.scale = layout_scale(&work, 1.5f); /* High DPI, 720p with a taskbar. */
     bounds.left = bounds.top = 0;
-    bounds.right = (LONG)lroundf(865.f * ui.scale); bounds.bottom = (LONG)lroundf(754.f * ui.scale);
+    bounds.right = (LONG)lroundf((float)LAUNCHER_WIDTH * ui.scale);
+    bounds.bottom = (LONG)lroundf((float)LAUNCHER_HEIGHT * ui.scale);
     AdjustWindowRectEx(&bounds, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE, WS_EX_CONTROLPARENT);
     HWND window = CreateWindowExA(WS_EX_CONTROLPARENT, "MM3NativeLauncher", "Midtown Madness 3 - 720p layout check",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, 0, 0,
@@ -145,11 +374,30 @@ static void smaller_layout(void)
     GetWindowRect(window, &bounds); GetWindowRect(GetDlgItem(window, IDOK), &footer);
     CHECK(bounds.bottom <= work.bottom && bounds.right <= work.right);
     CHECK(footer.bottom < bounds.bottom && IsWindowVisible(GetDlgItem(window, IDOK)));
+    CHECK(combo_value(GetDlgItem(window, ID_ANISO)) == 3);
+    focus_control(window, ID_ANISO);
+    HelpText hint; help_text(window, &hint); CHECK(contains(hint.value, "3x"));
+    contextual_help(window);
+    help_layout(window);
+    focus_control(window, ID_MSAA);
     capture_page(window, "settings-720p");
-    page_show(&ui, 1); controllers_layout(window);
+    page_show(&ui, 1); controllers_layout(window); help_layout(window);
     CHECK(combo_value(GetDlgItem(window, ID_PAD_COUNT)) == 1);
+    choose(window, ID_GROUP, 2);
+    HWND list = GetDlgItem(window, ID_BINDINGS);
+    SendMessageA(list, LB_SETCURSEL, 0, 0);
+    SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_BINDINGS, LBN_SELCHANGE), (LPARAM)list);
+    SetFocus(list); CHECK(GetFocus() == list);
+    pad_navigation(&ui, XINPUT_GAMEPAD_DPAD_DOWN);
+    CHECK(SendMessageA(list, LB_GETCURSEL, 0, 0) == 1);
+    help_text(window, &hint); CHECK(contains(hint.value, "Brake"));
+    pad_navigation(&ui, XINPUT_GAMEPAD_DPAD_UP);
+    CHECK(SendMessageA(list, LB_GETCURSEL, 0, 0) == 0);
+    help_text(window, &hint); CHECK(contains(hint.value, "Accelerate"));
+    choose(window, ID_GROUP, 0);
+    focus_control(window, ID_BINDINGS);
     capture_page(window, "controls-720p");
-    page_show(&ui, 2); capture_page(window, "mods-720p");
+    page_show(&ui, 2); help_layout(window); capture_page(window, "mods-720p");
     DestroyWindow(window); DeleteObject(ui.font); DeleteObject(ui.heading);
 }
 int main(int argc, char **argv)
@@ -202,6 +450,6 @@ int main(int argc, char **argv)
     CHECK(!mm3_launcher_run());
     smaller_layout();
     DeleteFileA(display_path); DeleteFileA(launcher_path);
-    puts("PASS launcher UI: scaled controller-count choice, keyboard capture/reserved keys, pad mapping, Cancel isolation, Play persistence, defaults, explicit USB overrides and bypass bootstrap");
+    puts("PASS launcher UI: contextual explanations and live values for all settings/mods/bindings, focus/hover, validation guidance, normal/720p help layout, keyboard capture/reserved keys, pad mapping, Cancel isolation, Play persistence, defaults, explicit USB overrides and bypass bootstrap");
     return 0;
 }

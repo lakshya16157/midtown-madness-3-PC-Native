@@ -164,19 +164,21 @@ static void time_of_day_checks(void)
         assert(!MEM32(QUEUE+0x5810) && !flares && MEM32(STACK+12)==0x101);
         for(j=0;j<sizeof nonfront/sizeof nonfront[0];++j) {
             unsigned kind=nonfront[j];
-            uint32_t night_color;
+            uint32_t night_color,night_flare_color;
             unsigned night_flares;
             setup(kind,0xffff0000u,.8f,1u<<kind,0);run();
             assert(MEM32(QUEUE+0x5810)==1);
-            night_color=MEM32(entry(0)+0x4c);night_flares=flares;
+            night_color=MEM32(entry(0)+0x4c);night_flares=flares;night_flare_color=flare_color;
             setup(kind,0xffff0000u,.8f,1u<<kind,0);MEM32(0x407c30)=times[i];run();
             assert(MEM32(QUEUE+0x5810)==1 && flares==night_flares);
-            assert(MEM32(entry(0)+0x4c)==night_color);
-            if(kind==1) {
-                float diameter=dark?4.4f:2.2f;
+            assert(flare_color==night_flare_color);
+            if(kind==1 || kind==2) {
+                float diameter=kind==1?(dark?4.4f:.7f):(dark?6.8f:1.0f);
+                uint32_t day_color=kind==1?0xff030000u:0xff080000u;
+                assert(MEM32(entry(0)+0x4c)==(dark?night_color:day_color));
                 assert(MEMF(entry(0)+0x40)==diameter);
                 assert(MEMF(entry(0)+0x44)==diameter && MEMF(entry(0)+0x48)==diameter);
-            }
+            } else assert(MEM32(entry(0)+0x4c)==night_color);
         }
     }
     /* Retain authored parameters and masks across successive races. Native
@@ -190,7 +192,29 @@ static void time_of_day_checks(void)
         assert(MEM32(NODE+0x64)==0xffffffffu && MEMF(NODE+0x54)==.8f);
         assert(MEM32(STACK+12)==0x101);
     }
-    puts("PASS: native lenses, beam/fill, offscreen sources and zero-color handles only light evening/night; daylight tail gradient radius halved with identical colour/intensity; brake/reverse/signal/emergency gates unchanged; repeated period transitions retain authoring/masks");
+    /* Both native draws and source-only collection use the same rear-light
+     * daylight attenuation. Repeated period switches cannot alter lenses or
+     * leave the old daytime/night field size and intensity behind. */
+    for(j=1;j<=2;++j) {
+        setup(j,0xffff0000u,.8f,1u<<j,0);
+        for(i=0;i<sizeof sequence/sizeof sequence[0];++i) {
+            unsigned dark=sequence[i]==2 || sequence[i]==3;
+            uint32_t color=j==1?(dark?0xff2d0000u:0xff030000u):
+                                     (dark?0xff520000u:0xff080000u);
+            float diameter=j==1?(dark?4.4f:.7f):(dark?6.8f:1.0f);
+            native_reset(QUEUE);flares=0;MEM32(0x407c30)=sequence[i];
+            mm3_car_lighting_emit(NODE,1u<<j,(const float *)XBOX_PTR(MATRIX));
+            assert(MEM32(QUEUE+0x5810)==1 && !flares);
+            assert(MEM32(entry(0)+0x4c)==color);
+            assert(MEMF(entry(0)+0x40)==diameter);
+            assert(MEMF(entry(0)+0x44)==diameter && MEMF(entry(0)+0x48)==diameter);
+            again(j,1u<<j);
+            assert(MEM32(QUEUE+0x5810)==1 && MEM32(entry(0)+0x4c)==color);
+            assert(MEM32(NODE+0x64)==0xffff0000u && MEMF(NODE+0x54)==.8f);
+            assert(MEM32(STACK+12)==(1u<<j));
+        }
+    }
+    puts("PASS: front lenses/fields only light evening/night; morning/noon tail and brake spill stays faint/tight while native rear lenses and evening/night illumination retain authoring; reverse/signal/emergency unchanged; native/offscreen sources and repeated period transitions agree");
 }
 static void direction_checks(void)
 {

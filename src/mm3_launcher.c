@@ -22,7 +22,9 @@ enum {
     ID_CAPTURE, ID_UNBIND, ID_SOURCE, ID_BIND_LABEL, ID_PAD_STATUS, ID_PAD_PORT, ID_PAD_COUNT,
     ID_RESOLUTION, ID_MODE, ID_FPS, ID_VSYNC, ID_SCALE, ID_ASPECT, ID_MSAA,
     ID_ANISO, ID_DRAW, ID_VIEW, ID_SHOW_FPS, ID_MINIMAP, ID_FOV, ID_PORT, ID_PEERS,
-    ID_OPTION = 300
+    ID_HELP_TITLE, ID_HELP_VALUE, ID_HELP_BODY, ID_HELP_EFFECT, ID_REQUIRED,
+    ID_OPTION = 300,
+    LAUNCHER_WIDTH = 1215, LAUNCHER_HEIGHT = 754
 };
 typedef struct LauncherControl { HWND window; int page; } LauncherControl;
 typedef struct Launcher {
@@ -33,6 +35,7 @@ typedef struct Launcher {
     WORD previous_pad[4];
     int pad_seen[4];
     float scale;
+    int help_id;
     MM3LauncherConfig config;
     MM3DisplaySettings display;
 } Launcher;
@@ -50,6 +53,18 @@ static const char *const key_labels[MM3_LAUNCHER_KEYS] = {
 };
 
 static HWND control(Launcher *ui, int id) { return GetDlgItem(ui->window, id); }
+static void help_show(Launcher *ui, int id);
+static LRESULT CALLBACK help_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+                                  UINT_PTR subclass, DWORD_PTR reference)
+{
+    Launcher *ui = (Launcher *)reference;
+    HWND field = window;
+    (void)subclass;
+    while (GetParent(field) && GetParent(field) != ui->window) field = GetParent(field);
+    if (message == WM_SETFOCUS || (message == WM_MOUSEMOVE && ui->help_id != GetDlgCtrlID(field)))
+        help_show(ui, GetDlgCtrlID(field));
+    return DefSubclassProc(window, message, wparam, lparam);
+}
 static HWND add(Launcher *ui, int page, const char *kind, const char *text,
                 DWORD style, int id, int x, int y, int width, int height)
 {
@@ -61,6 +76,15 @@ static HWND add(Launcher *ui, int page, const char *kind, const char *text,
         x, y, width, height, ui->window, (HMENU)(INT_PTR)id, GetModuleHandleA(NULL), NULL);
     if (child) {
         SendMessageA(child, WM_SETFONT, (WPARAM)ui->font, TRUE);
+        if (id > 0 && id < ID_HELP_TITLE) {
+            SetWindowSubclass(child, help_proc, 2, (DWORD_PTR)ui);
+            if (!strcmp(kind, "COMBOBOX")) {
+                COMBOBOXINFO info = {sizeof info};
+                if (GetComboBoxInfo(child, &info) && info.hwndItem != child)
+                    SetWindowSubclass(info.hwndItem, help_proc, 2, (DWORD_PTR)ui);
+            }
+        } else if (id == ID_REQUIRED || (id >= ID_OPTION && id < ID_OPTION + MM3_LAUNCH_OPTION_COUNT))
+            SetWindowSubclass(child, help_proc, 2, (DWORD_PTR)ui);
         if (ui->control_count < (int)(sizeof ui->controls / sizeof ui->controls[0])) {
             ui->controls[ui->control_count].window = child;
             ui->controls[ui->control_count++].page = page;
@@ -136,6 +160,228 @@ static void key_name(int vk, char *text, size_t capacity)
     else snprintf(text, capacity, "VK %02X", vk);
 }
 
+/* Read the controls, not the saved configuration: the guide follows edits
+ * immediately, before Play validates and commits the user's preferences. */
+static void help_show(Launcher *ui, int id)
+{
+    const char *title = NULL, *body = NULL, *effect = NULL;
+    char value[640] = "", detail[640] = "", consequence[512] = "";
+    int selected;
+    if (!control(ui, ID_HELP_TITLE)) return;
+    if (id >= ID_OPTION && id < ID_OPTION + MM3_LAUNCH_OPTION_COUNT) {
+        static const char *const descriptions[MM3_LAUNCH_OPTION_COUNT] = {
+            "Use keyboard and mouse bindings for player 1 alongside a controller. Inputs work while the game window has focus.",
+            "Fit the driving view and HUD to the selected aspect ratio. Off uses the original 4:3 presentation, regardless of the aspect-ratio choice.",
+            "Enable the object-detail and building-distance multipliers on Settings. Off uses the original Xbox distances, even if those values are higher than 1x.",
+            "Smooth the enlarged panorama of distant buildings to reduce blocky skyline edges. This affects the horizon artwork, separately from distance fog.",
+            "Add illumination around vehicle lamps and on the road. Front lights activate in evening/night; morning/afternoon rear-light spill is small and faint. Off uses retail vehicle lighting.",
+            "Add warm, local illumination around street lamps, with source-sized reach. Keeps the lamps' placement, activation and breakage. Off uses retail lamp lighting.",
+            "Adjust world and local-light composition. Daylight keeps its authored colors; default night fill is darker so lamps stand out. Softens overlapping light fields. Off uses retail composition.",
+            "Use scene depth to hide lamp flares behind cars and buildings. Off can leave bright flares visible through solid objects.",
+            "Make all installed vehicles, including hidden bonus cars, selectable. This adds no downloads and does not complete career missions.",
+            "Allow the game's developer scripts and commands. The developer HUD, menu, camera modes and E3 preset below depend on this switch and prepared scripts.",
+            "Show the game's diagnostic HUD at race start, including position and vehicle data. Requires developer tools and prepared scripts.",
+            "Open the game's developer menu at race start. Its experimental commands can change the current scene and do not pause the mission timer. Requires developer tools and prepared scripts.",
+            "Enable additional camera modes through the game's developer commands. Requires developer tools and prepared scripts.",
+            "Run the original E3 demonstration settings, including camera, LOD and streaming-sound changes. It can replace other visual choices. Requires developer tools and prepared scripts.",
+            "Show an animated spinner when new game frames stop briefly during loading. It is an activity indicator, not a percentage or estimate of remaining load time. Hidden during movies.",
+            "Use scene depth for distance haze and a smoother horizon transition. Off restores the game's original fog and horizon path.",
+            "Run the game's sound-processor programs for effects such as reverb, spatial processing and final mixing. Off uses a simpler voice mix.",
+            "Enable System Link networking for local multiplayer and configured UDP peers. This does not provide Xbox Live sign-in. Leave off for ordinary offline play."
+        };
+        int option = id - ID_OPTION, on = checked(ui, id);
+        title = mm3_launcher_options[option].label;
+        body = descriptions[option];
+        snprintf(value, sizeof value, "%s", on ? "On" : "Off");
+        effect = "Applies when you press Play. Your choice is saved for the next launch.";
+        if (option == MM3_LAUNCH_DSP)
+            effect = MM3_LAUNCHER_AUDIO ? (on ? "More accurate effects and mixing, with higher CPU use. Turn off if audio processing limits performance." : "Uses less CPU, with simpler audio effects and mixing.") : "This build does not include the sound-processor option.";
+        else if (option >= MM3_LAUNCH_DEV_HUD && option <= MM3_LAUNCH_E3)
+            effect = checked(ui, ID_OPTION + MM3_LAUNCH_DEV_TOOLS) ? "Needs the optional prepared developer scripts. These are experimental game commands." : "Enable retail developer tools first. Prepared developer scripts are also required.";
+        else if (option == MM3_LAUNCH_NETWORK)
+            effect = MM3_LAUNCHER_NETWORK ? "For two copies on one PC, use separate instances, saves and local UDP ports. Other machines can use the same port." : "This build does not include networking.";
+    } else {
+        GetWindowTextA(control(ui, id), value, sizeof value);
+        switch (id) {
+        case ID_RESOLUTION:
+            title = "Window size";
+            body = "Size of the game area in windowed mode. Fullscreen fills the current monitor at its native size. Automatic internal resolution also follows the fitted game area.";
+            effect = combo_value(control(ui, ID_MODE)) ? "Fullscreen is selected, so this size is used when you return to windowed mode." : "A larger window takes more screen space. With Automatic internal resolution it also increases GPU work.";
+            break;
+        case ID_MODE:
+            title = "Window mode";
+            body = combo_value(control(ui, id)) ? "Borderless fullscreen fills the current monitor at its native size. The Window size setting is retained for windowed mode." : "Play in a movable desktop window at the selected Window size.";
+            effect = "F11 or Alt+Enter switches fullscreen on and off while playing.";
+            break;
+        case ID_ASPECT:
+            title = "Aspect ratio";
+            body = !strcmp(value, "auto") ? "Auto matches the game's view to the actual window or fullscreen area. Resizing the window updates the view's shape." : "Choose the shape of the game view. 4:3 is the original Xbox shape; 16:9 is widescreen, 16:10 is slightly taller, and 21:9 is ultrawide. Unused space is letterboxed when shapes differ.";
+            effect = checked(ui, ID_OPTION + MM3_LAUNCH_WIDESCREEN) ? "Wider ratios show more at the sides. The widescreen mod keeps the HUD correctly placed." : "Widescreen view and HUD is off, so the game will use 4:3. Enable that mod to use this choice.";
+            break;
+        case ID_FPS: {
+            char *end;
+            long fps = strtol(value, &end, 10);
+            title = "Maximum FPS";
+            body = "Limit gameplay frame presentation to 1-60 frames per second. This is a ceiling, not a guarantee that the PC can reach that rate. Movies keep their own frame rate.";
+            if (end == value || *end || fps < 1 || fps > 60)
+                effect = "Enter a whole number from 1 to 60 before pressing Play.";
+            else {
+                snprintf(consequence, sizeof consequence, "%ld FPS allows about %.1f ms per frame. Higher values look smoother but need more CPU/GPU work; lower values reduce demand.", fps, 1000.0 / (double)fps);
+                effect = consequence;
+            }
+            break;
+        }
+        case ID_VSYNC:
+            title = "VSync"; snprintf(value, sizeof value, "%s", checked(ui, id) ? "On" : "Off");
+            body = "Synchronize presentation with the monitor to reduce screen tearing. The Maximum FPS limit still applies.";
+            effect = checked(ui, id) ? "Can add input delay or reduce the achieved frame rate when rendering misses a refresh." : "May respond sooner, but moving scenes can show tearing.";
+            break;
+        case ID_SCALE: {
+            int scale = combo_value(control(ui, id));
+            title = "Internal resolution";
+            body = "Resolution used to render the 3D scene before fitting it into the window. Higher settings sharpen edges and distant detail; they do not enlarge the window.";
+            if (scale == 0) {
+                const char *setting = getenv("RECOMP_SUPERSAMPLE");
+                int samples = setting ? atoi(setting) : 2;
+                if (samples < 1) samples = 1; if (samples > 4) samples = 4;
+                snprintf(consequence, sizeof consequence, "Automatic currently uses %dx the fitted window width and height, then downsamples (480-3840 vertical lines). At 2x this is about four times the pixels.", samples);
+            } else {
+                snprintf(consequence, sizeof consequence, "Renders about %d vertical lines. Doubling this resolution draws roughly four times the pixels and needs more GPU time and memory.", (int)lroundf((float)scale * .48f));
+            }
+            effect = consequence;
+            break;
+        }
+        case ID_MSAA:
+            title = "Anti-aliasing";
+            body = "Smooth polygon edges such as car outlines and building silhouettes. This is separate from internal resolution and texture filtering.";
+            selected = combo_value(control(ui, id));
+            if (selected == 1) effect = "Off uses less GPU memory and work, with more visible jagged edges.";
+            else { snprintf(consequence, sizeof consequence, "%dx MSAA uses more edge samples. Higher values smooth edges further and increase GPU memory and rendering cost.", selected); effect = consequence; }
+            break;
+        case ID_ANISO:
+            title = "Texture filtering";
+            body = "Keep textures sharper when viewed at a shallow angle, especially road markings and surfaces stretching into the distance.";
+            selected = combo_value(control(ui, id));
+            if (selected == 1) effect = "1x uses basic filtering. Angled road textures can look blurrier.";
+            else { snprintf(consequence, sizeof consequence, "%dx anisotropic filtering preserves more detail at angles. Higher values may cost some GPU time.", selected); effect = consequence; }
+            break;
+        case ID_DRAW: case ID_VIEW:
+            title = id == ID_DRAW ? "Object detail distance" : "Building view distance";
+            body = id == ID_DRAW ? "Keep detailed objects, pedestrian models and blob shadows visible farther away. 1x uses the Xbox distances; 2x-4x extend them. This does not set the city's building visibility range." : "Extend city/building visibility and the camera's far range. 1x uses the Xbox range. Streamed city cells limit how much extra geometry is available; facade detail extends only up to 2x.";
+            effect = checked(ui, ID_OPTION + MM3_LAUNCH_DISTANCE) ? (id == ID_DRAW ? "Higher values increase scene and CPU/GPU work. Lower this if dense streets reduce performance." : "Higher values can increase rendering work; 3x/4x may not reveal more buildings where the streamed-city limit is reached.") : "Extended detail and building distance is off. Both distances will use 1x until you enable that mod.";
+            break;
+        case ID_SHOW_FPS:
+            title = "Show FPS"; snprintf(value, sizeof value, "%s", checked(ui, id) ? "On" : "Off");
+            body = "Display the current frame rate in the game window's title bar. This is a readout and does not change the Maximum FPS limit.";
+            effect = "Useful for comparing settings. The title bar is normally hidden in fullscreen.";
+            break;
+        case ID_MINIMAP:
+            title = "Minimap style";
+            body = combo_value(control(ui, id)) ? "Draw transparent roads in perspective, with framing that responds to driving speed. This changes the minimap's presentation." : "Use the original Xbox minimap appearance and framing.";
+            effect = "Choose the style you find easier to read. Mission goals and the actual road layout are unchanged.";
+            break;
+        case ID_FOV: {
+            char *end;
+            long degrees = strtol(value, &end, 10);
+            title = "Horizontal field of view";
+            body = "Set the horizontal angle seen by the driving camera. 0 keeps the original camera framing with the selected aspect-ratio correction. Custom values must be 60-110 degrees.";
+            if (end == value || *end || degrees < 0 || degrees > 110 || (degrees && degrees < 60))
+                effect = "Enter 0 for retail framing, or a whole number from 60 to 110.";
+            else effect = degrees ? "Higher angles show more at the sides, make objects appear smaller and increase edge distortion. Lower angles zoom in. Menus and mirrors keep their own cameras." : "Uses the game's own camera framing. Set a value from 60 to 110 to choose a fixed horizontal angle.";
+            break;
+        }
+        case ID_PORT:
+            title = "Local UDP port";
+            body = "Network port used by this copy for System Link peer traffic. The default is 3075. Other players use this port when adding this copy as a peer.";
+            effect = "Used with System Link enabled. Enter 1-65535; two simultaneous copies on one PC need different ports.";
+            break;
+        case ID_PEERS:
+            title = "System Link peers";
+            if (!*value) snprintf(value, sizeof value, "Empty (no configured peer destinations)");
+            else {
+                int peers = 1;
+                for (const char *at = value; *at; ++at) if (*at == ',') ++peers;
+                snprintf(value, sizeof value, "%d configured peer destination%s", peers, peers == 1 ? "" : "s");
+            }
+            body = "Add up to eight remote host:port destinations, separated by commas. Example: 192.168.1.20:3075,192.168.1.21:3075. An empty field leaves the peer-destination list empty.";
+            effect = "Used with System Link enabled. Each port must match that remote copy's local UDP port. These are game-network destinations, not Xbox Live accounts.";
+            break;
+        case ID_KEYBOARD:
+            title = "Keyboard controls"; snprintf(value, sizeof value, "%s", checked(ui, id) ? "On" : "Off");
+            body = "Use keyboard and mouse bindings for player 1 while the game window has focus. A controller can still be used alongside them.";
+            effect = checked(ui, id) ? "Edit Xbox-button bindings or driving shortcuts below. F10 and F11 remain reserved for graphics settings and fullscreen." : "Keyboard gameplay bindings are disabled. Controllers and reserved window shortcuts remain available.";
+            break;
+        case ID_PAD_COUNT:
+            title = "Controllers in game";
+            body = "Expose 1-4 Xbox controller ports to the game. This is separate from the connected-controller status: choosing 4 does not create four physical controllers.";
+            effect = "Physical controller 1 feeds player 1, controller 2 feeds player 2, and so on. Keyboard input belongs to player 1.";
+            break;
+        case ID_GROUP:
+            title = "Binding group";
+            body = ui->group == 0 ? "Map physical controller buttons and triggers to Xbox inputs. The same mapping is used by all four players; stick axes keep their analog movement." : ui->group == 1 ? "Map keyboard keys or mouse buttons to Xbox buttons and stick directions. These generic Xbox inputs are interpreted by the game's current control layout." : "Map direct driving shortcuts for acceleration, braking, steering, gears, handbrake and camera. They take priority over colliding generic keyboard bindings while driving.";
+            effect = "Select an action in the list, then capture an input or clear that action. Changes are saved only when you press Play.";
+            break;
+        case ID_BINDINGS: case ID_SOURCE: case ID_CAPTURE: case ID_UNBIND: case ID_PAD_PORT: {
+            int action = (int)SendMessageA(control(ui, ID_BINDINGS), LB_GETCURSEL, 0, 0);
+            char binding[80];
+            if (action < 0) action = 0;
+            title = id == ID_PAD_PORT ? "Controller used for capture" : id == ID_CAPTURE ? "Capture a binding" : id == ID_UNBIND ? "Clear selected binding" : "Selected binding";
+            if (ui->group == 0) {
+                snprintf(value, sizeof value, "Xbox %s <- %s", mm3_launcher_pad_names[action], mm3_launcher_pad_sources[ui->config.pad[action]]);
+                body = "Choose the physical button or trigger that will produce this Xbox input. NONE unbinds it. The mapping applies equally to all players; stick axes remain analog.";
+                effect = "Triggers keep analog pressure for analog inputs. For digital actions they activate after about one-third travel.";
+            } else {
+                key_name(ui->group == 1 ? ui->config.keys[action] : ui->config.drive_keys[action], binding, sizeof binding);
+                snprintf(value, sizeof value, "%s <- %s", ui->group == 1 ? key_labels[action] : drive_labels[action], binding);
+                body = ui->group == 1 ? "This key or mouse button produces the selected Xbox input. Its game action follows the in-game control layout." : "This key or mouse button activates the selected driving shortcut. It takes priority over a generic Xbox-key binding on the same key while driving.";
+                effect = "Capture accepts a key or mouse button. Escape cancels capture; F10 and F11 are reserved.";
+            }
+            if (id == ID_PAD_PORT) {
+                GetWindowTextA(control(ui, id), value, sizeof value);
+                body = "Choose which physical controller to listen to when capturing a button or trigger. This affects capture only, not which player uses that controller.";
+                effect = "Release held buttons, choose Capture, then press a button on this controller. The resulting mapping is shared by all players.";
+            } else if (id == ID_UNBIND)
+                effect = "Clears only this action. Other bindings stay as they are; Play saves the edit and Cancel discards it.";
+            else if (id == ID_CAPTURE)
+                effect = ui->capture ? "Listening now. Press the desired input, or Escape to cancel." : "Start capture, then press the desired input. Release controller buttons before capturing. Escape cancels.";
+            break;
+        }
+        case ID_REQUIRED:
+            title = "Collision-cell safety repair"; snprintf(value, sizeof value, "Always on");
+            body = "Repair decoded collision cells before the game's collision queries use them. This compatibility fix is required for reliable native gameplay.";
+            effect = "Always enabled. It is a compatibility repair, not an optional visual effect.";
+            break;
+        case ID_DEFAULTS:
+            title = "Restore defaults"; value[0] = 0;
+            body = "Reset the choices in this launcher to the current performance-profile defaults, including graphics, mods and input bindings.";
+            effect = "Changes stay in this window until Play saves them. Cancel keeps your previously saved preferences.";
+            break;
+        case IDOK:
+            title = "Ready to play"; value[0] = 0;
+            body = "Play validates and saves all three tabs, then launches the game with these preferences. Changing a control here does not alter a game that is already running.";
+            effect = "Hover over, focus or change any setting to see its current value and what it does. In-game Graphics Settings are available with F10.";
+            break;
+        case IDCANCEL:
+            title = "Cancel"; value[0] = 0;
+            body = "Close the launcher without saving the edits in this window or starting the game. During input capture, Cancel stops capture first.";
+            effect = "Your previously saved preferences remain available for the next launch.";
+            break;
+        case ID_TABS:
+            title = ui->page == 0 ? "Game settings" : ui->page == 1 ? "Controls" : "Mods"; value[0] = 0;
+            body = ui->page == 0 ? "Set the display, rendering quality, minimap, audio and System Link options. Select any setting to read an explanation and its performance tradeoffs." : ui->page == 1 ? "Set up keyboard, mouse and controller inputs. Select a binding to see what it currently uses and how capture works." : "Choose visual enhancements and optional developer tools. Select an option to read its effect and any requirements.";
+            effect = "Every choice is saved when you press Play. Cancel discards this launcher's edits.";
+            break;
+        default: return;
+        }
+    }
+    ui->help_id = id;
+    if (*value) snprintf(detail, sizeof detail, "Selected: %s", value);
+    SetWindowTextA(control(ui, ID_HELP_TITLE), title);
+    SetWindowTextA(control(ui, ID_HELP_VALUE), detail);
+    SetWindowTextA(control(ui, ID_HELP_BODY), body);
+    SetWindowTextA(control(ui, ID_HELP_EFFECT), effect);
+}
+
 static void page_show(Launcher *ui, int page)
 {
     ui->page = page;
@@ -144,6 +390,7 @@ static void page_show(Launcher *ui, int page)
         if (ui->controls[i].page >= 0)
             ShowWindow(ui->controls[i].window, ui->controls[i].page == page ? SW_SHOW : SW_HIDE);
     TabCtrl_SetCurSel(ui->tabs, page);
+    help_show(ui, ID_TABS);
     InvalidateRect(ui->window, NULL, TRUE);
 }
 static void bindings_refresh(Launcher *ui);
@@ -203,6 +450,7 @@ static void binding_set(Launcher *ui, int value)
     ui->capture = 0;
     SetWindowTextA(control(ui, ID_STATUS), "Binding updated. Play saves your preferences.");
     bindings_refresh(ui);
+    help_show(ui, ID_BINDINGS);
 }
 
 static void populate(Launcher *ui)
@@ -230,6 +478,11 @@ static void populate(Launcher *ui)
       if (at == CB_ERR) at = SendMessageA(aspect, CB_ADDSTRING, 0, (LPARAM)s->aspect);
       SendMessageA(aspect, CB_SETCURSEL, (WPARAM)at, 0); }
     combo_select(control(ui, ID_MSAA), s->msaa); combo_select(control(ui, ID_ANISO), s->aniso);
+    if (combo_value(control(ui, ID_ANISO)) < 0) {
+        snprintf(text, sizeof text, "%dx", s->aniso);
+        combo_item(control(ui, ID_ANISO), text, s->aniso);
+        combo_select(control(ui, ID_ANISO), s->aniso);
+    }
     combo_select(control(ui, ID_DRAW), (int)lroundf(s->draw_distance * 1000.f));
     combo_select(control(ui, ID_VIEW), (int)lroundf(s->view_distance * 1000.f));
     if (combo_value(control(ui, ID_DRAW)) < 0) {
@@ -340,7 +593,7 @@ static void settings_controls(Launcher *ui)
     combo_item(c, "30", 30); combo_item(c, "60", 60);
     check(ui, 0, ID_VSYNC, "VSync", 172, 190, 100);
     c = combo(ui, 0, ID_SCALE, "Internal resolution", 310, 166, 238);
-    combo_item(c, "Automatic (window size)", 0); combo_item(c, "480p", 1000);
+    combo_item(c, "Automatic + supersampling", 0); combo_item(c, "480p", 1000);
     combo_item(c, "720p", 1500); combo_item(c, "960p", 2000); combo_item(c, "1440p", 3000);
     combo_item(c, "1920p", 4000); combo_item(c, "3840p", 8000);
     c = combo(ui, 0, ID_MSAA, "Anti-aliasing", 578, 166, 238);
@@ -367,7 +620,7 @@ static void settings_controls(Launcher *ui)
     SendMessageA(control(ui, ID_PEERS), EM_SETLIMITTEXT, 511, 0);
     EnableWindow(control(ui, ID_PORT), MM3_LAUNCHER_NETWORK);
     EnableWindow(control(ui, ID_PEERS), MM3_LAUNCHER_NETWORK);
-    label(ui, 0, MM3_LAUNCHER_NETWORK ? "Each copy needs its own port and save directory. Xbox Live sign-in is separate." : "System Link controls will be enabled when networking is installed.", 42, 552, 774);
+    label(ui, 0, MM3_LAUNCHER_NETWORK ? "Copies on one PC need separate ports and saves. Xbox Live sign-in is separate." : "System Link controls will be enabled when networking is installed.", 42, 552, 774);
 }
 
 static void controls_controls(Launcher *ui)
@@ -411,7 +664,7 @@ static void mods_controls(Launcher *ui)
     label(ui, 2, "0 = retail, or 60-110 degrees", 42, 466, 345);
     add(ui, 2, "STATIC", "Developer tools need the prepared scripts from tools\\debug-features\\prepare.py. These options invoke the game's own developer commands.",
         0, -1, 445, 370, 371, 60);
-    HWND fixed = check(ui, 2, -1, "Collision-cell safety repair (required)", 42, 521, 774);
+    HWND fixed = check(ui, 2, ID_REQUIRED, "Collision-cell safety repair (required)", 42, 521, 774);
     SendMessageA(fixed, BM_SETCHECK, BST_CHECKED, 0); EnableWindow(fixed, FALSE);
     label(ui, 2, "Preferences apply when Play starts the game. Graphics Settings remain available in game with F10.", 42, 560, 774);
 }
@@ -454,7 +707,7 @@ static void pad_navigation(Launcher *ui, WORD pressed)
             int count = (int)SendMessageA(focus, LB_GETCOUNT, 0, 0);
             int at = (int)SendMessageA(focus, LB_GETCURSEL, 0, 0) + (previous ? -1 : 1);
             if (at >= 0 && at < count) {
-                SendMessageA(focus, LB_SETCURSEL, at, 0); binding_detail(ui);
+                SendMessageA(focus, LB_SETCURSEL, at, 0); binding_detail(ui); help_show(ui, ID_BINDINGS);
             } else SetFocus(GetNextDlgTabItem(ui->window, focus, previous));
         } else SetFocus(GetNextDlgTabItem(ui->window, focus, previous));
     }
@@ -508,7 +761,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
         HWND title = add(ui, -1, "STATIC", "Midtown Madness 3", 0, -1, 25, 17, 570, 35);
         SendMessageA(title, WM_SETFONT, (WPARAM)ui->heading, TRUE);
-        label(ui, -1, "Set up your game, then Play. F10 opens Graphics Settings in game.", 25, 55, 800);
+        label(ui, -1, "Choose your settings. The guide explains each value as you select or change it.", 25, 55, 1150);
         ui->tabs = add(ui, -1, WC_TABCONTROLA, "", WS_TABSTOP, ID_TABS, 22, 85, 820, 550);
         tab.mask = TCIF_TEXT;
         tab.pszText = "Settings"; TabCtrl_InsertItem(ui->tabs, 0, &tab);
@@ -517,11 +770,19 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         /* The tab is a sibling; put it behind its page controls. */
         SetWindowPos(ui->tabs, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         settings_controls(ui); controls_controls(ui); mods_controls(ui);
+        add(ui, -1, "STATIC", "", SS_ETCHEDVERT, -1, 855, 85, 2, 550);
+        label(ui, -1, "SETTING GUIDE", 880, 103, 295);
+        HWND help_title = add(ui, -1, "STATIC", "", SS_NOPREFIX, ID_HELP_TITLE, 880, 139, 295, 76);
+        SendMessageA(help_title, WM_SETFONT, (WPARAM)ui->heading, TRUE);
+        add(ui, -1, "STATIC", "", SS_NOPREFIX, ID_HELP_VALUE, 880, 219, 295, 52);
+        add(ui, -1, "STATIC", "", SS_NOPREFIX, ID_HELP_BODY, 880, 285, 295, 190);
+        label(ui, -1, "WHAT TO EXPECT", 880, 489, 295);
+        add(ui, -1, "STATIC", "", SS_NOPREFIX, ID_HELP_EFFECT, 880, 521, 295, 100);
         add(ui, -1, "STATIC", "Keyboard: Tab to move, Enter to activate. Controller: D-pad moves, A selects, LB/RB changes tab, Start plays.",
-            0, ID_STATUS, 25, 644, 815, 45);
+            0, ID_STATUS, 25, 644, 1165, 45);
         add(ui, -1, "BUTTON", "Restore defaults", BS_PUSHBUTTON | WS_TABSTOP, ID_DEFAULTS, 25, 699, 155, 34);
-        add(ui, -1, "BUTTON", "Play", BS_DEFPUSHBUTTON | WS_TABSTOP, IDOK, 583, 699, 122, 34);
-        add(ui, -1, "BUTTON", "Cancel", BS_PUSHBUTTON | WS_TABSTOP, IDCANCEL, 718, 699, 122, 34);
+        add(ui, -1, "BUTTON", "Play", BS_DEFPUSHBUTTON | WS_TABSTOP, IDOK, 933, 699, 122, 34);
+        add(ui, -1, "BUTTON", "Cancel", BS_PUSHBUTTON | WS_TABSTOP, IDCANCEL, 1068, 699, 122, 34);
         populate(ui); page_show(ui, 0);
         SetTimer(window, 1, 70, NULL);
         if (ui->smoke) SetTimer(window, 2, 150, NULL);
@@ -537,26 +798,31 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             (LOWORD(wparam) >= ID_OPTION && LOWORD(wparam) < ID_OPTION + MM3_LAUNCH_OPTION_COUNT))) {
             int id = LOWORD(wparam);
             set_checked(ui, id, !checked(ui, id));
+            help_show(ui, id);
             return 0;
         }
+        if (HIWORD(wparam) == CBN_SELCHANGE || HIWORD(wparam) == CBN_EDITCHANGE ||
+            HIWORD(wparam) == EN_CHANGE || HIWORD(wparam) == LBN_SELCHANGE)
+            help_show(ui, LOWORD(wparam));
         switch (LOWORD(wparam)) {
         case IDOK:
             if (!ui->capture && apply(ui)) { ui->result = 1; DestroyWindow(window); }
             return 0;
         case IDCANCEL:
-            if (ui->capture) { ui->capture = 0; SetWindowTextA(control(ui, ID_STATUS), "Capture cancelled."); }
+            if (ui->capture) { ui->capture = 0; SetWindowTextA(control(ui, ID_STATUS), "Capture cancelled."); help_show(ui, ID_CAPTURE); }
             else DestroyWindow(window);
             return 0;
         case ID_DEFAULTS:
             mm3_launcher_config_defaults(&ui->config);
             mm3_display_settings_defaults(&ui->display, getenv("MM3_PERFORMANCE_PROFILE"));
             populate(ui); SetWindowTextA(control(ui, ID_STATUS), "Defaults restored in this window. Play saves them; Cancel discards them.");
+            help_show(ui, ID_DEFAULTS);
             return 0;
         case ID_GROUP:
-            if (HIWORD(wparam) == CBN_SELCHANGE) { ui->capture = 0; ui->group = combo_value(control(ui, ID_GROUP)); bindings_refresh(ui); }
+            if (HIWORD(wparam) == CBN_SELCHANGE) { ui->capture = 0; ui->group = combo_value(control(ui, ID_GROUP)); bindings_refresh(ui); help_show(ui, ID_GROUP); }
             return 0;
         case ID_BINDINGS:
-            if (HIWORD(wparam) == LBN_SELCHANGE) { ui->capture = 0; binding_detail(ui); }
+            if (HIWORD(wparam) == LBN_SELCHANGE) { ui->capture = 0; binding_detail(ui); help_show(ui, ID_BINDINGS); }
             return 0;
         case ID_SOURCE:
             if (HIWORD(wparam) == CBN_SELCHANGE && ui->group == 0) binding_set(ui, combo_value(control(ui, ID_SOURCE)));
@@ -566,8 +832,25 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             SetWindowTextA(control(ui, ID_STATUS), ui->group == 0 ?
                 "Release the controller buttons, then press the desired button or trigger. Escape cancels." :
                 "Press a key or mouse button now. Escape cancels; Clear selected binding unbinds it.");
+            help_show(ui, ID_CAPTURE);
             return 0;
         case ID_UNBIND: binding_set(ui, ui->group == 0 ? 16 : 0); return 0;
+        }
+        break;
+    case WM_MOUSEMOVE: {
+        /* Disabled controls cannot receive focus or mouse messages. Let their
+         * parent provide explanations too, including the required repair. */
+        POINT point = {(short)LOWORD(lparam), (short)HIWORD(lparam)};
+        HWND child = ChildWindowFromPointEx(window, point, CWP_SKIPINVISIBLE);
+        if (child && child != window && ui->help_id != GetDlgCtrlID(child))
+            help_show(ui, GetDlgCtrlID(child));
+        break;
+    }
+    case WM_CTLCOLORSTATIC:
+        if ((HWND)lparam == control(ui, ID_HELP_VALUE)) {
+            SetTextColor((HDC)wparam, RGB(0, 90, 150));
+            SetBkColor((HDC)wparam, GetSysColor(COLOR_BTNFACE));
+            return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
         }
         break;
     case WM_DRAWITEM: {
@@ -642,8 +925,8 @@ static float layout_scale(const RECT *work, float desired)
     RECT frame = {0};
     AdjustWindowRectEx(&frame, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
                       FALSE, WS_EX_CONTROLPARENT);
-    float width = (float)(work->right - work->left - (frame.right - frame.left) - 20) / 865.f;
-    float height = (float)(work->bottom - work->top - (frame.bottom - frame.top) - 20) / 754.f;
+    float width = (float)(work->right - work->left - (frame.right - frame.left) - 20) / (float)LAUNCHER_WIDTH;
+    float height = (float)(work->bottom - work->top - (frame.bottom - frame.top) - 20) / (float)LAUNCHER_HEIGHT;
     if (desired > width) desired = width;
     if (desired > height) desired = height;
     return desired < 0.4f ? 0.4f : desired;
@@ -679,7 +962,7 @@ int mm3_launcher_run(void)
         ui.scale = layout_scale(&work, screen ? (float)GetDeviceCaps(screen, LOGPIXELSY) / 96.f : 1.f);
         if (screen) ReleaseDC(NULL, screen);
         bounds.left = bounds.top = 0;
-        bounds.right = (LONG)lroundf(865.f * ui.scale); bounds.bottom = (LONG)lroundf(754.f * ui.scale);
+        bounds.right = (LONG)lroundf((float)LAUNCHER_WIDTH * ui.scale); bounds.bottom = (LONG)lroundf((float)LAUNCHER_HEIGHT * ui.scale);
         AdjustWindowRectEx(&bounds, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE, WS_EX_CONTROLPARENT);
         HWND window = CreateWindowExA(WS_EX_CONTROLPARENT, wc.lpszClassName, "Midtown Madness 3 - Play",
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
@@ -696,7 +979,7 @@ int mm3_launcher_run(void)
                 int vk = 0;
                 if (message.message == WM_KEYDOWN || message.message == WM_SYSKEYDOWN) {
                     if (message.wParam == VK_ESCAPE) {
-                        ui.capture = 0; SetWindowTextA(control(&ui, ID_STATUS), "Capture cancelled."); continue;
+                        ui.capture = 0; SetWindowTextA(control(&ui, ID_STATUS), "Capture cancelled."); help_show(&ui, ID_CAPTURE); continue;
                     }
                     vk = (int)message.wParam;
                 }
@@ -706,7 +989,7 @@ int mm3_launcher_run(void)
                 if (message.message == WM_XBUTTONDOWN) vk = HIWORD(message.wParam) == XBUTTON1 ? VK_XBUTTON1 : VK_XBUTTON2;
                 if (vk > 0 && vk <= 255) { binding_set(&ui, vk); continue; }
             } else if (ui.capture && message.message == WM_KEYDOWN && message.wParam == VK_ESCAPE) {
-                ui.capture = 0; SetWindowTextA(control(&ui, ID_STATUS), "Capture cancelled."); continue;
+                ui.capture = 0; SetWindowTextA(control(&ui, ID_STATUS), "Capture cancelled."); help_show(&ui, ID_CAPTURE); continue;
             }
             if (!IsDialogMessageA(window, &message)) { TranslateMessage(&message); DispatchMessageA(&message); }
         }

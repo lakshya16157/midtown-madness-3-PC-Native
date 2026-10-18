@@ -155,7 +155,9 @@ add missing packs. Installed data lives under `game_files\TDATA\4d53002a\$C`.
 
 - **Launcher:** Settings, Controls and Mods open before the game. Change graphics,
   field of view, keyboard/mouse bindings and controller buttons there, or toggle
-  individual enhancements. Controls shows the status of up to four XInput pads;
+  individual enhancements. The Setting Guide explains the selected value, its
+  effect and tradeoffs as you hover, focus or change a control. Controls shows
+  the status of up to four XInput pads;
   select a binding and press a key or controller button to change it. Settings
   are saved for the next launch. `scripts\play.ps1 -NoLauncher` skips the window.
 - **The first start takes about 3 1/2 minutes** before the menu appears while the intro
@@ -673,8 +675,10 @@ masked lamps no longer rescan every cached light record as traffic grows.
 Same-frame beam alignment, source fades and warm colors are retained.
 
 Front lenses, headlight beams and their road fill now activate only in the
-native evening/night periods. Morning/noon tail-light spill uses a 1.1 m
-radius instead of 2.2 m; evening/night retain the wider gradient.
+native evening/night periods. Morning/noon rear-light illumination is faint
+and close to the lamps: tail lights use a 0.35 m radius and brake lights
+0.5 m, with 93% and 90% less intensity respectively. Visible lenses retain
+their authored appearance; evening/night retain the wider, brighter gradient.
 
 Post-race dialogue and result panels retain one centred canvas after the race
 HUD disappears, keeping separately drawn caps, blue fill and text together.

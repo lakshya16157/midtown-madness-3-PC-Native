@@ -315,11 +315,14 @@ static void time_of_day_visibility_checks(void)
         visibility_setup(0x107);MEM32(0x407c30)=period;
         mm3_car_lighting_model(OWNER,0);
         assert(MEM32(QUEUE+0x5810)==(dark?4u:2u) && !flares);
-        /* Tail/brake remain active while only front sources are masked. */
-        assert(MEMF(entry(dark?1:0)+0x40)==(dark?4.4f:2.2f));
-        assert(MEMF(entry(dark?2:1)+0x40)==6.8f);
+        /* Tail/brake remain active with negligible daylight surface spill
+         * while only front sources are masked. */
+        assert(MEMF(entry(dark?1:0)+0x40)==(dark?4.4f:.7f));
+        assert(MEMF(entry(dark?2:1)+0x40)==(dark?6.8f:1.0f));
+        assert(MEM32(entry(dark?1:0)+0x4c)==(dark?0xff2d0000u:0xff030000u));
+        assert(MEM32(entry(dark?2:1)+0x4c)==(dark?0xff520000u:0xff080000u));
     }
-    puts("PASS: both real native offscreen render entries gate front sources by period; head-only daytime models skip collection; mixed tail/brake remain active with smaller daylight tail gradient");
+    puts("PASS: both real native offscreen render entries gate front sources by period; head-only daytime models skip collection; mixed tail/brake retain evening/night illumination and suppress daylight spill");
 }
 
 static void bounded_walk_checks(void)
