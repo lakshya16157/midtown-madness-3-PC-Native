@@ -172,7 +172,10 @@ int mm3_tree_fall_drawing(void)
 
 static void tree_draw_original(void)
 {
-    uint32_t caller = tree_word(g_esp);
+    /* This is the native renderer's live call frame, which the original
+     * function consumes too. Avoid an OS memory read for every static prop.
+     * Object and metadata pointers below still require checked reads. */
+    uint32_t caller = MEM32(g_esp);
     int previous_drawing = s_tree_fall_drawing;
     s_tree_fall_drawing = 0;
     /* Native detached geometry calls the model renderer from 167D94. Its
@@ -247,7 +250,7 @@ int mm3_tree_use_solid_contact(uint32_t record, float speed)
         s_tree_contact_body = tree_word(tree_word(s_tree_contact_car + 0x3C) + 4);
         tree_read(s_tree_contact_body + 0x20, s_tree_contact_velocity, sizeof s_tree_contact_velocity);
         tree_read(s_tree_contact_body + 0xC8, s_tree_contact_position, sizeof s_tree_contact_position);
-        s_tree_contact_before_count = tree_word(0x3C0344);
+        s_tree_contact_before_count = MEM32(0x3C0344u);
         s_tree_contact_log = 1;
     }
     return 1;
@@ -377,12 +380,14 @@ static int tree_remove_native(void)
 static void tree_apply_impact_resistance(void)
 {
     float velocity[3], speed, dx, dz, forward, loss;
-    uint32_t sim = tree_word_at((uint64_t)s_tree_contact_car + 0x3Cu);
-    uint32_t body = tree_word_at((uint64_t)sim + 4u);
+    uint32_t sim, body;
     /* Apply once, only after this instance was successfully retired. Retain
      * the native solver's lateral/vertical response and any larger slowdown;
      * breaking the tree costs at most 8% of forward speed, capped at 1.5m/s. */
-    if (!s_tree_broken || !s_tree_break_body || body != s_tree_break_body
+    if (!s_tree_broken || !s_tree_break_body) return;
+    sim = tree_word_at((uint64_t)s_tree_contact_car + 0x3Cu);
+    body = tree_word_at((uint64_t)sim + 4u);
+    if (body != s_tree_break_body
         || !tree_read(body + 0x20u, velocity, sizeof velocity)
         || !isfinite(velocity[0]) || !isfinite(velocity[2])) return;
     speed = hypotf(s_tree_break_velocity[0], s_tree_break_velocity[2]);
@@ -399,7 +404,9 @@ static void tree_apply_impact_resistance(void)
 
 void sub_001D137B(void)
 {
-    s_tree_contact_car = tree_word(g_esp + 4);
+    /* Native arguments and the title's static contact counter are mapped
+     * throughout this call. Keep checked reads for indirect car/body data. */
+    s_tree_contact_car = MEM32(g_esp + 4u);
     s_tree_contact_trees = 0;
     s_tree_contact_log = 0;
     s_tree_break_pending = s_tree_broken = 0;
@@ -411,19 +418,19 @@ void sub_001D137B(void)
     memset(s_tree_audio_position, 0, sizeof s_tree_audio_position);
     s_tree_audio_speed = 0.0f;
     s_tree_audio_position_valid = 0;
-    s_tree_solid_before = tree_word(0x3C0344);
+    s_tree_solid_before = MEM32(0x3C0344u);
     mm3_tree_audio_begin();
     sub_001D137B_original();
     s_tree_broken = tree_remove_native();
     tree_apply_impact_resistance();
     mm3_tree_audio_finish(s_tree_broken,
         s_tree_contact_trees != 0 && s_tree_audio_position_valid
-            && tree_word(0x3C0344) > s_tree_solid_before,
+            && MEM32(0x3C0344u) > s_tree_solid_before,
         s_tree_broken ? s_tree_break_position : s_tree_audio_position, s_tree_audio_speed);
     s_tree_break_pending = 0;
     if (s_tree_contact_log) {
         float velocity[3] = {0}, position[3] = {0};
-        uint32_t contacts = tree_word(0x3C0344);
+        uint32_t contacts = MEM32(0x3C0344u);
         tree_read(s_tree_contact_body + 0x20, velocity, sizeof velocity);
         tree_read(s_tree_contact_body + 0xC8, position, sizeof position);
         MM3_TREE_LOG("[TREE_BREAK_CONTACT] car=%08X contact=%08X metadata=%08X flags=%04X trees=%u native_hop_bit=2 response=%s original_flags=preserved id=%08X static_piece_retired=%d detached_collision=%s cached_contacts_expired=%u impact_speed_loss=%.3f velocity=(%.3f,%.3f,%.3f)->(%.3f,%.3f,%.3f) position=(%.3f,%.3f,%.3f)->(%.3f,%.3f,%.3f) solid_contacts=%u->%u\n",

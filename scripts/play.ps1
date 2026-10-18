@@ -338,7 +338,7 @@ try {
         default { @{ render_scale = '2.0'; msaa = '4'; draw_distance = '2'; view_distance = '2'; aniso = '16'; fps_limit = '60' } }
     }
     $profileDefaults.buffered_asset_reads = '1'
-    $profileDefaults.world_ambient_lift = '3'
+    $profileDefaults.world_ambient_lift = '0'
     $configFiles = @('game_files\default.xbe', 'game_files\Data\mm3_factory_physics.ini',
         'game_files\Data\mm3_speedometers.ini', 'game_files\.mm3-car-mods\state.json',
         'tools\car-mods\cars.local.json', 'tools\car-mods\cars.json', 'build\CMakeCache.txt')

@@ -577,11 +577,49 @@ the runtime `nv2a-wbc-wait` test exercises the actual acknowledgment and host
 wait, including completion races and shutdown. GPU local-light fixtures cover
 bounded overlap with 1 through 32 sources in both shader paths and MSAA/scales.
 
+Read-only light draws now reuse the converted scene depth until a submitted
+depth/stencil write or clear changes it. Previously, merely binding a depth
+target invalidated the view, so repeated lighting batches could repeat the
+fullscreen conversion. A GPU regression replays 16 native LightDraw submissions:
+the conversion count falls from 16 to 1 with the same illuminated output.
+It also checks depth/stencil writes, clears and projection metadata changes
+across both shader paths, 1x/4x MSAA and 1x/3x rendering scale. With
+`RECOMP_D3D_PROFILE=1`, the per-frame light-draw, depth-view conversion and
+depth-target alias counts show whether a gameplay scene can reuse these views.
+The optimization removes verified redundant GPU work; the synthetic conversion
+ratio is not a whole-game speedup. Audio producer shortfalls in existing logs
+remain a separate observation, without an established link to driving hitches.
+
+Ordinary roadside-object draws and collision updates also avoid unnecessary
+Windows memory reads in the tree hooks. Native stack arguments and the title's
+contact counter are read directly; indirect model/body metadata still uses
+checked reads. An optimized replay of 100,000 calls reduced ordinary draw
+overhead from 0.3540 to 0.0093 microseconds and collision-hook overhead from
+1.4271 to 0.0155 microseconds, removing one and four OS reads respectively.
+These are hook timings, not whole-game frame times. Run
+`python tests/mm3_tree_hotpath_regression.py --benchmark` to repeat the checks;
+the existing native tree contact, body, renderer and audio regressions also pass.
+
 The game enforces a maximum of **60 FPS** for presentation and emulated vblank.
 `RECOMP_FPS_LIMIT` may select an integer limit from 1 to 60. When unset, it uses
 saved setting, or the selected profile's cap when no setting has been saved:
 60 for Balanced/Quality or 30 for LowPower. Invalid, uncapped (`0`), or higher
 values use the saved setting or profile default, including direct executable launches.
+
+If driving motion is uneven, compare VSync on and off at the same FPS cap using
+Display Settings or the temporary `RECOMP_VSYNC=0` environment override. An
+evening Paris Cruise investigation with maximum traffic on a hybrid NVIDIA/AMD
+laptop isolated a presentation wait: the same frontend ran at about 50 FPS with
+VSync and a steady 60 FPS without it. The VSync-off driving capture held 60 FPS,
+with a 16.92 ms p99 guest-flip interval and a 19.13 ms maximum; actual host
+Present intervals remained less regular (22.49 ms p99, 25.69 ms maximum).
+That driving capture used the post-Present pacing override. A final frontend
+check with normal before-Present pacing and profiling off held 60 FPS, with
+17.32 ms p99 and 17.95 ms maximum host Present intervals. Lighting stayed enabled.
+Driving routes diverged, so these are observations
+from that machine, not a general performance guarantee. Moving the limiter
+after Present and reducing the DXGI queue did not resolve the VSync-on cadence;
+neither experiment changes the normal renderer defaults.
 
 Choose **Graphics Settings** below **Options** and above **Profile** in the
 main menu. Select a setting to open its choice list, move to the exact value,

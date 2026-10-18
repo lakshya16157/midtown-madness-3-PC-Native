@@ -89,6 +89,8 @@ class LauncherProfileTest(unittest.TestCase):
                          ["8", "1", "4", "4"])
         self.assertEqual([row["profile_defaults_for_unset_settings"]["view_distance"] for row in metadata],
                          ["2", "1", "2", "2"])
+        self.assertTrue(all(row["profile_defaults_for_unset_settings"]["world_ambient_lift"] == "0"
+                            for row in metadata))
 
     def test_individual_environment_overrides_take_priority_and_survive_launch(self):
         overrides = {"MM3_PERFORMANCE_PROFILE": "Quality", "RECOMP_RENDER_SCALE": "2.25",
