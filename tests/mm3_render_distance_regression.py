@@ -115,9 +115,10 @@ def main():
         compile_contract(executable)
         for case in cases:
             for mode in ('custom-first', 'invalid-first'):
-                result = subprocess.run([str(executable), *case, mode], capture_output=True, text=True)
-                if result.returncode:
-                    raise AssertionError((case, mode, result.stdout, result.stderr))
+                for fog in ('legacy', 'native'):
+                    result = subprocess.run([str(executable), *case, mode, fog], capture_output=True, text=True)
+                    if result.returncode:
+                        raise AssertionError((case, mode, fog, result.stdout, result.stderr))
         # Retain the former custom-setter initialization omission in a scratch
         # hook. The same real-setter contract must catch its double scale.
         source = (ROOT / 'src/mm3_render_distance.c').read_text()
@@ -144,7 +145,7 @@ def main():
         result = subprocess.run([str(before), '2', '2', '2', '2', 'invalid-first'],
                                 capture_output=True, text=True, timeout=15)
         assert result.returncode and 'wanted' in result.stderr, (result.returncode, result.stderr)
-    print(f'PASS: {len(cases) * 2} distance cases using actual PAL setters and loader clamp; resident-city cap, effective haze, Lua/FOV/temporary ranges, native fades and ordering; both former regressions rejected.')
+    print(f'PASS: {len(cases) * 4} distance cases using actual PAL setters and loader clamp; resident-city cap, native versus legacy haze, Lua/FOV/temporary ranges, native fades and ordering; both former regressions rejected.')
 
 
 if __name__ == '__main__':

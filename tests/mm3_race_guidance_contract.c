@@ -31,6 +31,7 @@ static const Draw *route_segment_draw(unsigned index);
 static Draw draws[65536];
 static unsigned draw_count, active_player, marker_count, world_draw_count;
 static unsigned hud_players, native_marker_count;
+void mm3_native_fog_frame_begin(void) { }
 static unsigned native_submission;
 static unsigned native_submission_dropped, native_submission_gray, native_submission_blue;
 static unsigned native_submission_markers, native_pool_allocations, native_pool_frees;

@@ -31,6 +31,8 @@ static int s_depth_hazed;
 static int64_t s_prof[3];
 static Surface *s_shown;
 static DWORD s_last_present, s_last_flip;
+static float s_loading_phase, displayed_loading_phase;
+static int s_loading_enabled;
 static unsigned s_frame;
 static FILE *s_frame_csv_file;
 static LARGE_INTEGER s_frame_csv_freq = {1000};
@@ -52,6 +54,7 @@ static int64_t clock_ticks, csv_ticks;
 static DWORD test_now;
 static int init_ok, surface_ok, scan_ok, swap_ok, buffer_ok, view_ok, overlay_ok;
 static int cpu_scanout, capture_surface, after_policy;
+static int spinner_disabled;
 static HRESULT present_result;
 
 static void event(char value)
@@ -66,6 +69,7 @@ static char *test_getenv(const char *name)
     if (strcmp(name, "RECOMP_PACE_AFTER_PRESENT") == 0) return after_policy ? "1" : "0";
     if (strcmp(name, "RECOMP_CAPTURE_SURFACE") == 0) return capture_surface ? "1" : NULL;
     if (strcmp(name, "RECOMP_VSYNC") == 0) return "0";
+    if (strcmp(name, "RECOMP_LOADING_SPINNER") == 0) return spinner_disabled ? "0" : NULL;
     return NULL;
 }
 
@@ -74,6 +78,7 @@ static int64_t qpc(void) { return clock_ticks; }
  * display fixture checks option publication and runtime rate changes. */
 static uint32_t present_options(void) { return 60; }
 static void reset_map_placement(void) {}
+static void hud_frame_complete(void) {}
 static int64_t hitch_trace_begin(void) { return 0; }
 static void hitch_trace_report(const char *phase, int64_t begin)
 { (void)phase; CHECK(begin == 0); }
@@ -111,7 +116,7 @@ static void ID3D11RenderTargetView_Release(ID3D11RenderTargetView *view)
 static void ID3D11Texture2D_Release(ID3D11Texture2D *texture)
 { CHECK(texture != NULL); texture_releases++; }
 static void composite(ID3D11RenderTargetView *view, UINT w, UINT h, Surface *image, PresentConsts *pc, int window)
-{ CHECK(view != NULL); (void)w; (void)h; (void)image; (void)pc; (void)window; event('C'); clock_ticks += 4; }
+{ CHECK(view != NULL); (void)w; (void)h; (void)image; (void)pc; displayed_loading_phase = window ? s_loading_phase : 0; event('C'); clock_ticks += 4; }
 static void capture_backbuffer(ID3D11Texture2D *texture) { (void)texture; event('K'); clock_ticks++; }
 static void frame_csv_init(void) {}
 static void contract_frame_csv_present(int64_t timestamp, HRESULT result);
@@ -147,6 +152,8 @@ static void reset(void)
     init_ok = surface_ok = scan_ok = swap_ok = buffer_ok = view_ok = overlay_ok = 1;
     cpu_scanout = capture_surface = 0; present_result = 0;
     s_init_state = 1; s_last_present = s_last_flip = 0;
+    s_loading_phase = displayed_loading_phase = 0;
+    s_loading_enabled = -1; spinner_disabled = 0;
     s_depth_hazed = 1;
     s_shown = &surface;
     if (s_frame_csv_file) fclose(s_frame_csv_file);
@@ -344,11 +351,40 @@ static void csv_cases(void)
     }
 }
 
+static void loading_cases(void)
+{
+    reset(); overlay_ok = 0; s_last_flip = test_now - 700;
+    nv2a_d3d_tick(); CHECK(!present_calls && !displayed_loading_phase);
+    test_now += 33; nv2a_d3d_tick();
+    CHECK(present_calls == 1 && displayed_loading_phase > 0 && !s_loading_phase);
+    CHECK(!pace_calls && !csv_calls && !s_frame);
+    /* Frequent ticks retain the deadline instead of starving the 33ms arc. */
+    test_now += 16; nv2a_d3d_tick(); CHECK(present_calls == 1);
+    test_now += 16; nv2a_d3d_tick(); CHECK(present_calls == 1);
+    test_now += 1; nv2a_d3d_tick(); CHECK(present_calls == 2);
+    CHECK(!pace_calls && !csv_calls);
+    reset(); overlay_ok = 0; spinner_disabled = 1; s_last_flip = test_now - 1000;
+    nv2a_d3d_tick(); CHECK(!present_calls && !s_loading_phase);
+    reset(); overlay_ok = 0; nv2a_d3d_tick(); CHECK(!present_calls);
+    reset(); s_last_flip = test_now - 1000; nv2a_d3d_tick();
+    CHECK(present_calls == 1 && !displayed_loading_phase); /* movie */
+    reset(); overlay_ok = 0; s_last_flip = test_now - 1000; cpu_scanout = 1;
+    nv2a_d3d_tick(); CHECK(present_calls == 1 && displayed_loading_phase > 0 && !s_loading_phase);
+    reset(); overlay_ok = 0; s_last_flip = test_now - 1000; s_loading_phase = 1;
+    nv2a_d3d_flip(0x10000, 2560); CHECK(!displayed_loading_phase);
+    /* Failed/occluded arc blits stay unpaced and retain CPU retry state. */
+    reset(); overlay_ok = 0; s_last_flip = test_now - 1000;
+    present_result = DXGI_STATUS_OCCLUDED; cpu_write = 1; nv2a_d3d_tick();
+    CHECK(surface.cpu_present_pending && !s_loading_phase && !pace_calls && !csv_calls);
+    test_now += 33; present_result = S_OK; nv2a_d3d_tick();
+    CHECK(!surface.cpu_present_pending && !pace_calls && !csv_calls);
+}
+
 int main(int argc, char **argv)
 {
     CHECK(argc == 2);
     after_policy = strcmp(argv[1], "after") == 0;
-    flip_cases(); tick_cases(); idle_cpu_cases(); csv_cases(); depth_haze_cases();
+    flip_cases(); tick_cases(); idle_cpu_cases(); csv_cases(); depth_haze_cases(); loading_cases();
     fclose(s_frame_csv_file);
     printf("PASS: %s-present pacing; successful/failed/captured flips, missing resources/RTV failure, once-per-flip fallback, unpaced movie/idle CPU ticks, writeback ordering, failed/occluded display retries, guest-only CSV state, profiler accounting and guest-frame haze reset\n",
            after_policy ? "after" : "before");

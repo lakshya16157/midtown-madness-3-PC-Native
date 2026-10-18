@@ -1,8 +1,9 @@
 <#
 Repeatable menu and race benchmark with an isolated save copy.
-  pwsh tools\bench\run.ps1 -Save <save template> [-Profile Balanced] [-Tag name]
+  pwsh tools\bench\run.ps1 -Save <save template> [-Profile Balanced] [-Tag name] [-Capture]
 Retains settings, executable identity, frame CSV and results under
 conformance_tmp\bench\<tag>. Unreached scenes and game exits fail the run.
+Capture optionally saves frontend/race BMPs outside the measured windows.
 #>
 [CmdletBinding()]
 param(
@@ -13,6 +14,8 @@ param(
     [ValidateSet('Balanced', 'Quality', 'LowPower')][string]$Profile = 'Balanced',
     [ValidateSet('Stationary', 'Driving')][string]$Scenario = 'Stationary',
     [switch]$HitchTrace,
+    [switch]$Capture,
+    [switch]$ControlledScene,
     [ValidateRange(1, 60)][int]$FpsLimit,
     [ValidateRange(5, 300)][int]$Secs = 20,
     [ValidateRange(1, 255)][int]$ParticleBudget = 24,
@@ -37,6 +40,9 @@ if ($PSBoundParameters.ContainsKey('X') -ne $PSBoundParameters.ContainsKey('Z'))
     throw 'Supply both X and Z, or omit both to measure the saved scene spawn.'
 }
 $explicitPosition = $PSBoundParameters.ContainsKey('X')
+if ($ControlledScene -and (-not $Capture -or -not $explicitPosition)) {
+    throw 'ControlledScene requires Capture and explicit X/Z coordinates.'
+}
 $benchRoot = [IO.Path]::GetFullPath((Join-Path $repo 'conformance_tmp\bench'))
 $dir = [IO.Path]::GetFullPath((Join-Path $benchRoot $Tag))
 if (-not $dir.StartsWith($benchRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
@@ -67,6 +73,9 @@ $pad = Join-Path $dir 'pad.txt'
 [IO.File]::WriteAllText($pad, '')
 $csv = Join-Path $dir 'frames.csv'
 $log = Join-Path $dir 'stderr.log'
+$capturePrefix = Join-Path $dir 'present'
+$captureOrdinal = 0
+$captures = @()
 $settings = switch ($Profile) {
     'Quality' { @{ scale='3.0'; msaa='8'; distance='2'; fps=60 } }
     'LowPower' { @{ scale='1.5'; msaa='1'; distance='1'; fps=30 } }
@@ -76,13 +85,17 @@ if (-not $PSBoundParameters.ContainsKey('FpsLimit')) { $FpsLimit = $settings.fps
 $envs = @{
     RECOMP_PB_EXEC='1'; RECOMP_FB_WINDOW='1'; RECOMP_USB='1'; RECOMP_PAD_LIVE=$pad
     RECOMP_APU_DSP_ACK='0x80458810'; MM3_SAVE_DIR=$runSave; MM3_PERFORMANCE_PROFILE=$Profile
+    RECOMP_APU_DSP='1'; RECOMP_USB_PADS='1'; MM3_LAUNCHER='0'
+    MM3_DISPLAY_CONFIG=(Join-Path $dir 'display.ini'); MM3_LAUNCHER_CONFIG=(Join-Path $dir 'launcher.ini')
     RECOMP_ASPECT='16:10'; RECOMP_WINDOW_SIZE='1280x800'; RECOMP_RENDER_SCALE=$settings.scale
     RECOMP_MSAA=$settings.msaa; RECOMP_DRAW_DISTANCE=$settings.distance
     RECOMP_VIEW_DISTANCE=$settings.distance; RECOMP_ANISO='16'
     RECOMP_FPS_LIMIT="$FpsLimit"; RECOMP_D3D_PROFILE='1'; RECOMP_FRAME_CSV=$csv
     MM3_DEBUG_TELEPORT='1'; MM3_PARTICLE_MAX_OVERDRAW="$ParticleBudget"; RECOMP_SHADER_CACHE='1'
     RECOMP_SHADER_CACHE_DIR=$shaderCache; RECOMP_PAD_PRESS=$null; RECOMP_PAD_SCRIPT=$null
-    RECOMP_HITCH_TRACE=$(if ($HitchTrace) { '1' } else { $null }); RECOMP_PRESENT_CAPTURE=$null; RECOMP_CAPTURE_SURFACE=$null
+    RECOMP_HITCH_TRACE=$(if ($HitchTrace) { '1' } else { $null })
+    RECOMP_PRESENT_CAPTURE=$(if ($Capture) { $capturePrefix } else { $null }); RECOMP_CAPTURE_SURFACE=$null
+    MM3_NATIVE_FOG=[Environment]::GetEnvironmentVariable('MM3_NATIVE_FOG', 'Process')
 }
 $previous = @{}
 $p = $null
@@ -103,6 +116,16 @@ function Press-Pad([string]$button, [double]$after) {
     Wait-Game (0.2 + $after)
 }
 function Qpc-Milliseconds { [Diagnostics.Stopwatch]::GetTimestamp() * 1000.0 / [Diagnostics.Stopwatch]::Frequency }
+function Get-InitialScene {
+    Assert-GameRunning
+    $position = $null
+    $probeError = $null
+    try { $position = & $teleport -ProcessId $p.Id } catch { $probeError = $_.Exception.Message }
+    $name = if ($position -and $position.available) { 'early-race' } else { 'frontend' }
+    @{ name=$name; position=$position; error=$probeError; qpc_ms=(Qpc-Milliseconds) } |
+        ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $dir 'initial-scene.json')
+    return $name
+}
 function Measure-Window([string]$name, [int]$seconds) {
     $p.Refresh()
     $cpuStart = $p.TotalProcessorTime.TotalMilliseconds
@@ -114,6 +137,33 @@ function Measure-Window([string]$name, [int]$seconds) {
         cpu_ms=$p.TotalProcessorTime.TotalMilliseconds - $cpuStart
         logical_processors=[Environment]::ProcessorCount }
 }
+function Capture-Frame([string]$name, [ValidateRange(1, 120)][int]$timeoutSeconds = 10) {
+    if (-not $Capture) { return }
+    Assert-GameRunning
+    $path = '{0}-{1:D3}.bmp' -f $capturePrefix, $script:captureOrdinal
+    [IO.File]::WriteAllText($capturePrefix + '.flag', '1', [Text.Encoding]::ASCII)
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    $complete = $false
+    while ($timer.Elapsed.TotalSeconds -lt $timeoutSeconds) {
+        Wait-Game 0.25
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        try {
+            # The runtime writes the header before pixel rows. Do not accept a
+            # partially flushed BMP as completed evidence.
+            $bytes = [IO.File]::ReadAllBytes($path)
+            $complete = $bytes.Length -ge 54 -and $bytes[0] -eq 66 -and $bytes[1] -eq 77 -and
+                [BitConverter]::ToUInt32($bytes, 2) -eq $bytes.Length
+        } catch { $complete = $false }
+        if ($complete) { break }
+    }
+    if (-not $complete) { throw "No complete $name present capture before timeout; see $log" }
+    $script:captures += @{ scene=$name; file=$path; qpc_ms=(Qpc-Milliseconds) }
+    $script:captures | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dir 'captures.json')
+    $script:captureOrdinal++
+    # Readback and disk writes are deliberately outside benchmark windows.
+    Wait-Game 1
+    Write-Output "Captured ${name}: $path"
+}
 try {
     foreach ($key in $envs.Keys) {
         $previous[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
@@ -124,9 +174,16 @@ try {
     foreach ($key in $previous.Keys) { [Environment]::SetEnvironmentVariable($key, $previous[$key], 'Process') }
     @{ executable=$Exe; sha256=(Get-FileHash -LiteralPath $Exe -Algorithm SHA256).Hash
        process_id=$p.Id; profile=$Profile; scenario=$Scenario; settings=$envs; explicit_position=$explicitPosition; coordinates=@($X, $Z); heading=$Heading
-       save_template=$Save; shader_cache_seed=$ShaderCacheSeed; logical_processors=[Environment]::ProcessorCount
+       save_template=$Save; shader_cache_seed=$ShaderCacheSeed; capture=[bool]$Capture; controlled_scene=[bool]$ControlledScene; logical_processors=[Environment]::ProcessorCount
     } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $dir 'run.json')
     Write-Output "Game PID $($p.Id), evidence $dir"
+    if ($ControlledScene) {
+        # Captures and explicit operator inputs establish the actual scene.
+        # Guest-flip CSV data can flush after the frontend is already active;
+        # repeated Start inputs while waiting could otherwise enter Career.
+        . (Join-Path $PSScriptRoot 'session.ps1')
+        Invoke-ControlledScene
+    } else {
     $intro = [Diagnostics.Stopwatch]::StartNew()
     $frontendReady = $false
     while ($intro.Elapsed.TotalSeconds -lt 120) {
@@ -142,7 +199,9 @@ try {
     Wait-Game 5
     Press-Pad 'start' 4
     Press-Pad 'a' 6
-    Measure-Window 'frontend' 10
+    $initialScene = Get-InitialScene
+    Measure-Window $initialScene 10
+    Capture-Frame $initialScene
     foreach ($step in @(@('down', 1), @('a', 4), @('a', 4), @('a', 5), @('a', 8), @('a', 10), @('a', 9), @('start', 6))) {
         Press-Pad $step[0] $step[1]
     }
@@ -160,6 +219,7 @@ try {
     }
     $position | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dir 'position.json')
     Wait-Game 4
+    Capture-Frame 'race'
     if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
         $gpuProcess = Start-Process -FilePath nvidia-smi -WindowStyle Hidden -PassThru `
             -ArgumentList @('--query-gpu=utilization.gpu,power.draw', '--format=csv,noheader,nounits', '-lms', '500') `
@@ -181,6 +241,7 @@ try {
         [Math]::Pow($endPosition.z - $measurePosition.z, 2) -lt 1)) {
         throw 'Driving benchmark did not move the player car by at least one metre.'
     }
+    }
     # The CSV flushes every 120 flips. Wait for persisted evidence covering
     # the complete window, including the 30 FPS profile, before stopping.
     $flushTimer = [Diagnostics.Stopwatch]::StartNew()
@@ -194,7 +255,7 @@ try {
             $lastTimestamp -ge $windows[-1].end) { $persisted = $true; break }
     }
     if (-not $persisted) { throw 'Frame CSV did not persist the complete measurement window.' }
-    $windows | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dir 'windows.json')
+    ConvertTo-Json -InputObject @($windows) | Set-Content -LiteralPath (Join-Path $dir 'windows.json')
 } finally {
     foreach ($key in $previous.Keys) { [Environment]::SetEnvironmentVariable($key, $previous[$key], 'Process') }
     if ($gpuProcess -and -not $gpuProcess.HasExited) { Stop-Process -Id $gpuProcess.Id -Force }

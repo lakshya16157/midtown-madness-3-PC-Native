@@ -87,7 +87,7 @@ void mm3_car_lighting_model(uint32_t graph, uint32_t selector)
     /* This explicit owner gate lies after the native body cull. Preserve it
      * even though this source-only pass runs before that cull. */
     if (!car_light_address(actor, 0xED) || MEM8(actor + 0xEC)) return;
-    mask = MEM32(graph + 0x124);
+    mask = mm3_car_lighting_effect_mask(MEM32(graph + 0x124), MEM32(0x00407C30u));
     if (!(mask & 0x16Fu)) return;
     memcpy(matrix, (const void *)XBOX_PTR(graph + 0x3C), sizeof matrix);
     for (i = 0; i < 12; ++i) if (!isfinite(matrix[i])) return;

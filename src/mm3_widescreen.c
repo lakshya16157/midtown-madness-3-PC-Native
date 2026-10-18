@@ -224,7 +224,7 @@ static float camera_fov_degrees(void)
         if (env && *env) {
             char *end;
             float value = strtof(env, &end);
-            if (end == env || *end || !isfinite(value) || value < 60.0f || value > 110.0f)
+            if (end == env || *end || !isfinite(value) || (value != 0.0f && value < 60.0f) || value > 110.0f)
                 fprintf(stderr, "[MM3_CAMERA] invalid MM3_FOV_DEGREES; expected 60..110, using stock FOV\n");
             else {
                 degrees = value;

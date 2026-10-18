@@ -6,7 +6,12 @@ Run the recompiled Midtown Madness 3 built by scripts\setup.ps1.
   pwsh scripts\play.ps1 [-Keyboard] [-Fullscreen] [-Profile Balanced|Quality|LowPower] [-FpsLimit 60] [-Fov 100] [-TraceBuildings | -NoTraceBuildings] [-NoLightDiagnostics] [-NoConsoleLog] [-Exe <path>]
 
 Any RECOMP_*/MM3_* variable already set in your shell overrides these
-defaults (see README "Options"). F11 or Alt+Enter toggles fullscreen.
+defaults (see README "Options"). Explicit -Instance and network arguments
+select the child process's namespace and networking and override inherited values.
+F11 or Alt+Enter toggles fullscreen.
+Use -Instance Host / -Instance Client with separate -NetworkPort values and
+-Network -NetPeers host:port for System Link. Named instances keep saves and
+preferences under LocalAppData\MM3Recomp\instances\<name>.
 Every launch saves combined, timestamped output and launch metadata under logs\.
 Use -NoConsoleLog to keep game output in the log without console echo.
 Use -NoLightDiagnostics to disable inherited lighting captures for this launch.
@@ -23,6 +28,11 @@ param(
     [switch]$NoTraceBuildings,
     [switch]$NoLightDiagnostics,
     [switch]$NoConsoleLog,
+    [switch]$NoLauncher,
+    [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$')][string]$Instance,
+    [Alias('SystemLink')][switch]$Network,
+    [Alias('NetPort')][ValidateRange(1, 65535)][int]$NetworkPort,
+    [ValidateLength(0, 511)][string]$NetPeers,
     [string]$Exe
 )
 $ErrorActionPreference = 'Stop'
@@ -51,6 +61,7 @@ $defaults = @{
     RECOMP_PB_EXEC = '1'; RECOMP_FB_WINDOW = '1'; RECOMP_USB = '1'
     RECOMP_APU_DSP_ACK = '0x80458810'; MM3_PERFORMANCE_PROFILE = $Profile
     RECOMP_KEYBOARD_LAYOUT = 'mm3'
+    MM3_LAUNCHER = $(if ($NoLauncher) { '0' } else { '1' })
 }
 if ($PSBoundParameters.ContainsKey('FpsLimit')) { $defaults.RECOMP_FPS_LIMIT = "$FpsLimit" }
 if ($PSBoundParameters.ContainsKey('Fov')) {
@@ -279,12 +290,41 @@ function Get-LaunchFile([string]$Path) {
     }
 }
 
+function Get-InstanceLaunchMutexName {
+    param([Parameter(Mandatory=$true)][string]$SaveRoot)
+    $canonical = [IO.Path]::GetFullPath($SaveRoot).TrimEnd([IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar).ToUpperInvariant()
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical))
+        'Local\MM3RecompSaveRoot-' + ([BitConverter]::ToString($hash).Replace('-', '').ToLowerInvariant())
+    } finally { $hasher.Dispose() }
+}
+
 function Save-LaunchMetadata {
     [IO.File]::WriteAllText($metadataPath, ($metadata | ConvertTo-Json -Depth 20),
                           [Text.UTF8Encoding]::new($false))
 }
 
 # The game reads game_files\ relative to the working directory.
+$explicitSettings = @{}
+$instanceRoot = $null
+if ($Instance) {
+    $localData = [Environment]::GetEnvironmentVariable('LOCALAPPDATA', 'Process')
+    if (-not $localData) { $localData = [Environment]::GetFolderPath('LocalApplicationData') }
+    if (-not $localData) { throw 'Cannot find local application data for this instance.' }
+    $instanceRoot = [IO.Path]::GetFullPath((Join-Path $localData ('MM3Recomp\instances\' + $Instance)))
+    $explicitSettings.MM3_SAVE_DIR = Join-Path $instanceRoot 'save'
+    $explicitSettings.MM3_DISPLAY_CONFIG = Join-Path $instanceRoot 'display.ini'
+    $explicitSettings.MM3_LAUNCHER_CONFIG = Join-Path $instanceRoot 'launcher.ini'
+}
+if ($PSBoundParameters.ContainsKey('Network')) {
+    $explicitSettings.RECOMP_NET = $(if ($Network) { 'nat' } else { '0' })
+} elseif ($PSBoundParameters.ContainsKey('NetworkPort') -or $PSBoundParameters.ContainsKey('NetPeers')) {
+    $explicitSettings.RECOMP_NET = 'nat'
+}
+if ($PSBoundParameters.ContainsKey('NetworkPort')) { $explicitSettings.RECOMP_NET_PORT = "$NetworkPort" }
+if ($PSBoundParameters.ContainsKey('NetPeers')) { $explicitSettings.RECOMP_NET_PEERS = $NetPeers }
 $previous = @{}
 $loggedProcess = $null
 $launchGuard = $null
@@ -294,19 +334,30 @@ $launchExitCode = 1
 Push-Location $repo
 try {
     if ([IO.Path]::GetFileName($Exe) -ieq 'mm3_recomp.exe') {
-        # The title opens the shared Data_hd.zip cache exclusively. A second
-        # game reports its sharing violation as a dirty/damaged disc. Hold a
-        # launcher mutex as well, so simultaneous clicks cannot both pass.
-        $launchGuard = [Threading.Mutex]::new($false, 'Local\MM3RecompSharedCacheLauncher')
-        try { $ownsLaunchGuard = $launchGuard.WaitOne(0) }
-        catch [Threading.AbandonedMutexException] { $ownsLaunchGuard = $true }
-        $runningGames = @(Get-Process -Name mm3_recomp -ErrorAction SilentlyContinue)
-        if ($runningGames.Count -gt 0) {
-            $runningIds = ($runningGames | ForEach-Object { $_.Id } | Sort-Object) -join ', '
-            throw "Midtown Madness 3 is already running (PID $runningIds). Close all existing game windows before launching again; they share an exclusive game cache."
-        }
-        if (-not $ownsLaunchGuard) {
-            throw 'Another Midtown Madness 3 launcher is active. Close the existing game/launcher before starting another copy; they share an exclusive game cache.'
+        if ($Instance) {
+            # Distinct named instances have isolated writable state. Serialize
+            # the canonical save root so the same instance cannot run twice.
+            $guardName = Get-InstanceLaunchMutexName $explicitSettings.MM3_SAVE_DIR
+            $launchGuard = [Threading.Mutex]::new($false, $guardName)
+            try { $ownsLaunchGuard = $launchGuard.WaitOne(0) }
+            catch [Threading.AbandonedMutexException] { $ownsLaunchGuard = $true }
+            if (-not $ownsLaunchGuard) {
+                throw "Midtown Madness 3 instance '$Instance' is already running. Close that instance before starting it again, or choose another -Instance name."
+            }
+        } else {
+            # The default instance shares writable saves and cache. Hold a
+            # launcher mutex so simultaneous clicks cannot both use that state.
+            $launchGuard = [Threading.Mutex]::new($false, 'Local\MM3RecompSharedCacheLauncher')
+            try { $ownsLaunchGuard = $launchGuard.WaitOne(0) }
+            catch [Threading.AbandonedMutexException] { $ownsLaunchGuard = $true }
+            $runningGames = @(Get-Process -Name mm3_recomp -ErrorAction SilentlyContinue)
+            if ($runningGames.Count -gt 0) {
+                $runningIds = ($runningGames | ForEach-Object { $_.Id } | Sort-Object) -join ', '
+                throw "Midtown Madness 3 is already running (PID $runningIds). Close all existing game windows before launching again; the default instance shares writable saves and cache."
+            }
+            if (-not $ownsLaunchGuard) {
+                throw 'Another Midtown Madness 3 launcher is active. Close the existing game/launcher before starting another copy; the default instance shares writable saves and cache.'
+            }
         }
     }
     if ($NoLightDiagnostics) {
@@ -314,6 +365,15 @@ try {
             $previous[$k] = [Environment]::GetEnvironmentVariable($k, 'Process')
             Remove-Item -LiteralPath "Env:\$k" -ErrorAction SilentlyContinue
         }
+    }
+    if ($instanceRoot) {
+        New-Item -ItemType Directory -Path $explicitSettings.MM3_SAVE_DIR -Force | Out-Null
+    }
+    # Explicit instance/network arguments select this child process even when
+    # inherited defaults differ. Restore every original value in finally.
+    foreach ($k in $explicitSettings.Keys) {
+        $previous[$k] = [Environment]::GetEnvironmentVariable($k, 'Process')
+        [Environment]::SetEnvironmentVariable($k, $explicitSettings[$k], 'Process')
     }
     foreach ($k in $defaults.Keys) {
         $value = [Environment]::GetEnvironmentVariable($k, 'Process')
@@ -394,6 +454,10 @@ try {
         launch_options = @{ profile = $Profile; keyboard = [bool]$Keyboard; fullscreen = [bool]$Fullscreen
             trace_buildings = [bool]$TraceBuildings; no_console_log = [bool]$NoConsoleLog
             no_light_diagnostics = [bool]$NoLightDiagnostics
+            instance = $Instance; instance_root = $instanceRoot
+            network = if ($PSBoundParameters.ContainsKey('Network')) { [bool]$Network } else { $null }
+            network_port = if ($PSBoundParameters.ContainsKey('NetworkPort')) { $NetworkPort } else { $null }
+            network_peers = if ($PSBoundParameters.ContainsKey('NetPeers')) { $NetPeers } else { $null }
             fps_limit = if ($PSBoundParameters.ContainsKey('FpsLimit')) { $FpsLimit } else { $null }
             fov = if ($PSBoundParameters.ContainsKey('Fov')) { $Fov } else { $null } }
         environment = $settings; profile_defaults_for_unset_settings = $profileDefaults

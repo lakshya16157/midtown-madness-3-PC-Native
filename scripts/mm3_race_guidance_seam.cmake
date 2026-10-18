@@ -6,7 +6,8 @@ function(mm3_add_race_guidance source_variable function_name)
         set(hooks epoch)
         set(epoch_original [=[loc_00120091: ;
     PUSH32(esp, ebx);]=])
-        set(epoch_call "    mm3_race_guidance_frame_begin();")
+        # This is the shared title update boundary before any player draws.
+        set(epoch_call "    mm3_race_guidance_frame_begin();\n    mm3_native_fog_frame_begin();")
     elseif(function_name STREQUAL "sub_0014BAE9")
         set(hooks roads)
         set(roads_original [=[loc_0014C10F: ;
@@ -107,7 +108,7 @@ function(mm3_add_race_guidance source_variable function_name)
     string(REPLACE "${body}" "${transformed}" content "${content}")
     string(FIND "${content}" "extern void mm3_race_guidance_begin(" declared)
     if(declared LESS 0)
-        set(declarations "#include <stdint.h>\nextern void mm3_race_guidance_frame_begin(void);\nextern void mm3_race_guidance_roads(uint32_t, uint32_t);\nextern void mm3_race_guidance_begin(uint32_t);\nextern void mm3_race_guidance_checkpoint(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\nextern void mm3_race_guidance_target(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\nextern void mm3_race_guidance_end(uint32_t);\nextern void mm3_race_map_route(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\nextern uint32_t mm3_race_route_quad_tagged(uint32_t, uint32_t);\nextern void mm3_race_route_tag_packed(uint32_t);\n")
+        set(declarations "#include <stdint.h>\nextern void mm3_race_guidance_frame_begin(void);\nextern void mm3_native_fog_frame_begin(void);\nextern void mm3_race_guidance_roads(uint32_t, uint32_t);\nextern void mm3_race_guidance_begin(uint32_t);\nextern void mm3_race_guidance_checkpoint(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\nextern void mm3_race_guidance_target(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\nextern void mm3_race_guidance_end(uint32_t);\nextern void mm3_race_map_route(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\nextern uint32_t mm3_race_route_quad_tagged(uint32_t, uint32_t);\nextern void mm3_race_route_tag_packed(uint32_t);\n")
         if(NOT crlf LESS 0)
             string(REPLACE "\n" "\r\n" declarations "${declarations}")
         endif()

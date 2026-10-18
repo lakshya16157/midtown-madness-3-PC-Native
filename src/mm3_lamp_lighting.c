@@ -1,6 +1,7 @@
 #include <math.h>
 #include <stdint.h>
 #include "recomp_types.h"
+#include "mm3_mod_flags.h"
 
 extern void sub_000489A6_original(void);
 extern void sub_00021E18_original(void);
@@ -13,6 +14,7 @@ float mm3_lamp_source_range(uint32_t source)
 {
     float range = MEMF(source + 0x4F);
     float size;
+    if (!mm3_mod_lamp_lighting()) return range;
     if (!isfinite(range) || range < 0.0f) return 0.0f;
     if (range > 0.0f) {
         /* Small indicators retain small pools; road lamps gain enough reach
@@ -34,6 +36,7 @@ float mm3_lamp_source_range(uint32_t source)
 float mm3_lamp_source_cone(uint32_t source)
 {
     float cone = (float)MEM8(source + 0x53) * (90.0f / 255.0f);
+    if (!mm3_mod_lamp_lighting()) return cone;
     /* Native spot volumes use a half-angle in degrees (clamped to 75).
      * Widen the ground footprint while retaining the authored aim/type. */
     return cone > 0.0f ? fminf(cone + 5.0f, 75.0f) : 0.0f;
@@ -86,6 +89,7 @@ static uint32_t lamp_source_color(uint32_t source, uint32_t color)
 
 void sub_000489A6(void)
 {
+    if (!mm3_mod_lamp_lighting()) { sub_000489A6_original(); return; }
     uint32_t stack = g_esp;
     uint32_t color = MEM32(stack + 8);
     int world_source = MEM32(stack) == 0x000E2533u;
@@ -104,6 +108,7 @@ void sub_000489A6(void)
 
 void sub_00021E18(void)
 {
+    if (!mm3_mod_lamp_lighting()) { sub_00021E18_original(); return; }
     uint32_t stack = g_esp;
     uint32_t color = MEM32(stack + 8);
     int world_source = MEM32(stack) == 0x000E2508u;

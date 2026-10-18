@@ -20,6 +20,8 @@ static unsigned char memory[0x600000];
 static const uint32_t stack = 0x1000, frame = 0x2000, manager = 0x500000, renderer = 0x510000;
 static float camera_far, shadow_distance, remap_scale;
 static unsigned remap_calls, vb_calls;
+static int native_fog;
+int nv2a_d3d_distance_fog_ready(void) { return native_fog; }
 static uint32_t vb_capacities[3];
 static int vb_success = 1;
 
@@ -112,7 +114,7 @@ static void check_city_load(float authored, float view, float cell_size)
     float cap = cell_size > 0 ? (float)((double)cell_size * MEMF(0x3860E0u)) : 0;
     float wanted = cap > 0 ? fminf(authored * view, cap) : authored * view;
     float baseline = cap > 0 ? fminf(authored, cap) : authored;
-    float expected_haze = fmaxf(1.0f, wanted / baseline);
+    float expected_haze = native_fog ? 1.0f : fmaxf(1.0f, wanted / baseline);
     unsigned calls;
     check_city(0x100ED6u, authored, authored * view);
     prepare(0, 0, 0);
@@ -151,7 +153,9 @@ int main(int argc, char **argv)
     float object, view, facade;
     unsigned i, factor;
     int custom_first;
-    assert(argc == 6);
+    assert(argc == 6 || argc == 7);
+    native_fog = argc == 7 && !strcmp(argv[6], "native");
+    _putenv_s("MM3_NATIVE_FOG", native_fog ? "1" : "0");
     _putenv_s("RECOMP_DRAW_DISTANCE", strcmp(argv[1], "-") ? argv[1] : "");
     _putenv_s("RECOMP_VIEW_DISTANCE", strcmp(argv[2], "-") ? argv[2] : "");
     _putenv_s("MM3_FOG_REMAP", "1");
@@ -192,7 +196,7 @@ int main(int argc, char **argv)
     MEMF(stack + 0x10) = camera_far;
     sub_000F4AC3();
     assert(camera_far == 700 * view);
-    assert(remap_calls == 1 && remap_scale == view);
+    assert(remap_calls == 1 && remap_scale == (native_fog ? 1.0f : view));
     /* City types with tighter/looser grids, authored ranges below/above the
      * native cap, uncapped cities, and returning to a different grid. */
     check_city_load(700, view, 800);

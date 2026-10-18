@@ -30,6 +30,94 @@ Xbox game and supply a lawfully obtained disc image. No building, no programming
 You need Windows 10 or 11 (64-bit), a Direct3D 11 graphics card, about 6 GB of free disk
 space, and your own game image (it is not included).
 
+## Play online (System Link)
+
+**These instructions require the current source build.** The previously published
+installer predates this networking update; pushing the source does not update that
+download. Build the current `main` using [Building from a fresh clone](#building-from-a-fresh-clone)
+until an installer containing this update is released. Each player needs the same
+build and their own game files. Use **Multiplayer > System Link** in the game.
+
+Configure the connection before starting the game:
+
+1. In the launcher's **Settings**, tick **Enable System Link**.
+2. Set **Local UDP port** to `3075` on each PC.
+3. In **Peers (host:port, comma separated)**, enter the other PC's reachable IPv4
+   address and port, for example `192.168.1.51:3075`. Configure both PCs: each needs
+   the other's address. Use the PC's LAN, VPN or public address as appropriate,
+   rather than the emulated guest address printed in the game log.
+4. Allow the game's chosen UDP port through Windows Firewall on the network you
+   are using. See Microsoft's [Windows Firewall rule documentation](https://learn.microsoft.com/en-us/powershell/module/netsecurity/new-netfirewallrule).
+
+For **two PCs on the same LAN**, find each PC's IPv4 address in Windows network
+settings or with `ipconfig`. Both PCs must be able to reach each other; guest Wi-Fi
+or wireless client isolation can prevent this. You can also launch from PowerShell 7
+in the repository folder, replacing these example addresses:
+
+```powershell
+# PC A: its LAN address is 192.168.1.50; PC B is 192.168.1.51.
+pwsh scripts\play.ps1 -Instance Online -Network -NetworkPort 3075 -NetPeers '192.168.1.51:3075'
+
+# PC B: point back to PC A.
+pwsh scripts\play.ps1 -Instance Online -Network -NetworkPort 3075 -NetPeers '192.168.1.50:3075'
+```
+
+Separate PCs can both use port `3075`. Multiple copies on **one PC** need different
+ports and different `-Instance` names; see the [two-instance example](#pc-runtime-upgrades).
+Named instances start with separate profiles and save preferences under
+`%LOCALAPPDATA%\MM3Recomp\instances\<name>`, while sharing the installed game data.
+The command-line network options override saved launcher settings.
+
+For **internet play**, choose one of these connection methods, then follow the
+same in-game steps below:
+
+- **Private VPN:** connect all players to a private VPN that allows UDP traffic
+  between their PCs. Enter each other's VPN IPv4 address and game port in **Peers**,
+  and allow that traffic through the VPN's access rules and Windows Firewall.
+- **Direct UDP:** on each player's router, forward a chosen external **UDP** port
+  to that PC's LAN IPv4 address and game UDP port. Exchange public IPv4 addresses
+  and external ports, and use those endpoints in **Peers**. A private LAN address
+  such as `192.168.1.50` is not reachable across the internet. If an ISP uses CGNAT,
+  or another router prevents inbound forwarding, use a private VPN with reachable
+  peer addresses instead.
+
+Every player needs mutual UDP reachability. This backend provides no public lobby
+service, relay, automatic port forwarding or NAT hole punching. Its UDP tunnel
+has no authentication or encryption; connect to trusted peers or use a private VPN.
+
+For **three to eight players**, configure each PC's comma-separated **Peers** list
+with **every other player**. For example, A lists B and C, B lists A and C, and C
+lists A and B. The host does not relay the other players' tunnel traffic. Peer
+entries accept IPv4 addresses or hostnames that resolve to IPv4, followed by a
+port; up to eight peer entries can be stored. Use commas without spaces, for
+example `192.168.1.51:3075,192.168.1.52:3075`.
+
+To create and join a game:
+
+1. Choose a profile, then **Multiplayer > System Link**.
+2. **Host:** press **Y — Create New Game**, select **Done** and press **A** to accept
+   the name, then choose the session settings and vehicle. Start with **Cruise**
+   and a base-game car when testing the connection.
+3. **Other players:** select the host's session and press **A** to join.
+4. **Clients:** press **X — Ready** in the lobby.
+5. **Host:** once the players are ready, press **X — Start Game**.
+
+These are Xbox button prompts. With the default keyboard bindings, **Y = S**,
+**A = Z**, and **X = A**; bindings changed in the launcher's **Controls** take
+precedence. Xbox Live sign-in and Insignia service support have not been validated.
+
+If the host does not appear, check that System Link is enabled on every PC,
+the peer addresses and ports are reciprocal, and firewall/VPN rules allow the
+chosen UDP port. `127.0.0.1` works only for copies on the same PC. If the port is
+already in use, choose a different local port and update the other players' peer
+lists. If joining fails, first retry with the same build, game content and base-game
+cars on all PCs. Launch logs are under `logs\`; include them when reporting a problem.
+
+**Tested:** two native copies on one Windows PC discovered a session, joined,
+propagated Ready, started a Paris Cruise and exchanged moving vehicle state in both
+directions. Separate physical PCs, VPNs and public-internet latency/loss conditions
+have not yet been tested.
+
 ## Ownership, disc images and DLC
 
 **Already owning the original Xbox disc is a requirement of this project.** The preferred
@@ -65,6 +153,11 @@ add missing packs. Installed data lives under `game_files\TDATA\4d53002a\$C`.
 
 **Good to know**
 
+- **Launcher:** Settings, Controls and Mods open before the game. Change graphics,
+  field of view, keyboard/mouse bindings and controller buttons there, or toggle
+  individual enhancements. Controls shows the status of up to four XInput pads;
+  select a binding and press a key or controller button to change it. Settings
+  are saved for the next launch. `scripts\play.ps1 -NoLauncher` skips the window.
 - **The first start takes about 3 1/2 minutes** before the menu appears while the intro
   movies play. The game has not frozen.
 - **Keyboard:** arrows drive and navigate menus, **Space** is the handbrake, **C** changes
@@ -293,15 +386,18 @@ not change the translated game, the pinned toolkit or the working executable.
 This publication preserves the current tested fork and records the remaining
 integration work below.
 
+The status notes include later integration work. The 18 October PC upgrades are
+described under [PC runtime upgrades](#pc-runtime-upgrades).
+
 The detailed future implementation checklist is saved in
 [Next fixes to do.txt](Next%20fixes%20to%20do.txt), including root causes,
 source locations, dependencies, integration steps and acceptance tests.
 
-### Fixes still missing or only partly covered
+### Upstream comparison and later integration
 
 | Upstream fix | Status in this fork | Code comparison and remaining work |
 |---|---|---|
-| [Collision-cell bounds](https://github.com/MattSG/mm3-recomp/commit/9ad1762): freezes, crashes and falling through roads | Missing | No grid/index sanitizer around `sub_0015A929`. Our collision-call stack repair fixes a separate fault. |
+| [Collision-cell bounds](https://github.com/MattSG/mm3-recomp/commit/9ad1762): freezes, crashes and falling through roads | Implemented after this audit | `sub_0015A929` validates decoded grids/lists once with bounded linear work, repairs invalid indexes and retains valid cells/cache hits. Native contracts and a Paris driving smoke pass. |
 | [Two unresolved functions](https://github.com/MattSG/mm3-recomp/commit/c91d8f1): corrupted guest registers | Partial | The graph epilogue at `0x144ED9` is repaired. The camera-related setter at `0x2534FF` is still an unresolved stub referenced by six generated thunk-tail sites. Direct unresolved-stub reporting is also absent. |
 | [Bounded push-buffer run-ahead](https://github.com/MattSG/mm3-recomp/commit/fdc33ea): one-frame dark/tunnel-lighting flicker | Implemented after this audit | Kicks retain the store fence and guest register effects, synchronizing above 256 KiB or across a wrap. The host waiter observes the real WBC clear with shutdown/self-wait guards; threshold, ABI and acknowledgment regressions cover it. Cruise/mission visual acceptance remains open. |
 | [White rims on silhouettes](https://github.com/MattSG/xboxrecomp/commit/d62ae29) | Implemented after this audit | Display passes use aligned translation; Y16 depth taps compensate their quarter-pixel offset. |
@@ -310,7 +406,7 @@ source locations, dependencies, integration steps and acceptance tests.
 | [Smooth horizon panorama](https://github.com/MattSG/xboxrecomp/commit/0e63cf0) | Implemented after this audit | Four bilinear taps reconstruct the skyline with cubic B-spline weights; MM3 opts in its panorama blend and texture signature. |
 | [Reset fade keeps the damage bar on the gauge](https://github.com/MattSG/xboxrecomp/commit/76192ee) | Implemented after this audit | HUD-atlas fades preserve edge anchors; fullscreen fade pieces stay separate and cover wide and tall displays. |
 | [Pause/post-race button caps remain joined](https://github.com/MattSG/xboxrecomp/commit/7367dca) | Partial | Our pause-state callback preserves the pause layout. Upstream also detects missing minimap/start rectangles across current and previous frames; equivalent post-race coverage is not established here. |
-| [Audio queue cushion](https://github.com/MattSG/xboxrecomp/commit/9b9a37c) and [audio producer priority](https://github.com/MattSG/xboxrecomp/commit/a4c2800) | Missing | `apu_xaudio2.c` lacks the silent cushion, and `apu_core.c` lacks the new time-critical frame-thread priority. Our PCM queue optimization is a separate change. |
+| [Audio queue cushion](https://github.com/MattSG/xboxrecomp/commit/9b9a37c) and [audio producer priority](https://github.com/MattSG/xboxrecomp/commit/a4c2800) | Different policy | The upstream silent cushion and time-critical producer priority are not adopted. This fork now compiles known DSP programs and uses a bounded, sleeping DSP worker at normal Windows priority; existing PCM buffering remains in use. |
 | [Device interrupts preempt DISPATCH](https://github.com/MattSG/xboxrecomp/commit/d359ee0): half-second freezes | Implemented after this audit | Known level-16 host ISRs can acknowledge completion while a guest holds DISPATCH. A separate device lock retains ISR/synchronization exclusion; nested DPCs still acquire DISPATCH before claiming work. Five new regressions cover completion, nesting, cancellation, restoration and device exclusion. |
 | [Facade slabs and capacity](https://github.com/MattSG/mm3-recomp/commit/31451f6) | Partial | Facade zones and their fade widths now use `min(view_distance, 2)`. Actual buffer storage and limits grow by `ceil(facade_scale^2)`, capped at 4×, with failure rollback and custom capacities preserved. Upstream enlarges four fields by 5×; this fork retains its tested three-pool strategy. |
 | [Quiet hot-path logging](https://github.com/MattSG/xboxrecomp/commit/4f4dbc6) | Partial | Summary, path, successful-read and push-buffer logs are reduced or opt-in here; empty or `0` wrap-trace settings now stay quiet. Loose asset search misses use bounded samples; actual file failures include host and guest context. Upstream's spike-stage split is absent. Focused building traces add work; disable them for performance comparisons. |
@@ -347,9 +443,9 @@ rebuilt locally from the supported disc rather than bundled in this repository.
 
 ### Other upstream improvements still absent
 
-- The RmlUi settings launcher, saved key/mouse bindings, menu hover/click control
-  and switchable mod registry introduced in upstream `9118262`/runtime `b666568`.
-  Our performance profiles, car workshop and driving controls are separate features.
+- Hover/click navigation inside the retail game menus. Settings, saved key/mouse
+  and controller bindings, and individually selectable enhancements are now
+  available through the native Windows launcher.
 - Spike screenshots, game-thread sampling, guest call chains and the new timing
   stage reports. Local hitch tracing and frame captures do not supply those features.
 - Heading display/input in the teleport GUI. The pipe already accepts an
@@ -575,6 +671,26 @@ Car-light caches now expire once at the native light-queue reset, including
 frames with no car callbacks. Each lamp's frame check uses constant time;
 masked lamps no longer rescan every cached light record as traffic grows.
 Same-frame beam alignment, source fades and warm colors are retained.
+
+Front lenses, headlight beams and their road fill now activate only in the
+native evening/night periods. Morning/noon tail-light spill uses a 1.1 m
+radius instead of 2.2 m; evening/night retain the wider gradient.
+
+Post-race dialogue and result panels retain one centred canvas after the race
+HUD disappears, keeping separately drawn caps, blue fill and text together.
+The renderer recognizes stock, expanded and masked map windows, and preserves
+explicit world-name/route placement. The preceding frame's HUD evidence is
+retained for one transition frame; this fallback does not eliminate a possible
+first-frame seam. `python tools/xboxrecomp/tests/test_menu_placement.py` checks
+subsequent dialogue frames, HUD restoration and the existing map layouts.
+
+Audio output keeps exact 48 kHz scheduling instead of discarding fractional
+microseconds per buffer. Voice playback preserves inclusive loop/stream end
+samples and mixes cached one-shot tails before completion. Renderer/DSP
+profiling flags set to empty or `0` now disable their timing work. These fixes
+pass focused native contracts; they are not a measured whole-game frame-time
+improvement. `python tests/mm3_renderer_profile_contract.py` verifies the
+renderer makes no profiling clock calls while disabled.
 
 The 18 October 2026 release-mode car-light replay measured 20 cars at
 0.091 to 0.028 ms/frame and 80 cars at 1.097 to 0.130 ms/frame, before/after
@@ -1022,10 +1138,21 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `RECOMP_PB_EXEC` | off | Execute the push buffer on the D3D11 renderer. **Required** for the game to draw. |
 | `RECOMP_FB_WINDOW` | off | Open the game window. **Required.** |
 | `RECOMP_USB` | off | Emulate the USB controller ports so pads (XInput) reach the game. **Required** for input. |
+| `RECOMP_USB_PADS` | saved setting or `1` | Number of controllers in game (1-4), selected in launcher Controls. Keyboard input shares player 1. |
 | `RECOMP_APU_DSP_ACK` | unset | DSP acknowledgement address(es) the audio needs; use `0x80458810`. |
 | `MM3_APU_IDLE_TRAP_FIX` | `0` | Experimental, for the report that engine and ambient sound vanish after several collisions: `1` re-reports the idle voice to DirectSound each frame, keeps guest threads from overwriting its trap registers and passes over an idle voice DirectSound keeps declining. Unproven; default off keeps the idle-voice handling unchanged. |
 | `RECOMP_APU_IRQ_HOLDOFF` | `0` | Diagnostic: delay the audio interrupt up to this many frames while a guest thread runs at DISPATCH_LEVEL or above (0 = never delay). |
 | `MM3_DISPLAY_CONFIG` | `%LOCALAPPDATA%\MM3Recomp\display.ini` | Override the saved display-settings file. F10 opens the settings dialog. |
+| `MM3_LAUNCHER` | automatic | `1` opens Settings/Controls/Mods; `0` skips the window while applying saved preferences. The play script opens it by default; `-NoLauncher` skips it. |
+| `MM3_LAUNCHER_CONFIG` | beside `display.ini` | Override `launcher.ini`, which stores bindings, Mods and network settings. |
+| `RECOMP_KEYMAP` / `MM3_DRIVE_KEYMAP` | saved bindings | Keyboard/mouse bindings and driving actions, edited through Controls. Explicit environment maps use `ACTION:VK` pairs with hexadecimal Win32 key codes. |
+| `RECOMP_PADMAP` | saved bindings | Controller button/trigger bindings, edited through Controls; maps use `DESTINATION:SOURCE` pairs such as `A:RB`. Applies to all four XInput ports. |
+| `RECOMP_LOADING_SPINNER` | saved setting or `1` | Show the native loading animation during long gaps between game flips. |
+| `MM3_NATIVE_FOG` | saved setting or `1` | Enable native depth fog, skyline masking and camera-aware sky blending. |
+| `RECOMP_NET` | saved setting or `0` | `nat` or `1` enables the System Link adapter and UDP peer transport. |
+| `RECOMP_NET_PORT` / `RECOMP_NET_PEERS` | `3075` / empty | Local UDP tunnel port and up to eight comma-separated peer `host:port` entries. |
+| `RECOMP_DSP_PROGRAM_DIR` | `game_files/dsp` | Runtime DSP capture cache. Native compilation uses CMake's `XBOXRECOMP_DSP_PROGRAM_DIR`, with the same default. |
+| `RECOMP_DSP_INTERPRETER` | `0` | `1` uses the DSP interpreter for reference comparisons, even when native programs are compiled in. |
 | `MM3_SHOW_FPS` | saved setting or `1` | Show the FPS counter in the window title; `0` hides it. Can also change live in Display Settings. |
 | `RECOMP_KEYBOARD` | off | `1`: keyboard as a pad (arrows drive/navigate, Z X A S = A B X Y, Enter = Start, Backspace = Back; MM3 layout also maps Escape to B/menu back). |
 | `RECOMP_KEYBOARD_LAYOUT` | `mm3` | Arrow driving controls; `legacy` restores the original D-pad-only arrows and 1/3 trigger keys. |
@@ -1639,10 +1766,9 @@ Normal launches use minimal logging: focused building, texture-stream and
 asynchronous-wait tracing is off by default. Use `-TraceBuildings` to opt in
 when investigating pop-in; `-NoTraceBuildings` remains available to explicitly
 disable that switch. Existing environment overrides still take priority.
-The launcher refuses a second game instance because
-both copies would open the same cache exclusively; that conflict otherwise
-appears as the title's dirty/damaged-disc screen. Close all game windows before
-starting a new run.
+Normal launches prevent concurrent use of the same writable saves and cache.
+System Link launches can use distinct `-Instance` names, each with separate
+saves and preferences. Read-only game archives are shared between instances.
 
 For the repeatable upper-building gap in Paris, Blitz **Sacré Leap**, approaching
 **Boulevard Malesherbes**, close the current game when convenient and launch:
@@ -1765,3 +1891,118 @@ Off unless set; for debugging the runtime, not for play. See the source named fo
 CMake options default to a clean build. `MM3_FRONTEND_WATCH`, `MM3_MOVIE_INPUT_TRACE`,
 `MM3_TRACY` and `MM3_RECOMP_ABI_CHECK` add diagnostics that cost performance (the first
 roughly halves menu frame rate); leave them off for play.
+
+### PC runtime upgrades
+
+The requested collision repair, native launcher with keyboard/controller
+bindings and individual Mods, loading animation, eight-region clipping,
+camera-aware depth fog, native DSP worker and System Link integration are
+implemented. These changes retain the pinned toolkit and are distributed in
+`patches/xboxrecomp-mm3.patch` rather than changing its Git revision.
+Controls includes saved keyboard/mouse and controller button/trigger bindings,
+plus a **Controllers in game** choice from one to four for local split screen.
+
+Paris collision cells are validated once when decoded, with bounded linear work
+even when many grid entries share a list. Invalid indexes are repaired before
+native road queries use them. Valid cells and cache hits keep their normal path.
+
+The loading animation runs at a limited cadence during long gaps between game
+flips and stays out of movies and guest-surface captures. Window clipping implements all eight
+inclusive/exclusive regions, including split-screen and scaled views.
+
+Native depth fog replaces the low-resolution fog overlay and horizon strip while
+retaining the skyline alpha mask. Its sky blend follows each camera; fog uses
+the existing depth samples without changing them. Shaders are prepared during
+startup. Failed preparation or an invalid guest submission retains the original
+fog/horizon path. Switch it in Mods or use `MM3_NATIVE_FOG=0` for comparisons.
+
+Audio uses a bounded eight-frame DSP worker queue. The worker sleeps when idle,
+uses normal Windows thread priority, and discards obsolete queued work after a
+reset. A failed worker creation retains synchronous processing. Existing PCM
+buffering, HRTF, resampling and fractional 48 kHz scheduling remain in use.
+
+`scripts\setup.ps1` captures the supplied game's GP/EP programs with isolated
+saves and muted device output, then compiles their executed instructions to
+native C. The interpreter handles unknown or changed instructions. Gameplay can
+teach the local `game_files\dsp` cache additional effects paths; run the normal
+incremental CMake build again to compile those too. Captures and generated DSP
+code are derived game data and are not stored in Git. To refresh them manually:
+
+```powershell
+pwsh scripts\capture_mm3_dsp.ps1 -Executable build\RelWithDebInfo\mm3_recomp.exe
+cmake --build build --config RelWithDebInfo --target mm3_recomp --parallel 4
+```
+
+The capture helper does not change the user's saves or preferences. It validates
+complete programs before replacing existing files. Native instruction contracts
+include loops, DMA, interrupts and self-modifying code; captured MM3 frames also
+replay against the interpreter with exact transfer payloads and final DSP state.
+
+System Link can be enabled in the launcher. Each instance needs its own UDP
+port and writable save root. For two copies on this PC, run these commands in
+separate terminals, then use Multiplayer > System Link inside the game:
+
+```powershell
+pwsh scripts\play.ps1 -Instance Host -Network -NetworkPort 3075 -NetPeers '127.0.0.1:3076'
+pwsh scripts\play.ps1 -Instance Client -Network -NetworkPort 3076 -NetPeers '127.0.0.1:3075'
+```
+
+Named instances store their saves and preferences under
+`%LOCALAPPDATA%\MM3Recomp\instances\<name>`; they start with a separate profile.
+For separate PCs, internet connection options and the in-game host/join steps,
+see [Play online (System Link)](#play-online-system-link). Packet queues and descriptor walks are
+bounded, sockets are nonblocking, and idle workers sleep. Shutdown wakes and
+joins the workers before releasing their guest memory.
+Stable MAC-derived guest addresses use 24 host bits in the private `10/8`
+subnet, reducing duplicate-address risk in larger lobbies compared with the
+upstream 200-address pool.
+
+The final build passed a two-instance System Link Paris Cruise on this Windows
+PC: discovery, joining, Ready propagation, race start and moving vehicle state
+in both directions. The host moved 100.74 metres and the client 73.65 metres;
+their settled remote replicas matched at the probe's reported precision.
+Evidence is in `logs/pc-upgrades-20261018-systemlink.json`. Separate physical
+PCs and network latency/loss conditions were not tested. The live test used
+owned process termination; lifecycle contracts separately verify bounded
+worker shutdown and handle cleanup.
+
+The captured gameplay DSP replay has 106 transfers. Native execution matches
+the current interpreter's transfer payloads and complete final state; payloads
+also match the pinned xemu reference. The latter has documented pre-existing
+register-state differences, so it is not a full-state match. Three alternating
+2,000-repeat trials measured median replay time of 270.754 microseconds native
+versus 394.866 interpreted for this GP frame (31.4% less time), and 111.563
+versus 151.704 microseconds for the intro EP frame (26.5% less). These are DSP
+replay measurements, not whole-game FPS or power measurements.
+
+The 18 October Windows smoke comparison used 30-second stationary Paris Cruise
+windows: Clear, Noon, Summer, no cops, Medium traffic/pedestrians, a Lotus
+Esprit V8 with Automatic transmission, Balanced rendering and a 60 FPS cap.
+Both runs used X=698.755981, Z=1346.96997 and a requested heading of 1.5707963
+radians. Captures were taken outside the measured windows.
+
+| Observed result | Before upgrades | Final build |
+|---|---:|---:|
+| FPS | 60.0 | 60.0 |
+| Presentation interval, 99th percentile | 17.81 ms | 17.12 ms |
+| Maximum presentation interval | 19.81 ms | 18.86 ms |
+| Hitches over twice the median interval | 0 / 1,801 frames | 0 / 1,804 frames |
+| Process CPU, normalized across 16 logical processors | 15.04% | 13.48% |
+
+Traffic, pedestrians and settled camera framing differed between runs; these
+are observations under the same configured scene, not a causal CPU speedup or
+a guarantee for every route. The earlier Career-based driving captures are
+streaming/functionality smokes rather than matched performance comparisons.
+The final executable's SHA-256 is
+`49AF9102B9A20966D060B507F35347332F1D0C3362C9D34654F52A83E9D4D0CF`.
+
+The focused contracts are `tests/mm3_collision_cells_regression.py`,
+`tests/mm3_launcher_regression.py`, `tests/mm3_window_clip_regression.py`,
+`tests/mm3_native_fog_regression.py` and
+`tests/mm3_native_fog_decoder_regression.py`. Renderer GPU fixtures live under
+`tools/xboxrecomp/tests/nv2a_loading`, `nv2a_window_clip` and `nv2a_native_fog`.
+
+Controller mapping, capture and configuration contracts use synthetic input;
+physical XInput controllers were not attached during validation. An existing
+optional car-lighting asset audit still reports missing front-light data in
+car 213's `body.cmp`; that asset issue is separate from these runtime upgrades.

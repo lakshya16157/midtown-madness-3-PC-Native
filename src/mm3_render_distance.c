@@ -4,8 +4,10 @@
 #include <string.h>
 #include "recomp_types.h"
 #include "mm3_render_distance.h"
+#include "mm3_mod_flags.h"
 
 extern void nv2a_d3d_set_depth_view_remap(float scale, float knee);
+extern int nv2a_d3d_distance_fog_ready(void);
 
 /* Sky fog ramps (Skies/<sky>_fog.cdds) index w-buffer depth relative to the
  * far plane and were authored for the 700 m city cap. The renderer anchors
@@ -97,7 +99,7 @@ static void update_city_haze(float effective, float authored)
         if (scale != s_haze_scale) {
             /* MM3_FOG_REMAP=0 retains the native depth ramp for A/B tests. */
             if (!getenv("MM3_FOG_REMAP") || strcmp(getenv("MM3_FOG_REMAP"), "0"))
-                nv2a_d3d_set_depth_view_remap(scale, FOG_KNEE);
+                nv2a_d3d_set_depth_view_remap(mm3_mod_native_fog() && nv2a_d3d_distance_fog_ready() ? 1.0f : scale, FOG_KNEE);
             s_haze_scale = scale;
             fprintf(stderr, "[MM3_DISTANCE] city authored=%.3g effective=%.3g resident_cap=%.3g haze_scale=%.3g\n",
                     authored, effective, s_city_stream_cap, scale);

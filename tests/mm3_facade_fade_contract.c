@@ -13,6 +13,7 @@ static unsigned char memory[0x400000], expected[0x400000];
 static unsigned setter_calls;
 static float original_bias, original_slope;
 static const uint32_t stack = 0x1000;
+int nv2a_d3d_distance_fog_ready(void) { return 0; }
 
 void nv2a_d3d_set_depth_view_remap(float scale, float knee)
 {

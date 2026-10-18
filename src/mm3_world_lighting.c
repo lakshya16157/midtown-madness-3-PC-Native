@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "recomp_types.h"
+#include "mm3_mod_flags.h"
 #include "mm3_world_lighting.h"
 
 extern void sub_000FF19A_original(void);
@@ -24,6 +25,12 @@ extern void nv2a_d3d_set_local_light_overlap(int enabled);
  * sources supply their own falloff and color. */
 void mm3_world_lighting_apply_gain(void)
 {
+    if (!mm3_mod_world_lighting()) {
+        nv2a_d3d_set_local_light_gain(1.0f);
+        nv2a_d3d_set_local_light_softness(0);
+        nv2a_d3d_set_local_light_overlap(0);
+        return;
+    }
     const char *setting = getenv("MM3_LOCAL_LIGHT_GAIN");
     double gain = 1.3;
     if (setting && *setting) {
@@ -106,6 +113,7 @@ static void world_lighting_configure(void)
 
 static uint32_t world_light_color(uint32_t color, unsigned ambient)
 {
+    if (!mm3_mod_world_lighting()) return color;
     world_lighting_configure();
     /* Native raceGetTimeOfDay (2125A0), the enum constructor (2501CD), and
      * the scene renderer (22F2DA) agree: 0 morning, 1 noon, 2 evening, 3 night.

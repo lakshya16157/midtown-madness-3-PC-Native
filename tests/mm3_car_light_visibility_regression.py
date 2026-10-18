@@ -301,6 +301,27 @@ static void mask_and_damage_checks(void)
     mm3_car_lighting_model(OWNER,0);assert(MEM32(QUEUE+0x5810)==0);
 }
 
+static void time_of_day_visibility_checks(void)
+{
+    unsigned period,alternate;
+    for(period=0;period<4;++period) {
+        unsigned dark=period>=2;
+        for(alternate=0;alternate<2;++alternate) {
+            visibility_setup(0x101);MEM32(0x407c30)=period;
+            rejected_body(alternate,1);
+            assert(MEM32(QUEUE+0x5810)==(dark?2u:0u));
+            assert(MEM32(OWNER+0x124)==0x101 && !flares);
+        }
+        visibility_setup(0x107);MEM32(0x407c30)=period;
+        mm3_car_lighting_model(OWNER,0);
+        assert(MEM32(QUEUE+0x5810)==(dark?4u:2u) && !flares);
+        /* Tail/brake remain active while only front sources are masked. */
+        assert(MEMF(entry(dark?1:0)+0x40)==(dark?4.4f:2.2f));
+        assert(MEMF(entry(dark?2:1)+0x40)==6.8f);
+    }
+    puts("PASS: both real native offscreen render entries gate front sources by period; head-only daytime models skip collection; mixed tail/brake remain active with smaller daylight tail gradient");
+}
+
 static void bounded_walk_checks(void)
 {
     unsigned i;
@@ -365,7 +386,8 @@ static void volume_culling_checks(void)
 
 int main(void)
 {
-    offscreen_motion_checks();mask_and_damage_checks();bounded_walk_checks();volume_culling_checks();
+    offscreen_motion_checks();mask_and_damage_checks();time_of_day_visibility_checks();
+    bounded_walk_checks();volume_culling_checks();
     puts("PASS: real native rejected-body seams (E01C2/E0277), live offscreen movement/turning/bank, native matrix reference, zero offscreen flares/geometry, current light masks/blink clock, actor/damage gates, later draw deduplication, bounded traversal, 320-model queue pressure and conservative full-volume frustum culling");
     return 0;
 }

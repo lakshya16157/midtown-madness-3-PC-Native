@@ -86,6 +86,13 @@ if ($Force -or -not (Test-Path 'src\recomp\gen\recomp_dispatch.c')) {
 } else {
     Write-Host 'src\recomp\gen present (use -Force to regenerate)'
 }
+# Existing generated trees need the newly recovered network entries too.
+# Incremental repair preserves every prior body and is a no-op when current.
+& $python scripts\Generate-MM3RuntimeEntries.py src\recomp\gen --incremental --entries `
+    0x00043A00 0x0010EF0D 0x00189153 0x0018B42B 0x001CDAD3 0x001D6327
+Check 'System Link runtime entries'
+& $python scripts\generate_mm3.py --fix-flag-joins src\recomp\gen --quiet-flag-joins
+Check 'guest flag joins'
 
 Step "Build ($Config)"
 if ($portableMsvc) {
@@ -96,5 +103,18 @@ if ($portableMsvc) {
 & $cmake --build build --config $Config --target mm3_recomp --parallel; Check 'build'
 
 $exe = Join-Path $repo "build\$Config\mm3_recomp.exe"
+# First build captures programs from the supplied disc; the second build
+# compiles those executed words to native code. Failure leaves a working
+# interpreter build and can be retried without touching game saves.
+Step 'Native audio programs'
+try {
+    $capture = & (Join-Path $PSScriptRoot 'capture_mm3_dsp.ps1') -Executable $exe
+    if ($capture.Captured) {
+        & $cmake --build build --config $Config --target mm3_recomp --parallel
+        Check 'native DSP build'
+    }
+} catch {
+    Write-Warning "Native audio bootstrap was unavailable; the previously built executable remains usable. $_"
+}
 Write-Host "`nBuilt $exe" -ForegroundColor Green
 Write-Host 'Play:  pwsh scripts\play.ps1    (-Keyboard to drive with the keyboard)'

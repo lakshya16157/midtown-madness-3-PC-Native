@@ -12,6 +12,7 @@ Needs a Python with capstone (scripts/setup.ps1 makes one).
 """
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -42,11 +43,17 @@ def generator_dir():
     return out
 
 
-TOOLKIT = generator_dir()
-os.environ['MM3_GENERATOR_DIR'] = str(TOOLKIT)  # for the helper scripts
+TOOLKIT = None
+DISASM = None
 XBE = REPO / 'game_files/default.xbe'
-DISASM = TOOLKIT / 'tools/disasm/output'
-sys.path.insert(0, str(TOOLKIT))
+
+
+def setup_toolkit():
+    global TOOLKIT, DISASM
+    TOOLKIT = generator_dir()
+    os.environ['MM3_GENERATOR_DIR'] = str(TOOLKIT)  # for the helper scripts
+    DISASM = TOOLKIT / 'tools/disasm/output'
+    sys.path.insert(0, str(TOOLKIT))
 
 # Computed reverse-copy entries share 0x93860's frame and end at its epilogue.
 MEMMOVE_TAILS = (0x93B04, 0x93B58, 0x93B60, 0x93B70, 0x93B84)
@@ -92,11 +99,174 @@ def write_runtime_entry_functions(path):
     path.write_text(json.dumps(functions, indent=1))
 
 
+# Statements that leave the flags as they were, so a walk back through them is exact.
+FLAG_NEUTRAL = re.compile(
+    r'^\s*(?:$|/\*.*\*/$|\(void\)|_(?:cf|zf) = [^;]*;(?: /\*.*\*/)?$'
+    r'|if \(.*\) (?:goto loc_[0-9A-F]+;|\{ .*return; \}|\(void\)0; /\*.*\*/)(?: /\*.*\*/)?$)')
+FLAG_LABEL = re.compile(r'^(loc_[0-9A-F]+): ;$')
+FLAG_JUMP_OUT = re.compile(r'^\s*(goto |return\b|esp \+= \d+; return)')
+FLAG_FUNC = re.compile(r'^\w[^;]*\b(sub_[0-9A-F]+)\(void\)\s*$')
+
+
+def func_name(lines, i):
+    """The sub_XXXX whose definition is the nearest one above line i."""
+    return next((lines[k].split('(')[0].split()[-1] for k in range(i, -1, -1)
+                 if FLAG_FUNC.match(lines[k])), '?')
+
+
+def flag_setter_zf(text):
+    """The C statement that sets _zf from a flag-producing line, or None.
+
+    Each form matches the lifter's own je/jne condition for that setter: cmp and
+    test keep their operands in _fa/_fb, and the result-based setters keep the
+    result in _fa (see _make_condition in tools/recomp/lifter.py).
+    """
+    if '/* cmp ' in text:
+        return '_zf = (_fa == _fb);'
+    if '/* test ' in text:
+        return '_zf = ((_fa & _fb) == 0);'
+    if re.search(r'/\* (\w+ )?(sub|dec|inc|add|and|or|xor|neg) result', text):
+        return '_zf = (_fa == 0);'
+    return None
+
+
+def fix_flag_joins(out, verbose=False):
+    """Materialize ZF where a je/jne reads the never-set `_flags` fallback.
+
+    The pinned lifter keeps flags lazily: a cmp leaves its operands in _fa/_fb, an
+    arithmetic op leaves its result in _fa, a test leaves both operands. When a
+    je/jne has no flag state it falls back to `_flags`, which nothing ever assigns,
+    so the branch is never taken. Lua's code generator hit this at 0x89689
+    (`x ~= y` compiled as `x ~= nil`), which kept System Link hosts from spawning a car.
+
+    The fix walks back from each such branch through the statements that leave the
+    flags alone (labels, conditional jumps, _cf writes) to every flag producer that
+    reaches it, across labels and their gotos. When all of them are one of the
+    forms above, each producer stores ZF in a per-function _zf and the branch tests
+    that. Anything else is left as it was and listed, with the line that blocked it,
+    so a silent miscompile is visible in the generator output.
+
+    Returns (fixed, unfixed): the branch count rewritten, and a list of
+    (file, function, label, line, reason) for every je/jne still on `_flags`.
+    """
+    jcc = re.compile(r'^(\s*)if \(_flags /\* (je|jne): [^*]*\*/\) (.*)$')
+    fixed = 0
+    unfixed = []
+    for path in sorted(out.glob('recomp_*.c')):
+        lines = path.read_text().splitlines()
+        targets = {}
+        for i, line in enumerate(lines):
+            for m in re.finditer(r'goto (loc_[0-9A-F]+);', line):
+                targets.setdefault(m.group(1), []).append(i)
+        blocked = []
+
+        def sources(j, seen=frozenset()):
+            """Lines that set the flags in effect after line j, or None when one is unknown."""
+            while j >= 0 and FLAG_NEUTRAL.match(lines[j]):
+                j -= 1
+            if j < 0:
+                blocked.append(None)  # function entry: flags are undefined
+                return None
+            label = FLAG_LABEL.match(lines[j])
+            if label:
+                if label.group(1) in seen:
+                    return []
+                seen = seen | {label.group(1)}
+                found = []
+                for g in targets.get(label.group(1), []):
+                    s = sources(g - 1, seen)
+                    if s is None:
+                        return None
+                    found += s
+                prev = j - 1
+                while prev >= 0 and not lines[prev].strip():
+                    prev -= 1
+                if prev >= 0 and not FLAG_JUMP_OUT.match(lines[prev]):
+                    s = sources(prev, seen)
+                    if s is None:
+                        return None
+                    found += s
+                return found
+            if flag_setter_zf(lines[j]) is None:
+                blocked.append(j)
+                return None
+            return [j]
+
+        inserts = {}   # setter line -> _zf statement
+        rewrites = {}  # branch line -> replacement
+        decls = set()
+        for i, line in enumerate(lines):
+            m = jcc.match(line)
+            if not m:
+                continue
+            indent, cond, rest = m.groups()
+            if '(void)0; /* goto' in rest or 'RECOMP_DEAD_BRANCH(' in rest:
+                # translator.py comments out a goto whose label is not in the function
+                # (mark_dead_branches rewrites that to RECOMP_DEAD_BRANCH). The branch
+                # has no ZF to materialize.
+                unfixed.append((path.name, func_name(lines, i), '-', i + 1,
+                                'target label outside this function; translator dropped the jump'))
+                continue
+            func = func_name(lines, i)
+            prev = next((k for k in range(i - 1, -1, -1) if lines[k].strip()), None)
+            label = FLAG_LABEL.match(lines[prev]) if prev is not None else None
+            blocked.clear()
+            srcs = sources(i - 1)
+            decl = next((k for k in range(i, -1, -1)
+                         if 'int _flags = 0; /* fallback flag var */' in lines[k]), None)
+            if srcs is None or not srcs or decl is None:
+                if srcs is not None and not srcs:
+                    reason = 'no flag producer reaches it'
+                elif decl is None:
+                    reason = 'no _flags declaration'
+                else:
+                    at = blocked[-1] if blocked else None
+                    reason = ('function entry' if at is None else
+                              f'blocked at {path.name}:{at + 1}: {lines[at].strip()[:90]}')
+                unfixed.append((path.name, func, label.group(1) if label else '-', i + 1, reason))
+                continue
+            for j in srcs:
+                indent_j = lines[j][:len(lines[j]) - len(lines[j].lstrip())]
+                inserts[j] = f'{indent_j}{flag_setter_zf(lines[j])}'
+            decls.add(decl)
+            rewrites[i] = f'{indent}if ({"" if cond == "je" else "!"}_zf) {rest}'
+            fixed += 1
+        if not rewrites:
+            continue
+        for d in decls:
+            if '_zf' not in lines[d]:
+                lines[d] += ' int _zf = 0;'
+        new = []
+        for k, line in enumerate(lines):
+            new.append(rewrites.get(k, line))
+            if k in inserts:
+                new.append(inserts[k])
+        path.write_text('\n'.join(new) + '\n')
+    print(f'flag joins materialized: {fixed}')
+    print(f'je/jne left on the _flags fallback: {len(unfixed)}')
+    if verbose:
+        for name, func, label, line, reason in unfixed:
+            print(f'  {name}:{line} {func} {label}: {reason}')
+    return fixed, unfixed
+
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--out', type=Path, default=REPO / 'src/recomp/gen')
     ap.add_argument('--skip-analysis', action='store_true', help='reuse tools/*/output')
+    ap.add_argument('--fix-flag-joins', type=Path, metavar='GEN_DIR',
+                    help='run only the je/jne flag join pass over an existing generated directory')
+    flag_report = ap.add_mutually_exclusive_group()
+    flag_report.add_argument('--quiet-flag-joins', action='store_true',
+                             help='print only flag-join counts (the default)')
+    flag_report.add_argument('--verbose-flag-joins', action='store_true',
+                             help='also list every unresolved flag-join diagnostic')
     args = ap.parse_args()
+    if args.fix_flag_joins:
+        fix_flag_joins(args.fix_flag_joins.resolve(), verbose=args.verbose_flag_joins)
+        return
+    setup_toolkit()
     out = args.out.resolve()
     if not XBE.exists():
         sys.exit(f'{XBE} missing: run scripts/setup.ps1 -Iso <disc> first')
@@ -151,6 +321,7 @@ def main():
 
     write_runtime_entry_functions(out / 'runtime_entry_functions.json')
     py(REPO / 'scripts/Generate-MM3RuntimeEntries.py', out)
+    fix_flag_joins(out, verbose=args.verbose_flag_joins)
 
     # Runtime semantics stay project-owned.
     shutil.copy(REPO / 'src/mm3_recomp_types.h', out / 'recomp_types.h')

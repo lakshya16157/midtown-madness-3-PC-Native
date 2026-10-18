@@ -13,6 +13,7 @@ static unsigned char memory[0x10000], expected[0x10000];
 static unsigned original_calls;
 static unsigned constructor_budget = 12;
 static const uint32_t manager = 0x1000, particles = 0x3000;
+int nv2a_d3d_distance_fog_ready(void) { return 0; }
 
 void nv2a_d3d_set_depth_view_remap(float scale, float knee)
 {

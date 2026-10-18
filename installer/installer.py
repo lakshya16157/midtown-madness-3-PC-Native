@@ -102,6 +102,7 @@ CAR_CREDITS = {
 
 # The game needs these to run at all; play.ps1 sets the same ones.
 LAUNCH_ESSENTIALS = {
+    "MM3_LAUNCHER": "1",
     "RECOMP_PB_EXEC": "1",
     "RECOMP_FB_WINDOW": "1",
     "RECOMP_USB": "1",

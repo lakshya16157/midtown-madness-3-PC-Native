@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "recomp_types.h"
+#include "mm3_mod_flags.h"
 
 extern void sub_0020F7EB(void);
 
@@ -17,6 +18,7 @@ static int flag(const char *name)
  * request selects a prepared script; no arbitrary guest address is accepted. */
 void mm3_debug_features_tick(void)
 {
+    if (!mm3_mod_dev_tools()) return;
     static const char *request;
     static int initialized, running;
     static unsigned startup;

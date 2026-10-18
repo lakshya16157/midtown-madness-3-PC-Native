@@ -13,6 +13,7 @@
 #include "mm3_frame_limit.h"
 #include "mm3_performance_profile.h"
 #include "mm3_display_settings.h"
+#include "mm3_launcher.h"
 #include "mm3_crash_diagnostics.h"
 #include "mm3_world_lighting.h"
 #include <xbox_host.h>
@@ -249,10 +250,22 @@ int main(void)
     else
         setvbuf(stderr, stderr_buffer, _IOFBF, sizeof stderr_buffer);
     SetUnhandledExceptionFilter(mm3_crash_report);
+    if (!mm3_launcher_run()) return 0;
+    /* Bootstrap capture uses the real audio engine without displaying a game
+     * window or changing the user's device volume or saved preferences. */
+    if (getenv("MM3_DSP_CAPTURE") && !strcmp(getenv("MM3_DSP_CAPTURE"), "1"))
+        _putenv_s("RECOMP_FB_WINDOW", "");
+    if (!getenv("RECOMP_DSP_PROGRAM_DIR") &&
+        _putenv_s("RECOMP_DSP_PROGRAM_DIR", "game_files/dsp") != 0) {
+        fprintf(stderr, "cannot select MM3 DSP program directory\n");
+        return 1;
+    }
+    nv2a_d3d_prepare_distance_fog(!getenv("MM3_NATIVE_FOG") || strcmp(getenv("MM3_NATIVE_FOG"), "0"));
     xbox_FramebufferSetCloseHandler(mm3_close_game);
-    nv2a_d3d_set_flare_depth_test(1);
+    nv2a_d3d_set_flare_depth_test(!getenv("MM3_MOD_FLARE_DEPTH") || strcmp(getenv("MM3_MOD_FLARE_DEPTH"), "0"));
     mm3_world_lighting_apply_gain();
-    nv2a_d3d_set_bspline_blend(0x304u, 0x305u);
+    if (!getenv("MM3_MOD_SKY") || strcmp(getenv("MM3_MOD_SKY"), "0"))
+        nv2a_d3d_set_bspline_blend(0x304u, 0x305u);
     SetConsoleCtrlHandler(mm3_console_control, TRUE);
     puts("MM3 static recompilation");
 

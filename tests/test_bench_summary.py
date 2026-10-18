@@ -50,6 +50,164 @@ class BenchmarkSummaryTests(unittest.TestCase):
                 BENCH.summarize_run(folder)
             self.assertFalse((folder / 'summary.json').exists())
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows benchmark capture helper')
+    def test_controlled_scene_requires_verified_setup_and_live_car(self):
+        pwsh = ROOT / 'tools/bin/powershell/pwsh.exe'
+        if not pwsh.exists():
+            self.skipTest('Checkout PowerShell is unavailable')
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            def quote(value):
+                return "'" + str(value).replace("'", "''") + "'"
+            script = folder / 'session.ps1'
+            script.write_text(f'''
+$ErrorActionPreference = 'Stop'
+. {quote(ROOT / 'tools/bench/session.ps1')}
+$dir = {quote(folder)}; $p = [pscustomobject]@{{ Id=4321 }}
+$pad = Join-Path $dir 'pad.txt'; [IO.File]::WriteAllText($pad,'')
+$X=643.2; $Z=52.6; $Heading=0; $Secs=5; $Scenario='Stationary'
+$windows=@(); $captures=@(); $gpuProcess=$null; $buttons=@(); $measured=0; $waits=@()
+$teleport = {{
+    param($ProcessId,$X,$Z,$Heading)
+    if ($ProcessId -ne 4321) {{ throw 'wrong process probed' }}
+    if ($PSBoundParameters.ContainsKey('X')) {{
+        if ($X -ne 643.2 -or $Z -ne 52.6 -or $Heading -ne 0) {{ throw 'run coordinates not used' }}
+        return @{{ result='applied'; x=$X; y=17; z=$Z }}
+    }}
+    return @{{ available=$true; x=643.2; y=17; z=52.6 }}
+}}
+function Qpc-Milliseconds {{ 1234.5 }}
+function Wait-Game([double]$seconds) {{ $script:waits += $seconds }}
+function Get-Command {{ param($Name) if ($Name -ne 'nvidia-smi') {{ throw 'unexpected executable lookup' }} }}
+function Press-Pad($button,$delay) {{ $script:buttons += $button }}
+function Capture-Frame($name) {{
+    $script:captures += @{{ scene=$name; file=($name+'.bmp') }}
+    if ($name -eq 'ready') {{
+        @(
+            '{{"command":"pad","button":"arbitrary-code"}}',
+            '{{"command":"measure"}}',
+            '{{"command":"pad","button":"down","wait":2}}',
+            '{{"command":"capture","name":"cruise-setup"}}',
+            '{{"command":"teleport"}}',
+            '{{"command":"position"}}',
+            '{{"command":"confirm","mode":"Cruise","city":"Paris","weather":"Clear","time":"Day","season":"Summer","cops":0,"pedestrians":"Medium","traffic":"Medium","car":"MINI Cooper S","transmission":"Automatic"}}',
+            '{{"command":"measure"}}',
+            '{{"command":"measure"}}',
+            '{{"command":"finish"}}'
+        ) | Set-Content -LiteralPath (Join-Path $dir 'control.jsonl')
+    }}
+}}
+function Measure-Window($name,$seconds) {{
+    if ($name -ne 'race' -or $seconds -ne 5) {{ throw 'measurement settings changed' }}
+    $script:windows += @{{ name=$name; start=100; end=5100 }}; $script:measured++
+}}
+Invoke-ControlledScene
+$results = @(Get-Content -LiteralPath (Join-Path $dir 'control-results.jsonl') | ConvertFrom-Json)
+if ($results.Count -ne 10 -or $results[0].ok -or $results[1].ok -or $results[8].ok) {{ throw 'invalid command or duplicate/unverified measurement accepted' }}
+if (-not $results[7].ok -or -not $results[9].ok -or $measured -ne 1 -or $buttons -ne 'down') {{ throw 'guided session did not complete exactly one race' }}
+$scene = Get-Content -LiteralPath (Join-Path $dir 'scene.json') -Raw | ConvertFrom-Json
+if ($scene.mode -ne 'Cruise' -or $scene.city -ne 'Paris' -or $scene.car -ne 'MINI Cooper S' -or $scene.traffic -ne 'Medium' -or $scene.transmission -ne 'Automatic' -or $scene.verified_captures.Count -ne 2) {{ throw 'verified scene evidence missing' }}
+if (-not (Test-Path -LiteralPath (Join-Path $dir 'position.json')) -or -not (Test-Path -LiteralPath (Join-Path $dir 'position-end.json'))) {{ throw 'car state evidence missing' }}
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile({quote(ROOT / 'tools/bench/run.ps1')},[ref]$tokens,[ref]$errors)
+if ($errors.Count) {{ throw 'runner parse failed' }}
+$write=$ast.Find({{ param($node) $node -is [Management.Automation.Language.PipelineAst] -and $node.Extent.Text -like '*windows.json*' }},$true)
+if (-not $write) {{ throw 'production window writer missing' }}
+Invoke-Expression $write.Extent.Text
+if ((Get-Content -LiteralPath (Join-Path $dir 'windows.json') -Raw).TrimStart()[0] -ne '[') {{ throw 'single controlled window must remain a JSON array for summarize.py' }}
+''', encoding='utf-8')
+            subprocess.run([str(pwsh), '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(script)], check=True)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows benchmark capture helper')
+    def test_initial_scene_uses_live_car_probe_and_records_metadata(self):
+        pwsh = ROOT / 'tools/bin/powershell/pwsh.exe'
+        if not pwsh.exists():
+            self.skipTest('Checkout PowerShell is unavailable')
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            def quote(value):
+                return "'" + str(value).replace("'", "''") + "'"
+            script = folder / 'initial-scene.ps1'
+            script.write_text(f'''
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile({quote(ROOT / 'tools/bench/run.ps1')}, [ref]$tokens, [ref]$errors)
+if ($errors.Count) {{ throw 'runner parse failed' }}
+$function = $ast.Find({{ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-InitialScene' }}, $true)
+if (-not $function) {{ throw 'production scene helper missing' }}
+Invoke-Expression $function.Extent.Text
+$dir = {quote(folder)}; $p = [pscustomobject]@{{ Id=4321 }}
+function Assert-GameRunning {{}}
+function Qpc-Milliseconds {{ 1234.5 }}
+$teleport = {{
+    param($ProcessId)
+    if ($ProcessId -ne 4321) {{ throw 'wrong process probed' }}
+    if ($script:probe -eq 'error') {{ throw 'probe unavailable' }}
+    [pscustomobject]@{{ available=($script:probe -eq 'race'); x=643.2; z=52.6 }}
+}}
+foreach ($probe in @('menu', 'race', 'error')) {{
+    $name = Get-InitialScene
+    $expected = if ($probe -eq 'race') {{ 'early-race' }} else {{ 'frontend' }}
+    $saved = Get-Content -LiteralPath (Join-Path $dir 'initial-scene.json') -Raw | ConvertFrom-Json
+    if ($name -ne $expected -or $saved.name -ne $expected -or $saved.qpc_ms -ne 1234.5) {{ throw 'scene label or probe metadata differs' }}
+    if ($probe -eq 'error') {{
+        if ($saved.error -ne 'probe unavailable' -or $null -ne $saved.position) {{ throw 'probe failure evidence lost' }}
+    }} elseif ($saved.position.available -ne ($probe -eq 'race') -or $saved.position.x -ne 643.2 -or $saved.error) {{
+        throw 'live car probe evidence lost'
+    }}
+}}
+''', encoding='utf-8')
+            subprocess.run([str(pwsh), '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(script)], check=True)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows benchmark capture helper')
+    def test_capture_waits_for_complete_bmp_and_records_each_scene(self):
+        pwsh = ROOT / 'tools/bin/powershell/pwsh.exe'
+        if not pwsh.exists():
+            self.skipTest('Checkout PowerShell is unavailable')
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            def quote(value):
+                return "'" + str(value).replace("'", "''") + "'"
+            script = folder / 'capture.ps1'
+            script.write_text(f'''
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile({quote(ROOT / 'tools/bench/run.ps1')}, [ref]$tokens, [ref]$errors)
+if ($errors.Count) {{ throw 'runner parse failed' }}
+$function = $ast.Find({{ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Capture-Frame' }}, $true)
+if (-not $function) {{ throw 'production capture helper missing' }}
+Invoke-Expression $function.Extent.Text
+$dir = {quote(folder)}
+$capturePrefix = Join-Path $dir 'present'; $captureOrdinal = 0; $captures = @()
+$log = Join-Path $dir 'stderr.log'; $polls = 0; $completed = 0
+function Assert-GameRunning {{}}
+function Qpc-Milliseconds {{ 1234.5 }}
+function Wait-Game([double]$seconds) {{
+    if ($seconds -eq 1) {{ return }}
+    if ($seconds -ne 0.25) {{ throw 'unexpected polling interval' }}
+    $script:polls++
+    if ((Get-Content -LiteralPath ($capturePrefix + '.flag') -Raw) -ne '1') {{ throw 'capture was not armed once' }}
+    $path = '{{0}}-{{1:D3}}.bmp' -f $capturePrefix, $script:captureOrdinal
+    $bytes = [byte[]]::new($(if ($script:polls % 2) {{54}} else {{58}}))
+    $bytes[0] = 66; $bytes[1] = 77
+    [BitConverter]::GetBytes([uint32]58).CopyTo($bytes,2)
+    [IO.File]::WriteAllBytes($path,$bytes)
+    if (-not ($script:polls % 2)) {{ [IO.File]::Delete($capturePrefix + '.flag'); $script:completed++ }}
+}}
+$Capture = $false
+Capture-Frame 'disabled'
+if ($polls -or $captures.Count -or (Test-Path -LiteralPath ($capturePrefix + '.flag'))) {{ throw 'disabled capture changed defaults' }}
+$Capture = $true
+Capture-Frame 'frontend'
+if ($polls -ne 2 -or $captureOrdinal -ne 1 -or $captures.Count -ne 1) {{ throw 'partial BMP was accepted or capture index is wrong' }}
+Capture-Frame 'race'
+if ($polls -ne 4 -or $completed -ne 2 -or $captureOrdinal -ne 2) {{ throw 'scene capture did not complete' }}
+$saved = Get-Content -LiteralPath (Join-Path $dir 'captures.json') -Raw | ConvertFrom-Json
+if ($saved.Count -ne 2 -or $saved[0].scene -ne 'frontend' -or $saved[1].scene -ne 'race' -or $saved[1].qpc_ms -ne 1234.5) {{ throw 'capture metadata differs' }}
+if ($saved[0].file -notlike '*present-000.bmp' -or $saved[1].file -notlike '*present-001.bmp') {{ throw 'wrong capture filenames' }}
+''', encoding='utf-8')
+            subprocess.run([str(pwsh), '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(script)], check=True)
+
     @unittest.skipUnless(os.name == 'nt', 'Windows benchmark runner')
     def test_runner_launch_failure_restores_environment_and_isolates_save(self):
         pwsh = ROOT / 'tools/bin/powershell/pwsh.exe'

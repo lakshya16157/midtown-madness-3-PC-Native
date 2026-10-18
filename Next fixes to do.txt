@@ -1,6 +1,18 @@
 MIDTOWN MADNESS 3 PC NATIVE - NEXT FIXES TO DO
 ============================================
 
+Implementation update: 2026-10-18 (Europe/Paris).
+The requested Paris collision-cell repair, native Settings/Controls/Mods
+launcher with keyboard/mouse and controller bindings, one-to-four controller
+selection, loading animation, eight-region inclusive/exclusive clipping,
+camera-aware native depth fog, compiled DSP programs with a sleeping worker,
+and System Link integration are now implemented. See README.md, "PC runtime
+upgrades", for current validation evidence, usage and remaining limitations.
+The audit and unchecked checklists below retain their historical baseline;
+they are not the current status of those completed features. Other unresolved
+items, including the camera setter, retail menu mouse navigation and the
+higher-FPS work, remain separate follow-up work.
+
 Audit date: 2026-10-12 (Europe/Paris).
 Implementation update: R01, R14 and R16 are now implemented in the native
 renderer. Their detailed audit evidence/checklists below describe the earlier

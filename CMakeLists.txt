@@ -26,6 +26,10 @@ if(MM3_TRACY)
     add_subdirectory("${MM3_TRACY_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/tracy" EXCLUDE_FROM_ALL)
 endif()
 
+# Programs captured from the user's disc remain local derived data. An empty
+# directory still builds the interpreter, which can capture them on first run.
+set(XBOXRECOMP_DSP_PROGRAM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/game_files/dsp" CACHE PATH
+    "Local GP/EP program captures for native DSP compilation")
 add_subdirectory(${XBOXRECOMP_DIR} ${CMAKE_BINARY_DIR}/xboxrecomp)
 if(MSVC AND MM3_DSP_AUTO_INLINE)
     # RelWithDebInfo defaults to /Ob1, which leaves small non-inline interpreter
@@ -72,6 +76,10 @@ endif()
 set(MM3_DISTANCE_FUNCTIONS sub_000D9E2E sub_000E2D5B sub_000F4AC3 sub_000FE71E
     sub_001661D0 sub_001633B7 sub_002256C7 sub_002203E5 sub_0022F298)
 set(MM3_DEFINITION_ONLY_FUNCTIONS ${MM3_DISTANCE_FUNCTIONS})
+# Repair newly decoded collision cells once, before the native queries use them.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0015A929)
+# Ordered host depth fog and its optional horizon replacement.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000F8DCE sub_000F8750)
 # Building diagnostics keep same-chunk calls routed through opt-in wrappers.
 set(MM3_BUILDING_FUNCTIONS sub_00168A77 sub_001C7B15 sub_001A67BA sub_00166E01
     sub_001681FB sub_00167DA5 sub_00166B3E sub_00162F75)
@@ -308,6 +316,10 @@ add_custom_command(OUTPUT "${MM3_MENU_HEADER}"
 
 add_executable(${PROJECT_NAME}
     src/main.c
+    src/mm3_collision_cells.c
+    src/mm3_native_fog.c
+    src/mm3_launcher.c
+    src/mm3_launcher_config.c
     src/mm3_pedestrian_compat.c
     src/mm3_display_config.c
     src/mm3_display_settings.c
@@ -376,6 +388,11 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${XBOXRECOMP_DIR}/include)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE xboxrecomp)
+set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_LAUNCHER_AUDIO=1)
+set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_LAUNCHER_NETWORK=1)
+if(WIN32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE comctl32 xinput)
+endif()
 
 # MM3's CRT uses NtAllocateVirtualMemory reserve requests as heap-backed
 # buffers.  Keep the vendor runtime untouched: redirect its public reserve

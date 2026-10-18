@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "recomp_types.h"
+#include "mm3_mod_flags.h"
 #include "mm3_car_lighting.h"
 
 extern void sub_000CF2DA_original(void);
@@ -29,6 +30,10 @@ extern void sub_0022FDFD_original(void);
 #define CAR_POOL_AHEAD 5.0f
 #define CAR_POOL_DROP 0.45f
 #define CAR_POOL_GAIN 0.10f
+/* Keep the red tail-light gradient close to the vehicle in daylight. The
+ * centre intensity stays authored; evening/night retain the wider spill. */
+#define CAR_TAIL_RADIUS_DAY 1.1f
+#define CAR_TAIL_RADIUS_NIGHT 2.2f
 /* Records per frame are scarce (256 slots shared with every street lamp), and
  * when the queue fills the later cars lose lights from frame to frame, which
  * reads as flicker. Same-kind lamps of one car share a record; its front uses
@@ -604,20 +609,24 @@ static void car_light_align(uint32_t owner, const float source[12])
 
 void mm3_car_lighting_emit(uint32_t node, uint32_t mask, const float source[12])
 {
+    if (!mm3_mod_car_lighting()) return;
     uint32_t kind = MEM32(node + 0x34), world = MEM32(0x003C55A0u);
+    uint32_t time_of_day = MEM32(0x00407C30u);
     uint32_t color = MEM32(node + 0x64);
     uint32_t owner = MEM32(node + 4);
     float heading[3], brightness;
     int enabled = world && !MEM8(world + 0x2A8) && MEM32(world + 0x24C);
+    mask = mm3_car_lighting_effect_mask(mask, time_of_day);
     car_light_frame();
     if (!enabled) { if (s_dbg_on > 0) ++s_dbg.disabled; return; }
 
     if (kind == 8) {
+        if (!(mask & 0x101u)) return;
         car_light_align(owner, source);
         /* The Formula 1 assets retain a zero-color road-light handle. Give
-         * those cars driving illumination at night without creating lenses
+         * those cars evening/night illumination without creating lenses
          * on their bodywork or changing saved effect data. */
-        if (color || MEM32(0x00407C30u) != 3 || !(mask & 0x101u)) return;
+        if (color) return;
         if (car_light_heading(owner, source, heading))
             car_light_submit(owner, node, 0, source, heading,
                               car_light_front_color(0xFFFFFFFFu), .9f, 0);
@@ -646,7 +655,9 @@ void mm3_car_lighting_emit(uint32_t node, uint32_t mask, const float source[12])
     }
     if (brightness > 1) brightness = 1;
     if (kind == 1) {
-        car_light_submit(owner, node, kind, source, NULL, color, brightness * .22f, 2.2f);
+        car_light_submit(owner, node, kind, source, NULL, color, brightness * .22f,
+                          mm3_car_lighting_dark_period(time_of_day) ?
+                          CAR_TAIL_RADIUS_NIGHT : CAR_TAIL_RADIUS_DAY);
     } else if (kind == 2) {
         car_light_submit(owner, node, kind, source, NULL, color, brightness * .40f, 3.4f);
     } else if (kind == 3) {
@@ -663,6 +674,7 @@ static void car_light_hook(void)
     uint32_t node = g_ecx, stack = g_esp, kind = MEM32(node + 0x34);
     uint32_t mask = MEM32(stack + 12), color = MEM32(node + 0x64);
     uint32_t transform = MEM32(stack + 4);
+    uint32_t draw_mask = mm3_car_lighting_effect_mask(mask, MEM32(0x00407C30u));
     float source[12];
     memcpy(source, (const void *)XBOX_PTR(transform), sizeof source);
     if (car_debug() && kind < 10) {
@@ -671,14 +683,16 @@ static void car_light_hook(void)
         if (entry < s_dbg.entry_min) s_dbg.entry_min = entry;
         if (entry > s_dbg.entry_max) s_dbg.entry_max = entry;
     }
-    /* Visible lenses remain on the native draw path. The source-only model
-     * pass shares these same fields and groups, so a later visible callback
-     * updates the existing records instead of adding another light. */
-    if (kind == 8) MEM32(stack + 12) = mask & ~0x100u;
+    /* Mask daytime front lenses on the native path as well as the fields.
+     * Keep authored brightness/color and the caller's effect mask intact so
+     * returning to an evening/night race immediately restores the lights.
+     * The replacement fields always supersede the native road projector. */
+    if (kind == 8) draw_mask &= ~0x100u;
+    if (draw_mask != mask) MEM32(stack + 12) = draw_mask;
     if (kind == 0) MEM32(node + 0x64) = car_light_color(car_light_front_color(color), .82f);
     sub_000CF2DA_original();
     if (kind == 0) MEM32(node + 0x64) = color;
-    if (kind == 8) MEM32(stack + 12) = mask;
+    if (draw_mask != mask) MEM32(stack + 12) = mask;
     mm3_car_lighting_emit(node, mask, source);
 }
 
@@ -714,6 +728,7 @@ static void car_debug_report(void)
 
 void sub_000CF2DA(void)
 {
+    if (!mm3_mod_car_lighting()) { sub_000CF2DA_original(); return; }
     car_light_hook();
     if (s_dbg_on > 0 && ++s_dbg.window >= 240) car_debug_report();
 }

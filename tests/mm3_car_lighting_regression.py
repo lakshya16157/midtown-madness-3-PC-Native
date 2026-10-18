@@ -137,6 +137,61 @@ static void environment(uint32_t owner)
     g_ecx=node;g_esp=STACK;MEM32(STACK+12)=0x100;run();
     MEM32(STACK+12)=1;
 }
+static void time_of_day_checks(void)
+{
+    const uint32_t times[]={0,1,2,3,4,0xffffffffu};
+    const uint32_t sequence[]={3,0,2,1,3,2};
+    const unsigned nonfront[]={1,2,3,4,5,6,9};
+    unsigned i,j;
+    for(i=0;i<sizeof times/sizeof times[0];++i) {
+        unsigned dark=times[i]==2 || times[i]==3;
+        /* Real native lens rendering and custom beam/fill must agree even
+         * if the game retains front-light mask bits during a daytime race. */
+        setup(0,0xffffffffu,.8f,0x101,0);MEM32(0x407c30)=times[i];run();
+        assert(MEM32(QUEUE+0x5810)==(dark?2u:0u) && flares==dark);
+        assert(MEM32(STACK+12)==0x101 && MEMF(NODE+0x54)==.8f);
+        /* The source-only/offscreen path observes the same time gate. */
+        setup(0,0xffffffffu,.8f,0x101,0);MEM32(0x407c30)=times[i];
+        mm3_car_lighting_emit(NODE,0x101,(const float *)XBOX_PTR(MATRIX));
+        assert(MEM32(QUEUE+0x5810)==(dark?2u:0u) && !flares);
+        /* Zero-color Formula 1 handles gain illumination in evening as well
+         * as night; neither native projectors nor host axes leak into day. */
+        setup(8,0,0,0x101,0);MEM32(0x407c30)=times[i];run();
+        assert(MEM32(QUEUE+0x5810)==(dark?2u:0u) && !flares);
+        assert(MEM32(STACK+12)==0x101 && MEM32(NODE+0x64)==0 && MEMF(NODE+0x54)==0);
+        assert(s_car_axis[car_axis_slot(OWNER)].owner==(dark?OWNER:0u));
+        setup(8,0xffffffffu,.8f,0x101,0);MEM32(0x407c30)=times[i];run();
+        assert(!MEM32(QUEUE+0x5810) && !flares && MEM32(STACK+12)==0x101);
+        for(j=0;j<sizeof nonfront/sizeof nonfront[0];++j) {
+            unsigned kind=nonfront[j];
+            uint32_t night_color;
+            unsigned night_flares;
+            setup(kind,0xffff0000u,.8f,1u<<kind,0);run();
+            assert(MEM32(QUEUE+0x5810)==1);
+            night_color=MEM32(entry(0)+0x4c);night_flares=flares;
+            setup(kind,0xffff0000u,.8f,1u<<kind,0);MEM32(0x407c30)=times[i];run();
+            assert(MEM32(QUEUE+0x5810)==1 && flares==night_flares);
+            assert(MEM32(entry(0)+0x4c)==night_color);
+            if(kind==1) {
+                float diameter=dark?4.4f:2.2f;
+                assert(MEMF(entry(0)+0x40)==diameter);
+                assert(MEMF(entry(0)+0x44)==diameter && MEMF(entry(0)+0x48)==diameter);
+            }
+        }
+    }
+    /* Retain authored parameters and masks across successive races. Native
+     * reset must discard prior night fields before a daytime frame. */
+    setup(0,0xffffffffu,.8f,0x101,0);
+    for(i=0;i<sizeof sequence/sizeof sequence[0];++i) {
+        unsigned dark=sequence[i]==2 || sequence[i]==3;
+        native_reset(QUEUE);flares=0;MEM32(0x407c30)=sequence[i];
+        again(0,0x101);
+        assert(MEM32(QUEUE+0x5810)==(dark?2u:0u) && flares==dark);
+        assert(MEM32(NODE+0x64)==0xffffffffu && MEMF(NODE+0x54)==.8f);
+        assert(MEM32(STACK+12)==0x101);
+    }
+    puts("PASS: native lenses, beam/fill, offscreen sources and zero-color handles only light evening/night; daylight tail gradient radius halved with identical colour/intensity; brake/reverse/signal/emergency gates unchanged; repeated period transitions retain authoring/masks");
+}
 static void direction_checks(void)
 {
     unsigned i,j;
@@ -658,6 +713,7 @@ static void player_priority_checks(void)
 int main(void)
 {
     unsigned kind;
+    time_of_day_checks();
     direction_checks();axis_checks();current_axis_checks();fading_checks();
     grouping_checks();reset_lifecycle_checks();banked_pool_checks();crowded_queue_checks();scalability_checks();player_priority_checks();
     setup(0,0xffffffffu,.8f,0,0);run();assert(!MEM32(QUEUE+0x5810)&&!flares);
