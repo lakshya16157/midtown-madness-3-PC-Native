@@ -32,11 +32,8 @@ space, and your own game image (it is not included).
 
 ## Play online (System Link)
 
-**These instructions require the current source build.** The previously published
-installer predates this networking update; pushing the source does not update that
-download. Build the current `main` using [Building from a fresh clone](#building-from-a-fresh-clone)
-until an installer containing this update is released. Each player needs the same
-build and their own game files. Use **Multiplayer > System Link** in the game.
+**Setup 1.2 and later include System Link.** Each player needs the same build and their own
+game files. Use **Multiplayer > System Link** in the game.
 
 Configure the connection before starting the game:
 
@@ -144,6 +141,9 @@ use downloads only when the rights holder permits your use:
   Setup reads the data packs from this ZIP or an extracted copy; do not run its Xbox
   installer on Windows. Console title-update executables are excluded because this
   native build requires the supported retail code.
+- [Midtown Madness 3 DLC installers — Xbox-Scene](https://www.xbox-scene.info/files/file/167-midtown-madness-3/)
+  hosts the same community installer pack (four car packs with 14 cars and two track
+  packs, credited to NemVitzh and InsaneNutter). Setup was tested with the Digiex ZIP.
 
 DLC is optional and separate from the nine community cars. Setup imports local packs
 only when you select a source; it does not download or bundle the game or official DLC.
@@ -158,7 +158,9 @@ add missing packs. Installed data lives under `game_files\TDATA\4d53002a\$C`.
   individual enhancements. The Setting Guide explains the selected value, its
   effect and tradeoffs as you hover, focus or change a control. Controls shows
   the status of up to four XInput pads;
-  select a binding and press a key or controller button to change it. Settings
+  select a binding and press a key or controller button to change it. Any pad
+  button or trigger can stand in for any Xbox button (for example **LB** for
+  **White**, the headlight switch), for all four pads. Settings
   are saved for the next launch. `scripts\play.ps1 -NoLauncher` skips the window.
 - **The first start takes about 3 1/2 minutes** before the menu appears while the intro
   movies play. The game has not frozen.
@@ -1657,6 +1659,13 @@ selected stop's own collection and native class join the course, and a stop
 listed twice counts once. Both map sizes share this behavior. `[RACE_ROUTE]`
 logs objective changes with the number of stops and the order used
 (`forward`, `reverse` or `single`).
+
+Mission zones (Undercover pickups such as Paris "Go for the gold") count when any
+of the car's seven reference points comes within a zone's radius, and only while
+the vehicle is placed (player `+0x14A`). `[MM3_ZONE]` lines record how many zones
+the player has enabled (a pickup that counts lowers it), each time the car is
+inside one, whether the zone check was on, and a zone still enabled 2 s after the
+car entered it (`src/mm3_zone_diagnostics.c`, read-only, at most 200 lines a run).
 
 Road geometry is copied after native city loading and cleared on unload.
 Unavailable or disconnected paths are omitted. The line uses the same map

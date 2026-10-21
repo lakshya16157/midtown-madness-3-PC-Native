@@ -90,6 +90,13 @@ pre-fill the window. A quick way to test without a retail disc is to build a bar
 from an existing `game_files` (pristine `Data_*.zip` from `.mm3-car-mods`, minus the files in
 its `state.json`).
 
+### Validation of Setup 1.3 (21 October 2026)
+
+Same payload as 1.2 apart from the game executable, which adds the `[MM3_ZONE]`
+mission-zone log lines. A fresh `--cli` install (disc, DLC ZIP, nine cars) and a second run
+over it passed as for 1.2: all 456 disc files, six DLC packs, no car file changed on the
+second run, an existing save kept, and the installed executable is the newest build.
+
 ### Validation of Setup 1.2 (21 October 2026)
 
 - Built with `--packages out\car-models\packages`: the nine cars as installed on the

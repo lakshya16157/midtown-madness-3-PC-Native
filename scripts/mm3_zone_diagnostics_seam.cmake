@@ -1,0 +1,46 @@
+# Read-only look at a player's mission zones just before its native zone check
+# (src/mm3_zone_diagnostics.c). At 0x0020F256 the car's current reference
+# points are at ebp - 132 and +0x14A gates the checkpoint and zone tests.
+function(mm3_add_zone_diagnostics source_variable)
+    set(content "${${source_variable}}")
+    string(REGEX MATCHALL "void sub_0020F1AB[(]void[)]" owners "${content}")
+    list(LENGTH owners owner_count)
+    string(FIND "${content}" "void sub_0020F1AB(void)" owner_start)
+    if(NOT owner_count EQUAL 1 OR owner_start LESS 0)
+        message(FATAL_ERROR "MM3 zone diagnostics: missing or duplicate sub_0020F1AB")
+    endif()
+    string(SUBSTRING "${content}" ${owner_start} -1 tail)
+    string(FIND "${tail}" "\n}" owner_end)
+    if(owner_end LESS 0)
+        message(FATAL_ERROR "MM3 zone diagnostics: incomplete sub_0020F1AB")
+    endif()
+    math(EXPR owner_length "${owner_end} + 2")
+    string(SUBSTRING "${tail}" 0 ${owner_length} body)
+    set(block [=[loc_0020F256: ;
+    _fa = (uint32_t)(MEM8(ebx + 0x14A)) & 0xFFu; _fb = (uint32_t)(0) & 0xFFu;
+]=])
+    set(fixed [=[loc_0020F256: ;
+    mm3_zone_status(ebx, ebp + -132);
+    _fa = (uint32_t)(MEM8(ebx + 0x14A)) & 0xFFu; _fb = (uint32_t)(0) & 0xFFu;
+]=])
+    if(content MATCHES "\r\n")
+        string(REPLACE "\n" "\r\n" block "${block}")
+        string(REPLACE "\n" "\r\n" fixed "${fixed}")
+    endif()
+    string(FIND "${body}" "${block}" anchor)
+    string(FIND "${body}" "mm3_zone_status" already)
+    if(anchor LESS 0 OR NOT already LESS 0)
+        message(FATAL_ERROR "MM3 zone diagnostics: sub_0020F1AB anchor changed")
+    endif()
+    string(REPLACE "${block}" "${fixed}" transformed "${body}")
+    string(REPLACE "${body}" "${transformed}" content "${content}")
+    string(FIND "${content}" "#include \"mm3_zone_diagnostics.h\"" declared)
+    if(declared LESS 0)
+        if(content MATCHES "\r\n")
+            set(content "#include \"mm3_zone_diagnostics.h\"\r\n${content}")
+        else()
+            set(content "#include \"mm3_zone_diagnostics.h\"\n${content}")
+        endif()
+    endif()
+    set(${source_variable} "${content}" PARENT_SCOPE)
+endfunction()

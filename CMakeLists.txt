@@ -171,6 +171,8 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_car_light_culling_seam.cmake")
 list(APPEND MM3_SEAM_FUNCTIONS sub_00201BCA sub_0011CAE8 sub_00120091 sub_00116535 sub_0014BAE9 sub_0014C121)
 list(REMOVE_DUPLICATES MM3_SEAM_FUNCTIONS)
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_race_guidance_seam.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_zone_diagnostics_seam.cmake")
+list(APPEND MM3_SEAM_FUNCTIONS sub_0020F1AB)
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_tree_contact_seam.cmake")
 list(APPEND MM3_SEAM_FUNCTIONS sub_0015CD35 sub_0015B9AB)
 if(MM3_NATIVE_FENCE_WAIT)
@@ -327,6 +329,9 @@ foreach(distance_input IN LISTS distance_owners)
             mm3_add_race_guidance(distance_content ${race_owner})
         endif()
     endforeach()
+    if(owner_sub_0020F1AB STREQUAL distance_input)
+        mm3_add_zone_diagnostics(distance_content)
+    endif()
     if(owner_sub_001D137B STREQUAL distance_input)
         mm3_add_tree_contacts(distance_content)
     endif()
@@ -391,6 +396,7 @@ add_executable(${PROJECT_NAME}
  src/mm3_building_diagnostics.c
  src/mm3_producer_diagnostics.c
  src/mm3_route_diagnostics.c
+ src/mm3_zone_diagnostics.c
  src/mm3_apu_mmio.c
  src/mm3_direct_log.c
     src/mm3_collision_profile.c
