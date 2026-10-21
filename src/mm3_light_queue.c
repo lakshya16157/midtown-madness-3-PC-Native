@@ -349,6 +349,74 @@ static int light_queue_eye(float eye[3])
     return mm3_view_eye(eye);
 }
 
+/* Probe (see the header): the drawn lights covering a point on the road ahead
+ * of the driver's car with its headlights off, counted per frame by class
+ * (0 world, 1 another car, 2 the driver's own car), and the strongest of the
+ * second, reported with the usage line. */
+static float s_probe_point[3];
+static uint32_t s_probe_frame;
+static struct {
+    uint32_t frames, covered[3], best_class, best_cone, best_color;
+    float best, best_size[3], best_offset[3];
+} s_probe;
+
+void mm3_light_queue_probe(const float point[3])
+{
+    memcpy(s_probe_point, point, sizeof s_probe_point);
+    s_probe_frame = s_frame;
+}
+
+/* How much of a record's volume lies over `point`: 1 at its centre to 0 at
+ * its edge (a spot: the middle of its box along the axis), times its
+ * brightest channel. Points span W/H/L around their position along the
+ * record's rows, spots 0..L along the forward row. */
+static float light_cover(uint32_t record, const float point[3], float offset[3])
+{
+    float half[3] = {MEMF(record + 0x40) * .5f, MEMF(record + 0x44) * .5f, MEMF(record + 0x48) * .5f};
+    float local[3], spread = 0.0f;
+    uint32_t color = MEM32(record + 0x4C), i, j;
+    unsigned peak = (color >> 16) & 255u;
+    if (((color >> 8) & 255u) > peak) peak = (color >> 8) & 255u;
+    if ((color & 255u) > peak) peak = color & 255u;
+    for (i = 0; i != 3; ++i) offset[i] = point[i] - MEMF(record + 0x30 + i * 4);
+    for (i = 0; i != 3; ++i) {
+        if (!(half[i] > 0.0f)) return 0.0f;
+        local[i] = 0.0f;
+        for (j = 0; j != 3; ++j) local[i] += offset[j] * MEMF(record + i * 16 + j * 4);
+    }
+    if (MEM32(record + 0x50) == 1u) local[2] -= half[2];
+    for (i = 0; i != 3; ++i) spread += (local[i] / half[i]) * (local[i] / half[i]);
+    return spread < 1.0f ? (1.0f - spread) * (float)peak / 255.0f : 0.0f;
+}
+
+static void light_queue_probe(uint32_t queue, uint32_t drawn)
+{
+    uint32_t slots = mm3_light_queue_slots(queue), i, k;
+    unsigned seen[3] = {0, 0, 0};
+    ++s_probe.frames;
+    for (i = 0; i != drawn; ++i) {
+        uint32_t record = MEM32(slots + i * 4u);
+        float offset[3], cover;
+        unsigned light_class;
+        if (!record) continue;
+        cover = light_cover(record, s_probe_point, offset);
+        if (!(cover > 0.0f)) continue;
+        light_class = light_record_class(record);
+        seen[light_class] = 1;
+        if (cover > s_probe.best) {
+            s_probe.best = cover;
+            s_probe.best_class = light_class;
+            s_probe.best_cone = MEM32(record + 0x50) == 1u;
+            s_probe.best_color = MEM32(record + 0x4C) & 0x00FFFFFFu;
+            for (k = 0; k != 3; ++k) {
+                s_probe.best_size[k] = MEMF(record + 0x40 + k * 4);
+                s_probe.best_offset[k] = offset[k];
+            }
+        }
+    }
+    for (k = 0; k != 3; ++k) s_probe.covered[k] += seen[k];
+}
+
 /* The consumer passes each frame's queue before drawing it: select what is
  * drawn, then forget this frame's car/driver tags. Without a trusted camera
  * every queued light is drawn, as before. */
@@ -371,6 +439,7 @@ void mm3_light_queue_frame(uint32_t queue)
         drawn = light_queue_select(queue, mm3_light_queue_slots(queue), count, budget, eye);
     else if (count && budget)
         ++s_usage.no_camera;
+    if (s_probe_frame == s_frame && light_queue_reporting()) light_queue_probe(queue, drawn);
     if (!++s_frame) s_frame = 1;
     if (!light_queue_reporting()) return;
     if (count) {
@@ -399,6 +468,22 @@ void mm3_light_queue_frame(uint32_t queue)
                 (double)s_usage.over / frames, (double)s_usage.fading / frames,
                 s_usage.full, s_usage.no_camera, s_usage.frames, s_usage.refused[0], s_usage.refused[1],
                 (double)(now - s_usage.start) / CLOCKS_PER_SEC);
+    }
+    if (s_probe.frames) {
+        static const char *const classes[3] = {"a world light", "another car's light", "the driver's own light"};
+        fprintf(stderr, "[MM3_LIGHTS] headlights off: the road 6 m ahead of the driver was lit in %u of %u frames "
+                "by the driver's own lights, %u by other cars', %u by world lights",
+                s_probe.covered[2], s_probe.frames, s_probe.covered[1], s_probe.covered[0]);
+        if (s_probe.best > 0.0f)
+            fprintf(stderr, "; strongest %s (%s %.1f x %.1f x %.1f m, colour %06X, %.0f%% strength there, "
+                    "centre %.1f m away)", classes[s_probe.best_class < 3 ? s_probe.best_class : 0],
+                    s_probe.best_cone ? "beam" : "pool", s_probe.best_size[0], s_probe.best_size[1],
+                    s_probe.best_size[2], (unsigned)s_probe.best_color, s_probe.best * 100.0f,
+                    sqrtf(s_probe.best_offset[0] * s_probe.best_offset[0] +
+                          s_probe.best_offset[1] * s_probe.best_offset[1] +
+                          s_probe.best_offset[2] * s_probe.best_offset[2]));
+        fputc('\n', stderr);
+        memset(&s_probe, 0, sizeof s_probe);
     }
     memset(&s_usage, 0, sizeof s_usage);
     s_usage.start = now;

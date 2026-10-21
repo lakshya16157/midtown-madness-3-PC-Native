@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <xinput.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,12 +24,20 @@ enum {
     ID_CAPTURE, ID_UNBIND, ID_SOURCE, ID_BIND_LABEL, ID_PAD_STATUS, ID_PAD_PORT, ID_PAD_COUNT,
     ID_RESOLUTION, ID_MODE, ID_FPS, ID_VSYNC, ID_SCALE, ID_ASPECT, ID_MSAA,
     ID_ANISO, ID_DRAW, ID_VIEW, ID_SHOW_FPS, ID_MINIMAP, ID_FOV, ID_PORT, ID_PEERS,
+    ID_SCREEN,
     ID_HELP_TITLE, ID_HELP_VALUE, ID_HELP_BODY, ID_HELP_EFFECT, ID_REQUIRED,
     ID_PAD_SUMMARY, ID_PAD_HINT,
     ID_OPTION = 300,
     LAUNCHER_WIDTH = 1215, LAUNCHER_HEIGHT = 754
 };
 typedef struct LauncherControl { HWND window; int page; } LauncherControl;
+/* A connected display, for the Screen choice. number is the N of \\.\DISPLAYN,
+ * which is usually the number Windows shows when it identifies displays. */
+typedef struct LauncherScreen {
+    char device[32], name[128];
+    int number, width, height, hertz, primary;
+} LauncherScreen;
+enum { SCREEN_MAIN = 0, SCREEN_MISSING = 99, LAUNCHER_SCREENS = 16 };
 typedef struct Launcher {
     HWND window, tabs;
     HFONT font, heading;
@@ -42,6 +51,8 @@ typedef struct Launcher {
     int help_id;
     MM3LauncherConfig config;
     MM3DisplaySettings display;
+    LauncherScreen screens[LAUNCHER_SCREENS];
+    int screen_count;
 } Launcher;
 
 static const char *const drive_labels[MM3_LAUNCHER_DRIVE_KEYS] = {
@@ -115,6 +126,58 @@ static int combo_value(HWND combo)
 {
     LRESULT at = SendMessageA(combo, CB_GETCURSEL, 0, 0);
     return at == CB_ERR ? -1 : (int)SendMessageA(combo, CB_GETITEMDATA, (WPARAM)at, 0);
+}
+
+static BOOL CALLBACK screen_found(HMONITOR monitor, HDC dc, LPRECT rect, LPARAM data)
+{
+    Launcher *ui = (Launcher *)data;
+    LauncherScreen *screen;
+    MONITORINFOEXA info;
+    DISPLAY_DEVICEA device;
+    DEVMODEA mode;
+    const char *digits;
+    (void)dc; (void)rect;
+    if (ui->screen_count >= LAUNCHER_SCREENS) return FALSE;
+    memset(&info, 0, sizeof info);
+    info.cbSize = sizeof info;
+    if (!GetMonitorInfoA(monitor, (MONITORINFO *)&info) || !mm3_display_monitor_valid(info.szDevice))
+        return TRUE;
+    screen = &ui->screens[ui->screen_count];
+    memset(screen, 0, sizeof *screen);
+    snprintf(screen->device, sizeof screen->device, "%s", info.szDevice);
+    screen->primary = (info.dwFlags & MONITORINFOF_PRIMARY) != 0;
+    screen->width = info.rcMonitor.right - info.rcMonitor.left;
+    screen->height = info.rcMonitor.bottom - info.rcMonitor.top;
+    memset(&mode, 0, sizeof mode);
+    mode.dmSize = sizeof mode;
+    if (EnumDisplaySettingsA(info.szDevice, ENUM_CURRENT_SETTINGS, &mode)) {
+        screen->width = (int)mode.dmPelsWidth;
+        screen->height = (int)mode.dmPelsHeight;
+        screen->hertz = mode.dmDisplayFrequency > 1 ? (int)mode.dmDisplayFrequency : 0;
+    }
+    memset(&device, 0, sizeof device);
+    device.cb = sizeof device;
+    snprintf(screen->name, sizeof screen->name, "%s",
+             EnumDisplayDevicesA(info.szDevice, 0, &device, 0) && device.DeviceString[0]
+             ? device.DeviceString : "A display");
+    for (digits = info.szDevice + strlen(info.szDevice);
+         digits > info.szDevice && isdigit((unsigned char)digits[-1]); --digits) {}
+    screen->number = *digits ? atoi(digits) : ui->screen_count + 1;
+    ui->screen_count++;
+    return TRUE;
+}
+
+/* The connected displays, in the order Windows numbers them. */
+static void screens_find(Launcher *ui)
+{
+    ui->screen_count = 0;
+    EnumDisplayMonitors(NULL, NULL, screen_found, (LPARAM)ui);
+    for (int i = 1; i < ui->screen_count; ++i)
+        for (int j = i; j > 0 && ui->screens[j].number < ui->screens[j - 1].number; --j) {
+            LauncherScreen swap = ui->screens[j];
+            ui->screens[j] = ui->screens[j - 1];
+            ui->screens[j - 1] = swap;
+        }
 }
 static HWND combo(Launcher *ui, int page, int id, const char *caption, int x, int y,
                   int width)
@@ -219,6 +282,27 @@ static void help_show(Launcher *ui, int id)
             body = combo_value(control(ui, id)) ? "Borderless fullscreen fills the current monitor at its native size. The Window size setting is retained for windowed mode." : "Play in a movable desktop window at the selected Window size.";
             effect = "F11 or Alt+Enter switches fullscreen on and off while playing.";
             break;
+        case ID_SCREEN: {
+            int at = combo_value(control(ui, id));
+            const LauncherScreen *screen = NULL;
+            title = "Screen";
+            body = "The display the game opens on. Fullscreen fills that screen at its native size; a window opens centred on it. Windows main display follows whichever display Windows uses as its main one.";
+            if (at >= 1 && at <= ui->screen_count) screen = &ui->screens[at - 1];
+            for (int i = 0; !screen && at == SCREEN_MAIN && i < ui->screen_count; ++i)
+                if (ui->screens[i].primary) screen = &ui->screens[i];
+            if (at == SCREEN_MISSING)
+                effect = "That screen is not connected now, so the game opens on the main display until it is.";
+            else if (screen) {
+                char rate[24] = "";
+                if (screen->hertz) snprintf(rate, sizeof rate, " at %d Hz", screen->hertz);
+                snprintf(consequence, sizeof consequence, "%s: Screen %d, %s, %d x %d%s.",
+                         at == SCREEN_MAIN ? "Now" : "Selected", screen->number, screen->name,
+                         screen->width, screen->height, rate);
+                effect = consequence;
+            } else
+                effect = "F11 or Alt+Enter still switches fullscreen on the screen the window is on.";
+            break;
+        }
         case ID_ASPECT:
             title = "Aspect ratio";
             body = !strcmp(value, "auto") ? "Auto matches the game's view to the actual window or fullscreen area. Resizing the window updates the view's shape." : "Choose the shape of the game view. 4:3 is the original Xbox shape; 16:9 is widescreen, 16:10 is slightly taller, and 21:9 is ultrawide. Unused space is letterboxed when shapes differ.";
@@ -471,6 +555,20 @@ static void populate(Launcher *ui)
         combo_select(control(ui, ID_RESOLUTION), resolution);
     }
     combo_select(control(ui, ID_MODE), s->fullscreen);
+    { /* A saved screen that is not connected stays chosen, named as such. */
+      HWND screen = control(ui, ID_SCREEN);
+      int at = SCREEN_MAIN;
+      for (int i = (int)SendMessageA(screen, CB_GETCOUNT, 0, 0) - 1; i >= 0; --i)
+          if ((int)SendMessageA(screen, CB_GETITEMDATA, i, 0) == SCREEN_MISSING)
+              SendMessageA(screen, CB_DELETESTRING, i, 0);
+      for (int i = 0; i < ui->screen_count; ++i)
+          if (!_stricmp(ui->screens[i].device, s->monitor)) at = i + 1;
+      if (at == SCREEN_MAIN && strcmp(s->monitor, "primary")) {
+          snprintf(text, sizeof text, "%s (not connected)", s->monitor + 4);
+          combo_item(screen, text, SCREEN_MISSING);
+          at = SCREEN_MISSING;
+      }
+      combo_select(screen, at); }
     snprintf(text, sizeof text, "%d", s->fps_limit); SetWindowTextA(control(ui, ID_FPS), text);
     set_checked(ui, ID_VSYNC, s->vsync); set_checked(ui, ID_SHOW_FPS, s->show_fps);
     combo_select(control(ui, ID_SCALE), (int)lroundf(s->render_scale * 1000.f));
@@ -538,6 +636,10 @@ static int read_controls(Launcher *ui, char *error, size_t capacity)
     }
     s->window_width = resolution / 10000; s->window_height = resolution % 10000;
     s->fullscreen = combo_value(control(ui, ID_MODE));
+    { int at = combo_value(control(ui, ID_SCREEN));
+      if (at >= 1 && at <= ui->screen_count)
+          snprintf(s->monitor, sizeof s->monitor, "%s", ui->screens[at - 1].device);
+      else if (at != SCREEN_MISSING) strcpy(s->monitor, "primary"); }
     s->vsync = checked(ui, ID_VSYNC); s->show_fps = checked(ui, ID_SHOW_FPS);
     s->render_scale = (float)combo_value(control(ui, ID_SCALE)) / 1000.f;
     GetWindowTextA(control(ui, ID_ASPECT), s->aspect, sizeof s->aspect);
@@ -582,14 +684,23 @@ static void settings_controls(Launcher *ui)
 {
     HWND c;
     static const int sizes[][2] = {{960,540},{1280,720},{1600,900},{1920,1080},{2560,1440},{3840,2160}};
-    c = combo(ui, 0, ID_RESOLUTION, "Window size", 42, 98, 238);
+    c = combo(ui, 0, ID_RESOLUTION, "Window size", 42, 98, 150);
     for (int i = 0; i < (int)(sizeof sizes / sizeof sizes[0]); ++i) {
         char name[48]; snprintf(name, sizeof name, "%d x %d", sizes[i][0], sizes[i][1]);
         combo_item(c, name, sizes[i][0] * 10000 + sizes[i][1]);
     }
-    c = combo(ui, 0, ID_MODE, "Window mode", 310, 98, 238);
+    c = combo(ui, 0, ID_MODE, "Window mode", 212, 98, 150);
     combo_item(c, "Windowed", 0); combo_item(c, "Fullscreen", 1);
-    c = combo(ui, 0, ID_ASPECT, "Aspect ratio", 578, 98, 238);
+    c = combo(ui, 0, ID_SCREEN, "Screen", 382, 98, 264);
+    combo_item(c, "Windows main display", SCREEN_MAIN);
+    screens_find(ui);
+    for (int i = 0; i < ui->screen_count; ++i) {
+        char name[64];
+        snprintf(name, sizeof name, "Screen %d: %d x %d%s", ui->screens[i].number,
+                 ui->screens[i].width, ui->screens[i].height, ui->screens[i].primary ? " (main)" : "");
+        combo_item(c, name, i + 1);
+    }
+    c = combo(ui, 0, ID_ASPECT, "Aspect ratio", 666, 98, 150);
     for (int i = 0; i < 5; ++i) {
         static const char *const ratios[] = {"auto", "4:3", "16:9", "16:10", "21:9"};
         SendMessageA(c, CB_ADDSTRING, 0, (LPARAM)ratios[i]);

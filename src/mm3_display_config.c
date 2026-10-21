@@ -24,7 +24,7 @@
 
 #define MM3_CONFIG_PATH_CAPACITY 32768
 
-typedef enum SettingType { SETTING_INTEGER, SETTING_FLOAT, SETTING_ASPECT } SettingType;
+typedef enum SettingType { SETTING_INTEGER, SETTING_FLOAT, SETTING_ASPECT, SETTING_MONITOR } SettingType;
 typedef struct SettingField {
     const char *name;
     const char *environment;
@@ -54,7 +54,8 @@ static const SettingField s_fields[] = {
     INT_FIELD(msaa, "RECOMP_MSAA", 1, 8, CHOICE(1) | CHOICE(2) | CHOICE(4) | CHOICE(8)),
     INT_FIELD(aniso, "RECOMP_ANISO", 1, 16, 0),
     FLOAT_FIELD(draw_distance, "RECOMP_DRAW_DISTANCE", 1.0f, 4.0f),
-    FLOAT_FIELD(view_distance, "RECOMP_VIEW_DISTANCE", 1.0f, 4.0f)
+    FLOAT_FIELD(view_distance, "RECOMP_VIEW_DISTANCE", 1.0f, 4.0f),
+    {"monitor", "RECOMP_MONITOR", SETTING_MONITOR, offsetof(MM3DisplaySettings, monitor), 0, 0, 0}
 };
 
 static void error_clear(char *error, size_t capacity)
@@ -100,6 +101,26 @@ static int aspect_assign(char *destination, const char *value)
     return 1;
 }
 
+/* "primary", or a Windows display device name: \\.\ and then letters, digits
+ * and underscores (\\.\DISPLAY2), short enough for MONITORINFOEX. */
+static int monitor_assign(char *destination, const char *value)
+{
+    size_t length = strlen(value), i;
+    if (strcmp(value, "primary") != 0) {
+        if (length < 5 || length >= sizeof ((MM3DisplaySettings *)0)->monitor ||
+            strncmp(value, "\\\\.\\", 4) != 0) return 0;
+        for (i = 4; i < length; ++i)
+            if (!isalnum((unsigned char)value[i]) && value[i] != '_') return 0;
+    }
+    if (destination) memcpy(destination, value, length + 1);
+    return 1;
+}
+
+int mm3_display_monitor_valid(const char *monitor)
+{
+    return monitor && monitor_assign(NULL, monitor);
+}
+
 static int field_assign(MM3DisplaySettings *settings, const SettingField *field, const char *value)
 {
     char *end;
@@ -126,6 +147,8 @@ static int field_assign(MM3DisplaySettings *settings, const SettingField *field,
             (!(render_scale && parsed == 0.0f) && parsed < field->minimum) ||
             parsed > field->maximum) return 0;
         *(float *)destination = parsed;
+    } else if (field->type == SETTING_MONITOR) {
+        if (!monitor_assign(destination, value)) return 0;
     } else {
         if (!aspect_assign(destination, value)) return 0;
     }
@@ -148,6 +171,8 @@ static int settings_valid(const MM3DisplaySettings *settings, const char **inval
             valid = isfinite(value) && (value >= field->minimum ||
                 (field->offset == offsetof(MM3DisplaySettings, render_scale) && value == 0.0f)) &&
                 value <= field->maximum;
+        } else if (field->type == SETTING_MONITOR) {
+            valid = memchr(source, '\0', sizeof settings->monitor) != NULL && monitor_assign(NULL, source);
         } else {
             valid = memchr(source, '\0', sizeof settings->aspect) != NULL && aspect_assign(NULL, source);
         }
@@ -174,6 +199,7 @@ void mm3_display_settings_defaults(MM3DisplaySettings *settings, const char *pro
     settings->aniso = atoi(profile->aniso);
     settings->draw_distance = (float)atof(profile->draw_distance);
     settings->view_distance = settings->draw_distance;
+    strcpy(settings->monitor, "primary");
 }
 
 #ifdef _WIN32
@@ -418,12 +444,13 @@ int mm3_display_settings_save(const MM3DisplaySettings *settings, char *error, s
                 "# MM3 display settings. Changes made in the game are saved here.\n"
                 "[display]\nwindow_width=%d\nwindow_height=%d\nfullscreen=%d\n"
                 "fps_limit=%d\nvsync=%d\nshow_fps=%d\nminimap_improved=%d\nrender_scale=%s\n"
-                "aspect=%s\nmsaa=%d\naniso=%d\ndraw_distance=%.9g\nview_distance=%.9g\n",
+                "aspect=%s\nmsaa=%d\naniso=%d\ndraw_distance=%.9g\nview_distance=%.9g\n"
+                "monitor=%s\n",
                 settings->window_width, settings->window_height, settings->fullscreen,
                 settings->fps_limit, settings->vsync, settings->show_fps, settings->minimap_improved,
                 scale_value, settings->aspect, settings->msaa,
                 settings->aniso, (double)settings->draw_distance,
-                (double)settings->view_distance) < 0) failed = 1;
+                (double)settings->view_distance, settings->monitor) < 0) failed = 1;
     if (fflush(file)) failed = 1;
 #ifdef _WIN32
     if (_commit(_fileno(file))) failed = 1;

@@ -160,7 +160,8 @@ add missing packs. Installed data lives under `game_files\TDATA\4d53002a\$C`.
   the status of up to four XInput pads;
   select a binding and press a key or controller button to change it. Any pad
   button or trigger can stand in for any Xbox button (for example **LB** for
-  **White**, the headlight switch), for all four pads. Settings
+  **White**, the headlight switch), for all four pads. With several displays,
+  **Screen** picks the one the game opens on; fullscreen fills that screen. Settings
   are saved for the next launch. `scripts\play.ps1 -NoLauncher` skips the window.
 - **The first start takes about 3 1/2 minutes** before the menu appears while the intro
   movies play. The game has not frozen.
@@ -309,12 +310,16 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   ambulances, armoured cars) no longer throw their light sideways. A night
   driving beam also covers the Formula 1 model without adding bodywork lenses.
   Tail, brake, reversing and turn-signal lights cast smaller tinted pools,
-  barely any in daylight. The driver's headlights follow the game's own Light
+  barely any in daylight; by day a reversing lamp's lens glow is dimmer too,
+  a lit lens rather than a lamp's halo. The driver's headlights follow the game's own Light
   control (pad White, mapped to LB/L1 by default; keyboard Q): on at the
   start of evening/night races, off by day, and switchable either way at any
-  time, in cruise as well as races. Switched off in the evening or at night,
-  the tail lamps go off with them; brake, reverse and signal lamps keep
-  working. Each change is logged as `[MM3_CARLIGHT] driver headlights on/off`.
+  time, in cruise as well as races. Switched off, the car is dark in every
+  period: the tail lamps go off with the headlights; brake, reverse and signal lamps keep
+  working. Each change is logged as `[MM3_CARLIGHT] driver headlights on/off`;
+  with renderer profiling on, while the headlights are off in the evening or
+  at night, `[MM3_LIGHTS] headlights off: ...` says which lights still cover
+  the road 6 m ahead of the car (the driver's own, other cars', world lights).
   Other cars keep the time-of-day rule. Neutral street
   fixtures cast warm amber gradients with modest extra reach, and bulbs that
   previously supplied only a visible flare have bounded local pools. Colored
@@ -344,7 +349,13 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   Lamp glows use the scene depth buffer's encoding when testing occlusion,
   and are tested slightly nearer the camera so a lamp's own lens or housing
   cannot hide it. Every street lamp is lit at night (retail lit only one in N
-  of each type); reversing lights cast a lane-wide pool behind the car.
+  of each type), and so are the tunnel, underpass, wall and low road lamps
+  retail thinned the same way, at their retail strength; in the evening lamp
+  pools are smaller but still reach the road. The game's glow list holds 1024
+  glows a frame instead of the Xbox's 256 (`MM3_GLOW_CAPACITY`): busy night
+  scenes had filled it, so the last glows of a frame were dropped and lamps,
+  even the player's tail lamps, blinked. Reversing lights cast a lane-wide
+  pool behind the car in the evening and at night.
   Imported wheel references retain their opaque donor headers, and rear lamp
   effects sit outside the imported lens surfaces.
   Road spline addressing uses an unbiased floor, keeping its control-point
@@ -836,7 +847,9 @@ is saved. Facade detail zones stay capped at 2× to match their allocated
 buffers, even when the city view is farther away; different asset types still
 retain their authored visibility and LOD thresholds.
 
-F11 or Alt+Enter toggles fullscreen. The default **Balanced** profile renders at
+F11 or Alt+Enter toggles fullscreen on the screen the window is on; the launcher's
+**Screen** (saved as `monitor` in `display.ini`) chooses where the game opens. The
+default **Balanced** profile renders at
 960 vertical pixels and an automatic aspect ratio that follows the window or
 fullscreen size. The internal height stays fixed when you maximize the window. Profiles
 provide these initial defaults when no display preferences have been saved.
@@ -1165,8 +1178,7 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `RECOMP_USB` | off | Emulate the USB controller ports so pads (XInput) reach the game. **Required** for input. |
 | `RECOMP_USB_PADS` | saved setting or `1` | Number of controllers in game (1-4), selected in launcher Controls. Keyboard input shares player 1. |
 | `RECOMP_APU_DSP_ACK` | unset | DSP acknowledgement address(es) the audio needs; use `0x80458810`. |
-| `MM3_APU_IDLE_TRAP_FIX` | `0` | Experimental, for the report that engine and ambient sound vanish after several collisions: `1` re-reports the idle voice to DirectSound each frame, keeps guest threads from overwriting its trap registers and passes over an idle voice DirectSound keeps declining. Unproven; default off keeps the idle-voice handling unchanged. |
-| `RECOMP_APU_IRQ_HOLDOFF` | `0` | Diagnostic: delay the audio interrupt up to this many frames while a guest thread runs at DISPATCH_LEVEL or above (0 = never delay). |
+| `RECOMP_APU_IRQ_HOLDOFF` | `0` | Diagnostic: delay the audio interrupt up to this many frames while a guest thread runs at DISPATCH_LEVEL or above (0 = never delay). The interrupt routine itself never runs beside DISPATCH_LEVEL code except where that code stalls, as on the console's one processor. |
 | `MM3_DISPLAY_CONFIG` | `%LOCALAPPDATA%\MM3Recomp\display.ini` | Override the saved display-settings file. F10 opens the settings dialog. |
 | `MM3_LAUNCHER` | automatic | `1` opens Settings/Controls/Mods; `0` skips the window while applying saved preferences. The play script opens it by default; `-NoLauncher` skips it. |
 | `MM3_LAUNCHER_CONFIG` | beside `display.ini` | Override `launcher.ini`, which stores bindings, Mods and network settings. |
@@ -1188,12 +1200,14 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `RECOMP_VSYNC` | `0` | Present sync interval passed to DXGI. |
 | `RECOMP_FULLSCREEN` | off | Start fullscreen. |
 | `RECOMP_WINDOW_SIZE` | auto | Initial window client size, `WxH`. |
+| `RECOMP_MONITOR` | saved setting or `primary` | Display to open on, by its Windows name (`\\.\DISPLAY2`), chosen with the launcher's **Screen**. The window opens centred on it and fullscreen fills it; a display that is not connected falls back to the primary one. |
 | `RECOMP_ASPECT` | `auto` | Follow the window, or pin `16:10`, `16:9`, `4:3`, or a numeric ratio (0.5–4). Gameplay adapts its view; menus retain their proportions. |
 | `MM3_NIGHT_WORLD_LIGHT` | `25` | Night-only world fill, as an integer percentage of authored ambient, diffuse and backlight colors (0-100). Daytime and emissive materials retain their normal strength; source-specific local illumination is independent of this setting. Set `100` with both boosts below at `0` for retail world fill. Requires restart. |
 | `MM3_EVEN_LIGHTING` | `0` | Optional readability boost: `1` imposes a 48/255 minimum on world ambient, diffuse and backlight colors (75% unlit texture brightness). Default `0` lets night lighting come mainly from local sources. Native local lights, material alpha, UI and emissive lamps are preserved. Requires restart. |
 | `MM3_AMBIENT_LIFT` | `0` | Optional added packed-RGB ambient lift, integer 0-16. Default `0` adds no artificial ambient light. Both lighting boosts are disabled by default. Requires restart. |
 | `MM3_LOCAL_LIGHT_GAIN` | `1.3` | Strength of the local-light buffer (headlights, street lamps, tail lights, signals), 1-8; `1` uses the retail composite gain. Overlap uses bounded screen accumulation per pixel, so intersections brighten progressively without changing isolated beams or adding render passes. Daylight, night world fill and emissive lamps are unaffected. Requires restart. |
 | `MM3_GLOW_LIFT` | `1` | Lamp glows (car lenses, street lamps) are tested a little nearer the camera, along the line of sight: 12 cm plus 0.3% of the distance, at most 3 m. Their screen position is unchanged, but a glow no longer blinks out behind its own lens rim or lamp housing; buildings and hills still hide it. `0` keeps the retail glow positions. |
+| `MM3_GLOW_CAPACITY` | `1024` | Lamp glows (car lenses, street lamps, signals, signs) the game's glow list holds a frame, 256-4096; `256` is the Xbox size, which busy night scenes filled so later glows were dropped. With renderer profiling on, `[MM3_GLOWS]` reports the mean and peak per frame and any refused, once a second. Requires restart. |
 | `MM3_ALL_STREET_LAMPS` | `1` | Retail lights only one in N street lamps of a type (half of most Paris and Washington lamps stay dark). With this on, every lamp is lit, glow and pool. The added lamps' pools are chosen by distance from the camera (full within 70 m, easing out by 100 m) and only while fewer than 144 of the shared 256 light records are queued, so at least 112 stay free for car lights; beyond that they still glow. Every lamp of the driver's own car can reclaim a record when the queue is full. With renderer profiling on, `[MM3_LAMPS]` reports added lamps lit/glow-only once a second. `0` restores the retail pattern. Requires the street-lamp lighting option. |
 | `MM3_FOV_DEGREES` | unset | Driving horizontal FOV at the display aspect, 60–110 degrees; unset or invalid values retain the existing widescreen FOV. Set with `scripts\play.ps1 -Fov 100`. |
 | `RECOMP_SUPERSAMPLE` | `2` | In auto resolution mode, render N×N pixels per window pixel (1–4). |
@@ -2053,6 +2067,25 @@ The audio path was made cheaper without changing a single output sample
 byte comparison of two builds, `--bench` for timing); the GP/EP captures under
 `conformance_tmp/audio-live-replay` time the sound processor with
 `dsp_frame_replay <capture> <repeats>`.
+
+Finished voices are freed by DirectSound's interrupt handler, which hears about
+each idle voice through a front-end trap. On the console every idle voice the
+voice processor passes raises its own trap; the port used to raise one per frame,
+so a voice DirectSound kept declining (a stream meant to persist, or one whose
+buffer was busy) hid every other finished voice behind it. Those were never
+freed: after a crash the engine went quiet first, then every sound, and a mission
+whose end waits for its last line (Washington pizza job 1) never reached its
+results. Every idle voice is now reported after each frame, one trap and
+interrupt each, in list order; one declined 16 times in a row is offered every
+8th frame. The handler also no longer runs beside DISPATCH_LEVEL game code: it
+checks a busy count that code holds while it edits the same voice lists, which
+only works when nothing else runs, as on the console's one processor
+(`xbox_IsrGateEnter`; it still runs during the game's `KeStallExecutionProcessor`
+waits). Two `[APU]` lines, which never show in a healthy run, name voices that
+will never finish: `voice N ... finished but has stayed in its list for 2 s` and
+`voice N is playing but is in no voice list`. The per-minute `[APU] output` line
+also counts the finished voices reported and any interrupt that ran unguarded
+after waiting 4 ms.
 
 `scripts\setup.ps1` captures the supplied game's GP/EP programs with isolated
 saves and muted device output, then compiles their executed instructions to

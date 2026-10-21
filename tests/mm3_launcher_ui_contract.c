@@ -449,10 +449,10 @@ static void stable_controller_text(HWND window)
 
 static void contextual_help(HWND window)
 {
-    static const int settings[] = {ID_RESOLUTION, ID_MODE, ID_FPS, ID_VSYNC, ID_SCALE,
+    static const int settings[] = {ID_RESOLUTION, ID_MODE, ID_SCREEN, ID_FPS, ID_VSYNC, ID_SCALE,
         ID_ASPECT, ID_MSAA, ID_ANISO, ID_DRAW, ID_VIEW, ID_SHOW_FPS, ID_MINIMAP,
         ID_PORT, ID_PEERS};
-    static const int choices[] = {ID_RESOLUTION, ID_MODE, ID_SCALE, ID_ASPECT,
+    static const int choices[] = {ID_RESOLUTION, ID_MODE, ID_SCREEN, ID_SCALE, ID_ASPECT,
         ID_MSAA, ID_ANISO, ID_DRAW, ID_VIEW, ID_MINIMAP};
     static const int controls[] = {ID_KEYBOARD, ID_PAD_COUNT, ID_GROUP, ID_BINDINGS,
         ID_SOURCE, ID_PAD_PORT, ID_CAPTURE, ID_UNBIND};
@@ -665,6 +665,8 @@ static DWORD WINAPI exercise(void *unused)
     SetDlgItemTextA(window, ID_FPS, "30");
     SendMessageA(GetDlgItem(window, ID_VSYNC), BM_SETCHECK, BST_CHECKED, 0);
     choose(window, ID_MSAA, 4);
+    choose(window, ID_SCREEN, 1);
+    CHECK(help_contains(window, "Screen") && help_contains(window, "Selected"));
     capture_page(window, "settings");
     SendMessageA(window, WM_COMMAND, s_play ? IDOK : IDCANCEL, 0);
     return 0;
@@ -677,6 +679,7 @@ static void smaller_layout(void)
     mm3_launcher_config_defaults(&ui.config);
     mm3_display_settings_defaults(&ui.display, NULL);
     ui.display.aniso = 3; /* Valid saved values need not be predefined choices. */
+    strcpy(ui.display.monitor, "\\\\.\\DISPLAY99"); /* Saved, but not connected now. */
     ui.scale = layout_scale(&work, 1.5f); /* High DPI, 720p with a taskbar. */
     bounds.left = bounds.top = 0;
     bounds.right = (LONG)lroundf((float)LAUNCHER_WIDTH * ui.scale);
@@ -696,6 +699,16 @@ static void smaller_layout(void)
     CHECK(bounds.bottom <= work.bottom && bounds.right <= work.right);
     CHECK(footer.bottom < bounds.bottom && IsWindowVisible(GetDlgItem(window, IDOK)));
     CHECK(combo_value(GetDlgItem(window, ID_ANISO)) == 3);
+    /* A saved screen that is not connected stays chosen and is kept. */
+    CHECK(combo_value(GetDlgItem(window, ID_SCREEN)) == SCREEN_MISSING);
+    focus_control(window, ID_SCREEN);
+    CHECK(help_contains(window, "DISPLAY99") && help_contains(window, "not connected"));
+    { char read_error[256]; CHECK(read_controls(&ui, read_error, sizeof read_error));
+      CHECK(!strcmp(ui.display.monitor, "\\\\.\\DISPLAY99")); }
+    choose(window, ID_SCREEN, SCREEN_MAIN);
+    { char read_error[256]; CHECK(read_controls(&ui, read_error, sizeof read_error));
+      CHECK(!strcmp(ui.display.monitor, "primary")); }
+    CHECK(help_contains(window, "Now: Screen"));
     focus_control(window, ID_ANISO);
     HelpText hint; help_text(window, &hint); CHECK(contains(hint.value, "3x"));
     contextual_help(window);
@@ -762,6 +775,8 @@ int main(int argc, char **argv)
     mm3_display_settings_defaults(&display, NULL);
     CHECK(mm3_display_settings_load(&display, error, sizeof error));
     CHECK(display.fps_limit == 30 && display.vsync);
+    /* Screen 1 of this PC, by its Windows device name, reaches the game. */
+    CHECK(!strncmp(display.monitor, "\\\\.\\", 4) && !strcmp(getenv("RECOMP_MONITOR"), display.monitor));
     CHECK(!_putenv_s("MM3_LAUNCHER", "0"));
     CHECK(!_putenv_s("MM3_FOV_DEGREES", "100"));
     CHECK(!_putenv_s("RECOMP_USB_PADS", "2"));

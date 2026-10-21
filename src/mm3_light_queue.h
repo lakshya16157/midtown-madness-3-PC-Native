@@ -34,5 +34,9 @@ void mm3_light_queue_camera(void);
 /* The most recent trusted camera position, for diagnostics. */
 int mm3_light_queue_last_eye(float eye[3]);
 void mm3_light_queue_refused(unsigned beam);
+/* Diagnostic: car lighting marks a point on the road ahead of the driver's
+ * car while its headlights are switched off in the evening or at night; the
+ * usage report then says which drawn lights cover that point. */
+void mm3_light_queue_probe(const float point[3]);
 
 #endif

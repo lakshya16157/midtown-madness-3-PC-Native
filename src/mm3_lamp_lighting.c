@@ -28,16 +28,17 @@ static void lamp_set_mount(uint32_t position, uint32_t direction)
 {
     float height, x, y, z, length;
     s_lamp_height = s_lamp_drop = 0.0f;
+    /* The aim counts on any mount: tunnel and wall lamps are told apart by it. */
+    if (lamp_address(direction, 12)) {
+        x = MEMF(direction); y = MEMF(direction + 4); z = MEMF(direction + 8);
+        length = sqrtf(x * x + y * y + z * z);
+        if (isfinite(length) && length > 1e-3f) s_lamp_drop = -y / length;
+    }
     if (!lamp_address(position, 12)) return;
     height = MEMF(position + 4);
     /* Wall and ceiling fixtures on objects whose origin is not on the ground
      * read as 0 here and keep their authored reach. */
-    if (!isfinite(height) || height < 1.0f || height > 12.0f) return;
-    s_lamp_height = height;
-    if (!lamp_address(direction, 12)) return;
-    x = MEMF(direction); y = MEMF(direction + 4); z = MEMF(direction + 8);
-    length = sqrtf(x * x + y * y + z * z);
-    if (isfinite(length) && length > 1e-3f) s_lamp_drop = -y / length;
+    if (isfinite(height) && height >= 1.0f && height <= 12.0f) s_lamp_height = height;
 }
 
 void mm3_lamp_bounds_begin(uint32_t position, uint32_t direction)
@@ -63,8 +64,9 @@ static int lamp_lights_ground(uint32_t color)
  * base that light the ground below (points, or spots aimed at least 30
  * degrees down) with a lamp's reach (authored at most 15m). The PC changes
  * (every fixture lit, flare-only bulbs given a pool, longer reach, wider
- * cones, warm tint) are for these. Everything else keeps the retail density,
- * reach, cone and colour: Washington's monument floodlights (40m and 50m
+ * cones, warm tint) are for these. Everything else keeps the retail reach,
+ * cone and colour, and the retail density unless lamp_is_restored (tunnel,
+ * wall and low road lamps) below: Washington's monument floodlights (40m and 50m
  * spots with a glow, lit one in two) and their red warning lights (seven per
  * fixture) were doubled, lengthened, widened and brightened, which washed
  * the white monuments out; facade bulbs and signs likewise. Mounting is set
@@ -82,6 +84,31 @@ static int lamp_is_street(uint32_t source)
     return !MEM8(source + 0x53) || s_lamp_drop >= 0.5f;
 }
 
+/* Lamps that light the ground but are not street lamps by their mounting:
+ * tunnel and underpass ceiling lights and wall lamps on objects whose origin
+ * is not at the road (their height reads 0 or above 12m), and low road lights
+ * under 2m. Retail thinned them like street lamps (byte 8), so every other
+ * one stayed dark, glow included. Bright lamp colours (peak 0xC0 or more:
+ * not the dim 805A3C/5A5A46 monument floods) that are warm, or white with at
+ * most a slight cool cast (tunnel D2E6F5; not Paris's pink FF96DC signs),
+ * lamp-sized (authored reach at most 15m), all round or aimed at least 30
+ * degrees down. They light again at their retail reach, cone and colour;
+ * signs, neon, warning lights and floodlights keep the retail density. */
+#define LAMP_RESTORED_MIN_PEAK 0xC0u
+static int lamp_is_restored(uint32_t source)
+{
+    uint32_t color = MEM32(source + 0x2B);
+    unsigned red = (color >> 16) & 255u, green = (color >> 8) & 255u, blue = color & 255u;
+    unsigned peak = red > green ? red : green, minimum = red < green ? red : green;
+    float range = MEMF(source + 0x4F);
+    if (blue > peak) peak = blue;
+    if (blue < minimum) minimum = blue;
+    if (peak < LAMP_RESTORED_MIN_PEAK || !lamp_lights_ground(color)) return 0;
+    if (blue > green && minimum * 20u < peak * 17u) return 0;
+    if (!(range <= LAMP_STREET_MAX_RANGE)) return 0;
+    return !MEM8(source + 0x53) || s_lamp_drop >= 0.5f;
+}
+
 /* A lamp's pool must reach the road below it. The point volume falls from
  * full at the bulb to 13/255 at its edge, so a 2-3m pool on a 3-4m post left
  * the ground under smaller lamps dark while tall lamps (7-9m authored reach)
@@ -91,14 +118,22 @@ static int lamp_is_street(uint32_t source)
  * reach further keep their tuned reach. */
 #define LAMP_POINT_MOUNT_REACH 1.75f
 #define LAMP_SPOT_MOUNT_REACH 1.5f
-static float lamp_mount_reach(uint32_t source, float reach)
+/* In the evening (`evening` below 1) pools shrink, but never short of the
+ * road: multiplying the mounted reach as well left the ground under a 9m lamp
+ * at 95% of its pool's radius, where the point volume has faded out, so the
+ * street lamps looked off. At least 0.8 of the mounted reach (1.4x a point's
+ * height: the ground at 71% of the radius, about half the night pool's
+ * area) keeps a smaller, dimmer pool on the road. */
+#define LAMP_EVENING_MOUNT 0.8f
+static float lamp_mount_reach(uint32_t source, float reach, float evening)
 {
     float floor;
-    if (s_lamp_height <= 0.0f || !lamp_lights_ground(MEM32(source + 0x2B))) return reach;
+    if (s_lamp_height <= 0.0f || !lamp_lights_ground(MEM32(source + 0x2B))) return reach * evening;
     if (!MEM8(source + 0x53)) floor = LAMP_POINT_MOUNT_REACH * s_lamp_height;
     else if (s_lamp_drop >= 0.5f) floor = LAMP_SPOT_MOUNT_REACH * s_lamp_height / s_lamp_drop;
-    else return reach;
-    return fmaxf(reach, floor);
+    else return reach * evening;
+    reach = fmaxf(reach, floor);
+    return evening < 1.0f ? fmaxf(reach * evening, floor * LAMP_EVENING_MOUNT) : reach;
 }
 
 /* OTF0 LocalObject effects are packed 0x56-byte records. The same range is
@@ -112,13 +147,19 @@ float mm3_lamp_source_range(uint32_t source)
     if (!mm3_mod_lamp_lighting()) return range;
     if (!isfinite(range) || range < 0.0f) return 0.0f;
     reach = mm3_local_light_reach(MEM32(0x00407C30u));
-    if (!lamp_is_street(source)) return range * reach;
+    if (!lamp_is_street(source)) {
+        /* Lamp-sized lamp-coloured fixtures (tunnel, wall and low road
+         * lights) keep their authored reach in the evening: shortened, a
+         * ceiling lamp's pool stopped short of the road under it. */
+        if (lamp_lights_ground(MEM32(source + 0x2B)) && range <= LAMP_STREET_MAX_RANGE) return range;
+        return range * reach;
+    }
     if (range > 0.0f) {
         /* Small indicators retain small pools; road lamps gain enough reach
          * below their mounting height. Large architectural spots add at most
          * 6m instead of multiplying their already long 40-50m throw. Keeping
          * these pools local also limits how many fixtures overlap a surface. */
-        return lamp_mount_reach(source, range + fminf(range * 0.45f, 6.0f)) * reach;
+        return lamp_mount_reach(source, range + fminf(range * 0.45f, 6.0f), reach);
     }
     size = MEMF(source + 0x49);
     if (!isfinite(size) || size <= 0.0f || !MEM8(source + 0x4D) ||
@@ -127,13 +168,14 @@ float mm3_lamp_source_range(uint32_t source)
      * effect provided only a flare. Derive its reach from the authored flare
      * extent and brightness: tiny bulbs about 1-2m, larger fixtures 5-10m. */
     return lamp_mount_reach(source, fminf(10.0f, (1.0f + 14.0f * fminf(size, 2.0f)) *
-                        sqrtf((float)MEM8(source + 0x4D) / 255.0f))) * reach;
+                        sqrtf((float)MEM8(source + 0x4D) / 255.0f)), reach);
 }
 
 /* Retail E1F49 skips every fixture whose object hash is not a multiple of the
  * descriptor's byte 8 (2 for most Paris and Washington street lamps, so half
  * of them stay dark at night: no glow, no pool). Those fixtures now run their
- * native path in full. Street lamps are queued before vehicles in the shared
+ * native path in full, and so do thinned tunnel, wall and low road lamps
+ * (lamp_is_restored, at retail strength). Street lamps are queued before vehicles in the shared
  * light queue (mm3_light_queue.c: 1024 records by default, 256 on the Xbox;
  * its frame budget then picks what is drawn). The added ones keep a quarter
  * of it (at least 112 records) free for headlights and tail lamps: 768 of
@@ -158,6 +200,7 @@ float mm3_lamp_source_range(uint32_t source)
 static RECOMP_TLS int s_lamp_glow_only;
 static RECOMP_TLS float s_lamp_added_fade = 1.0f;
 static RECOMP_TLS unsigned s_lamp_added_lit, s_lamp_added_glow, s_lamp_added_capped, s_lamp_retail_kept;
+static RECOMP_TLS unsigned s_lamp_restored_lit, s_lamp_restored_glow;
 static RECOMP_TLS clock_t s_lamp_report;
 static int s_lamp_report_on = -1;
 /* Per-frame selection state. A frame begins when the queue's reset stamp
@@ -261,24 +304,29 @@ static void lamp_density_report(void)
     if (!s_lamp_report) { s_lamp_report = now; return; }
     if (now - s_lamp_report < CLOCKS_PER_SEC) return;
     fprintf(stderr, "[MM3_LAMPS] added street lamps lit=%u glow-only=%u capped=%u reach=%.0f m queue=%u, "
-            "other fixtures left at retail density=%u per %.2f s\n",
+            "tunnel/wall/road lamps lit=%u glow-only=%u, other fixtures left at retail density=%u "
+            "(time of day %u) per %.2f s\n",
             s_lamp_added_lit, s_lamp_added_glow, s_lamp_added_capped, s_lamp_reach,
-            mm3_light_queue_capacity(MEM32(0x003C5D8Cu)), s_lamp_retail_kept,
+            mm3_light_queue_capacity(MEM32(0x003C5D8Cu)), s_lamp_restored_lit, s_lamp_restored_glow,
+            s_lamp_retail_kept, (unsigned)MEM32(0x00407C30u),
             (double)(now - s_lamp_report) / CLOCKS_PER_SEC);
     s_lamp_report = now;
     s_lamp_added_lit = s_lamp_added_glow = s_lamp_added_capped = s_lamp_retail_kept = 0;
+    s_lamp_restored_lit = s_lamp_restored_glow = 0;
 }
 
 int mm3_lamp_density_skip(int skipped, uint32_t matrix, uint32_t local, uint32_t direction, uint32_t source)
 {
     uint32_t queue, count;
     float distance;
+    int street;
     s_lamp_glow_only = 0;
     s_lamp_added_fade = 1.0f;
     lamp_set_mount(local, direction);
     mm3_light_queue_camera();
     if (!skipped || !mm3_mod_lamp_lighting() || !mm3_mod_lamp_glows()) return skipped;
-    if (!lamp_address(source, 0x56) || !lamp_is_street(source)) {
+    street = lamp_address(source, 0x56) && lamp_is_street(source);
+    if (!street && !(lamp_address(source, 0x56) && lamp_is_restored(source))) {
         ++s_lamp_retail_kept;
         lamp_density_report();
         return skipped;
@@ -286,7 +334,7 @@ int mm3_lamp_density_skip(int skipped, uint32_t matrix, uint32_t local, uint32_t
     queue = MEM32(0x003C5D8Cu);
     if (!queue) {
         s_lamp_glow_only = 1;
-        ++s_lamp_added_glow;
+        ++*(street ? &s_lamp_added_glow : &s_lamp_restored_glow);
         return 0;
     }
     lamp_frame_check(queue);
@@ -305,8 +353,8 @@ int mm3_lamp_density_skip(int skipped, uint32_t matrix, uint32_t local, uint32_t
         s_lamp_frame_capped = 1;
         ++s_lamp_added_capped;
     }
-    if (s_lamp_glow_only) ++s_lamp_added_glow;
-    else ++s_lamp_added_lit;
+    if (street) ++*(s_lamp_glow_only ? &s_lamp_added_glow : &s_lamp_added_lit);
+    else ++*(s_lamp_glow_only ? &s_lamp_restored_glow : &s_lamp_restored_lit);
     lamp_density_report();
     return 0;
 }

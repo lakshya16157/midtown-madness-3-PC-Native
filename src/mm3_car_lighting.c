@@ -9,6 +9,7 @@
 #include "mm3_car_lighting.h"
 #include "mm3_world_lighting.h"
 #include "mm3_light_queue.h"
+#include "mm3_lamp_glow.h"
 
 extern void sub_000CF2DA_original(void);
 extern void sub_0022FDFD_original(void);
@@ -54,12 +55,21 @@ extern void sub_000DFE0E_original(void);
 /* Reversing lamps face rearward (every model turns their nodes 180 degrees).
  * A 9m cube around the bumper also lit both sides of the car and the road
  * beneath it. Instead, a ground-level field starting just ahead of the lamps
- * reaches about 4.5m behind the car and spans a lane's width. */
+ * reaches about 4.5m behind the car and spans a lane's width -- in the
+ * evening and at night. By day that white patch read as a lamp shining on the
+ * road; like the tail and brake lamps, daylight keeps only a faint field at
+ * the lens. */
 #define CAR_REVERSE_WIDTH 3.6f
 #define CAR_REVERSE_HEIGHT 3.0f
 #define CAR_REVERSE_LENGTH 6.0f
 #define CAR_REVERSE_BEHIND 1.5f
 #define CAR_REVERSE_DROP 0.3f
+#define CAR_REVERSE_GAIN_NIGHT 0.35f
+#define CAR_REVERSE_RADIUS_DAY 0.4f
+#define CAR_REVERSE_GAIN_DAY 0.03f
+/* The lens glow (native flare) of a reversing lamp by day: a lit lens rather
+ * than a lamp's halo. Evening and night keep the authored glow. */
+#define CAR_REVERSE_GLOW_DAY 0.3f
 /* Records per frame are shared with every street lamp (256 on the Xbox, 1024
  * queued by default here, mm3_light_queue.c, whose frame budget then draws
  * the ones that show, car lights ranked well above lamps). Same-kind lamps of
@@ -77,7 +87,9 @@ static int car_light_owner_address(uint32_t address, uint32_t size)
 
 /* The race's primary driver owns its CMP graph at +8. Resolve the live
  * association rather than remembering an address across races/car swaps.
- * Native 21C6C8/21C77C use this same graph for its pose and effect mask. */
+ * Native 21C6C8/21C77C use this same graph for its pose and effect mask.
+ * The graph's own +4 is its root, i.e. the graph itself (read in play), never
+ * the vehicle: requiring that made this lookup fail for every car. */
 static uint32_t car_light_player_object(uint32_t owner)
 {
     uint32_t manager = MEM32(0x003C5CDCu), race, player;
@@ -86,7 +98,7 @@ static uint32_t car_light_player_object(uint32_t owner)
     if (!car_light_owner_address(race, 0xDC)) return 0;
     player = MEM32(race + 0xD8);
     if (!car_light_owner_address(player, 0x658) || !car_light_owner_address(owner, 8)) return 0;
-    return MEM32(player + 8) == owner && MEM32(owner + 4) == player ? player : 0;
+    return MEM32(player + 8) == owner ? player : 0;
 }
 
 static int car_light_player(uint32_t owner)
@@ -147,10 +159,10 @@ static int car_light_driver(uint32_t owner)
 /* The driver's own headlight switch (+0x657): native 21B40A turns it on at
  * race start in evening/night and off by day for the local driver (+0x488 ==
  * 1), and 21C1F6 flips it on the Light control (pad White, which LB/L1 and
- * the Q key map to). That car's front lenses and beams follow it in any
- * period, like a real light switch its evening/night tail lamps do too, and
- * daytime tails, brake, reverse and signal lamps are unaffected. Every other
- * car keeps the time-of-day rule. */
+ * the Q key map to). Like a real light switch it governs that car's front
+ * lenses, beams and tail lamps in every period: off, the car is dark (by day
+ * its tail lenses used to stay lit); brake, reverse and signal lamps keep
+ * working. Every other car keeps the time-of-day rule. */
 uint32_t mm3_car_lighting_mask(uint32_t owner, uint32_t mask, uint32_t time_of_day)
 {
     int slot = car_switch_slot(owner);
@@ -167,9 +179,7 @@ uint32_t mm3_car_lighting_mask(uint32_t owner, uint32_t mask, uint32_t time_of_d
         }
         s_car_switch[slot].state = on;
     }
-    if (on) return mask;
-    mask &= ~0x101u;
-    return mm3_car_lighting_dark_period(time_of_day) ? mask & ~0x2u : mask;
+    return on ? mask : mask & ~0x103u;
 }
 
 static int car_light_reclaim(uint32_t queue, uint32_t count);
@@ -705,7 +715,7 @@ static void car_light_group_draw(struct car_light_group *group, float radius)
             car_light_group_record(group, 1, matrix, CAR_BEAM_WIDTH * reach, CAR_BEAM_HEIGHT,
                                     CAR_BEAM_LENGTH * reach,
                                     car_light_color(group->color, CAR_BEAM_GAIN * maximum), 1);
-    } else if (group->kind == 3) {
+    } else if (group->kind == 3 && radius <= 0) {
         float up[3] = {centre[3], centre[4], centre[5]}, level[3], vertical;
         if (!car_light_normalize(up) || !car_light_normalize(forward)) return;
         vertical = car_light_dot(forward, up);
@@ -831,6 +841,17 @@ void mm3_car_lighting_emit(uint32_t node, uint32_t mask, const float source[12])
     float heading[3], brightness;
     int enabled = world && !MEM8(world + 0x2A8) && MEM32(world + 0x24C);
     mask = mm3_car_lighting_mask(owner, mask, time_of_day);
+    /* Diagnostic (light usage report): with the driver's headlights off in
+     * the evening or at night, which lights still cover the road 6m ahead
+     * of its front lenses. */
+    if (kind == 0 && !(mask & 1u) && mm3_car_lighting_dark_period(time_of_day) && car_light_driver(owner)) {
+        float ahead[3] = {source[6], source[7], source[8]};
+        if (car_light_normalize(ahead)) {
+            unsigned i;
+            for (i = 0; i != 3; ++i) ahead[i] = source[9 + i] + ahead[i] * 6.0f;
+            mm3_light_queue_probe(ahead);
+        }
+    }
     car_light_frame();
     if (!enabled) { if (s_dbg_on > 0) ++s_dbg.disabled; return; }
     mm3_light_queue_camera();
@@ -880,7 +901,10 @@ void mm3_car_lighting_emit(uint32_t node, uint32_t mask, const float source[12])
                           brightness * (dark ? CAR_BRAKE_GAIN_NIGHT : CAR_BRAKE_GAIN_DAY),
                           dark ? CAR_BRAKE_RADIUS_NIGHT : CAR_BRAKE_RADIUS_DAY);
     } else if (kind == 3) {
-        car_light_submit(owner, node, kind, source, NULL, color, brightness * .35f, 0);
+        int dark = mm3_car_lighting_dark_period(time_of_day);
+        car_light_submit(owner, node, kind, source, NULL, color,
+                          brightness * (dark ? CAR_REVERSE_GAIN_NIGHT : CAR_REVERSE_GAIN_DAY),
+                          dark ? 0 : CAR_REVERSE_RADIUS_DAY);
     } else if (kind == 4 || kind == 9) {
         car_light_submit(owner, node, kind, source, NULL, color, brightness * .25f, 3.0f);
     } else {
@@ -895,8 +919,9 @@ static void car_light_hook(void)
 {
     uint32_t node = g_ecx, stack = g_esp, kind = MEM32(node + 0x34);
     uint32_t mask = MEM32(stack + 12), color = MEM32(node + 0x64);
-    uint32_t transform = MEM32(stack + 4);
-    uint32_t draw_mask = mm3_car_lighting_mask(MEM32(node + 4), mask, MEM32(0x00407C30u));
+    uint32_t transform = MEM32(stack + 4), time_of_day = MEM32(0x00407C30u);
+    uint32_t draw_mask = mm3_car_lighting_mask(MEM32(node + 4), mask, time_of_day);
+    int day_reverse = kind == 3 && !mm3_car_lighting_dark_period(time_of_day);
     float source[12];
     memcpy(source, (const void *)XBOX_PTR(transform), sizeof source);
     if (car_debug() && kind < 10) {
@@ -912,8 +937,11 @@ static void car_light_hook(void)
     if (kind == 8) draw_mask &= ~0x100u;
     if (draw_mask != mask) MEM32(stack + 12) = draw_mask;
     if (kind == 0) MEM32(node + 0x64) = car_light_color(car_light_front_color(color), .82f);
+    else if (day_reverse) MEM32(node + 0x64) = car_light_color(color, CAR_REVERSE_GLOW_DAY);
+    mm3_glow_driver_scope(car_light_driver(MEM32(node + 4)));
     sub_000CF2DA_original();
-    if (kind == 0) MEM32(node + 0x64) = color;
+    mm3_glow_driver_scope(0);
+    if (kind == 0 || day_reverse) MEM32(node + 0x64) = color;
     if (draw_mask != mask) MEM32(stack + 12) = mask;
     mm3_car_lighting_emit(node, mask, source);
 }

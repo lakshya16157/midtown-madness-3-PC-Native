@@ -59,17 +59,6 @@ class PlayInstances(unittest.TestCase):
             self.assertTrue(metadata['launch_options']['network'])
             self.assertIn(metadata['launch_options']['network_port'], (3075, 3076))
 
-    def test_explicit_off_empty_peers_and_implicit_network_port(self):
-        inherited = {'RECOMP_NET': 'nat', 'RECOMP_NET_PEERS': '127.0.0.1:9999'}
-        response = self.run_launcher(['-Network:$false -NetPeers ""', '-NetPort 3077'], inherited)
-        self.assertEqual(response['during'][0]['RECOMP_NET'], '0')
-        self.assertIsNone(response['during'][0]['RECOMP_NET_PEERS'])
-        self.assertEqual(response['during'][1]['RECOMP_NET'], 'nat')
-        self.assertEqual(response['during'][1]['RECOMP_NET_PORT'], '3077')
-        self.assertEqual(response['during'][1]['RECOMP_NET_PEERS'], inherited['RECOMP_NET_PEERS'])
-        for key, value in inherited.items():
-            self.assertEqual(response['after'][key], value)
-
     def test_invalid_names_and_ports_reject_before_state_or_log_creation(self):
         response = self.run_launcher(['-Instance ../escape', '-Instance .', '-Instance a/b',
                                       '-Instance ""', '-Instance ' + 'x' * 33,

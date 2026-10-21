@@ -526,7 +526,10 @@ def main():
                                 "#pragma warning(disable:4101 4102 4127 4189 4702)")
         source = source.replace('void sub_001A842A(void) { assert(!"unexpected flare submission"); }',
                                 'static unsigned flares; static uint32_t flare_color,flare_node;\n'
-                                'void sub_001A842A(void) { ++flares; flare_color=MEM32(flare_node+0x64); g_esp+=16; }')
+                                'static int glow_driver,flare_driver;\n'
+                                'void mm3_glow_driver_scope(int driver) { glow_driver=driver; }\n'
+                                'void sub_001A842A(void) { ++flares; flare_color=MEM32(flare_node+0x64); '
+                                'flare_driver=glow_driver; g_esp+=16; }')
         source = source.replace('#pragma warning(push)',
                                 'static void fixture_icall(uint32_t);\n'
                                 '#undef RECOMP_ICALL_SAFE_AT\n'

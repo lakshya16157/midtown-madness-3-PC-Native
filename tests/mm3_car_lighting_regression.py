@@ -95,7 +95,7 @@ static void setup(unsigned kind, uint32_t color, float brightness, unsigned mask
     g_eax=g_edx=g_ebx=g_esi=g_edi=g_ebp=g_seh_ebp=g_fs_base=g_eflags=0;
     g_ecx=NODE;g_esp=STACK;g_fp_top=g_df=g_fp_cmp=0;
     g_fp_cc=0;g_fp_control_word=0x27f;
-    memset(g_fp_stack,0,sizeof g_fp_stack);native_constants();flares=0;flare_color=0;
+    memset(g_fp_stack,0,sizeof g_fp_stack);native_constants();flares=0;flare_color=0;flare_driver=0;
     MEM32(0x3c55a0)=WORLD;MEM32(WORLD+0x24c)=0x1234;
     MEM32(0x3c5d8c)=QUEUE;native_reset(QUEUE);
     for(i=0;i<256;++i) MEM32(QUEUE+0x5410+i*4)=RECORD+i*0x54;
@@ -180,8 +180,18 @@ static void time_of_day_checks(void)
             night_color=MEM32(entry(0)+0x4c);night_flares=flares;night_flare_color=flare_color;
             setup(kind,0xffff0000u,.8f,1u<<kind,0);MEM32(0x407c30)=times[i];run();
             assert(MEM32(QUEUE+0x5810)==1 && flares==night_flares);
-            assert(flare_color==night_flare_color);
-            if(kind==1 || kind==2 || kind==5 || kind==6) {
+            /* A reversing lamp's lens glow is dimmer by day; every other lens
+             * keeps its authored glow in every period. */
+            assert(flare_color==(kind==3 && !dark ?
+                   car_light_color(night_flare_color,CAR_REVERSE_GLOW_DAY) : night_flare_color));
+            if(kind==3 && !dark) {
+                /* By day a reversing lamp keeps only a faint field at its lens,
+                 * not the lane-wide patch on the road. */
+                assert(MEM32(entry(0)+0x4c)==0xff060000u);
+                assert(MEMF(entry(0)+0x40)==CAR_REVERSE_RADIUS_DAY*2);
+                assert(MEMF(entry(0)+0x44)==CAR_REVERSE_RADIUS_DAY*2 &&
+                       MEMF(entry(0)+0x48)==CAR_REVERSE_RADIUS_DAY*2);
+            } else if(kind==1 || kind==2 || kind==5 || kind==6) {
                 float night_radius=kind==1?CAR_TAIL_RADIUS_NIGHT:kind==2?CAR_BRAKE_RADIUS_NIGHT:
                                    CAR_SIGNAL_RADIUS_NIGHT;
                 float day_radius=kind==1?CAR_TAIL_RADIUS_DAY:kind==2?CAR_BRAKE_RADIUS_DAY:
@@ -242,7 +252,7 @@ static void time_of_day_checks(void)
             assert(MEM32(STACK+12)==(1u<<j));
         }
     }
-    puts("PASS: front lenses/fields only light evening/night; morning/noon tail, brake and indicator spill stays faint/tight while native lenses keep authoring; evening fields are smaller and dimmer than night; reverse/emergency unchanged by day; native/offscreen sources and repeated period transitions agree");
+    puts("PASS: front lenses/fields only light evening/night; morning/noon tail, brake, indicator and reverse spill stays faint/tight while native lenses keep authoring (reverse glow dimmer by day); evening fields are smaller and dimmer than night; emergency unchanged by day; native/offscreen sources and repeated period transitions agree");
 }
 static void direction_checks(void)
 {
@@ -845,9 +855,10 @@ static void headlight_switch_checks(void)
         setup(0,0xffffffffu,.8f,0x101,0);primary_driver();MEM8(switch_byte)=0;
         MEM32(0x407c30)=time;run();
         assert(!MEM32(QUEUE+0x5810) && !flares && MEM32(STACK+12)==0x101);
-        /* Switched on: lit in every period, daytime included. */
+        /* Switched on: lit in every period, daytime included; its lens glow
+         * is drawn as the driver's (the glow report's attribution). */
         setup(0,0xffffffffu,.8f,0x101,0);primary_driver();MEM32(0x407c30)=time;run();
-        assert(MEM32(QUEUE+0x5810)==2 && flares==1);
+        assert(MEM32(QUEUE+0x5810)==2 && flares==1 && flare_driver==1 && !glow_driver);
         /* The shared road-light handle obeys the same switch. */
         setup(8,0,0,0x101,0);primary_driver();MEM8(switch_byte)=0;MEM32(0x407c30)=time;run();
         assert(!MEM32(QUEUE+0x5810));
@@ -855,23 +866,47 @@ static void headlight_switch_checks(void)
         setup(0,0xffffffffu,.8f,0x101,0);primary_driver();MEM8(switch_byte)=0;MEM32(0x407c30)=time;
         mm3_car_lighting_emit(NODE,0x101,(const float *)XBOX_PTR(MATRIX));
         assert(!MEM32(QUEUE+0x5810));
-        /* Switched off, evening/night tails go dark with it; daytime tails stay. */
+        /* Switched off, the tail lamps go dark with it in every period (by
+         * day their lenses used to stay lit). */
         setup(1,0xffff0000u,.8f,2,0);primary_driver();MEM8(switch_byte)=0;MEM32(0x407c30)=time;run();
-        assert(MEM32(QUEUE+0x5810)==(dark?0u:1u) && flares==(dark?0u:1u));
+        assert(!MEM32(QUEUE+0x5810) && !flares);
         setup(1,0xffff0000u,.8f,2,0);primary_driver();MEM32(0x407c30)=time;run();
         assert(MEM32(QUEUE+0x5810)==1);
         /* Brake lamps always work. */
         setup(2,0xffff0000u,.8f,4,0);primary_driver();MEM8(switch_byte)=0;MEM32(0x407c30)=time;run();
         assert(MEM32(QUEUE+0x5810)==1);
-        /* A traffic car keeps the time-of-day rule. */
+        /* A traffic car keeps the time-of-day rule; its glow is not the driver's. */
         setup(0,0xffffffffu,.8f,0x101,0);MEM32(0x407c30)=time;run();
-        assert(MEM32(QUEUE+0x5810)==(dark?2u:0u));
+        assert(MEM32(QUEUE+0x5810)==(dark?2u:0u) && !flare_driver);
         /* A non-local driver keeps it too, whatever its switch byte says. */
         setup(0,0xffffffffu,.8f,0x101,0);primary_driver();MEM32(0x182000+0x488)=0;
         MEM8(switch_byte)=0;MEM32(0x407c30)=time;run();
         assert(MEM32(QUEUE+0x5810)==(dark?2u:0u));
     }
-    puts("PASS: player headlights follow the native Light switch in every period (lens, beam, road handle, offscreen); evening/night tails follow it, brake/daytime tails and traffic unchanged");
+    /* Diagnostic probe: switched off at night, the road 6m ahead of the
+     * driver's lenses is checked against the drawn lights; a street lamp's
+     * pool over it counts as a world light. Switched on, nothing is probed. */
+    {
+        uint32_t record;
+        /* A new frame: earlier checks tagged these records in this one. */
+        setup(0,0xffffffffu,.8f,0x101,0);primary_driver();MEM8(switch_byte)=0;
+        mm3_light_queue_frame(QUEUE);run();
+        assert(!MEM32(QUEUE+0x5810) && s_probe_frame==s_frame);
+        assert(s_probe_point[0]==13.0f && fabsf(s_probe_point[1]-.7f)<1e-5f && fabsf(s_probe_point[2]+2.0f)<1e-5f);
+        record=entry(0);memset((void *)XBOX_PTR(record),0,0x54);
+        MEMF(record)=MEMF(record+0x14)=MEMF(record+0x28)=MEMF(record+0x3c)=1;
+        MEMF(record+0x30)=13;MEMF(record+0x34)=.7f;MEMF(record+0x38)=-4;
+        MEMF(record+0x40)=MEMF(record+0x44)=MEMF(record+0x48)=10;MEM32(record+0x4c)=0x00ffd080u;
+        /* (The budget's cut-off still holds the busy frames of earlier checks.) */
+        MEM32(QUEUE+0x5810)=1;s_usage_on=1;s_threshold=0;memset(&s_probe,0,sizeof s_probe);
+        mm3_light_queue_frame(QUEUE);
+        assert(s_probe.frames==1 && s_probe.covered[0]==1 && !s_probe.covered[1] && !s_probe.covered[2]);
+        assert(fabsf(s_probe.best-.84f)<1e-4f && s_probe.best_color==0x00ffd080u && !s_probe.best_cone);
+        setup(0,0xffffffffu,.8f,0x101,0);primary_driver();memset(&s_probe,0,sizeof s_probe);run();
+        assert(s_probe_frame!=s_frame);
+        s_usage_on=-1;memset(&s_usage,0,sizeof s_usage);memset(&s_probe,0,sizeof s_probe);
+    }
+    puts("PASS: player headlights follow the native Light switch in every period (lens, beam, road handle, offscreen), tails with them; brake lamps and traffic unchanged");
 }
 /* Native 21C6C8 sets each driven vehicle's mask through DFE0E (ECX graph,
  * EDI vehicle). Without any race association (cruise) that call alone lets
@@ -903,7 +938,7 @@ static void cruise_switch_checks(void)
         setup(0,0xffffffffu,.8f,0x101,0);driven(VEHICLE,1,1,time);run();
         assert(MEM32(QUEUE+0x5810)==2 && flares==1);
         setup(1,0xffff0000u,.8f,2,0);driven(VEHICLE,1,0,time);run();
-        assert(MEM32(QUEUE+0x5810)==(dark?0u:1u));
+        assert(!MEM32(QUEUE+0x5810));
         /* The same graph driven by another vehicle follows that vehicle. */
         setup(0,0xffffffffu,.8f,0x101,0);driven(VEHICLE,1,0,time);driven(OTHER,1,1,time);run();
         assert(MEM32(QUEUE+0x5810)==2);
@@ -1033,7 +1068,10 @@ static void player_priority_checks(void)
      * A graph belonging to another driver never receives replacement power. */
     setup(0,0xffffffffu,.8f,1,0);primary_driver();full_native_queue(2);
     lamp(NODE,OWNER+0x1000,13);assert(!s_car_groups);queue_permutation();
-    MEM32(OWNER+4)=0;lamp(NODE,OWNER,13);assert(!s_car_groups);queue_permutation();
+    /* The player's vehicle now drives another graph. (A graph's own +4 is
+     * itself in play, never the vehicle, so it is not part of the chain.) */
+    MEM32(0x182000+8)=OWNER+0x2000;lamp(NODE,OWNER,13);assert(!s_car_groups);queue_permutation();
+    MEM32(0x182000+8)=OWNER;MEM32(OWNER+4)=OWNER;assert(car_light_player(OWNER));
     setup(0,0xffffffffu,.8f,0,0);primary_driver();full_native_queue(2);run();
     assert(!s_car_groups);queue_permutation();
     setup(0,0xffffffffu,.8f,1,0);primary_driver();full_native_queue(2);
@@ -1125,7 +1163,11 @@ def main():
     source = native_projector.SOURCE.split("static unsigned submit", 1)[0]
     source = source.replace("memory[0x400000]", "memory[0x500000]")
     source = source.replace('void sub_001A842A(void) { assert(!"unexpected flare submission"); }',
-                            'static unsigned flares; static uint32_t flare_color,flare_node;\nvoid sub_001A842A(void) { ++flares; flare_color=MEM32(flare_node+0x64); g_esp+=16; }')
+                            'static unsigned flares; static uint32_t flare_color,flare_node;\n'
+                            'static int glow_driver,flare_driver;\n'
+                            'void mm3_glow_driver_scope(int driver) { glow_driver=driver; }\n'
+                            'void sub_001A842A(void) { ++flares; flare_color=MEM32(flare_node+0x64); '
+                            'flare_driver=glow_driver; g_esp+=16; }')
     source += CHECKS.replace("static unsigned flares;", "")
     with tempfile.TemporaryDirectory(prefix="mm3-car-lighting-") as temporary:
         folder = Path(temporary)

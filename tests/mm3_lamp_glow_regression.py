@@ -209,7 +209,32 @@ int main(void)
     /* Non-finite authored positions stay as the game wrote them. */
     reset();before[0]=NAN;before[1]=19;before[2]=-44;
     assert(append(before,0)==1 && isnan(component(0,0)));
-    puts("PASS: lamp glows lift along the eye ray (12cm + 0.3%, 3m cap, none within 1m), eye from the live camera matrix; native append, output, directional fade, capacity and failures unchanged; untrusted eye/view skipped; ABI");
+    /* The list's size: 1024 a frame by default (the Xbox held 256),
+     * MM3_GLOW_CAPACITY 256..4096, anything else the default. */
+    {
+        static const char *const settings[][2]={{"","1024"},{"300","300"},{"256","256"},
+            {"4096","4096"},{"255","1024"},{"5000","1024"},{"12x","1024"},{"abc","1024"}};
+        for(i=0;i!=sizeof settings/sizeof settings[0];++i) {
+            _putenv_s("MM3_GLOW_CAPACITY",settings[i][0]);s_glow_capacity=0;
+            assert(mm3_glow_capacity()==(uint32_t)atoi(settings[i][1]));
+        }
+        _putenv_s("MM3_GLOW_CAPACITY","");s_glow_capacity=0;
+    }
+    /* Per-frame counts come from the appends: three glows, then a new frame
+     * (native 1A762A clears the count) that fills the list; refused appends
+     * are counted, the driver's own separately. */
+    reset();memset(&s_glow_stats,0,sizeof s_glow_stats);s_glow_report_on=0;
+    for(i=0;i!=3;++i) assert(append(street,0)==1);
+    assert(s_glow_stats.count==3 && !s_glow_stats.frames);
+    MEM32(MANAGER+0x218)=0;
+    for(i=0;i!=CAPACITY;++i) assert(append(street,0)==1);
+    assert(s_glow_stats.frames==1 && s_glow_stats.total==3 && s_glow_stats.peak==3);
+    assert(append(street,0)==0 && s_glow_stats.refused==1 && !s_glow_stats.driver_refused);
+    mm3_glow_driver_scope(1);assert(append(street,0)==0);mm3_glow_driver_scope(0);
+    assert(s_glow_stats.refused==2 && s_glow_stats.driver_refused==1 && s_glow_stats.count==CAPACITY);
+    MEM32(MANAGER+0x218)=0;assert(append(street,0)==1);
+    assert(s_glow_stats.frames==2 && s_glow_stats.total==3+CAPACITY && s_glow_stats.peak==CAPACITY);
+    puts("PASS: lamp glows lift along the eye ray (12cm + 0.3%, 3m cap, none within 1m), eye from the live camera matrix; native append, output, directional fade, capacity and failures unchanged; untrusted eye/view skipped; ABI; list size setting and per-frame glow/refusal counts");
     return 0;
 }
 '''
@@ -240,6 +265,34 @@ def build(folder: Path, name: str, source: str) -> Path:
     return exe
 
 
+def check_capacity_seam(folder: Path):
+    """The seam swaps the retail 256 that 22C86A passes to the flare manager
+    (248518: records and three vertex buffers) for mm3_glow_capacity()."""
+    cmake = ROOT / "tools/venv/Lib/site-packages/cmake/data/bin/cmake.exe"
+    if not cmake.is_file():
+        cmake = shutil.which("cmake")
+    owner = generated("sub_0022C86A")
+    script = folder / "seam.cmake"
+    script.write_text(f'include("{(ROOT / "scripts/mm3_glow_capacity_seam.cmake").as_posix()}")\n'
+                      'file(READ "${INPUT}" content)\n'
+                      'mm3_add_glow_capacity(content)\n'
+                      'file(WRITE "${OUTPUT}" "${content}")\n')
+    for newline in ("\n", "\r\n"):
+        original, modified = folder / "owner.c", folder / "owner_seamed.c"
+        original.write_bytes(("int before;\n" + owner + "\nint after;\n").replace("\n", newline).encode())
+        subprocess.run([str(cmake), f"-DINPUT={original.as_posix()}", f"-DOUTPUT={modified.as_posix()}",
+                        "-P", str(script)], check=True)
+        # CMake's file(WRITE) picks the platform's line ends; compare lines.
+        text = modified.read_text()
+        assert "\r" not in text
+        body = text.split("void sub_0022C86A(void)", 1)[1].split("\n}", 1)[0]
+        assert body.count("eax = mm3_glow_capacity(); /* PC-sized glow list */") == 1
+        assert "eax = 0x100;" not in body
+        assert text.startswith("#include <stdint.h>\nextern uint32_t mm3_glow_capacity(void);\nint before;")
+        assert text.endswith("int after;\n")
+    print("PASS: the glow capacity seam replaces the retail 256 passed by 22C86A (LF and CRLF)")
+
+
 def main():
     if not shutil.which("cl"):
         raise SystemExit("Run scripts/enter-env.ps1 first so cl.exe is available.")
@@ -257,6 +310,7 @@ def main():
         disabled = build(folder, "disabled", SOURCE.split("int main(void)", 1)[0] + DISABLED)
         environment = dict(__import__("os").environ, MM3_GLOW_LIFT="0")
         subprocess.run([str(disabled)], check=True, cwd=folder, env=environment)
+        check_capacity_seam(folder)
 
 
 if __name__ == "__main__":

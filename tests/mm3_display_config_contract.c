@@ -11,7 +11,8 @@
 static const char *s_environment[] = {
     "RECOMP_WINDOW_SIZE", "RECOMP_FULLSCREEN", "RECOMP_FPS_LIMIT", "RECOMP_VSYNC",
     "MM3_SHOW_FPS", "MM3_MINIMAP_IMPROVED", "RECOMP_RENDER_SCALE", "RECOMP_ASPECT", "RECOMP_MSAA",
-    "RECOMP_ANISO", "RECOMP_DRAW_DISTANCE", "RECOMP_VIEW_DISTANCE", "MM3_PERFORMANCE_PROFILE"
+    "RECOMP_ANISO", "RECOMP_DRAW_DISTANCE", "RECOMP_VIEW_DISTANCE", "MM3_PERFORMANCE_PROFILE",
+    "RECOMP_MONITOR"
 };
 
 static void environment(const char *key, const char *value)
@@ -41,6 +42,7 @@ static void equal_settings(const MM3DisplaySettings *a, const MM3DisplaySettings
     assert(a->aniso == b->aniso);
     assert(a->draw_distance == b->draw_distance);
     assert(a->view_distance == b->view_distance);
+    assert(strcmp(a->monitor, b->monitor) == 0);
 }
 
 static void write_config(const char *contents)
@@ -89,6 +91,7 @@ static void persistence(void)
     expected.aniso = 3;
     expected.draw_distance = 2.25f;
     expected.view_distance = 3.25f;
+    strcpy(expected.monitor, "\\\\.\\DISPLAY2");
 
     /* A stale temp from a previous interrupted save cannot be overwritten or
      * block saving, even when its PID/sequence match the first attempt. */
@@ -122,9 +125,46 @@ static void persistence(void)
     invalid = expected;
     memset(invalid.aspect, 'x', sizeof invalid.aspect);
     assert(!mm3_display_settings_save(&invalid, error, sizeof error));
+    invalid = expected;
+    strcpy(invalid.monitor, "DISPLAY2");
+    assert(!mm3_display_settings_save(&invalid, error, sizeof error));
+    assert(strstr(error, "monitor"));
+    invalid = expected;
+    memset(invalid.monitor, 'x', sizeof invalid.monitor);
+    assert(!mm3_display_settings_save(&invalid, error, sizeof error));
     assert(mm3_display_settings_load(&loaded, error, sizeof error));
     equal_settings(&loaded, &expected);
     no_temporary_files();
+
+    /* The screen: "primary" or a Windows display name; anything else in the
+     * file is ignored and leaves the incoming choice. */
+    assert(mm3_display_monitor_valid("primary") && mm3_display_monitor_valid("\\\\.\\DISPLAY12"));
+    assert(!mm3_display_monitor_valid("\\\\.\\") && !mm3_display_monitor_valid("\\\\.\\DISPLAY 2"));
+    assert(!mm3_display_monitor_valid("DISPLAY2") && !mm3_display_monitor_valid("Primary"));
+    assert(!mm3_display_monitor_valid("\\\\.\\DISPLAY1234567890123456789012345"));
+    assert(!mm3_display_monitor_valid(NULL));
+    write_config("monitor=\\\\.\\DISPLAY3\n");
+    assert(mm3_display_settings_load(&loaded, error, sizeof error));
+    assert(!strcmp(loaded.monitor, "\\\\.\\DISPLAY3"));
+    write_config("monitor=DISPLAY4\nmonitor=\\\\.\\\nmonitor=\\\\.\\DISP#LAY\n");
+    assert(mm3_display_settings_load(&loaded, error, sizeof error));
+    assert(!strcmp(loaded.monitor, "\\\\.\\DISPLAY3"));
+    write_config("monitor=primary ; the main display\n");
+    assert(mm3_display_settings_load(&loaded, error, sizeof error));
+    assert(!strcmp(loaded.monitor, "primary"));
+    assert(mm3_display_settings_save(&expected, error, sizeof error));
+    file = fopen("display.ini", "rb");
+    {
+        char text[2048];
+        size_t length = fread(text, 1, sizeof text - 1, file);
+        text[length] = 0;
+        assert(fclose(file) == 0);
+        assert(strstr(text, "\nmonitor=\\\\.\\DISPLAY2\n"));
+    }
+    mm3_display_settings_defaults(&loaded, "Balanced");
+    assert(!strcmp(loaded.monitor, "primary"));
+    assert(mm3_display_settings_load(&loaded, error, sizeof error));
+    equal_settings(&loaded, &expected);
 
     /* Sharing restrictions make the atomic replace fail after writing its
      * temp. The old settings remain intact and the failed temp is removed. */
@@ -198,6 +238,18 @@ static void precedence(void)
     equal_settings(&loaded, &expected);
     assert(strcmp(getenv("RECOMP_FULLSCREEN"), "0") == 0);
     assert(strcmp(getenv("RECOMP_FPS_LIMIT"), "45") == 0);
+    assert(strcmp(getenv("RECOMP_MONITOR"), "primary") == 0);
+
+    /* The screen follows the same order: an explicit valid RECOMP_MONITOR wins,
+     * an invalid one is reported and the saved screen is kept. */
+    environment("RECOMP_MONITOR", "\\\\.\\DISPLAY5");
+    assert(mm3_display_settings_startup(&loaded, error, sizeof error));
+    assert(!*error && !strcmp(loaded.monitor, "\\\\.\\DISPLAY5"));
+    assert(!strcmp(getenv("RECOMP_MONITOR"), "\\\\.\\DISPLAY5"));
+    environment("RECOMP_MONITOR", "the left one");
+    assert(mm3_display_settings_startup(&loaded, error, sizeof error));
+    assert(strstr(error, "RECOMP_MONITOR") && !strcmp(loaded.monitor, "primary"));
+    assert(!strcmp(getenv("RECOMP_MONITOR"), "primary"));
 
     clear_environment();
     environment("MM3_PERFORMANCE_PROFILE", "Quality");

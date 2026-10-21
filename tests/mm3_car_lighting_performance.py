@@ -344,7 +344,8 @@ def main():
     prefix = native_projector.SOURCE.split("static unsigned submit", 1)[0]
     prefix = prefix.replace("memory[0x400000]", "memory[0x600000]")
     prefix = prefix.replace('void sub_001A842A(void) { assert(!"unexpected flare submission"); }',
-                            'void sub_001A842A(void) { g_esp+=16; }')
+                            'void sub_001A842A(void) { g_esp+=16; }\n'
+                            'void mm3_glow_driver_scope(int driver) { (void)driver; }')
     with tempfile.TemporaryDirectory(prefix="mm3-car-performance-") as temporary:
         folder = Path(temporary)
         shutil.copyfile(ROOT / "src/mm3_recomp_types.h", folder / "recomp_types.h")

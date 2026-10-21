@@ -446,12 +446,26 @@ static void mount_reach(void)
     /* The authored 7m street spot on a 5m post is unchanged (10.15m). */
     reset();MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;
     assert(produce()==1 && fabsf(MEMF(RECORD+0x48)-10.15f)<.001f);
-    /* Evening still shrinks the grown pool. */
+    /* Evening still shrinks the grown pool, but not short of the road: the
+     * 7m mounted reach keeps 0.8 of itself (1.4x the 4m post). */
     reset();MEMF(POSITION+4)=4;MEMF(SOURCE+0x4f)=2;MEM32(SOURCE+0x2b)=0x00ded57d;
     lamp_set_mount(POSITION,DIRECTION);MEM32(0x407c30)=2;
-    assert(fabsf(mm3_lamp_source_range(SOURCE)-7.0f*MM3_EVENING_LIGHT_REACH)<.01f);
+    assert(fabsf(mm3_lamp_source_range(SOURCE)-7.0f*LAMP_EVENING_MOUNT)<.01f);
+    assert(mm3_lamp_source_range(SOURCE)<7.0f);
     MEM32(0x407c30)=0;assert(fabsf(mm3_lamp_source_range(SOURCE)-7.0f)<.01f);
-    printf("mount reach: small lamps reach the road, signs/tall lamps/sideways spots unchanged\n");fflush(stdout);
+    /* A 9m lamp (10m authored, 15.75m mounted): the evening pool used to end
+     * 0.45m below the bulb's height (9.45m); now 12.6m, the road at 71%. */
+    reset();MEMF(POSITION+4)=9;MEMF(SOURCE+0x4f)=10;MEM32(SOURCE+0x2b)=0x00ffaf48;
+    lamp_set_mount(POSITION,DIRECTION);
+    assert(fabsf(mm3_lamp_source_range(SOURCE)-15.75f)<.01f);
+    MEM32(0x407c30)=2;assert(fabsf(mm3_lamp_source_range(SOURCE)-12.6f)<.01f);
+    MEM32(0x407c30)=3;assert(fabsf(mm3_lamp_source_range(SOURCE)-15.75f)<.01f);
+    /* A long-reach lamp keeps the plain evening shrink: 17.4m -> 10.44m. */
+    reset();MEMF(POSITION+4)=2;MEMF(SOURCE+0x4f)=12;MEM32(SOURCE+0x2b)=0x00ded57d;
+    lamp_set_mount(POSITION,DIRECTION);MEM32(0x407c30)=2;
+    assert(fabsf(mm3_lamp_source_range(SOURCE)-17.4f*MM3_EVENING_LIGHT_REACH)<.01f);
+    MEM32(0x407c30)=0;
+    printf("mount reach: small lamps reach the road, signs/tall lamps/sideways spots unchanged, evening pools still reach the road\n");fflush(stdout);
 }
 
 /* Monuments: a white floodlight at the base of a monument aimed up its wall
@@ -494,6 +508,53 @@ static void architecture(void)
     /* A street lamp beside them: every one lights, pool included. */
     reset();MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;assert(produce()==1 && !s_lamp_glow_only);
     printf("architecture: monument floodlights and wall bulbs keep the retail density, reach, cone and colour\n");fflush(stdout);
+}
+
+/* Tunnel, wall and low road lamps: thinned one in two like street lamps but
+ * not street lamps by their mount. The skipped one now lights at the retail
+ * reach, cone and colour (also in the evening); pink signs, sideways spots,
+ * dim floods and long throws stay one in two. */
+static void restored(void)
+{
+    uint32_t color;
+    unsigned before;
+    /* A white 8m tunnel ceiling light: its object's origin is above the
+     * road, so its height reads 0 (here 20m). */
+    reset();MEMF(POSITION+4)=20;MEMF(SOURCE+0x4f)=8;MEM32(SOURCE+0x2b)=0x00ffffff;
+    MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;before=s_lamp_restored_lit;
+    assert(produce()==1 && !s_lamp_glow_only && MEM32(RECORD+0x50)==0);
+    assert(s_lamp_restored_lit==before+1);
+    assert(fabsf(MEMF(RECORD+0x40)-16.0f)<.01f);
+    color=MEM32(RECORD+0x4c);
+    assert(channel(color,16)==channel(color,8) && channel(color,8)==channel(color,0));
+    assert(!lamp_is_street(SOURCE));
+    MEM32(0x407c30)=2;assert(mm3_lamp_source_range(SOURCE)==8.0f);MEM32(0x407c30)=0;
+    /* The same at ground level (a road light under 2m) and a cool-white
+     * fluorescent; a downward 7m spot under a bridge. */
+    reset();MEMF(POSITION+4)=.6f;MEMF(SOURCE+0x4f)=8;MEM32(SOURCE+0x2b)=0x00d2e6f5;
+    MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;assert(produce()==1 && !s_lamp_glow_only);
+    reset();MEMF(POSITION+4)=0;MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;MEM32(SOURCE+0x2b)=0x00ded57d;
+    MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;assert(produce()==1 && MEM32(RECORD+0x50)==1);
+    assert(MEMF(RECORD+0x48)==7.0f);
+    /* Far away it keeps only its glow, like an added street lamp. */
+    {
+        static const float far_eye[3]={12,5,-113};
+        reset();view(far_eye);MEMF(POSITION+4)=20;MEMF(SOURCE+0x4f)=8;MEM32(SOURCE+0x2b)=0x00ffffff;
+        MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;before=s_lamp_restored_glow;
+        assert(produce()==0 && s_lamp_glow_only && s_lamp_restored_glow==before+1);
+    }
+    /* Still one in two: Paris's pink signs, the same spot aimed sideways, a
+     * dim monument flood and a 20m throw. */
+    reset();MEMF(POSITION+4)=20;MEMF(SOURCE+0x4f)=4;MEM32(SOURCE+0x2b)=0x00ff96dc;
+    MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;assert(produce()==0 && !s_lamp_glow_only);
+    reset();MEMF(POSITION+4)=0;MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;MEM32(SOURCE+0x2b)=0x00ded57d;
+    MEMF(DIRECTION)=1;MEMF(DIRECTION+4)=0;
+    MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;assert(produce()==0);
+    reset();MEMF(POSITION+4)=20;MEM32(SOURCE+0x2b)=0x00805a3c;
+    MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;assert(produce()==0);
+    reset();MEMF(POSITION+4)=20;MEMF(SOURCE+0x4f)=20;MEM32(SOURCE+0x2b)=0x00ffffff;
+    MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;assert(produce()==0);
+    printf("restored: thinned tunnel/wall/road lamps light at retail strength; signs, sideways spots, floods stay thinned\n");fflush(stdout);
 }
 
 int main(void)
@@ -602,6 +663,7 @@ int main(void)
     MEMF(SOURCE+0x4f)=NAN;assert(mm3_lamp_source_range(SOURCE)==0);
     mount_reach();
     architecture();
+    restored();
     queue_extension();
     adaptive_reach();
     direct_spot(0x0016945a);direct_spot(0x000CF5ED);direct_spot(0x12345678);

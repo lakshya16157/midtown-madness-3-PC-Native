@@ -17,9 +17,12 @@ typedef struct MM3DisplaySettings {
     int aniso;
     float draw_distance; /* Object detail/LOD distance; retains the legacy key. */
     float view_distance; /* City/building visibility; legacy configurations inherit draw_distance. */
+    char monitor[32]; /* "primary", or the Windows name of the display to open on (\\.\DISPLAY2). */
 } MM3DisplaySettings;
 
 void mm3_display_settings_defaults(MM3DisplaySettings *settings, const char *profile);
+/* Whether a monitor value can be saved: "primary" or \\.\ and a name. */
+int mm3_display_monitor_valid(const char *monitor);
 
 /* Paths are UTF-8. MM3_DISPLAY_CONFIG overrides the per-user configuration.
  * Resolving the path does not create a directory or file. */

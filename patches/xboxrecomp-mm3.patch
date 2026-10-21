@@ -102,7 +102,7 @@ index f7b9f8fcb1e916fcc3686f4e207578a93a4d382a..93811ebc8d9b0e1b42cf3f9bf8071035
  uint64_t mcpx_apu_mmio_read(MCPXAPUState *d, uint64_t addr, unsigned int size);
  
 diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
-index 70ac34c..9c65edc 100644
+index 70ac34c..4fa3b5e 100644
 --- a/src/apu/apu_core.c
 +++ b/src/apu/apu_core.c
 @@ -23,6 +23,8 @@
@@ -160,7 +160,19 @@ index 70ac34c..9c65edc 100644
  /* ============================================================
   * IRQ handling (stubbed - no PCI bus in standalone)
   * ============================================================ */
-@@ -132,23 +173,50 @@ extern void xbox_IrqlLeaveInterrupt(int saved);
+@@ -124,6 +165,11 @@ extern uint32_t xbox_AllocThreadTib(void);
+ extern int xbox_IrqlBlocksInterrupts(void);
+ extern int xbox_IrqlEnterInterrupt(int level);
+ extern void xbox_IrqlLeaveInterrupt(int saved);
++extern int xbox_IsrGateEnter(unsigned timeout_us);
++extern void xbox_IsrGateLeave(void);
++/* How long the routine waits for DISPATCH_LEVEL code to finish or stall. */
++#define APU_ISR_GATE_TIMEOUT_US 4000
++static volatile LONG s_isr_gate_timeouts;
+ #if defined(_MSC_VER)
+ #  define APU_TLS __declspec(thread)
+ #else
+@@ -132,23 +178,50 @@ extern void xbox_IrqlLeaveInterrupt(int saved);
  extern APU_TLS uint32_t g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi, g_edi;
  extern APU_TLS uint32_t g_fs_base;
  
@@ -193,7 +205,8 @@ index 70ac34c..9c65edc 100644
 +    static int holdoff_limit = -1;
      uint32_t kint, routine, context;
      apu_guest_fn fn;
-     int slot;
+-    int slot;
++    int slot, gated;
  
      if (!InterlockedCompareExchange(&s_irq_line, 0, 0))
          return;
@@ -215,7 +228,7 @@ index 70ac34c..9c65edc 100644
          return;
      held_off = 0;
      kint = xbox_GetConnectedInterrupt(APU_VECTOR);
-@@ -157,18 +225,24 @@ static void apu_deliver_irq(MCPXAPUState *d)
+@@ -157,26 +230,40 @@ static void apu_deliver_irq(MCPXAPUState *d)
      routine = *(uint32_t *)(g_apu_ram_ptr + kint + 0);
      context = *(uint32_t *)(g_apu_ram_ptr + kint + 4);
      fn = routine ? recomp_lookup(routine) : NULL;
@@ -242,8 +255,24 @@ index 70ac34c..9c65edc 100644
 +    }
  
      qemu_mutex_unlock(&d->lock);
++    /* Not while a game thread runs at DISPATCH_LEVEL (see xbox_IsrGateEnter):
++     * the routine edits the voice lists that code edits. Past the timeout it
++     * runs anyway, as it always did, and the minute report counts it. */
++    gated = xbox_IsrGateEnter(APU_ISR_GATE_TIMEOUT_US);
++    if (!gated)
++        InterlockedIncrement(&s_isr_gate_timeouts);
      g_esp = XBOX_WORKER_STACK_TOP(slot);
-@@ -194,6 +268,28 @@ static void apu_deliver_irq(MCPXAPUState *d)
+     g_eax = g_ecx = g_edx = g_ebx = g_esi = g_edi = 0;
+     g_esp -= 4; *(uint32_t *)(g_apu_ram_ptr + g_esp) = context;
+     g_esp -= 4; *(uint32_t *)(g_apu_ram_ptr + g_esp) = kint;
+     g_esp -= 4; *(uint32_t *)(g_apu_ram_ptr + g_esp) = 0xDEADBEEFu;
+     { int _irql = xbox_IrqlEnterInterrupt(16); fn(); xbox_IrqlLeaveInterrupt(_irql); }
++    if (gated)
++        xbox_IsrGateLeave();
+     xbox_worker_stack_free(slot);
+     qemu_mutex_lock(&d->lock);
+ 
+@@ -194,6 +281,28 @@ static void apu_deliver_irq(MCPXAPUState *d)
   * MMIO Read / Write
   * ============================================================ */
  
@@ -272,7 +301,7 @@ index 70ac34c..9c65edc 100644
  uint64_t mcpx_apu_read(void *opaque, hwaddr addr, unsigned int size)
  {
      MCPXAPUState *d = (MCPXAPUState *)opaque;
-@@ -201,7 +297,10 @@ uint64_t mcpx_apu_read(void *opaque, hwaddr addr, unsigned int size)
+@@ -201,7 +310,10 @@ uint64_t mcpx_apu_read(void *opaque, hwaddr addr, unsigned int size)
  
      switch (addr) {
      case NV_PAPU_XGSCNT:
@@ -284,7 +313,7 @@ index 70ac34c..9c65edc 100644
          break;
      default:
          if (addr < 0x20000) {
-@@ -233,11 +332,20 @@ void mcpx_apu_write(void *opaque, hwaddr addr, uint64_t val,
+@@ -233,11 +345,20 @@ void mcpx_apu_write(void *opaque, hwaddr addr, uint64_t val,
      case NV_PAPU_ISTS:
          qatomic_and(&d->regs[NV_PAPU_ISTS], ~(uint32_t)val);
          update_irq(d);
@@ -307,7 +336,7 @@ index 70ac34c..9c65edc 100644
          /* Starting the APU has to start the frame thread.
           *
           * The thread idles on pause_requested, which init sets and only the
-@@ -264,7 +372,7 @@ void mcpx_apu_write(void *opaque, hwaddr addr, uint64_t val,
+@@ -264,7 +385,7 @@ void mcpx_apu_write(void *opaque, hwaddr addr, uint64_t val,
                                  " (SECTL=%08X FECTL=%08X)\n", sectl, fectl);
              }
          }
@@ -316,7 +345,7 @@ index 70ac34c..9c65edc 100644
          break;
      case NV_PAPU_FEMEMDATA:
          /* 'magic write' - value written to FEMEMADDR on notify completion */
-@@ -317,6 +425,50 @@ typedef struct {
+@@ -317,6 +438,50 @@ typedef struct {
  
  static WaveOutState g_waveout = { 0 };
  
@@ -367,7 +396,7 @@ index 70ac34c..9c65edc 100644
  void mcpx_apu_monitor_init(MCPXAPUState *d, Error **errp)
  {
      (void)errp;
-@@ -412,6 +564,11 @@ void mcpx_apu_monitor_frame(MCPXAPUState *d)
+@@ -412,6 +577,11 @@ void mcpx_apu_monitor_frame(MCPXAPUState *d)
              premix_dump = NULL;
          }
  
@@ -379,7 +408,7 @@ index 70ac34c..9c65edc 100644
          if (g_audio_muted) {
              memset(d->monitor.frame_buf, 0, sizeof(d->monitor.frame_buf));
          } else {
-@@ -437,10 +594,33 @@ void mcpx_apu_monitor_frame(MCPXAPUState *d)
+@@ -437,10 +607,33 @@ void mcpx_apu_monitor_frame(MCPXAPUState *d)
  
      }
  
@@ -413,7 +442,7 @@ index 70ac34c..9c65edc 100644
              qemu_mutex_unlock(&d->lock);
              Sleep(1);
              qemu_mutex_lock(&d->lock);
-@@ -469,6 +649,14 @@ void mcpx_apu_monitor_frame(MCPXAPUState *d)
+@@ -469,6 +662,14 @@ void mcpx_apu_monitor_frame(MCPXAPUState *d)
      }
  
      memcpy(g_waveout.bufs[idx], d->monitor.frame_buf, sizeof(d->monitor.frame_buf));
@@ -428,7 +457,7 @@ index 70ac34c..9c65edc 100644
      /* Submit to waveOut; retain the output if the device rejects it. */
      hdr->dwFlags &= ~WHDR_DONE;
      MMRESULT written = waveOutWrite(g_waveout.hwo, hdr, sizeof(WAVEHDR));
-@@ -494,6 +682,7 @@ static void throttle(MCPXAPUState *d)
+@@ -494,6 +695,7 @@ static void throttle(MCPXAPUState *d)
      }
  
      int64_t now_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
@@ -436,7 +465,7 @@ index 70ac34c..9c65edc 100644
  
      if (d->next_frame_time_us == 0 ||
          /* Windows waits may overshoot one 5.33 ms output frame. Preserve
-@@ -502,26 +691,297 @@ static void throttle(MCPXAPUState *d)
+@@ -502,26 +704,297 @@ static void throttle(MCPXAPUState *d)
           * Rebase only after a substantial pause to bound catch-up work. */
          now_us - d->next_frame_time_us > 250000) {
          d->next_frame_time_us = now_us;
@@ -738,7 +767,7 @@ index 70ac34c..9c65edc 100644
  static void se_frame(MCPXAPUState *d)
  {
      mcpx_apu_update_dsp_preference(d);
-@@ -537,6 +997,7 @@ static void se_frame(MCPXAPUState *d)
+@@ -537,6 +1010,7 @@ static void se_frame(MCPXAPUState *d)
          d->frame_count_time_ms = now_ms;
          d->frame_count = 0;
          d->sleep_acc_us = 0;
@@ -746,7 +775,7 @@ index 70ac34c..9c65edc 100644
      }
      d->frame_count++;
  
-@@ -544,9 +1005,28 @@ static void se_frame(MCPXAPUState *d)
+@@ -544,9 +1018,28 @@ static void se_frame(MCPXAPUState *d)
      float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME];
      memset(mixbins, 0, sizeof(mixbins));
  
@@ -776,31 +805,48 @@ index 70ac34c..9c65edc 100644
  
      d->ep_frame_div++;
  
-@@ -557,13 +1037,45 @@ static void se_frame(MCPXAPUState *d)
+@@ -557,13 +1050,62 @@ static void se_frame(MCPXAPUState *d)
   * APU frame thread (background processing)
   * ============================================================ */
  
-+/* Once a minute: how close the output came to running dry, and how often
-+ * the voice processor waited for a voice DirectSound had locked. The first
-+ * minute is always shown, later ones only when something went wrong. */
++static volatile LONG s_idle_reports;
++
++/* Once a minute: how close the output came to running dry, how often the
++ * voice processor waited for a voice DirectSound had locked, how many
++ * finished voices DirectSound was told about, and how often its interrupt
++ * routine ran without waiting for DISPATCH_LEVEL code (the gate timed out).
++ * The first minute is always shown, later ones only when something went
++ * wrong. */
 +static void apu_report_output(void)
 +{
 +    static int64_t last_ms;
 +    static unsigned lines;
-+    unsigned dry, queue_min, queue_max, waits, timeouts;
++    unsigned dry, queue_min, queue_max, waits, timeouts, reports, ungated;
 +    int64_t now = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
 +    if (!last_ms) { last_ms = now; return; }
 +    if (now - last_ms < 60000) return;
 +    xa2_take_health(&dry, &queue_min, &queue_max);
 +    mcpx_apu_vp_lock_stats(&waits, &timeouts);
-+    if (lines < 60 && (!lines || dry || timeouts)) {
++    reports = (unsigned)InterlockedExchange(&s_idle_reports, 0);
++    ungated = (unsigned)InterlockedExchange(&s_isr_gate_timeouts, 0);
++    if (lines < 60 && (!lines || dry || timeouts || ungated)) {
 +        ++lines;
 +        fprintf(stderr, "[APU] output last %.0f s: device queue %u..%u buffers, ran dry %u times; "
-+                "voices waited for a DirectSound lock %u times (%u ran out)\n",
-+                (now - last_ms) / 1000.0, queue_min, queue_max, dry, waits, timeouts);
++                "voices waited for a DirectSound lock %u times (%u ran out); "
++                "%u finished voices reported, interrupt ran unguarded %u times\n",
++                (now - last_ms) / 1000.0, queue_min, queue_max, dry, waits, timeouts,
++                reports, ungated);
 +        fflush(stderr);
 +    }
 +    last_ms = now;
++}
++
++/* One idle-voice report's interrupt (see mcpx_apu_vp_report_idle). */
++static void apu_idle_interrupt(MCPXAPUState *d)
++{
++    update_irq(d);
++    d->set_irq = false;
++    apu_deliver_irq(d);
 +}
 +
  static void *mcpx_apu_frame_thread(void *arg)
@@ -822,7 +868,7 @@ index 70ac34c..9c65edc 100644
              d->is_idle = true;
              qemu_cond_signal(&d->idle_cond);
              qemu_cond_wait(&d->cond, &d->lock);
-@@ -594,10 +1106,24 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -594,10 +1136,35 @@ static void *mcpx_apu_frame_thread(void *arg)
              se_frame(d);
          } else {
              /* Lightweight: just monitor frame (test tone + software mixer) */
@@ -840,14 +886,25 @@ index 70ac34c..9c65edc 100644
              d->ep_frame_div++;
          }
  
-+        /* Trap the front end on this frame's idle voice now, so the decode
-+         * registers its handler reads are fresh when the interrupt arrives. */
-+        mcpx_apu_vp_flush_idle(d);
++        /* Tell DirectSound about every voice that finished this frame, one
++         * trap and interrupt each; once a second, look for voices that will
++         * never finish (mcpx_apu_vp_check_voices). */
++        if (apu_active && !g_test_tone.active) {
++            static int64_t next_check_ms;
++            int64_t now_ms = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
++            int reports = mcpx_apu_vp_report_idle(d, apu_idle_interrupt);
++            if (reports)
++                InterlockedExchangeAdd(&s_idle_reports, reports);
++            if (now_ms >= next_check_ms) {
++                next_check_ms = now_ms + 1000;
++                mcpx_apu_vp_check_voices(d, now_ms);
++            }
++        }
 +
          /* What xemu's frame thread does after each frame: turn a pending
           * notification (set by the voice processor or a trapped method) into
           * the interrupt line. Nothing here ever did, so the line never rose
-@@ -619,6 +1145,10 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -619,6 +1186,10 @@ static void *mcpx_apu_frame_thread(void *arg)
           * select, blocked in voice_lock at raised IRQL, which in turn held
           * off every USB interrupt. */
          qemu_mutex_unlock(&d->lock);
@@ -858,7 +915,7 @@ index 70ac34c..9c65edc 100644
          SwitchToThread();
          qemu_mutex_lock(&d->lock);
      }
-@@ -634,7 +1164,7 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -634,7 +1205,7 @@ static void *mcpx_apu_frame_thread(void *arg)
  static void mcpx_apu_wait_for_idle(MCPXAPUState *d)
  {
      d->pause_requested = true;
@@ -867,7 +924,7 @@ index 70ac34c..9c65edc 100644
      while (!d->is_idle) {
          qemu_cond_wait(&d->idle_cond, &d->lock);
      }
-@@ -643,7 +1173,7 @@ static void mcpx_apu_wait_for_idle(MCPXAPUState *d)
+@@ -643,7 +1214,7 @@ static void mcpx_apu_wait_for_idle(MCPXAPUState *d)
  static void mcpx_apu_resume(MCPXAPUState *d)
  {
      d->pause_requested = false;
@@ -876,7 +933,7 @@ index 70ac34c..9c65edc 100644
  }
  
  /* ============================================================
-@@ -652,15 +1182,25 @@ static void mcpx_apu_resume(MCPXAPUState *d)
+@@ -652,15 +1223,25 @@ static void mcpx_apu_resume(MCPXAPUState *d)
  
  static void mcpx_apu_reset_locked(MCPXAPUState *d)
  {
@@ -902,7 +959,7 @@ index 70ac34c..9c65edc 100644
  }
  
  /* ============================================================
-@@ -684,6 +1224,28 @@ MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr)
+@@ -684,6 +1265,28 @@ MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr)
      d->is_idle = false;
      d->pause_requested = true;
  
@@ -931,7 +988,7 @@ index 70ac34c..9c65edc 100644
      qemu_mutex_init(&d->lock);
      qemu_mutex_lock(&d->lock);
      qemu_cond_init(&d->cond);
-@@ -706,6 +1268,7 @@ MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr)
+@@ -706,6 +1309,7 @@ MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr)
      }
  
      /* Start background frame thread */
@@ -939,7 +996,7 @@ index 70ac34c..9c65edc 100644
      qemu_thread_create(&d->apu_thread, "mcpx.apu_thread",
                         mcpx_apu_frame_thread, d, QEMU_THREAD_JOINABLE);
      mcpx_apu_wait_for_idle(d);
-@@ -728,10 +1291,13 @@ void mcpx_apu_shutdown(MCPXAPUState *d)
+@@ -728,10 +1332,13 @@ void mcpx_apu_shutdown(MCPXAPUState *d)
      qemu_mutex_lock(&d->lock);
      /* Thread join below waits for exit; a running guest may never become idle. */
      qatomic_set(&d->exiting, true);
@@ -954,7 +1011,7 @@ index 70ac34c..9c65edc 100644
      mcpx_apu_vp_finalize(d);
      mcpx_apu_monitor_finalize(d);
  
-@@ -839,7 +1405,8 @@ void mcpx_apu_play_test_tone(MCPXAPUState *d)
+@@ -839,7 +1446,8 @@ void mcpx_apu_play_test_tone(MCPXAPUState *d)
      /* Make sure waveOut is running - enable SECTL and resume APU thread */
      qemu_mutex_lock(&d->lock);
      d->regs[NV_PAPU_SECTL] = NV_PAPU_SECTL_XCNTMODE & ~NV_PAPU_SECTL_XCNTMODE_OFF;
@@ -964,7 +1021,7 @@ index 70ac34c..9c65edc 100644
      /* Initialize empty voice lists so VP frame doesn't crash */
      d->regs[NV_PAPU_TVL2D] = 0xFFFF;
      d->regs[NV_PAPU_TVL3D] = 0xFFFF;
-@@ -958,7 +1525,7 @@ void apu_mixer_play(int slot, int looping)
+@@ -958,7 +1566,7 @@ void apu_mixer_play(int slot, int looping)
      if (g_state) {
          qemu_mutex_lock(&g_state->lock);
          g_state->pause_requested = false;
@@ -2075,7 +2132,7 @@ index e18baa567c4a1319c7659859945c98bc48c5eb0a..6c4d4354304f0ded024a7caee90b1258
  #endif
  
 diff --git a/src/apu/apu_state.h b/src/apu/apu_state.h
-index 3493ba5..3b099af 100644
+index 3493ba5..8813e3b 100644
 --- a/src/apu/apu_state.h
 +++ b/src/apu/apu_state.h
 @@ -26,6 +26,11 @@
@@ -2484,7 +2541,7 @@ index 3493ba5..3b099af 100644
  /* ============================================================
   * Forward declarations for APU sub-module functions
   * ============================================================ */
-@@ -420,13 +691,45 @@ struct MCPXAPUState {
+@@ -420,13 +691,47 @@ struct MCPXAPUState {
  void mcpx_apu_vp_init(MCPXAPUState *d);
  void mcpx_apu_vp_finalize(MCPXAPUState *d);
  void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME]);
@@ -2508,7 +2565,9 @@ index 3493ba5..3b099af 100644
 +#endif
 +    return 0;
 +}
-+void mcpx_apu_vp_flush_idle(MCPXAPUState *d);   /* idle-voice trap, just before the interrupt */
++/* Idle-voice reports, one trap and interrupt() each (see apu_vp.c). */
++int  mcpx_apu_vp_report_idle(MCPXAPUState *d, void (*interrupt)(MCPXAPUState *d));
++void mcpx_apu_vp_check_voices(MCPXAPUState *d, int64_t now_ms);   /* once a second */
  void mcpx_apu_vp_reset(MCPXAPUState *d);
 +/* Ordinary commands wake idle/legacy waits without interrupting a native
 + * output deadline. State/lifecycle changes must use the urgent wake below. */
@@ -2532,7 +2591,7 @@ index 3493ba5..3b099af 100644
  void mcpx_apu_dsp_write(MCPXAPUState *d, bool gp, uint32_t addr, uint64_t value, unsigned size);
  
 diff --git a/src/apu/apu_vp.c b/src/apu/apu_vp.c
-index 755c02e..487b703 100644
+index 755c02e..3dd2a3a 100644
 --- a/src/apu/apu_vp.c
 +++ b/src/apu/apu_vp.c
 @@ -21,6 +21,7 @@
@@ -2543,7 +2602,7 @@ index 755c02e..487b703 100644
  #ifdef _MSC_VER
  #include <intrin.h>
  #else
-@@ -75,10 +76,61 @@ static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
+@@ -75,10 +76,70 @@ static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
   * ramps across the next frame instead of stepping (see voice_process). */
  static float s_gain_prev[MCPX_HW_MAX_VOICES][8];
  static uint8_t s_gain_valid[MCPX_HW_MAX_VOICES];
@@ -2573,22 +2632,31 @@ index 755c02e..487b703 100644
 +    return 1ull << 63 | (uint64_t)mode << 56 | (uint64_t)(high24 & 0xFFFFFFu) << 32 | low;
 +}
 +
-+/* Voice-list integrity and idle-voice reporting (see mcpx_apu_vp_frame).
++/* Voice-list integrity (see mcpx_apu_vp_frame).
 + *
 + * New voices go on the top of a list, so the longest-running ones (engine
 + * loops, ambience) sit at its tail: a voice that cuts the list short silences
 + * everything older than itself, for good, with nothing in the log. These
-+ * counters only change what happens on a damaged list or when DirectSound
-+ * keeps ignoring the same idle voice; a healthy run never touches them. */
-+#define VP_IDLE_DECLINE_LIMIT 16   /* same idle voice reported this often in a row */
-+#define VP_IDLE_DECLINE_SKIP  64   /* frames it is then passed over */
++ * counters only change what happens on a damaged list; a healthy run never
++ * touches them. */
 +static uint32_t s_next_seen[MCPX_HW_MAX_VOICES];  /* successor + 1 at the last normal walk, 0 = unknown */
 +static uint8_t  s_self_noted[MCPX_HW_MAX_VOICES]; /* self-linked voice already logged */
-+static uint8_t  s_idle_skip[MCPX_HW_MAX_VOICES];
-+static int      s_pending_idle = -1;              /* idle voice to report after this frame */
-+static int      s_last_reported = -1;
-+static int      s_same_reports;
 +static int      s_prev_nodes[3];
++
++/* Idle-voice reports (see mcpx_apu_vp_next_idle). A voice DirectSound leaves
++ * in its list after hearing that it is idle -- a stream meant to persist, or
++ * one whose buffer was busy -- is reported again on each frame, every
++ * VP_IDLE_BACKOFF frames once it has been declined VP_IDLE_PATIENCE times in a
++ * row. The counts are reset whenever the voice is seen playing or started. */
++#define VP_IDLE_PATIENCE 16
++#define VP_IDLE_BACKOFF  8
++static uint8_t  s_idle_reported[MCPX_HW_MAX_VOICES]; /* reported, and still idle in its list since */
++static uint16_t s_idle_declines[MCPX_HW_MAX_VOICES];
++static int64_t  s_idle_since_ms[MCPX_HW_MAX_VOICES]; /* first declined, for the voice check */
++static uint8_t  s_idle_noted[MCPX_HW_MAX_VOICES];
++static uint8_t  s_lost_seen[MCPX_HW_MAX_VOICES];     /* playing in no list at the last check */
++static uint8_t  s_lost_noted[MCPX_HW_MAX_VOICES];
++static unsigned s_vp_frames;
 +/* Voices seen by the last frame, for the load line in apu_core.c. */
 +volatile int g_apu_vp_active_voices, g_apu_vp_idle_voices;
  
@@ -2605,7 +2673,7 @@ index 755c02e..487b703 100644
      memset(&d->vp.filters[v].svf, 0, sizeof(d->vp.filters[v].svf));
      hrtf_filter_clear_history(&d->vp.filters[v].hrtf);
      if (d->vp.filters[v].resampler) {
-@@ -103,31 +155,67 @@ static float clampf(float v, float mn, float mx)
+@@ -103,31 +164,67 @@ static float clampf(float v, float mn, float mx)
      return v;
  }
  
@@ -2685,7 +2753,7 @@ index 755c02e..487b703 100644
  }
  
  /* ============================================================
-@@ -195,7 +283,7 @@ static void voice_lock(MCPXAPUState *d, uint16_t v, bool lock)
+@@ -195,7 +292,7 @@ static void voice_lock(MCPXAPUState *d, uint16_t v, bool lock)
      }
  
      voice_spin_unlock(d, v);
@@ -2694,7 +2762,7 @@ index 755c02e..487b703 100644
  }
  
  static bool is_voice_locked(MCPXAPUState *d, uint16_t v)
-@@ -205,6 +293,48 @@ static bool is_voice_locked(MCPXAPUState *d, uint16_t v)
+@@ -205,6 +302,48 @@ static bool is_voice_locked(MCPXAPUState *d, uint16_t v)
      return (qatomic_read(&d->vp.voice_locked[v / 64]) & mask) != 0;
  }
  
@@ -2743,8 +2811,13 @@ index 755c02e..487b703 100644
  /* ============================================================
   * HRIR coefficient setter
   * ============================================================ */
-@@ -223,9 +353,32 @@ static void set_hrir_coeff_tar(MCPXAPUState *d, int channel, int coeff_idx,
- static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+@@ -220,12 +359,36 @@ static void set_hrir_coeff_tar(MCPXAPUState *d, int channel, int coeff_idx,
+  * Front-End method dispatch
+  * ============================================================ */
+ 
+-static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
++/* True when the method trapped the front end (an idle-voice report). */
++static bool fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
  {
      unsigned int slot;
 +    voice_regs_forget();
@@ -2778,7 +2851,7 @@ index 755c02e..487b703 100644
      unsigned int selected_handle, list;
  
      switch (method) {
-@@ -273,11 +426,8 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+@@ -273,11 +436,10 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
                         NV_PAVS_VOICE_PAR_OFFSET_CBO, 0);
          d->vp.ssl[selected_handle].ssl_seg = 0;
          d->vp.ssl[selected_handle].ssl_index = 0;
@@ -2787,11 +2860,13 @@ index 755c02e..487b703 100644
 -        d->vp.filters[selected_handle].resample_read = 0;
 -        d->vp.filters[selected_handle].resample_count = 0;
          s_gain_valid[selected_handle] = 0;
-+        s_idle_skip[selected_handle] = 0;
++        s_idle_reported[selected_handle] = 0;
++        s_idle_declines[selected_handle] = 0;
++        s_idle_noted[selected_handle] = 0;
  
          unsigned int ea_start = GET_MASK(argument, NV1BA0_PIO_VOICE_ON_ENVA);
          voice_set_mask(d, (uint16_t)selected_handle, NV_PAVS_VOICE_PAR_STATE,
-@@ -534,13 +684,6 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+@@ -534,13 +696,6 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
          break;
  
      case SE2FE_IDLE_VOICE:
@@ -2805,7 +2880,15 @@ index 755c02e..487b703 100644
          break;
  
      default:
-@@ -622,13 +765,74 @@ void mcpx_apu_vp_write(void *opaque, hwaddr addr, uint64_t val,
+@@ -589,6 +744,7 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+         }
+         break;
+     }
++    return publication.trapped;
+ }
+ 
+ /* ============================================================
+@@ -622,13 +778,74 @@ void mcpx_apu_vp_write(void *opaque, hwaddr addr, uint64_t val,
   * SGE data pointer resolution
   * ============================================================ */
  
@@ -2883,7 +2966,7 @@ index 755c02e..487b703 100644
  }
  
  /* ============================================================
-@@ -774,6 +978,37 @@ static float voice_step_envelope(MCPXAPUState *d, uint16_t v, uint32_t reg_0,
+@@ -774,6 +991,37 @@ static float voice_step_envelope(MCPXAPUState *d, uint16_t v, uint32_t reg_0,
   * Sample fetching from voice buffers
   * ============================================================ */
  
@@ -2921,7 +3004,7 @@ index 755c02e..487b703 100644
  static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
                         int num_samples_requested)
  {
-@@ -814,8 +1049,11 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
+@@ -814,8 +1062,11 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
      size_t block_size;
  
      int adpcm_block_index = -1;
@@ -2933,7 +3016,7 @@ index 755c02e..487b703 100644
  
      voice_set_mask(d, (uint16_t)v, NV_PAVS_VOICE_PAR_STATE,
                     NV_PAVS_VOICE_PAR_STATE_NEW_VOICE, 0);
-@@ -855,7 +1093,7 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
+@@ -855,7 +1106,7 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
              d->vp.ssl[v].ssl_seg = 0;
              if (!persist) {
                  d->vp.ssl[v].ssl_index = 0;
@@ -2942,7 +3025,7 @@ index 755c02e..487b703 100644
              } else {
                  set_notify_status(d, v, MCPX_HW_NOTIFIER_SSLA_DONE +
                                    d->vp.ssl[v].ssl_index,
-@@ -910,58 +1148,67 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
+@@ -910,58 +1161,67 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
                  uint32_t linear_addr = block_index * (uint32_t)block_size;
                  if (stream) {
                      hwaddr addr = segment_offset + linear_addr;
@@ -3026,7 +3109,7 @@ index 755c02e..487b703 100644
                      fval = int32_to_float(ival);
                      break;
                  default:
-@@ -978,7 +1225,9 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
+@@ -978,7 +1238,9 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
          }
      }
  
@@ -3037,7 +3120,7 @@ index 755c02e..487b703 100644
          if (stream) {
              d->vp.ssl[v].ssl_seg += 1;
              cbo = 0;
-@@ -995,8 +1244,9 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
+@@ -995,8 +1257,9 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
              if (loop) {
                  cbo = lbo;
              } else {
@@ -3049,7 +3132,7 @@ index 755c02e..487b703 100644
              }
          }
      }
-@@ -1012,19 +1262,52 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
+@@ -1012,19 +1275,52 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
   * Preserve input/output rate and fractional position across VP frames.
   * ============================================================ */
  
@@ -3109,7 +3192,7 @@ index 755c02e..487b703 100644
      return 1;
  }
  
-@@ -1032,30 +1315,59 @@ static int voice_resample(MCPXAPUState *d, uint16_t v, float samples[][2],
+@@ -1032,30 +1328,59 @@ static int voice_resample(MCPXAPUState *d, uint16_t v, float samples[][2],
                            int requested_num, float rate)
  {
      MCPXAPUVoiceFilter *filter = &d->vp.filters[v];
@@ -3171,18 +3254,18 @@ index 755c02e..487b703 100644
          produced++;
 -        filter->resample_phase += 1.0 / rate;
 +        s.phase += step;
-     }
++    }
 +    if (s.tail && s.phase >= 1.0 && s.valid) {
 +        s.valid = 0;
 +        voice_resample_store(filter, &s);
 +        voice_off(d, v);
 +        return produced;
-+    }
+     }
 +    voice_resample_store(filter, &s);
      return produced;
  }
  
-@@ -1095,7 +1407,14 @@ static void voice_process(MCPXAPUState *d,
+@@ -1095,7 +1420,14 @@ static void voice_process(MCPXAPUState *d,
                                           NV_PAVS_VOICE_TAR_PITCH_LINK_PITCH);
      int8_t ps = (int8_t)voice_get_mask(d, v, NV_PAVS_VOICE_CFG_ENV0,
                                          NV_PAVS_VOICE_CFG_ENV0_EF_PITCHSCALE);
@@ -3198,7 +3281,7 @@ index 755c02e..487b703 100644
      dbg->rate = rate;
  
      /* Step amplitude envelope */
-@@ -1113,6 +1432,7 @@ static void voice_process(MCPXAPUState *d,
+@@ -1113,6 +1445,7 @@ static void voice_process(MCPXAPUState *d,
      bool multipass = voice_get_mask(d, v, NV_PAVS_VOICE_CFG_FMT,
                                      NV_PAVS_VOICE_CFG_FMT_MULTIPASS) != 0;
      dbg->multipass = multipass;
@@ -3206,7 +3289,7 @@ index 755c02e..487b703 100644
  
      if (multipass) {
          /* Read from multipass bin */
-@@ -1130,10 +1450,10 @@ static void voice_process(MCPXAPUState *d,
+@@ -1130,10 +1463,10 @@ static void voice_process(MCPXAPUState *d,
          }
      } else {
          int empty = 0;
@@ -3219,7 +3302,7 @@ index 755c02e..487b703 100644
              int count = voice_resample(d, v, &samples[sample_count],
                                         NUM_SAMPLES_PER_FRAME - sample_count, rate);
              if (count < 0) break;
-@@ -1148,7 +1468,9 @@ static void voice_process(MCPXAPUState *d,
+@@ -1148,7 +1481,9 @@ static void voice_process(MCPXAPUState *d,
  
      int active = voice_get_mask(d, v, NV_PAVS_VOICE_PAR_STATE,
                                  NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE);
@@ -3230,7 +3313,7 @@ index 755c02e..487b703 100644
  
      /* Get volume bins */
      int bin[8];
-@@ -1199,22 +1521,45 @@ static void voice_process(MCPXAPUState *d,
+@@ -1199,22 +1534,45 @@ static void voice_process(MCPXAPUState *d,
          lpf = stereo ? (fmode == 1) : (fmode & 1) != 0;
      }
      if (lpf) {
@@ -3279,7 +3362,7 @@ index 755c02e..487b703 100644
      }
  
      /* HRTF processing for 3D voices */
-@@ -1232,6 +1577,19 @@ static void voice_process(MCPXAPUState *d,
+@@ -1232,6 +1590,19 @@ static void voice_process(MCPXAPUState *d,
       * level as a step every 32 samples turned a voice whose volume the title
       * changes every frame into a buzz of
       * clicks at the frame rate. Ramp from the last frame's gain instead. */
@@ -3299,7 +3382,7 @@ index 755c02e..487b703 100644
      for (int b = 0; b < 8; b++) {
          float g = ea_value;
          float hr;
-@@ -1240,7 +1598,7 @@ static void voice_process(MCPXAPUState *d,
+@@ -1240,7 +1611,7 @@ static void voice_process(MCPXAPUState *d,
          } else {
              hr = (float)(1 << d->vp.submix_headroom[bin[b]]);
          }
@@ -3308,7 +3391,7 @@ index 755c02e..487b703 100644
          /* Bin channel follows xemu (b % channels). Splitting HRTF bins into
           * left/right ear pairs fed the GP crosstalk bins (MM3: 6 8 7 9)
           * distinct ears: gameplay went out of phase (L/R corr -0.73), +8 dB
-@@ -1249,24 +1607,82 @@ static void voice_process(MCPXAPUState *d,
+@@ -1249,24 +1620,82 @@ static void voice_process(MCPXAPUState *d,
          float g0 = s_gain_valid[v] ? s_gain_prev[v][b] : g;
          float step = (g - g0) / NUM_SAMPLES_PER_FRAME;
          s_gain_prev[v][b] = g;
@@ -3400,7 +3483,7 @@ index 755c02e..487b703 100644
          }
      }
  
-@@ -1279,13 +1695,134 @@ static void voice_process(MCPXAPUState *d,
+@@ -1279,13 +1708,134 @@ static void voice_process(MCPXAPUState *d,
   * Simplified single-threaded version (no worker threads initially)
   * ============================================================ */
  
@@ -3521,7 +3604,7 @@ index 755c02e..487b703 100644
                          float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
  {
 +    uint64_t walked[MCPX_HW_MAX_VOICES / 64] = { 0 };
-+    int active_voices = 0, idle_voices = 0, idle_pick = -1, idle_any = -1;
++    int active_voices = 0, idle_voices = 0;
 +
 +    /* Initialization and mixing can run on different host threads. Match the
 +     * current rounding mode once per frame, never once per bin/voice. */
@@ -3535,7 +3618,7 @@ index 755c02e..487b703 100644
          top = voice_list_regs[list].top;
          current = voice_list_regs[list].current;
          next = voice_list_regs[list].next;
-@@ -1293,31 +1830,119 @@ void mcpx_apu_vp_frame(MCPXAPUState *d,
+@@ -1293,31 +1843,106 @@ void mcpx_apu_vp_frame(MCPXAPUState *d,
          d->regs[current] = d->regs[top];
  
          for (int i = 0; d->regs[current] != 0xFFFF; i++) {
@@ -3592,21 +3675,18 @@ index 755c02e..487b703 100644
              if (!voice_get_mask(d, v, NV_PAVS_VOICE_PAR_STATE,
                                  NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE)) {
 -                fe_method(d, SE2FE_IDLE_VOICE, v);
-+                /* The front end can only be trapped on one voice at a time;
-+                 * the last idle voice of the walk is the one DirectSound
-+                 * hears about (see mcpx_apu_vp_flush_idle). A voice it keeps
-+                 * declining is passed over for a while so it cannot hide the
-+                 * rest. */
++                /* DirectSound hears about it after the frame, when the frame
++                 * thread reports each idle voice in turn (next_idle). One it
++                 * was told about and left in the list has been declined. */
 +                idle_voices++;
-+                idle_any = v;
-+                if (s_idle_skip[v]) {
-+                    s_idle_skip[v]--;
-+                } else {
-+                    idle_pick = v;
-+                    fe_method(d, SE2FE_IDLE_VOICE, v);
-+                }
++                if (s_idle_reported[v] && s_idle_declines[v] < UINT16_MAX)
++                    s_idle_declines[v]++;
++                s_idle_reported[v] = 0;
              } else {
 +                active_voices++;
++                s_idle_reported[v] = 0;
++                s_idle_declines[v] = 0;
++                s_idle_noted[v] = 0;
                  /* Process voice directly (single-threaded) */
                  voice_spin_lock(d, v);
 +                if (is_voice_locked(d, v)) voice_wait_unlocked(d, v);
@@ -3628,18 +3708,8 @@ index 755c02e..487b703 100644
 +            }
 +        }
 +        s_prev_nodes[list] = nodes;
-+    }
-+    if (idle_pick < 0 && idle_any >= 0) {
-+        /* Every idle voice is being passed over: report one anyway. */
-+        idle_pick = idle_any;
-+        fe_method(d, SE2FE_IDLE_VOICE, (uint32_t)idle_pick);
      }
-+    s_pending_idle = idle_pick;
-+    if (idle_pick < 0) {
-+        /* Nothing is idle: whatever was being reported has been taken out. */
-+        s_last_reported = -1;
-+        s_same_reports = 0;
-+    }
++    s_vp_frames++;
 +    g_apu_vp_active_voices = active_voices;
 +    g_apu_vp_idle_voices = idle_voices;
  
@@ -3661,59 +3731,219 @@ index 755c02e..487b703 100644
          src_float_to_short_array((float *)d->vp.sample_buf, isamp,
                                   NUM_SAMPLES_PER_FRAME * 2);
          int off = (d->ep_frame_div % 8) * NUM_SAMPLES_PER_FRAME;
-@@ -1330,14 +1955,70 @@ void mcpx_apu_vp_frame(MCPXAPUState *d,
+@@ -1330,14 +1955,230 @@ void mcpx_apu_vp_frame(MCPXAPUState *d,
      }
  }
  
-+/* Report the idle voice picked by the last frame to the front end again, so
-+ * that the decode registers hold it, and nothing a guest thread wrote since
-+ * the walk, when the interrupt arrives. The walk has already trapped the
-+ * front end (the trap state is visible to the guest for as long as it always
-+ * was). Called by the frame thread right before it raises the interrupt.
++/* The next idle voice the frame thread should report, or -1.
 + *
-+ * DirectSound's handler takes the voice out of the hardware list only when it
-+ * is the last voice of a client it still has linked, and not at all for a
-+ * stream that is meant to persist. On the console every idle voice gets its
-+ * own trap; here one is reported per frame, so a voice that is declined
-+ * every time would be reported every time and the idle voices before it in
-+ * the walk would never be heard of. After VP_IDLE_DECLINE_LIMIT reports in a
-+ * row it is passed over for VP_IDLE_DECLINE_SKIP frames. */
-+void mcpx_apu_vp_flush_idle(MCPXAPUState *d)
++ * On the console every idle voice the voice processor passes raises its own
++ * SE2FE_IDLE_VOICE, and the front end traps on each in turn, so DirectSound's
++ * interrupt handler hears about all of them. Its handler takes a voice out
++ * only when it may -- not a stream meant to persist, not while its buffer is
++ * busy (the count at +0x2BC of its device object) -- and declines the rest.
++ * Here the walk used to report one idle voice per frame: one that kept being
++ * declined was then reported on every frame, and every other finished voice
++ * waited behind it for good. Those were never freed, so sounds went silent one
++ * by one, the engine after a crash first, until the game had no voices left
++ * (and a mission whose end waits for its last line never ended).
++ *
++ * Now the frame thread reports every idle voice of the frame, one interrupt
++ * each, in list order (mcpx_apu_vp_report_idle). The lists are walked again
++ * for each report because the handler for the last one may have taken voices
++ * out; reported holds the voices already reported this frame. A voice
++ * declined VP_IDLE_PATIENCE times in a row is offered only every
++ * VP_IDLE_BACKOFF frames. */
++static int vp_next_idle(MCPXAPUState *d, const uint64_t reported[MCPX_HW_MAX_VOICES / 64])
 +{
-+    static int enabled = -1;
-+    int v = s_pending_idle;
++    uint64_t walked[MCPX_HW_MAX_VOICES / 64] = { 0 };
 +
-+    s_pending_idle = -1;
-+    /* An unproven suspect for the "engine and ambience go silent after several
-+     * collisions" report, so opt-in: MM3_APU_IDLE_TRAP_FIX=1. Off, nothing
-+     * below runs and the idle-voice reporting is exactly what it always was. */
-+    if (enabled < 0) {
-+        const char *e = getenv("MM3_APU_IDLE_TRAP_FIX");
-+        enabled = e && e[0] == '1' && !e[1];
-+        if (enabled) {
-+            fprintf(stderr, "[APU] idle-voice trap fix enabled (MM3_APU_IDLE_TRAP_FIX=1)\n");
-+            fflush(stderr);
-+        }
-+    }
-+    if (!enabled || v < 0)
-+        return;
-+    if (v == s_last_reported) {
-+        if (++s_same_reports >= VP_IDLE_DECLINE_LIMIT) {
-+            static unsigned noted;
-+            s_same_reports = 0;
-+            s_idle_skip[v] = VP_IDLE_DECLINE_SKIP;
-+            if (noted++ < 8) {
-+                fprintf(stderr, "[APU] idle voice %d reported %d times in a row without DirectSound"
-+                        " unlinking it; passing it over for %d frames\n",
-+                        v, VP_IDLE_DECLINE_LIMIT, VP_IDLE_DECLINE_SKIP);
-+                fflush(stderr);
++    voice_regs_forget();
++    for (int list = 0; list < 3; list++) {
++        uint32_t handle = d->regs[voice_list_regs[list].top];
++        for (int i = 0; handle != 0xFFFF && i < MCPX_HW_MAX_VOICES; i++) {
++            uint32_t link;
++            uint16_t v;
++
++            if (handle >= MCPX_HW_MAX_VOICES)
++                break;
++            v = (uint16_t)handle;
++            if (walked[v >> 6] & (1ULL << (v & 63)))
++                break;
++            walked[v >> 6] |= 1ULL << (v & 63);
++            link = voice_get_mask(d, v, NV_PAVS_VOICE_TAR_PITCH_LINK,
++                                  NV_PAVS_VOICE_TAR_PITCH_LINK_NEXT_VOICE_HANDLE);
++            if (link == v) {
++                /* Taken out but still reached, as in the frame's walk. */
++                link = s_next_seen[v] ? s_next_seen[v] - 1 : 0xFFFF;
++                if (link == v)
++                    link = 0xFFFF;
 +            }
++            if (!(reported[v >> 6] & (1ULL << (v & 63))) &&
++                !voice_get_mask(d, v, NV_PAVS_VOICE_PAR_STATE,
++                                NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE) &&
++                (s_idle_declines[v] < VP_IDLE_PATIENCE ||
++                 s_vp_frames % VP_IDLE_BACKOFF == 0))
++                return v;
++            handle = link;
 +        }
-+    } else {
-+        s_last_reported = v;
-+        s_same_reports = 1;
 +    }
-+    fe_method(d, SE2FE_IDLE_VOICE, (uint32_t)v);
++    return -1;
++}
++
++#define VP_IDLE_REPORTS_PER_FRAME 32
++
++/* After a frame, with d->lock held: trap the front end on each idle voice in
++ * turn and have interrupt() raise and deliver DirectSound's interrupt for it.
++ * Stops when the front end is not free to trap -- the title halted it, or the
++ * last trap was not delivered and waits for the next frame -- or when the
++ * title has not enabled idle-voice traps (FETFORCE1). Returns the reports. */
++int mcpx_apu_vp_report_idle(MCPXAPUState *d, void (*interrupt)(MCPXAPUState *d))
++{
++    uint64_t reported[MCPX_HW_MAX_VOICES / 64] = { 0 };
++    int reports = 0;
++
++    if (!g_apu_vp_idle_voices)
++        return 0;
++    while (reports < VP_IDLE_REPORTS_PER_FRAME) {
++        int v;
++
++        if ((qatomic_read(&d->regs[NV_PAPU_FECTL]) & NV_PAPU_FECTL_FEMETHMODE) !=
++            NV_PAPU_FECTL_FEMETHMODE_FREE_RUNNING)
++            break;
++        v = vp_next_idle(d, reported);
++        if (v < 0)
++            break;
++        reported[v >> 6] |= 1ULL << (v & 63);
++        if (!fe_method(d, SE2FE_IDLE_VOICE, (uint32_t)v))
++            break;
++        s_idle_reported[v] = 1;
++        reports++;
++        interrupt(d);
++    }
++    return reports;
++}
++
++/* Whether all 256 voice structures are mapped, which the voice check reads;
++ * the walks only ever touch linked ones. */
++static bool vp_voice_table_readable(MCPXAPUState *d)
++{
++#ifdef _WIN32
++    const size_t span = NV_PAVS_SIZE * MCPX_HW_MAX_VOICES;
++    uintptr_t start = (uintptr_t)mcpx_apu_phys(d->regs[NV_PAPU_VPVADDR]);
++    uintptr_t last = (uintptr_t)mcpx_apu_phys((uint64_t)d->regs[NV_PAPU_VPVADDR] + span - 1);
++    if (span > UINTPTR_MAX - start || last != start + span - 1)
++        return false;
++    for (uintptr_t cursor = start; cursor < start + span;) {
++        MEMORY_BASIC_INFORMATION region;
++        if (!VirtualQuery((const void *)cursor, &region, sizeof(region)) ||
++            region.State != MEM_COMMIT ||
++            (region.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
++            return false;
++        uintptr_t end = (uintptr_t)region.BaseAddress + region.RegionSize;
++        if (end <= cursor)
++            return false;
++        cursor = end;
++    }
++    return true;
++#else
++    (void)d;
++    return false;
++#endif
++}
++
++/* Once a second, from the frame thread with d->lock held. Says once per voice
++ * when a finished voice stays in its list for 2 s although DirectSound has
++ * been told (it keeps declining it), and when a voice is playing in no list,
++ * seen at two checks in a row: such a voice is never mixed and never
++ * finishes, so its sound is silent and its buffer never stops. Neither shows
++ * in a healthy run. */
++void mcpx_apu_vp_check_voices(MCPXAPUState *d, int64_t now_ms)
++{
++    static uint32_t table_base;
++    static bool table_readable;
++    static unsigned lines;
++    static const char *const names[3] = { "2D", "3D", "multipass" };
++    uint64_t listed[MCPX_HW_MAX_VOICES / 64] = { 0 };
++    uint8_t list_of[MCPX_HW_MAX_VOICES];
++
++    if (!d->regs[NV_PAPU_VPVADDR])
++        return;
++    if (table_base != d->regs[NV_PAPU_VPVADDR]) {
++        table_base = d->regs[NV_PAPU_VPVADDR];
++        table_readable = vp_voice_table_readable(d);
++    }
++    voice_regs_forget();
++    for (int list = 0; list < 3; list++) {
++        uint32_t handle = d->regs[voice_list_regs[list].top];
++        for (int i = 0; handle != 0xFFFF && i < MCPX_HW_MAX_VOICES; i++) {
++            uint32_t link;
++            uint16_t v;
++
++            if (handle >= MCPX_HW_MAX_VOICES)
++                break;
++            v = (uint16_t)handle;
++            if (listed[v >> 6] & (1ULL << (v & 63)))
++                break;
++            listed[v >> 6] |= 1ULL << (v & 63);
++            list_of[v] = (uint8_t)list;
++            link = voice_get_mask(d, v, NV_PAVS_VOICE_TAR_PITCH_LINK,
++                                  NV_PAVS_VOICE_TAR_PITCH_LINK_NEXT_VOICE_HANDLE);
++            if (link == v) {
++                link = s_next_seen[v] ? s_next_seen[v] - 1 : 0xFFFF;
++                if (link == v)
++                    link = 0xFFFF;
++            }
++            handle = link;
++        }
++    }
++    for (unsigned v = 0; v < MCPX_HW_MAX_VOICES; v++) {
++        bool in_list = (listed[v >> 6] & (1ULL << (v & 63))) != 0;
++
++        if (in_list && s_idle_declines[v] &&
++            !voice_get_mask(d, (uint16_t)v, NV_PAVS_VOICE_PAR_STATE,
++                            NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE)) {
++            if (!s_idle_since_ms[v]) {
++                s_idle_since_ms[v] = now_ms;
++            } else if (now_ms - s_idle_since_ms[v] >= 2000 && !s_idle_noted[v]) {
++                s_idle_noted[v] = 1;
++                if (lines < 16) {
++                    bool stream = voice_get_mask(d, (uint16_t)v, NV_PAVS_VOICE_CFG_FMT,
++                                                 NV_PAVS_VOICE_CFG_FMT_DATA_TYPE) != 0;
++                    bool persist = voice_get_mask(d, (uint16_t)v, NV_PAVS_VOICE_CFG_FMT,
++                                                  NV_PAVS_VOICE_CFG_FMT_PERSIST) != 0;
++                    lines++;
++                    fprintf(stderr, "[APU] voice %u (%s list) finished but has stayed in its list for"
++                            " %lld s; DirectSound was told %u times and left it there%s\n",
++                            v, names[list_of[v]], (long long)((now_ms - s_idle_since_ms[v]) / 1000),
++                            (unsigned)s_idle_declines[v],
++                            persist ? " (a stream meant to persist)" : stream ? " (a stream)" : "");
++                    fflush(stderr);
++                }
++            }
++        } else {
++            s_idle_since_ms[v] = 0;
++        }
++
++        if (!table_readable)
++            continue;
++        if (!in_list && voice_get_mask(d, (uint16_t)v, NV_PAVS_VOICE_PAR_STATE,
++                                       NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE)) {
++            if (s_lost_seen[v] && !s_lost_noted[v]) {
++                s_lost_noted[v] = 1;
++                if (lines < 16) {
++                    lines++;
++                    fprintf(stderr, "[APU] voice %u is playing but is in no voice list: it is never"
++                            " mixed and never finishes\n", v);
++                    fflush(stderr);
++                }
++            }
++            s_lost_seen[v] = 1;
++        } else {
++            s_lost_seen[v] = 0;
++            s_lost_noted[v] = 0;
++        }
++    }
 +}
 +
  /* ============================================================
@@ -3734,7 +3964,7 @@ index 755c02e..487b703 100644
  }
  
  void mcpx_apu_vp_finalize(MCPXAPUState *d)
-@@ -1355,5 +2036,13 @@ void mcpx_apu_vp_reset(MCPXAPUState *d)
+@@ -1355,5 +2196,16 @@ void mcpx_apu_vp_reset(MCPXAPUState *d)
      memset(d->vp.voice_locked, 0, sizeof(d->vp.voice_locked));
      for (int v = 0; v < MCPX_HW_MAX_VOICES; v++) {
          hrtf_filter_init(&d->vp.filters[v].hrtf);
@@ -3743,10 +3973,13 @@ index 755c02e..487b703 100644
 +    memset(s_gain_valid, 0, sizeof(s_gain_valid));
 +    memset(s_next_seen, 0, sizeof(s_next_seen));
 +    memset(s_self_noted, 0, sizeof(s_self_noted));
-+    memset(s_idle_skip, 0, sizeof(s_idle_skip));
 +    memset(s_prev_nodes, 0, sizeof(s_prev_nodes));
-+    s_pending_idle = s_last_reported = -1;
-+    s_same_reports = 0;
++    memset(s_idle_reported, 0, sizeof(s_idle_reported));
++    memset(s_idle_declines, 0, sizeof(s_idle_declines));
++    memset(s_idle_since_ms, 0, sizeof(s_idle_since_ms));
++    memset(s_idle_noted, 0, sizeof(s_idle_noted));
++    memset(s_lost_seen, 0, sizeof(s_lost_seen));
++    memset(s_lost_noted, 0, sizeof(s_lost_noted));
  }
 diff --git a/src/apu/apu_wait.h b/src/apu/apu_wait.h
 new file mode 100644
@@ -6379,7 +6612,7 @@ index 4779275135c47db7e6b37e514caaafa9bd8e6c5b..ad5669b9738d0ff889c09328c916a202
   * Get the state of a controller.
   * Port: 0-3 (Xbox controller ports)
 diff --git a/src/kernel/kernel.h b/src/kernel/kernel.h
-index b9a02bc41c7b5e30287d72d479e408fe270eeae3..6f76ddab50a819cb64a8535c4b87e0fe59c813d4 100644
+index b9a02bc..52a87dc 100644
 --- a/src/kernel/kernel.h
 +++ b/src/kernel/kernel.h
 @@ -124,6 +124,9 @@ enum {
@@ -6434,7 +6667,7 @@ index b9a02bc41c7b5e30287d72d479e408fe270eeae3..6f76ddab50a819cb64a8535c4b87e0fe
  NTSTATUS __stdcall xbox_NtCreateFile(
      PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
      PXBOX_OBJECT_ATTRIBUTES ObjectAttributes, PXBOX_IO_STATUS_BLOCK IoStatusBlock,
-@@ -793,6 +817,7 @@ KIRQL   __fastcall xbox_KfRaiseIrql(KIRQL NewIrql);
+@@ -793,9 +817,16 @@ KIRQL   __fastcall xbox_KfRaiseIrql(KIRQL NewIrql);
   * Device models ask before delivering an interrupt; raising IRQL masks the
   * line for the whole processor on hardware, not just for one thread. */
  int     xbox_IrqlBlocksInterrupts(void);
@@ -6442,6 +6675,15 @@ index b9a02bc41c7b5e30287d72d479e408fe270eeae3..6f76ddab50a819cb64a8535c4b87e0fe
  int     xbox_IrqlRaisedCount(void);
  int     xbox_IrqlEnterInterrupt(int level);     /* around host-run ISRs and DPCs */
  void    xbox_IrqlLeaveInterrupt(int saved);
++/* Run a device ISR the way the console's one processor would: not while a
++ * guest thread is at DISPATCH_LEVEL, except where that thread stalls in
++ * KeStallExecutionProcessor. Enter returns 1 with the gate held (call Leave
++ * after the routine) or 0 once timeout_us has passed without it. */
++int     xbox_IsrGateEnter(unsigned timeout_us);
++void    xbox_IsrGateLeave(void);
+ 
+ /* Total crossings of the DISPATCH boundary, and who is holding it up.
+  * A depth that is non-zero while this stops moving is stuck, not busy. */
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
 index ed7682a..17987db 100644
 --- a/src/kernel/kernel_bridge.c
@@ -9275,7 +9517,7 @@ index 0000000000000000000000000000000000000000..28e63027a859d73db1351c07e5b3ff53
 +}
 +#endif
 diff --git a/src/kernel/kernel_hal.c b/src/kernel/kernel_hal.c
-index 966bab801ff9eecc5c6ee83d1a45e5256983d296..476b41fef10d6494d8599a35afbf141e694792c7 100644
+index 966bab8..6f4f1f3 100644
 --- a/src/kernel/kernel_hal.c
 +++ b/src/kernel/kernel_hal.c
 @@ -40,6 +40,11 @@
@@ -9299,7 +9541,7 @@ index 966bab801ff9eecc5c6ee83d1a45e5256983d296..476b41fef10d6494d8599a35afbf141e
   *
   * Counting raised threads only lets a device model decline to *start* an
   * interrupt. The timer thread drained DPCs without even asking, and nothing
-@@ -177,17 +182,25 @@ void xbox_IrqlDumpHolders(void)
+@@ -177,17 +182,47 @@ void xbox_IrqlDumpHolders(void)
   * time calling a "callback" in freed heap -- and the writes into the freed
   * block surfaced later as a crash in HeapFree at the start of dice.bik.
   *
@@ -9320,16 +9562,38 @@ index 966bab801ff9eecc5c6ee83d1a45e5256983d296..476b41fef10d6494d8599a35afbf141e
 +static XBOX_THREAD_LOCAL int g_device_owned;
 +/* A host-run level-16 ISR entered from below DISPATCH without its lock. */
 +static XBOX_THREAD_LOCAL int g_isr_unlocked;
++
++/* An ISR delivered through xbox_IsrGateEnter, kept out of DISPATCH_LEVEL.
++ *
++ * Preempting DISPATCH_LEVEL on the console means the raised code stops
++ * between two instructions until the routine returns; here the routine runs
++ * on its device's thread beside it. DirectSound's routine takes a finished
++ * voice out of the lists only while the busy count at +0x2BC of its device
++ * object is zero, and the DISPATCH_LEVEL code holds that count while it edits
++ * the same lists and the voice-to-buffer map. On one processor that check
++ * cannot go stale; here a game thread raised right after it, and both edited
++ * the lists at once. A voice lost that way never plays and never finishes,
++ * which after crashes (many sounds started and stopped at once) took out the
++ * engine first and then, as such sounds piled up, every sound.
++ *
++ * A guest thread holds this gate from its raise to DISPATCH_LEVEL to its
++ * lower, except inside KeStallExecutionProcessor at exactly DISPATCH_LEVEL,
++ * which is how DirectSound waits for the hardware -- where the console takes
++ * the interrupt. Ordered DISPATCH -> gate -> device. */
++static CRITICAL_SECTION g_isr_gate;
++static XBOX_THREAD_LOCAL int g_isr_gate_dispatch; /* held for this thread's raise */
++static XBOX_THREAD_LOCAL int g_isr_gate_isr;      /* held around an ISR it delivers */
  
  static BOOL CALLBACK dispatch_lock_init(PINIT_ONCE o, PVOID p, PVOID *c)
  {
      (void)o; (void)p; (void)c;
      InitializeCriticalSection(&g_dispatch_lock);
 +    InitializeCriticalSection(&g_device_lock);
++    InitializeCriticalSection(&g_isr_gate);
      return TRUE;
  }
  
-@@ -195,16 +208,37 @@ static void irql_track(KIRQL old_level, KIRQL new_level, void *ra)
+@@ -195,16 +230,50 @@ static void irql_track(KIRQL old_level, KIRQL new_level, void *ra)
  {
      int was = (old_level >= DISPATCH_LEVEL);
      int now = (new_level >= DISPATCH_LEVEL);
@@ -9354,12 +9618,25 @@ index 966bab801ff9eecc5c6ee83d1a45e5256983d296..476b41fef10d6494d8599a35afbf141e
 +        LeaveCriticalSection(&g_device_lock);
 +    }
 +    if (g_dispatch_owned && !need_dispatch) {
++        if (g_isr_gate_dispatch) {
++            g_isr_gate_dispatch = 0;
++            LeaveCriticalSection(&g_isr_gate);
++        }
 +        g_dispatch_owned = 0;
          LeaveCriticalSection(&g_dispatch_lock);
 +    }
 +    if (need_dispatch && !g_dispatch_owned) {
++        /* A gated ISR that needs DISPATCH could wait here for a thread whose
++         * stall has ended and which now waits for the gate: give the gate up
++         * for the rest of that routine rather than deadlock. */
++        if (g_isr_gate_isr) {
++            g_isr_gate_isr = 0;
++            LeaveCriticalSection(&g_isr_gate);
++        }
 +        EnterCriticalSection(&g_dispatch_lock);
 +        g_dispatch_owned = 1;
++        EnterCriticalSection(&g_isr_gate);
++        g_isr_gate_dispatch = 1;
 +    }
 +    if (need_device && !g_device_owned) {
 +        EnterCriticalSection(&g_device_lock);
@@ -9371,7 +9648,7 @@ index 966bab801ff9eecc5c6ee83d1a45e5256983d296..476b41fef10d6494d8599a35afbf141e
  
      d = now ? InterlockedIncrement(&g_irql_raised_count)
              : InterlockedDecrement(&g_irql_raised_count);
-@@ -239,9 +273,21 @@ static void irql_track(KIRQL old_level, KIRQL new_level, void *ra)
+@@ -239,9 +308,21 @@ static void irql_track(KIRQL old_level, KIRQL new_level, void *ra)
   *
   * They also run the routine at the level it expects -- DISPATCH_LEVEL for a
   * DPC, the device level for an ISR -- and code checks: see irql_publish. */
@@ -9393,7 +9670,7 @@ index 966bab801ff9eecc5c6ee83d1a45e5256983d296..476b41fef10d6494d8599a35afbf141e
      if (g_current_irql != (KIRQL)level) {
          irql_track(g_current_irql, (KIRQL)level, IRQL_CALLER());
          g_current_irql = (KIRQL)level;
-@@ -252,11 +298,20 @@ int xbox_IrqlEnterInterrupt(int level)
+@@ -252,11 +333,57 @@ int xbox_IrqlEnterInterrupt(int level)
  
  void xbox_IrqlLeaveInterrupt(int saved)
  {
@@ -9409,15 +9686,77 @@ index 966bab801ff9eecc5c6ee83d1a45e5256983d296..476b41fef10d6494d8599a35afbf141e
 +    if ((saved & IRQL_DPC_LOCKED) && g_dispatch_owned) {
 +        /* Restore an unlocked ISR after a nested deferred-work scope. Device
 +         * exclusion was reacquired above; do not retain the DPC's lock. */
++        if (g_isr_gate_dispatch) {
++            g_isr_gate_dispatch = 0;
++            LeaveCriticalSection(&g_isr_gate);
++        }
 +        g_dispatch_owned = 0;
 +        LeaveCriticalSection(&g_dispatch_lock);
 +    }
 +    if (saved & IRQL_ISR_UNLOCKED)
 +        g_isr_unlocked--;
++}
++
++int xbox_IsrGateEnter(unsigned timeout_us)
++{
++    LARGE_INTEGER freq, start, now;
++    unsigned spins = 0;
++
++    InitOnceExecuteOnce(&g_dispatch_lock_once, dispatch_lock_init, NULL, NULL);
++    if (g_isr_gate_isr)
++        return 1;
++    if (!TryEnterCriticalSection(&g_isr_gate)) {
++        QueryPerformanceFrequency(&freq);
++        QueryPerformanceCounter(&start);
++        for (;;) {
++            if (++spins < 64) YieldProcessor();
++            else SwitchToThread();
++            if (TryEnterCriticalSection(&g_isr_gate))
++                break;
++            QueryPerformanceCounter(&now);
++            if ((now.QuadPart - start.QuadPart) * 1000000 / freq.QuadPart >= timeout_us)
++                return 0;
++        }
++    }
++    g_isr_gate_isr = 1;
++    return 1;
++}
++
++void xbox_IsrGateLeave(void)
++{
++    if (g_isr_gate_isr) {
++        g_isr_gate_isr = 0;
++        LeaveCriticalSection(&g_isr_gate);
++    }
  }
  
  /*
-@@ -609,10 +664,9 @@ VOID __stdcall xbox_HalDisableSystemInterrupt(ULONG BusInterruptLevel, KIRQL Irq
+@@ -434,6 +561,10 @@ VOID __stdcall xbox_KeQuerySystemTime(PLARGE_INTEGER CurrentTime)
+ VOID __stdcall xbox_KeStallExecutionProcessor(ULONG MicroSeconds)
+ {
+     LARGE_INTEGER freq, start, now;
++    /* The console takes interrupts during a DISPATCH_LEVEL stall: let a gated
++     * ISR in (see g_isr_gate). Not above DISPATCH, where the device lock is
++     * held and the line would be masked anyway. */
++    int open = g_isr_gate_dispatch && g_current_irql == DISPATCH_LEVEL;
+ 
+     if (MicroSeconds == 0)
+         return;
+@@ -443,9 +574,13 @@ VOID __stdcall xbox_KeStallExecutionProcessor(ULONG MicroSeconds)
+ 
+     LONGLONG target_counts = (freq.QuadPart * MicroSeconds) / 1000000;
+ 
++    if (open)
++        LeaveCriticalSection(&g_isr_gate);
+     do {
+         QueryPerformanceCounter(&now);
+     } while ((now.QuadPart - start.QuadPart) < target_counts);
++    if (open)
++        EnterCriticalSection(&g_isr_gate);
+ }
+ 
+ /* ============================================================================
+@@ -609,10 +744,9 @@ VOID __stdcall xbox_HalDisableSystemInterrupt(ULONG BusInterruptLevel, KIRQL Irq
  
  ULONG __stdcall xbox_HalGetInterruptVector(ULONG BusInterruptLevel, PKIRQL Irql)
  {
@@ -14317,7 +14656,7 @@ index bd00f3fc02f3bac594c79acae4f0bbd61bcc2b5d..789b98349803523702f480fe23ddfd2d
              }
          }
 diff --git a/src/video/fb_present.c b/src/video/fb_present.c
-index b80ba0cb2358965b6e5ac32c6ea7e42878d83422..292d9da1fa0a80f40dd8a9bf20738f135a9cb9aa 100644
+index b80ba0c..99a2b31 100644
 --- a/src/video/fb_present.c
 +++ b/src/video/fb_present.c
 @@ -25,13 +25,22 @@
@@ -14663,7 +15002,7 @@ index b80ba0cb2358965b6e5ac32c6ea7e42878d83422..292d9da1fa0a80f40dd8a9bf20738f13
          if ((w == VK_RETURN && (l & (1 << 29))) || w == VK_F11) {
              if (!(l & (1 << 30)))       /* not auto-repeat */
                  fb_toggle_fullscreen(h);
-@@ -400,13 +512,48 @@ static LRESULT CALLBACK fb_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
+@@ -400,34 +512,76 @@ static LRESULT CALLBACK fb_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
  
      case WM_KEYUP:
      case WM_SYSKEYUP:
@@ -14712,9 +15051,17 @@ index b80ba0cb2358965b6e5ac32c6ea7e42878d83422..292d9da1fa0a80f40dd8a9bf20738f13
          return 0;
      }
      return DefWindowProcA(h, m, w, l);
-@@ -420,6 +567,11 @@ static void fb_initial_size(int *w, int *h)
+ }
+ 
+ /* The initial client size: RECOMP_WINDOW_SIZE=WxH, else the display aspect
+- * at about two thirds of the work area's height. */
++ * at about two thirds of the target display's work area height. */
+ extern float nv2a_d3d_display_aspect(void);
+ 
+ static void fb_initial_size(int *w, int *h)
  {
      const char *e = getenv("RECOMP_WINDOW_SIZE");
++    MONITORINFO monitor = { sizeof monitor };
      RECT work;
 +    AcquireSRWLockShared(&s_display_lock);
 +    *w = s_display_width;
@@ -14723,13 +15070,26 @@ index b80ba0cb2358965b6e5ac32c6ea7e42878d83422..292d9da1fa0a80f40dd8a9bf20738f13
 +    if (*w && *h) return;
      if (e && sscanf(e, "%dx%d", w, h) == 2 && *w >= 64 && *h >= 48)
          return;
-     if (!SystemParametersInfoA(SPI_GETWORKAREA, 0, &work, 0) ||
-@@ -440,20 +592,27 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+-    if (!SystemParametersInfoA(SPI_GETWORKAREA, 0, &work, 0) ||
+-        work.bottom - work.top < 600) {
++    if (!GetMonitorInfoA(xbox_FramebufferTargetMonitor(), &monitor) ||
++        monitor.rcWork.bottom - monitor.rcWork.top < 600) {
+         *h = 720;
+         *w = (int)(720 * nv2a_d3d_display_aspect() + 0.5f);
+         return;
+     }
++    work = monitor.rcWork;
+     *h = (work.bottom - work.top) * 2 / 3;
+     *w = (int)(*h * nv2a_d3d_display_aspect() + 0.5f);
+     if (*w > work.right - work.left) {
+@@ -440,37 +594,73 @@ static DWORD WINAPI fb_thread(LPVOID unused)
  {
      HWND hwnd;
      RECT r;
 -    int cw, ch;
-+    int cw, ch, configured;
++    int cw, ch, configured, x = CW_USEDEFAULT, y = CW_USEDEFAULT;
++    const char *chosen = getenv("RECOMP_MONITOR");
++    MONITORINFOEXA target;
  
      (void)unused;
      /* Real pixels: without this a scaled desktop hands the swap chain a
@@ -14755,13 +15115,34 @@ index b80ba0cb2358965b6e5ac32c6ea7e42878d83422..292d9da1fa0a80f40dd8a9bf20738f13
      }
      fb_initial_size(&cw, &ch);
      r.left = 0; r.top = 0; r.right = cw; r.bottom = ch;
-@@ -467,9 +626,20 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
++    /* A display chosen by name (the launcher's Screen): open centred in its
++     * work area, so borderless fullscreen -- which fills the window's
++     * display -- fills that one too. Otherwise Windows places it. */
++    memset(&target, 0, sizeof target);
++    target.cbSize = sizeof target;
++    if (!GetMonitorInfoA(xbox_FramebufferTargetMonitor(), (MONITORINFO *)&target))
++        target.szDevice[0] = 0;
++    else if (chosen && *chosen && _stricmp(chosen, "primary")) {
++        x = target.rcWork.left + ((target.rcWork.right - target.rcWork.left) - (r.right - r.left)) / 2;
++        y = target.rcWork.top + ((target.rcWork.bottom - target.rcWork.top) - (r.bottom - r.top)) / 2;
++        if (x < target.rcWork.left) x = target.rcWork.left;
++        if (y < target.rcWork.top) y = target.rcWork.top;
++    }
+     hwnd = CreateWindowExA(0, "XboxRecompFramebuffer", "Xbox Recomp - Framebuffer",
+                            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+-                           CW_USEDEFAULT, CW_USEDEFAULT,
++                           x, y,
+                            r.right - r.left, r.bottom - r.top,
+                            NULL, NULL, GetModuleHandleA(NULL), NULL);
+     if (!hwnd) {
          InterlockedExchange(&s_fb_running, 0);
          return 0;
      }
 -    if (getenv("RECOMP_FULLSCREEN"))
 -        fb_toggle_fullscreen(hwnd);
 -    s_hwnd = hwnd;
+-    fprintf(stderr, "  [FBWIN] framebuffer window open (%dx%d client)\n", cw, ch);
 +    AcquireSRWLockShared(&s_display_lock);
 +    configured = s_display_width != 0;
 +    ReleaseSRWLockShared(&s_display_lock);
@@ -14776,10 +15157,14 @@ index b80ba0cb2358965b6e5ac32c6ea7e42878d83422..292d9da1fa0a80f40dd8a9bf20738f13
 +            AppendMenuA(menu, MF_STRING, FB_SETTINGS_COMMAND, "Display settings... (F10)");
 +        }
 +    }
-     fprintf(stderr, "  [FBWIN] framebuffer window open (%dx%d client)\n", cw, ch);
++    fprintf(stderr, "  [FBWIN] framebuffer window open (%dx%d client) on %s%s\n", cw, ch,
++            target.szDevice[0] ? target.szDevice : "the primary display",
++            chosen && *chosen && _stricmp(chosen, "primary") &&
++            _stricmp(chosen, target.szDevice) ? " (RECOMP_MONITOR names a display that is not connected)" : "");
  
      while (InterlockedCompareExchange(&s_fb_running, 1, 1)) {
-@@ -487,9 +657,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+         MSG msg;
+@@ -487,9 +677,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              if (now - t0 >= 1000) {
                  LONG f = s_flips;
                  wchar_t tb[128];
@@ -14795,7 +15180,7 @@ index b80ba0cb2358965b6e5ac32c6ea7e42878d83422..292d9da1fa0a80f40dd8a9bf20738f13
                  tb[127] = 0;
                  SetWindowTextW(hwnd, tb);
                  t0 = now; f0 = f;
-@@ -497,7 +670,7 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -497,7 +690,7 @@ static DWORD WINAPI fb_thread(LPVOID unused)
          }
      }
  
@@ -14804,7 +15189,7 @@ index b80ba0cb2358965b6e5ac32c6ea7e42878d83422..292d9da1fa0a80f40dd8a9bf20738f13
      DestroyWindow(hwnd);
      return 0;
  }
-@@ -518,6 +691,8 @@ void xbox_FramebufferWindowStart(void)
+@@ -518,6 +711,8 @@ void xbox_FramebufferWindowStart(void)
  }
  
  #else
@@ -14814,10 +15199,10 @@ index b80ba0cb2358965b6e5ac32c6ea7e42878d83422..292d9da1fa0a80f40dd8a9bf20738f13
  void xbox_FramebufferWindowPresent(uint32_t fb_va, uint32_t pitch) { (void)fb_va; (void)pitch; }
  void xbox_FramebufferWindowScanout(uint32_t fb_va, uint32_t pitch) { (void)fb_va; (void)pitch; }
 diff --git a/src/video/fb_present.h b/src/video/fb_present.h
-index 9676e027f86cad11724b9fffa6be7d9837e460d4..16d21d53ae5fe19938a2762a5b84ee58cccd41d2 100644
+index 9676e02..3d7a0b0 100644
 --- a/src/video/fb_present.h
 +++ b/src/video/fb_present.h
-@@ -12,8 +12,24 @@
+@@ -12,8 +12,58 @@
  #include <windows.h>
  /* The window to present into, or NULL until it exists. */
  HWND xbox_FramebufferWindowHandle(void);
@@ -14827,6 +15212,40 @@ index 9676e027f86cad11724b9fffa6be7d9837e460d4..16d21d53ae5fe19938a2762a5b84ee58
 +/* Register before window startup. F10 and the window system menu invoke this
 + * on the window message thread; the title may open its modal settings UI. */
 +void xbox_FramebufferSetSettingsHandler(void (*handler)(HWND));
++/* The display the window opens on: the one RECOMP_MONITOR names by its
++ * Windows device name (\\.\DISPLAY2), else -- unset, "primary", or not
++ * connected -- the primary display. Inline, so the renderer and its tests
++ * need none of the window code. */
++#include <stdlib.h>
++#include <string.h>
++typedef struct XboxMonitorSearch { const char *name; HMONITOR found; } XboxMonitorSearch;
++
++static __inline BOOL CALLBACK xbox_monitor_match(HMONITOR monitor, HDC dc, LPRECT rect, LPARAM data)
++{
++    XboxMonitorSearch *search = (XboxMonitorSearch *)data;
++    MONITORINFOEXA info;
++    (void)dc; (void)rect;
++    memset(&info, 0, sizeof info);
++    info.cbSize = sizeof info;
++    if (GetMonitorInfoA(monitor, (MONITORINFO *)&info) && !_stricmp(info.szDevice, search->name)) {
++        search->found = monitor;
++        return FALSE;
++    }
++    return TRUE;
++}
++
++static __inline HMONITOR xbox_FramebufferTargetMonitor(void)
++{
++    const char *name = getenv("RECOMP_MONITOR");
++    POINT origin = { 0, 0 };
++    if (name && *name && _stricmp(name, "primary")) {
++        XboxMonitorSearch search = { name, NULL };
++        EnumDisplayMonitors(NULL, NULL, xbox_monitor_match, (LPARAM)&search);
++        if (search.found)
++            return search.found;
++    }
++    return MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
++}
  #endif
  
 +/* Thread-safe host display controls. Valid sizes are 640..7680 x 480..4320.
@@ -16016,7 +16435,7 @@ index 0000000..ba782e5
 +#endif /* NV2A_BLACK_FRAME_LOGIC_ONLY */
 +#endif /* NV2A_BLACK_FRAME_H */
 diff --git a/src/video/nv2a_d3d11.c b/src/video/nv2a_d3d11.c
-index b9f3fa2..6a62c03 100644
+index b9f3fa2..a76a1c2 100644
 --- a/src/video/nv2a_d3d11.c
 +++ b/src/video/nv2a_d3d11.c
 @@ -19,9 +19,10 @@
@@ -16541,6 +16960,15 @@ index b9f3fa2..6a62c03 100644
      if (e && sscanf(e, "%f:%f", &w, &h) == 2 && h > 0 && w > 0) return clamp_aspect(w / h);
      if (e && sscanf(e, "%f", &w) == 1 && w > 0) return clamp_aspect(w);
      return 0;
+@@ -288,7 +614,7 @@ float nv2a_d3d_display_aspect(void)
+     {
+         /* No window yet (sizing it): the monitor it will open on. */
+         MONITORINFO mi = { sizeof mi };
+-        if (GetMonitorInfoA(MonitorFromWindow(NULL, MONITOR_DEFAULTTOPRIMARY), &mi) &&
++        if (GetMonitorInfoA(xbox_FramebufferTargetMonitor(), &mi) &&
+             mi.rcMonitor.bottom > mi.rcMonitor.top)
+             return clamp_aspect((float)(mi.rcMonitor.right - mi.rcMonitor.left) /
+                                 (float)(mi.rcMonitor.bottom - mi.rcMonitor.top));
 @@ -309,6 +635,7 @@ static ID3D11PixelShader  *s_y16_ps[2];      /* [msaa] */
  static ID3D11PixelShader  *s_y16d_ps[2];     /* [msaa], from a depth buffer */
  /* s_raw: the vertex-data ring ub_vs reads (raw view s_raw_srv) */
@@ -23863,7 +24291,7 @@ index 0000000..9dc9c00
 +}
 +#endif
 diff --git a/tests/dsp/CMakeLists.txt b/tests/dsp/CMakeLists.txt
-index 1e4ebc0..d4ca10d 100644
+index 1e4ebc0..789d0c4 100644
 --- a/tests/dsp/CMakeLists.txt
 +++ b/tests/dsp/CMakeLists.txt
 @@ -19,6 +19,10 @@ add_executable(dsp_disasm_test dsp_disasm_test.c)
@@ -23886,7 +24314,7 @@ index 1e4ebc0..d4ca10d 100644
      ../../src/apu/dsp/dsp_dma.c "${xemu_dsp}/interp/dsp_cpu.c")
    target_include_directories(dsp_xemu_frame_replay PRIVATE reference ../../src/apu/dsp "${xemu_dsp}")
    target_compile_definitions(dsp_xemu_frame_replay PRIVATE _CRT_SECURE_NO_WARNINGS)
-@@ -54,11 +58,144 @@ if(DSP_XEMU_REFERENCE_DIR)
+@@ -54,11 +58,148 @@ if(DSP_XEMU_REFERENCE_DIR)
      "-Doutput=${CMAKE_CURRENT_BINARY_DIR}/dma-results" -P "${CMAKE_CURRENT_SOURCE_DIR}/compare_dma.cmake")
  endif()
  if(WIN32)
@@ -23928,6 +24356,10 @@ index 1e4ebc0..d4ca10d 100644
 +  target_include_directories(vp_profile_test PRIVATE ../../src ../../src/apu)
 +  target_compile_definitions(vp_profile_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
 +  add_test(NAME vp_profile COMMAND vp_profile_test)
++  add_executable(vp_idle_report_test vp_idle_report_test.c)
++  target_include_directories(vp_idle_report_test PRIVATE ../../src ../../src/apu)
++  target_compile_definitions(vp_idle_report_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
++  add_test(NAME vp_idle_report COMMAND vp_idle_report_test)
 +  add_executable(vp_resampling_test vp_resampling_test.c)
 +  target_include_directories(vp_resampling_test PRIVATE ../../src ../../src/apu)
 +  target_compile_definitions(vp_resampling_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
@@ -24031,7 +24463,7 @@ index 1e4ebc0..d4ca10d 100644
    add_test(NAME dsp_frame_capture COMMAND "${CMAKE_COMMAND}" -E env
      "RECOMP_DSP_FRAME_DUMP=${CMAKE_CURRENT_BINARY_DIR}/test-frame" "$<TARGET_FILE:dsp_apu_test>")
    add_test(NAME dsp_capture_reset COMMAND "${CMAKE_COMMAND}" -E env
-@@ -97,3 +234,51 @@ add_test(NAME dsp_clipped_capture COMMAND "${CMAKE_COMMAND}" -E env
+@@ -97,3 +238,51 @@ add_test(NAME dsp_clipped_capture COMMAND "${CMAKE_COMMAND}" -E env
  set_tests_properties(dsp_clipped_capture PROPERTIES FIXTURES_SETUP clipped_frame)
  add_test(NAME dsp_clipped_replay COMMAND dsp_frame_replay "${CMAKE_CURRENT_BINARY_DIR}/clipped-frame.ep.frame.bin")
  set_tests_properties(dsp_clipped_replay PROPERTIES FIXTURES_REQUIRED clipped_frame)
@@ -26457,6 +26889,214 @@ index 0000000..c370c49
 +    free(d);
 +    return 0;
 +}
+diff --git a/tests/dsp/vp_idle_report_test.c b/tests/dsp/vp_idle_report_test.c
+new file mode 100644
+index 0000000..f4ee01c
+--- /dev/null
++++ b/tests/dsp/vp_idle_report_test.c
+@@ -0,0 +1,202 @@
++/* Execute the production idle-voice reports and voice check: every idle voice
++ * of a frame is offered to DirectSound in list order, one trap and interrupt
++ * each, even behind a voice it keeps declining; a declined voice backs off;
++ * the voice check names a finished voice left in its list and a playing voice
++ * in no list. */
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include "../../src/apu/apu_vp.c"
++#include "vp_test_wake.h"
++#define CHECK(c) do { if (!(c)) { fprintf(stderr,"VP idle report line %d: %s\n",__LINE__,#c); exit(1); } } while (0)
++struct McpxApuDebug g_dbg, g_dbg_cache;
++int g_dbg_voice_monitor = -1;
++uint64_t g_dbg_muted_voices[4];
++static uint8_t ram[0x20000];
++uint8_t *g_apu_ram_ptr = ram;
++uint8_t *mcpx_apu_phys(uint64_t address)
++{
++    CHECK(address < sizeof(ram));
++    return ram + address;
++}
++
++static MCPXAPUState *d;
++static float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME];
++static unsigned declined = 0xFFFF;
++static unsigned heard[64], heard_count;
++
++static unsigned link_of(unsigned v)
++{
++    return voice_get_mask(d, (uint16_t)v, NV_PAVS_VOICE_TAR_PITCH_LINK,
++                          NV_PAVS_VOICE_TAR_PITCH_LINK_NEXT_VOICE_HANDLE);
++}
++static void link_voice(unsigned v, unsigned next)
++{
++    voice_set_mask(d, (uint16_t)v, NV_PAVS_VOICE_TAR_PITCH_LINK,
++                   NV_PAVS_VOICE_TAR_PITCH_LINK_NEXT_VOICE_HANDLE, next);
++}
++static void set_active(unsigned v, unsigned on)
++{
++    voice_set_mask(d, (uint16_t)v, NV_PAVS_VOICE_PAR_STATE,
++                   NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE, on);
++}
++static void make_list(int list, const unsigned *voices, int count)
++{
++    d->regs[voice_list_regs[list].top] = count ? voices[0] : 0xFFFF;
++    for (int i = 0; i < count; i++)
++        link_voice(voices[i], i + 1 < count ? voices[i + 1] : 0xFFFF);
++}
++static int in_list(int list, unsigned v)
++{
++    unsigned h = d->regs[voice_list_regs[list].top];
++    for (int i = 0; h != 0xFFFF && i < 256; i++, h = link_of(h))
++        if (h == v) return 1;
++    return 0;
++}
++
++/* DirectSound's trap handler as far as these voices go (0x0027B6FB): read the
++ * trapped method and voice, take the voice out of its list -- predecessor's
++ * link or the list head, then the voice pointed at itself -- unless it is the
++ * one it declines, and acknowledge: HALTED, then FREE_RUNNING. */
++static void directsound_isr(MCPXAPUState *state)
++{
++    uint32_t v = state->regs[NV_PAPU_FEDECPARAM];
++    CHECK(state == d);
++    CHECK(state->regs[NV_PAPU_FEDECMETH] == SE2FE_IDLE_VOICE);
++    CHECK((state->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE) ==
++          NV_PAPU_FECTL_FEMETHMODE_TRAPPED);
++    CHECK(heard_count < 64);
++    heard[heard_count++] = v;
++    if (v != declined) {
++        for (int list = 0; list < 3; list++) {
++            unsigned top = voice_list_regs[list].top, h = state->regs[top], prev = 0xFFFF;
++            for (int i = 0; h != 0xFFFF && i < 256; i++, prev = h, h = link_of(h)) {
++                if (h != v) continue;
++                if (prev == 0xFFFF) state->regs[top] = link_of(v);
++                else link_voice(prev, link_of(v));
++                link_voice(v, v);
++                break;
++            }
++        }
++    }
++    apu_fe_write_mode(&state->fe_publication, &state->regs[NV_PAPU_FECTL],
++                      (state->regs[NV_PAPU_FECTL] & ~0x60u) | NV_PAPU_FECTL_FEMETHMODE_HALTED);
++    apu_fe_write_mode(&state->fe_publication, &state->regs[NV_PAPU_FECTL],
++                      state->regs[NV_PAPU_FECTL] & ~NV_PAPU_FECTL_FEMETHMODE);
++}
++
++static void undelivered_isr(MCPXAPUState *state)
++{
++    (void)state;
++    heard_count++;
++}
++
++int main(void)
++{
++    d = calloc(1, sizeof(*d));
++    CHECK(d);
++    d->regs[NV_PAPU_VPVADDR] = 0x10000;
++    d->regs[NV_PAPU_FETFORCE1] = NV_PAPU_FETFORCE1_SE2FE_IDLE_VOICE;
++    for (int l = 0; l < 3; l++) d->regs[voice_list_regs[l].top] = 0xFFFF;
++
++    /* One frame: a declined voice first, an active one, two finished ones
++     * behind them, and one in the 3D list. All four idle voices are heard,
++     * in list order; the declined one stays. One report per frame left the
++     * three behind the declined voice waiting for good. */
++    unsigned list0[] = { 70, 71, 72, 73 }, list1[] = { 74 };
++    make_list(0, list0, 4); make_list(1, list1, 1);
++    set_active(71, 1);
++    declined = 70;
++    g_apu_vp_idle_voices = 4;
++    CHECK(mcpx_apu_vp_report_idle(d, directsound_isr) == 4);
++    CHECK(heard_count == 4 && heard[0] == 70 && heard[1] == 72 && heard[2] == 73 && heard[3] == 74);
++    CHECK(in_list(0, 70) && in_list(0, 71) && !in_list(0, 72) && !in_list(0, 73) && !in_list(1, 74));
++    CHECK(link_of(70) == 71 && link_of(71) == 0xFFFF && d->regs[voice_list_regs[1].top] == 0xFFFF);
++    CHECK((d->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE) == NV_PAPU_FECTL_FEMETHMODE_FREE_RUNNING);
++
++    /* Nothing idle last frame: nothing is walked or reported. */
++    heard_count = 0;
++    g_apu_vp_idle_voices = 0;
++    CHECK(mcpx_apu_vp_report_idle(d, directsound_isr) == 0 && heard_count == 0);
++
++    /* A trap that was not delivered waits for the next frame: one report,
++     * then the front end is still trapped and nothing more is offered. */
++    g_apu_vp_idle_voices = 1;
++    CHECK(mcpx_apu_vp_report_idle(d, undelivered_isr) == 1 && heard_count == 1);
++    CHECK((d->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE) == NV_PAPU_FECTL_FEMETHMODE_TRAPPED);
++    CHECK(mcpx_apu_vp_report_idle(d, directsound_isr) == 0 && heard_count == 1);
++    apu_fe_write_mode(&d->fe_publication, &d->regs[NV_PAPU_FECTL], 0);
++
++    /* The title halted the front end: no trap. */
++    apu_fe_write_mode(&d->fe_publication, &d->regs[NV_PAPU_FECTL], NV_PAPU_FECTL_FEMETHMODE_HALTED);
++    CHECK(mcpx_apu_vp_report_idle(d, directsound_isr) == 0);
++    apu_fe_write_mode(&d->fe_publication, &d->regs[NV_PAPU_FECTL], 0);
++
++    /* Idle-voice traps not enabled: no report. */
++    d->regs[NV_PAPU_FETFORCE1] = 0;
++    CHECK(mcpx_apu_vp_report_idle(d, directsound_isr) == 0);
++    CHECK((d->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE) == NV_PAPU_FECTL_FEMETHMODE_FREE_RUNNING);
++    d->regs[NV_PAPU_FETFORCE1] = NV_PAPU_FETFORCE1_SE2FE_IDLE_VOICE;
++
++    /* Backoff, through the production walk: voice 70 alone and declined each
++     * time. Offered on each of the first VP_IDLE_PATIENCE frames, then on
++     * every VP_IDLE_BACKOFF-th frame only. */
++    mcpx_apu_vp_reset(d);
++    s_vp_frames = 0;
++    unsigned only70[] = { 70 };
++    make_list(0, only70, 1); make_list(1, NULL, 0);
++    set_active(71, 0);
++    int offered[48] = { 0 };
++    for (int f = 1; f <= 40; f++) {
++        heard_count = 0;
++        mcpx_apu_vp_frame(d, mixbins);
++        CHECK(g_apu_vp_idle_voices == 1 && g_apu_vp_active_voices == 0);
++        offered[f] = mcpx_apu_vp_report_idle(d, directsound_isr);
++        CHECK(offered[f] == (int)heard_count);
++    }
++    for (int f = 1; f <= 16; f++) CHECK(offered[f] == 1);
++    for (int f = 17; f <= 40; f++) CHECK(offered[f] == (f % VP_IDLE_BACKOFF == 0));
++    CHECK(s_idle_declines[70] >= VP_IDLE_PATIENCE);
++
++    /* Seen playing again: the backoff is forgotten. */
++    set_active(70, 1);
++    voice_set_mask(d, 70, NV_PAVS_VOICE_PAR_STATE, NV_PAVS_VOICE_PAR_STATE_PAUSED, 1);
++    mcpx_apu_vp_frame(d, mixbins);
++    CHECK(g_apu_vp_active_voices == 1 && g_apu_vp_idle_voices == 0);
++    CHECK(s_idle_declines[70] == 0 && !s_idle_reported[70]);
++    set_active(70, 0);
++
++    /* The voice check. Voice 70, finished and declined, is said once after
++     * 2 s; voice 80, playing in no list, on the second check in a row. */
++    for (int f = 0; f < 3; f++) {
++        mcpx_apu_vp_frame(d, mixbins);
++        mcpx_apu_vp_report_idle(d, directsound_isr);
++    }
++    CHECK(s_idle_declines[70] > 0);
++    set_active(80, 1);
++    voice_set_mask(d, 80, NV_PAVS_VOICE_PAR_STATE, NV_PAVS_VOICE_PAR_STATE_PAUSED, 1);
++    mcpx_apu_vp_check_voices(d, 10000);
++    CHECK(!s_idle_noted[70] && s_idle_since_ms[70] == 10000);
++    CHECK(s_lost_seen[80] && !s_lost_noted[80]);
++    mcpx_apu_vp_check_voices(d, 11000);
++    CHECK(!s_idle_noted[70] && s_lost_noted[80]);
++    mcpx_apu_vp_check_voices(d, 12000);
++    CHECK(s_idle_noted[70]);
++    /* Back in a list: no longer lost, and said again if it is lost again. */
++    unsigned list2[] = { 80 };
++    make_list(2, list2, 1);
++    mcpx_apu_vp_check_voices(d, 13000);
++    CHECK(!s_lost_seen[80] && !s_lost_noted[80]);
++    /* Taken out by DirectSound: its time in the list starts over. */
++    declined = 0xFFFF;
++    mcpx_apu_vp_frame(d, mixbins);
++    mcpx_apu_vp_report_idle(d, directsound_isr);
++    CHECK(!in_list(0, 70));
++    mcpx_apu_vp_check_voices(d, 14000);
++    CHECK(s_idle_since_ms[70] == 0);
++
++    free(d);
++    puts("VP idle reports: every idle voice in list order/declined stays/undelivered waits/halted/disabled/backoff/reset/voice check PASS");
++    return 0;
++}
 diff --git a/tests/dsp/vp_monitor_mix_test.c b/tests/dsp/vp_monitor_mix_test.c
 new file mode 100644
 index 0000000..a03126f
@@ -27371,10 +28011,10 @@ index 0000000000000000000000000000000000000000..d0c6d7db5a35820ac832fcdd829373f9
 +    return 0;
 +}
 diff --git a/tests/kernel_dispatch/CMakeLists.txt b/tests/kernel_dispatch/CMakeLists.txt
-index a8e9688..42f2fb5 100644
+index a8e9688..e7cb402 100644
 --- a/tests/kernel_dispatch/CMakeLists.txt
 +++ b/tests/kernel_dispatch/CMakeLists.txt
-@@ -7,5 +7,161 @@ add_subdirectory(../.. xboxrecomp)
+@@ -7,5 +7,169 @@ add_subdirectory(../.. xboxrecomp)
  add_executable(kernel-dispatch-thread-test kernel_dispatch_thread_test.c)
  target_include_directories(kernel-dispatch-thread-test PRIVATE ../../src/kernel)
  target_link_libraries(kernel-dispatch-thread-test PRIVATE xboxrecomp)
@@ -27527,6 +28167,14 @@ index a8e9688..42f2fb5 100644
 +foreach(case early late cancel negative scope invalid reuse capacity concurrent)
 +    add_test(NAME kernel-inline-event-callers-${case} COMMAND kernel-inline-event-callers-test ${case})
 +    set_tests_properties(kernel-inline-event-callers-${case} PROPERTIES TIMEOUT 10)
++endforeach()
++
++add_executable(kernel-isr-gate-test kernel_isr_gate_test.c)
++target_include_directories(kernel-isr-gate-test PRIVATE ../../src/kernel)
++target_link_libraries(kernel-isr-gate-test PRIVATE xboxrecomp)
++foreach(case passive dispatch stall device_stall timeout isr_needs_dispatch)
++    add_test(NAME kernel-isr-gate-${case} COMMAND kernel-isr-gate-test ${case})
++    set_tests_properties(kernel-isr-gate-${case} PROPERTIES TIMEOUT 10)
 +endforeach()
 +
 +add_executable(kernel-interrupt-preemption-test kernel_interrupt_preemption_test.c)
@@ -31073,6 +31721,186 @@ index 0000000000000000000000000000000000000000..9dc93531041899a2e383739e02028247
 +    CHECK(VirtualFree(memory, 0, MEM_RELEASE));
 +    printf("PASS: interrupt synchronization %s; callback arguments, result "
 +           "and stack preserved\n", exclusion_mode ? "exclusion" : "IRQL");
++    return 0;
++}
+diff --git a/tests/kernel_dispatch/kernel_isr_gate_test.c b/tests/kernel_dispatch/kernel_isr_gate_test.c
+new file mode 100644
+index 0000000..896270e
+--- /dev/null
++++ b/tests/kernel_dispatch/kernel_isr_gate_test.c
+@@ -0,0 +1,174 @@
++/* The gated ISR path (xbox_IsrGateEnter): kept out while a guest thread runs
++ * at DISPATCH_LEVEL, let in while that thread stalls at exactly
++ * DISPATCH_LEVEL, never while it stalls at a device level, bounded by its
++ * timeout, free at PASSIVE_LEVEL, and never deadlocked by an ISR that itself
++ * needs DISPATCH_LEVEL while the stalled thread waits for the gate. */
++#include "../../src/kernel/kernel_bridge.c"
++
++#define CHECK(c) do { if (!(c)) { \
++    fprintf(stderr, "ISR gate line %d: %s\n", __LINE__, #c); \
++    ExitProcess(1); \
++} } while (0)
++
++recomp_func_t recomp_lookup(uint32_t address)
++{
++    (void)address;
++    return NULL;
++}
++recomp_func_t recomp_lookup_manual(uint32_t address)
++{
++    (void)address;
++    return NULL;
++}
++
++static HANDLE go, entered, left;
++static volatile LONG gate_result = -1;
++static unsigned worker_timeout_us, worker_hold_ms;
++static int worker_raises;
++static LARGE_INTEGER entered_at, left_at;
++
++static double ms_between(LARGE_INTEGER a, LARGE_INTEGER b)
++{
++    LARGE_INTEGER f;
++    QueryPerformanceFrequency(&f);
++    return (double)(b.QuadPart - a.QuadPart) * 1000.0 / (double)f.QuadPart;
++}
++
++static DWORD WINAPI isr_worker(LPVOID unused)
++{
++    (void)unused;
++    g_esp = 0x80000;
++    g_fs_base = 0x18000;
++    CHECK(WaitForSingleObject(go, 5000) == WAIT_OBJECT_0);
++    gate_result = xbox_IsrGateEnter(worker_timeout_us);
++    QueryPerformanceCounter(&entered_at);
++    CHECK(SetEvent(entered));
++    if (gate_result) {
++        if (worker_raises) {
++            /* An ISR that needs DISPATCH_LEVEL gives the gate up first. */
++            int saved = xbox_IrqlEnterInterrupt(16);
++            xbox_KfLowerIrql(DISPATCH_LEVEL);
++            CHECK(xbox_KfRaiseIrql(16) == DISPATCH_LEVEL);
++            xbox_IrqlLeaveInterrupt(saved);
++        }
++        Sleep(worker_hold_ms);
++        QueryPerformanceCounter(&left_at);
++        xbox_IsrGateLeave();
++    }
++    CHECK(SetEvent(left));
++    return 0;
++}
++
++static HANDLE start(unsigned timeout_us, unsigned hold_ms, int raises)
++{
++    HANDLE thread;
++    worker_timeout_us = timeout_us;
++    worker_hold_ms = hold_ms;
++    worker_raises = raises;
++    gate_result = -1;
++    CHECK(ResetEvent(go) && ResetEvent(entered) && ResetEvent(left));
++    thread = CreateThread(NULL, 0, isr_worker, NULL, 0, NULL);
++    CHECK(thread);
++    return thread;
++}
++
++static void join(HANDLE thread)
++{
++    CHECK(WaitForSingleObject(thread, 5000) == WAIT_OBJECT_0);
++    CHECK(CloseHandle(thread));
++}
++
++int main(int argc, char **argv)
++{
++    HANDLE thread;
++    LARGE_INTEGER stall_begin, stall_end;
++    KIRQL old;
++    CHECK(argc == 2);
++    {
++        uint8_t *memory = VirtualAlloc(NULL, 16 * 1024 * 1024,
++                                       MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
++        CHECK(memory);
++        g_xbox_mem_offset = (ptrdiff_t)memory;
++    }
++    g_esp = 0x30000;
++    g_fs_base = 0x10000;
++    go = CreateEventW(NULL, TRUE, FALSE, NULL);
++    entered = CreateEventW(NULL, TRUE, FALSE, NULL);
++    left = CreateEventW(NULL, TRUE, FALSE, NULL);
++    CHECK(go && entered && left);
++
++    if (!strcmp(argv[1], "passive")) {
++        thread = start(1000000, 0, 0);
++        CHECK(SetEvent(go));
++        CHECK(WaitForSingleObject(entered, 1000) == WAIT_OBJECT_0 && gate_result == 1);
++        join(thread);
++    } else if (!strcmp(argv[1], "dispatch")) {
++        /* Raised and running: kept out until the lower. */
++        old = xbox_KfRaiseIrql(DISPATCH_LEVEL);
++        thread = start(3000000, 0, 0);
++        CHECK(SetEvent(go));
++        CHECK(WaitForSingleObject(entered, 150) == WAIT_TIMEOUT);
++        xbox_KfLowerIrql(old);
++        CHECK(WaitForSingleObject(entered, 1000) == WAIT_OBJECT_0 && gate_result == 1);
++        join(thread);
++    } else if (!strcmp(argv[1], "stall")) {
++        /* Stalled at DISPATCH_LEVEL: let in during the stall, and the stall
++         * does not return until the routine has left. */
++        old = xbox_KfRaiseIrql(DISPATCH_LEVEL);
++        thread = start(3000000, 250, 0);
++        CHECK(SetEvent(go));
++        QueryPerformanceCounter(&stall_begin);
++        xbox_KeStallExecutionProcessor(150000);
++        QueryPerformanceCounter(&stall_end);
++        CHECK(gate_result == 1);
++        CHECK(ms_between(stall_begin, entered_at) < 150.0);
++        CHECK(ms_between(left_at, stall_end) >= 0.0);
++        CHECK(ms_between(stall_begin, stall_end) >= 250.0);
++        xbox_KfLowerIrql(old);
++        join(thread);
++    } else if (!strcmp(argv[1], "device_stall")) {
++        /* Stalled above DISPATCH_LEVEL: the line is masked; the gate stays shut
++         * and the routine's wait ends at its timeout. */
++        old = xbox_KfRaiseIrql(DISPATCH_LEVEL);
++        CHECK(xbox_KfRaiseIrql(16) == DISPATCH_LEVEL);
++        thread = start(30000, 0, 0);
++        CHECK(SetEvent(go));
++        xbox_KeStallExecutionProcessor(150000);
++        CHECK(WaitForSingleObject(entered, 1000) == WAIT_OBJECT_0 && gate_result == 0);
++        xbox_KfLowerIrql(DISPATCH_LEVEL);
++        xbox_KfLowerIrql(old);
++        join(thread);
++    } else if (!strcmp(argv[1], "timeout")) {
++        /* A thread that stays raised only delays the routine. */
++        LARGE_INTEGER t0;
++        old = xbox_KfRaiseIrql(DISPATCH_LEVEL);
++        thread = start(20000, 0, 0);
++        QueryPerformanceCounter(&t0);
++        CHECK(SetEvent(go));
++        CHECK(WaitForSingleObject(entered, 2000) == WAIT_OBJECT_0 && gate_result == 0);
++        CHECK(ms_between(t0, entered_at) >= 19.0);
++        xbox_KfLowerIrql(old);
++        join(thread);
++        /* Nothing left held: the next one gets straight in. */
++        thread = start(1000000, 0, 0);
++        CHECK(SetEvent(go));
++        CHECK(WaitForSingleObject(entered, 1000) == WAIT_OBJECT_0 && gate_result == 1);
++        join(thread);
++    } else if (!strcmp(argv[1], "isr_needs_dispatch")) {
++        /* The routine raises to DISPATCH_LEVEL while this thread, holding it,
++         * stalls; the stall ends and wants the gate back. The routine gives
++         * the gate up before waiting, so both finish. */
++        old = xbox_KfRaiseIrql(DISPATCH_LEVEL);
++        thread = start(3000000, 0, 1);
++        CHECK(SetEvent(go));
++        xbox_KeStallExecutionProcessor(100000);
++        CHECK(gate_result == 1);
++        xbox_KfLowerIrql(old);
++        CHECK(WaitForSingleObject(left, 3000) == WAIT_OBJECT_0);
++        join(thread);
++    } else {
++        CHECK(!"unknown case");
++    }
++    printf("PASS: ISR gate %s\n", argv[1]);
 +    return 0;
 +}
 diff --git a/tests/kernel_dispatch/kernel_log_test.c b/tests/kernel_dispatch/kernel_log_test.c
