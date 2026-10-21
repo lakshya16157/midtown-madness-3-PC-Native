@@ -63,6 +63,12 @@ static inline const char *mm3_apply_performance_defaults(const char *name)
         return "RECOMP_ANISO";
     if (mm3_performance_default("RECOMP_FPS_LIMIT", profile->fps_limit))
         return "RECOMP_FPS_LIMIT";
+    if (mm3_performance_default("RECOMP_READBACK_FENCE", "1"))
+        return "RECOMP_READBACK_FENCE";
+    if (mm3_performance_default("RECOMP_AUDIO_HIRES_WAIT", "1"))
+        return "RECOMP_AUDIO_HIRES_WAIT";
+    if (mm3_performance_default("RECOMP_AUDIO_DSP_HANDOFF", "1"))
+        return "RECOMP_AUDIO_DSP_HANDOFF";
     if (mm3_performance_default("RECOMP_BUFFERED_ASSET_READS", "1"))
         return "RECOMP_BUFFERED_ASSET_READS";
     return NULL;

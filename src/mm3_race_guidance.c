@@ -8,18 +8,24 @@ extern int mm3_minimap_origin(uint32_t, float *);
 extern int mm3_minimap_heading(uint32_t, float *);
 
 /* 201BCA publishes the native race's remaining ordered checkpoint list and
- * selected Undercover objective once per player HUD update. Copy positions
+ * the visible Undercover stops once per player HUD update. Copy positions
  * and identities; never dereference a saved guest object. */
 enum { RACE_PLAYERS = 2, RACE_CHECKPOINTS = 128 };
 typedef struct { float x, y, z; } RoadPoint;
 typedef struct { uint32_t object; RoadPoint position; } RaceCheckpoint;
+/* An Undercover stop the native HUD is showing. Its collection and class
+ * identify the stops that share the selected target's course. */
+typedef struct { uint32_t object, kind, list; RoadPoint position; } RaceObjective;
+enum { ORDER_SINGLE, ORDER_FORWARD, ORDER_REVERSE };
 static struct {
     RaceCheckpoint checkpoints[RACE_CHECKPOINTS];
-    RoadPoint origin;
-    uint32_t current_object;
-    unsigned count, current, valid, objective;
+    RaceObjective objectives[RACE_CHECKPOINTS];
+    RoadPoint origin, objective_origin;
+    uint32_t current_object, objective_current;
+    unsigned count, current, valid, objective, objective_count, order;
 } s_race[RACE_PLAYERS];
 static uint32_t s_reported_objective[RACE_PLAYERS];
+static unsigned s_reported_targets[RACE_PLAYERS], s_reported_order[RACE_PLAYERS];
 
 enum { ROAD_NODES = 65536, ROAD_EDGES = 262144, COURSE_POINTS = 16384,
        ACTIVE_POINTS = 4096, NO_NODE = UINT32_MAX };
@@ -960,6 +966,8 @@ void mm3_race_guidance_begin(uint32_t player)
         s_race[player].count = s_race[player].valid = 0;
         s_race[player].objective = 0;
         s_race[player].current_object = 0;
+        s_race[player].objective_count = 0;
+        s_race[player].objective_current = 0;
         /* Both retail Blitz and Checkpoint scripts finish at total_targets.
          * A repeated start gate is explicit in the list, never inferred from
          * event mode or from the first gate in a shrinking pending list. */
@@ -991,37 +999,98 @@ void mm3_race_guidance_checkpoint(uint32_t player, uint32_t object,
 
 void mm3_race_guidance_target(uint32_t player, uint32_t object,
                               uint32_t position, uint32_t origin,
-                              uint32_t current)
+                              uint32_t current, uint32_t list)
 {
-    unsigned i;
+    unsigned i, count;
     RoadPoint point, player_origin;
-    if (player >= RACE_PLAYERS || !current || object != current || !position || !origin) return;
-    /* +EC/+F0 are unordered objectives, including Undercover pickup/drop-off
-     * zones. Route only to the native selected target; connecting every zone
-     * would expose future scripted stops and invent a course ordering. */
+    if (player >= RACE_PLAYERS || !current || !object || !position || !origin) return;
+    /* +EC/+F0 publish every Undercover stop the HUD is showing, including
+     * pickup/drop-off zones. Only visible stops reach this call, so collecting
+     * them never exposes a stop the player cannot already see. The end of the
+     * update decides which of them belong to the selected target's course. */
     for (i = 0; i < s_race[player].count; ++i)
         if (s_race[player].checkpoints[i].object == object) return;
+    count = s_race[player].objective_count;
+    for (i = 0; i < count; ++i)
+        if (s_race[player].objectives[i].object == object) return;
+    if (count >= RACE_CHECKPOINTS) return;
     point = road_control(position, 0); player_origin = road_control(origin, 0);
     if (!road_point_valid(point) || !road_point_valid(player_origin)) return;
+    s_race[player].objectives[count].object = object;
+    s_race[player].objectives[count].kind = MEM32(object);
+    s_race[player].objectives[count].list = list;
+    s_race[player].objectives[count].position = point;
+    s_race[player].objective_origin = player_origin;
+    s_race[player].objective_current = current;
+    s_race[player].objective_count = count + 1;
+}
+
+static void race_objective_add(unsigned player, const RaceObjective *stop)
+{
+    unsigned count = s_race[player].count;
+    s_race[player].checkpoints[count].object = stop->object;
+    s_race[player].checkpoints[count].position = stop->position;
+    s_race[player].count = count + 1;
+}
+
+/* Missions such as the paper routes show every zone at once and point the
+ * arrow at the lowest unvisited one; visited zones are hidden. The native
+ * collection is therefore in mission order (or exactly reversed) whenever the
+ * selected target sits at one end of its visible stops, and the course runs
+ * from the target through the others. A target in the middle gives no sign of
+ * the ordering, so it keeps the single-stop route. Hidden or unselected
+ * stops, and stops of another collection or class, never join the course. */
+static void race_objective_course(unsigned player)
+{
+    unsigned i, count = 0, selected = 0, order = ORDER_SINGLE;
+    unsigned group[RACE_CHECKPOINTS];
+    const RaceObjective *stops = s_race[player].objectives;
+    const RaceObjective *current = 0;
+    for (i = 0; i < s_race[player].objective_count; ++i)
+        if (stops[i].object == s_race[player].objective_current) { current = stops + i; break; }
+    if (!current) return;
+    for (i = 0; i < s_race[player].objective_count; ++i)
+        if (stops[i].kind == current->kind && stops[i].list == current->list) {
+            if (stops + i == current) selected = count;
+            group[count++] = i;
+        }
+    if (count > 1 && selected == 0) order = ORDER_FORWARD;
+    else if (count > 1 && selected == count - 1) order = ORDER_REVERSE;
     s_race[player].count = 0;
-    mm3_race_guidance_checkpoint(player, object, position, origin, current);
+    if (order == ORDER_FORWARD)
+        for (i = 0; i < count; ++i) race_objective_add(player, stops + group[i]);
+    else if (order == ORDER_REVERSE)
+        for (i = count; i-- > 0;) race_objective_add(player, stops + group[i]);
+    else race_objective_add(player, current);
+    s_race[player].origin = s_race[player].objective_origin;
+    s_race[player].current_object = s_race[player].objective_current;
     s_race[player].objective = 1;
+    s_race[player].order = order;
 }
 
 void mm3_race_guidance_end(uint32_t player)
 {
     unsigned i;
     if (player >= RACE_PLAYERS) return;
+    race_objective_course(player);
     /* A race may temporarily have no current target, including its finish
      * state. The course still exists and must continue drawing. */
     s_race[player].current = s_race[player].count;
     /* Native 20DA6F removes each passed gate from this list. The final
      * singleton still needs a car-to-checkpoint path. */
     s_race[player].valid = s_race[player].count > 0;
-    if (s_reported_objective[player] != (s_race[player].objective ? s_race[player].current_object : 0)) {
-        s_reported_objective[player] = s_race[player].objective ? s_race[player].current_object : 0;
-        fprintf(stderr, "[RACE_ROUTE] player=%u objective=%08X targets=%u\n",
-                player, s_reported_objective[player], s_race[player].count);
+    {
+        uint32_t objective = s_race[player].objective ? s_race[player].current_object : 0;
+        unsigned targets = objective ? s_race[player].count : 0;
+        unsigned order = objective ? s_race[player].order : ORDER_SINGLE;
+        if (s_reported_objective[player] != objective ||
+            (objective && (s_reported_targets[player] != targets || s_reported_order[player] != order))) {
+            s_reported_objective[player] = objective;
+            s_reported_targets[player] = targets; s_reported_order[player] = order;
+            fprintf(stderr, "[RACE_ROUTE] player=%u objective=%08X targets=%u order=%s\n",
+                    player, objective, s_race[player].count,
+                    order == ORDER_FORWARD ? "forward" : order == ORDER_REVERSE ? "reverse" : "single");
+        }
     }
     for (i = 0; i < s_race[player].count; ++i)
         if (s_race[player].checkpoints[i].object == s_race[player].current_object) {

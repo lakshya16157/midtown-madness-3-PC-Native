@@ -260,6 +260,7 @@ class MenuRepairTest(unittest.TestCase):
                     patch.object(builder.mm3_model, "write_omb", return_value=b"materials"), \
                     patch.object(builder.mm3_lights, "source_anchors", return_value=({}, {})), \
                     patch.object(builder.mm3_lights, "align_lights", return_value=(b"model", {})), \
+                    patch.object(builder.mm3_lights, "anchor_lights_to_body", return_value=(b"model", {})), \
                     patch.object(builder.mm3_textures, "image_to_cdds") as body_encoder, \
                     patch.object(builder.mm3_textures, "image_to_menu_cdds", return_value=b"native-icon") as menu_encoder, \
                     patch.object(builder.mm3_textures, "image_to_background_cdds", return_value=b"native-background") as bg_encoder, \

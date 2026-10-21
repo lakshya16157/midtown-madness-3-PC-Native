@@ -1,6 +1,7 @@
 # The GameCamera owns the large top-screen Arrow mesh. Skip its isolated
-# submission block while retaining the camera's player visibility loop and
-# native saved registers/return. Minimap turn icons and world markers stay native.
+# submission block, unless the launcher's race-arrow option shows it, while
+# retaining the camera's player visibility loop and native saved
+# registers/return. Minimap turn icons and world markers stay native.
 function(mm3_hide_navigation_arrows source_variable)
     set(content "${${source_variable}}")
     set(owner sub_001EC352)
@@ -9,7 +10,8 @@ function(mm3_hide_navigation_arrows source_variable)
     PUSH32(esp, edi);
     if (CMP_EQ(_fa, _fb)) goto loc_001EC3AC; /* je: equal / zero */]=])
     string(REPLACE "    if (CMP_EQ(_fa, _fb)) goto loc_001EC3AC; /* je: equal / zero */"
-        "    goto loc_001EC3AC; /* Top navigation arrow hidden. */" replacement "${original}")
+        "    { extern int mm3_hud_race_arrow(void); if (CMP_EQ(_fa, _fb) || !mm3_hud_race_arrow()) goto loc_001EC3AC; } /* Top navigation arrow only when shown. */"
+        replacement "${original}")
     string(REGEX MATCHALL "void ${owner}[(]void[)]" owners "${content}")
     list(LENGTH owners owner_count)
     if(NOT owner_count EQUAL 1)

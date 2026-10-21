@@ -41,7 +41,37 @@ function(mm3_add_lamp_lighting_seam source_variable function_name)
     string(REPLACE "${range_read}" "fp_push(mm3_lamp_source_range(${source_register})); /* source-specific reach */" transformed "${body}")
     string(REPLACE "fp_top() = RECOMP_FP_PC(fp_top() * MEMF(0x386180)); /* fmul dword ptr [0x386180] */"
         "fp_top() = mm3_lamp_source_cone(${source_register}); /* wider authored cone */" transformed "${transformed}")
+    if(function_name MATCHES "^sub_000E1F49(_original)?$")
+        # Retail lights only fixtures whose object hash is a multiple of the
+        # descriptor's byte 8 (half of most street lamps). The rest of the
+        # street lamps (EBX = descriptor) now light too; their pools are
+        # budgeted by camera distance and queue use. The object matrix (+0x64)
+        # and local source position (+0x68) place them.
+        set(entry "loc_000E1F49: ;\n")
+        set(gate "    if (CMP_NE(_fa, _fb)) goto loc_000E2A86; /* jne: not equal / not zero */\n\nloc_000E201F: ;")
+        string(FIND "${transformed}" "${entry}" entry_at)
+        string(FIND "${transformed}" "${gate}" gate_at)
+        if(entry_at LESS 0 OR gate_at LESS 0)
+            message(FATAL_ERROR "MM3 source lights: ${function_name} entry/density gate changed")
+        endif()
+        string(REPLACE "${entry}" "${entry}    mm3_lamp_density_begin();\n" transformed "${transformed}")
+        # The locator position (+0x68) and direction (+0x6C) give the lamp's
+        # mounting height, so its pool can reach the ground below it.
+        string(REPLACE "${gate}"
+            "    if (mm3_lamp_density_skip(CMP_NE(_fa, _fb), MEM32(ebp + 0x64), MEM32(ebp + 0x68), MEM32(ebp + 0x6C), ebx)) goto loc_000E2A86; /* one-in-N street lamps light too */\n\nloc_000E201F: ;"
+            transformed "${transformed}")
+    endif()
+    if(function_name MATCHES "^sub_000E10A5(_original)?$")
+        # ECX/EDX enter as the object-space locator position and direction;
+        # the bounds then use the same mounting reach as the producer.
+        set(entry "loc_000E10A5: ;\n")
+        string(FIND "${transformed}" "${entry}" entry_at)
+        if(entry_at LESS 0)
+            message(FATAL_ERROR "MM3 source lights: ${function_name} entry changed")
+        endif()
+        string(REPLACE "${entry}" "${entry}    mm3_lamp_bounds_begin(ecx, edx);\n" transformed "${transformed}")
+    endif()
     string(REPLACE "${body}" "${transformed}" content "${content}")
-    set(declaration "#include <stdint.h>\nextern float mm3_lamp_source_range(uint32_t);\nextern float mm3_lamp_source_cone(uint32_t);\n")
+    set(declaration "#include <stdint.h>\nextern float mm3_lamp_source_range(uint32_t);\nextern float mm3_lamp_source_cone(uint32_t);\nextern void mm3_lamp_density_begin(void);\nextern int mm3_lamp_density_skip(int, uint32_t, uint32_t, uint32_t, uint32_t);\nextern void mm3_lamp_bounds_begin(uint32_t, uint32_t);\n")
     set(${source_variable} "${declaration}${content}" PARENT_SCOPE)
 endfunction()

@@ -5,6 +5,7 @@
 #include <math.h>
 #include "recomp_types.h"
 #include "mm3_debug_teleport.h"
+#include "mm3_stress_debug.h"
 
 /* PAL XBE: player update 2203E5; primary player manager 3C5CDC+54+D8.
  * Player+19C is the vehicle interface (vtable 383768), whose +8 is the car.
@@ -197,6 +198,7 @@ void sub_002203E5(void)
             SetEvent(finished);
         }
         ReleaseSRWLockExclusive(&lock);
+        if (body) mm3_stress_tick(player, body);
     }
     sub_002203E5_original();
     mm3_debug_features_tick();
@@ -240,7 +242,7 @@ static DWORD WINAPI pipe_thread(void *unused)
             1, 2048, 2048, 0, NULL);
         if (pipe == INVALID_HANDLE_VALUE) return 1;
         if (ConnectNamedPipe(pipe, NULL) || GetLastError() == ERROR_PIPE_CONNECTED) {
-            char command[128] = {0}, reply[2048], extra;
+            char command[128] = {0}, reply[8192], extra;
             DWORD bytes;
             float xyz[3];
             if (ReadFile(pipe, command, sizeof(command) - 1, &bytes, NULL)) {
@@ -248,7 +250,9 @@ static DWORD WINAPI pipe_thread(void *unused)
                 xyz[1] = 0;
                 float heading = NAN;
                 int fields = sscanf(command, "teleport %f %f %f %c", &xyz[0], &xyz[2], &heading, &extra);
-                if ((fields == 2 || (fields == 3 && isfinite(heading))) &&
+                if (mm3_stress_command(command, reply, sizeof(reply))) {
+                    /* Native work is queued and executed by the player hook. */
+                } else if ((fields == 2 || (fields == 3 && isfinite(heading))) &&
                     isfinite(xyz[0]) && isfinite(xyz[2])) {
                     request_teleport(xyz, fields == 3 ? heading : NAN, reply, sizeof(reply));
                 } else if (strcmp(command, "cars") == 0) {

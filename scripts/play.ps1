@@ -398,6 +398,10 @@ try {
         default { @{ render_scale = '2.0'; msaa = '4'; draw_distance = '2'; view_distance = '2'; aniso = '16'; fps_limit = '60' } }
     }
     $profileDefaults.buffered_asset_reads = '1'
+    $profileDefaults.readback_fence = '1'
+    $profileDefaults.audio_hires_wait = '1'
+    $profileDefaults.readback_idle_wait = '0'
+    $profileDefaults.audio_dsp_handoff = '1'
     $profileDefaults.world_ambient_lift = '0'
     $configFiles = @('game_files\default.xbe', 'game_files\Data\mm3_factory_physics.ini',
         'game_files\Data\mm3_speedometers.ini', 'game_files\.mm3-car-mods\state.json',
@@ -437,7 +441,7 @@ try {
         build_context_at_launch = @{ cmake_cache = Get-LaunchFile $cachePath; cmake_options = $cmakeOptions
             source_files = @(@('CMakeLists.txt', 'src\mm3_render_distance.c', 'src\mm3_widescreen.c',
                 'src\mm3_performance_profile.h', 'src\mm3_display_config.c', 'src\mm3_display_settings.c',
-                'src\mm3_building_diagnostics.c', 'src\mm3_facade_capacity.c', 'src\main.c',
+                'src\mm3_building_diagnostics.c', 'src\mm3_facade_capacity.c', 'src\mm3_facade_streams.c', 'src\main.c',
                 'src\recomp_manual.c', 'src\mm3_crash_diagnostics.h', 'src\mm3_map_zoom.c',
                 'src\mm3_world_lighting.c', 'src\mm3_world_lighting.h',
                 'src\mm3_producer_diagnostics.c', 'src\mm3_producer_diagnostics.h',

@@ -103,6 +103,11 @@ def main():
             results.append([list(map(int, row.split())) for row in rows])
         for case, actual in zip(cases, results[0]):
             assert actual == expected(machine, *case), (case, actual, expected(machine, *case))
+        if all(actual == expected(machine, *case) for case, actual in zip(cases, results[1])):
+            # Regenerated code that emits the branch itself matches as well.
+            print(f'PASS: {len(cases)} original-Xbox pedestrian completion cases; '
+                  'the generated function no longer has the former bugs')
+            return
         for regression in ((1, 0), (4, INSTANCE + 0x18)):
             index = cases.index(regression)
             assert results[1][index] != results[0][index], 'Former missing-ZF branch must fail'

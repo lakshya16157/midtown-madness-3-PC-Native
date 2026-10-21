@@ -9,6 +9,22 @@
  * low night world fill so local lights provide most illumination. */
 enum { MM3_WORLD_LIGHT_FLOOR = 48 };
 
+/* Evening (native time of day 2) still has sky light on every surface, so
+ * night-sized pools from lamps and headlights read as floodlights. Shrink
+ * their reach and soften them; morning, noon and night are unchanged. */
+#define MM3_EVENING_LIGHT_REACH 0.6f
+#define MM3_EVENING_LIGHT_GAIN 0.75f
+
+static inline float mm3_local_light_reach(uint32_t time_of_day)
+{
+    return time_of_day == 2u ? MM3_EVENING_LIGHT_REACH : 1.0f;
+}
+
+static inline float mm3_local_light_gain(uint32_t time_of_day)
+{
+    return time_of_day == 2u ? MM3_EVENING_LIGHT_GAIN : 1.0f;
+}
+
 /* Enable eased, bounded local-light accumulation and configure how strongly
  * the world-lighting composite applies its
  * local-light buffer (MM3_LOCAL_LIGHT_GAIN, 1..8, default 1.3; 1 is retail).

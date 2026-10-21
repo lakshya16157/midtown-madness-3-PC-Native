@@ -17,9 +17,11 @@ class ReflectionRepairTest(unittest.TestCase):
         self.assertEqual(merged, [1])
 
     def test_all_available_packages_change_only_visible_shading_words(self):
-        folders = sorted(path.parent for path in (ROOT / "out/car-models/packages").glob("*/package.json"))
+        # Packages recreated from an install (rebuild_packages_from_install.py)
+        # carry no conversion report, which this repair reads.
+        folders = sorted(path.parent for path in (ROOT / "out/car-models/packages").glob("*/conversion-report.json"))
         if not folders:
-            self.skipTest("Prepared imported packages are not present")
+            self.skipTest("Converted imported packages are not present")
         for folder in folders:
             with self.subTest(car=folder.name):
                 updates, report = repair_reflections.prepare(folder)

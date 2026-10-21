@@ -297,5 +297,48 @@ class ImportedRearLightTest(unittest.TestCase):
                         self.assertGreater(point[2], 1.8, "Rear anchor must be behind the car, +Z")
 
 
+CARS = ROOT / "game_files/Data/Shared/Cars"
+
+
+def find(model, suffix):
+    return next(node for path, node in model.root.walk() if path.lower().endswith(suffix.lower()))
+
+
+@unittest.skipUnless((CARS / "Koenigsegg/body.cmp").is_file() and (CARS / "Ford_GTcar/body.cmp").is_file(),
+                     "installed retail Koenigsegg and imported Ford GT models are required")
+class LampAnchorTest(unittest.TestCase):
+    def test_retail_lamps_keep_following_their_visible_loose_parts(self):
+        blob = (CARS / "Koenigsegg/body.cmp").read_bytes()
+        after, report = mm3_lights.anchor_lights_to_body(blob)
+        self.assertEqual(after, blob)
+        self.assertEqual(report["anchored"], [])
+        self.assertTrue(any("engine_hood/backlight" in path.lower() for path in report["kept"]))
+
+    def test_lamps_on_invisible_stub_parts_move_to_body_at_the_same_place(self):
+        # Retail Koenigsegg with its engine cover replaced by an imported
+        # exterior's 3-vertex stub: the cover's lamps join the body, while
+        # the visible front hood keeps its headlights.
+        model = read_model((CARS / "Koenigsegg/body.cmp").read_bytes())
+        stub = find(read_model((CARS / "Ford_GTcar/body.cmp").read_bytes()), "/Engine_hood/Engine_hoodShape")
+        find(model, "/Engine_hood/Engine_hoodShape").meshes = copy.deepcopy(stub.meshes)
+        blob = model.write()
+        meshes = {path: [m.payload for m in node.meshes] for path, node in model.root.walk() if node.meshes}
+        after, report = mm3_lights.anchor_lights_to_body(blob)
+        moved = read_model(after)
+        moved_names = sorted(item["node"].rsplit("/", 1)[1].lower() for item in report["anchored"])
+        self.assertEqual(moved_names, ["backlight_01", "backlight_02", "brakelight_01", "brakelight_02"])
+        self.assertTrue(all("/front_hood/" in path.lower() for path in report["kept"] if "headlight" in path.lower()))
+        body = find(moved, "/car/body")
+        self.assertTrue({"Backlight_01", "BrakeLight_02"} <= {child.name for child in body.children})
+        before_worlds, after_worlds = world_positions(read_model(blob)), world_positions(moved)
+        self.assertEqual(before_worlds.keys(), after_worlds.keys())
+        for name, position in before_worlds.items():
+            np.testing.assert_allclose(after_worlds[name], position, atol=1e-5, err_msg=name)
+        self.assertEqual(len(after), len(blob))
+        self.assertEqual(meshes, {path.replace("/Engine_hood/Backlight", "/body/Backlight"): [m.payload for m in node.meshes]
+                                  for path, node in moved.root.walk() if node.meshes})
+        self.assertEqual(mm3_lights.anchor_lights_to_body(after), (after, {"anchored": [], "kept": report["kept"]}))
+
+
 if __name__ == "__main__":
     unittest.main()

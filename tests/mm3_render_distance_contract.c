@@ -22,7 +22,7 @@ static float camera_far, shadow_distance, remap_scale;
 static unsigned remap_calls, vb_calls;
 static int native_fog;
 int nv2a_d3d_distance_fog_ready(void) { return native_fog; }
-static uint32_t vb_capacities[3];
+static uint32_t vb_capacities[4];
 static int vb_success = 1;
 
 void nv2a_d3d_set_depth_view_remap(float scale, float knee)
@@ -52,6 +52,7 @@ void sub_001633B7_original(void)
     vb_capacities[0] = MEM32(g_esi + 0x1ED0);
     vb_capacities[1] = MEM32(g_esi + 0x1F2C);
     vb_capacities[2] = MEM32(g_esi + 0x1F88);
+    vb_capacities[3] = MEM32(g_esi + 0x48);
     g_eax = (uint32_t)vb_success;
     g_esp += 4;
 }
@@ -226,10 +227,12 @@ int main(int argc, char **argv)
     g_esp = stack;
     sub_001633B7();
     assert(vb_capacities[0] == 0x3000 * factor && vb_capacities[1] == 0x800 * factor);
-    assert(vb_capacities[2] == 0x200 * factor && MEM32(manager + 0x48) == 0x600);
+    assert(vb_capacities[2] == 0x200 * factor && vb_capacities[3] == 0x600 * factor);
+    assert(MEM32(manager + 0x48) == 0x600 * factor);  /* the detail stream grows with its zone */
     g_esp = stack;
     sub_001633B7();
     assert(MEM32(manager + 0x1ED0) == 0x3000 * factor); /* No double growth. */
+    assert(MEM32(manager + 0x48) == 0x600 * factor);
     assert(vb_calls == 2);
     puts("PASS: native city clamp and camera handover, effective haze, independent detail/facade ranges, Lua/FOV/temporary restores and bounded facade pools");
     return 0;

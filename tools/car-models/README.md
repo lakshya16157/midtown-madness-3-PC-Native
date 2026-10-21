@@ -471,6 +471,28 @@ It checks that native node structure and every mesh payload remain unchanged.
 It does not install game files. Close MM3 and reapply the selected packages
 through Workshop to receive the correction on the next launch.
 
+Imported exteriors keep the donor's hoods, hatches and lamp glasses only as
+invisible 3-vertex stubs. Lamps hung from those stubs wobbled or flew off in
+crashes while the visible lens stayed on the body, so `build_package.py` now
+attaches them to the body at the same position (`mm3_lights.anchor_lights_to_body`).
+Lamps under parts with real geometry keep following them. For cars already
+installed by Workshop, with the game closed:
+
+```powershell
+python tools/car-models/anchor_installed_lights.py --dry-run
+python tools/car-models/anchor_installed_lights.py
+```
+
+It backs up each changed CMP under `backups/lamp-anchors-<time>` and records the
+new digests in Workshop's install state. It only touches the imported cars'
+`Data/Shared/Cars` models. Never edit `game_files/TDATA`: downloadable content is
+signed, and the game reports edited files there as damaged content.
+
+If `out/car-models/packages` is lost, Workshop can no longer apply anything.
+`python tools/car-models/rebuild_packages_from_install.py` recreates every
+package from the current installation and checks that Workshop's plan with them
+reproduces each installed file exactly.
+
 ### Repair selection-menu artwork in already prepared packages
 
 Older imports kept the donor car in the blue selection background. Their small

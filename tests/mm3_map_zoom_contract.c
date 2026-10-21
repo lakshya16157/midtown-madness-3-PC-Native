@@ -27,10 +27,11 @@ static int race_input_present, ctrl_pressed;
 static unsigned marker_count = 1;
 static int zoom_markers;
 static const char *check = "speed";
-static int improved = 1;
+static int improved = 1, north_marker;
 static unsigned pool_allocations, pool_frees, pool_bytes;
 static uint32_t pool_live;
 int mm3_minimap_improved(void) { return improved; }
+int mm3_hud_north_marker(void) { return north_marker; }
 
 void sub_00170EE2(void) {
     const uint32_t allocation = 0x450000;
@@ -557,6 +558,15 @@ static void native_contract(void) {
                         centre + (retail->xy[vertex][axis] - centre) * (draws[i].texture == 3 ? 0 : icon_scale));
             }
         }
+        /* The launcher's north marker keeps the native letter's quad. */
+        north_marker = 1; draw_count = 0;
+        abi_start(node); zoom_draw(); abi_end(24);
+        assert(draw_count + 1 == original_count);
+        {
+            const Draw *north = texture_draw(draws, draw_count, 3);
+            assert(fabsf(north->xy[0][0] - north->xy[2][0]) > 1 || fabsf(north->xy[0][1] - north->xy[2][1]) > 1);
+        }
+        north_marker = 0;
         for (i = 0; i < 600; ++i) mm3_map_zoom_update(node, 1.0f / 60.0f);
         draw_count = 0; abi_start(node); zoom_draw(); abi_end(24);
         assert(draw_count + 1 == original_count); near(MEMF(node + 0x50), native_scale * frame_scale / span);
@@ -1016,6 +1026,12 @@ int main(void) {
                     near(draws[i].xy[vertex][axis], draws[i].xy[0][axis]);
             } else assert(!memcmp(&original[i], &draws[i], sizeof(Draw)));
         }
+        /* Shown, Stock draws exactly as retail, north letter included. */
+        north_marker = 1; draw_count = 0;
+        abi_start(node); zoom_draw(); abi_end(24);
+        assert(draw_count == count);
+        for (i = 0; i < count; ++i) assert(!memcmp(&original[i], &draws[i], sizeof(Draw)));
+        north_marker = 0;
         near(mm3_map_zoom_checkpoint_scale(node, 0), 1);
         near(mm3_map_square_marker_distance(node, layout, 20, 30), hypotf(20, 30));
     }

@@ -9,6 +9,7 @@
 #include "mm3_launcher.h"
 #include "mm3_launcher_config.h"
 #include "mm3_display_config.h"
+#include "mm3_controller_detection.h"
 
 #ifndef MM3_LAUNCHER_AUDIO
 #define MM3_LAUNCHER_AUDIO 0
@@ -23,6 +24,7 @@ enum {
     ID_RESOLUTION, ID_MODE, ID_FPS, ID_VSYNC, ID_SCALE, ID_ASPECT, ID_MSAA,
     ID_ANISO, ID_DRAW, ID_VIEW, ID_SHOW_FPS, ID_MINIMAP, ID_FOV, ID_PORT, ID_PEERS,
     ID_HELP_TITLE, ID_HELP_VALUE, ID_HELP_BODY, ID_HELP_EFFECT, ID_REQUIRED,
+    ID_PAD_SUMMARY, ID_PAD_HINT,
     ID_OPTION = 300,
     LAUNCHER_WIDTH = 1215, LAUNCHER_HEIGHT = 754
 };
@@ -34,6 +36,8 @@ typedef struct Launcher {
     int control_count, page, result, done, smoke, capture, capture_armed, group;
     WORD previous_pad[4];
     int pad_seen[4];
+    int dualsense_count;
+    ULONGLONG device_poll_time;
     float scale;
     int help_id;
     MM3LauncherConfig config;
@@ -187,7 +191,9 @@ static void help_show(Launcher *ui, int id)
             "Show an animated spinner when new game frames stop briefly during loading. It is an activity indicator, not a percentage or estimate of remaining load time. Hidden during movies.",
             "Use scene depth for distance haze and a smoother horizon transition. Off restores the game's original fog and horizon path.",
             "Run the game's sound-processor programs for effects such as reverb, spatial processing and final mixing. Off uses a simpler voice mix.",
-            "Enable System Link networking for local multiplayer and configured UDP peers. This does not provide Xbox Live sign-in. Leave off for ordinary offline play."
+            "Enable System Link networking for local multiplayer and configured UDP peers. This does not provide Xbox Live sign-in. Leave off for ordinary offline play.",
+            "Show the game's N letter, which marks north on the edge of the minimap as the map turns. Off keeps the minimap free of it.",
+            "Show the game's yellow arrow at the top of the screen, which points toward the next checkpoint in races. Off hides it; the minimap still shows the route."
         };
         int option = id - ID_OPTION, on = checked(ui, id);
         title = mm3_launcher_options[option].label;
@@ -629,17 +635,18 @@ static void controls_controls(Launcher *ui)
     check(ui, 1, ID_KEYBOARD, "Enable keyboard controls (player 1, alongside a controller)", 42, 94, 774);
     c = combo(ui, 1, ID_PAD_COUNT, "Controllers in game", 42, 130, 345);
     for (int i = 1; i <= 4; ++i) { char text[16]; snprintf(text, sizeof text, "%d", i); combo_item(c, text, i); }
-    add(ui, 1, "STATIC", "Detecting controllers...", 0, ID_PAD_STATUS, 417, 130, 399, 64);
-    c = combo(ui, 1, ID_GROUP, "Bindings", 42, 207, 345);
+    add(ui, 1, "STATIC", "Detecting controllers...", 0, ID_PAD_STATUS, 417, 130, 399, 92);
+    add(ui, 1, "STATIC", "", 0, ID_PAD_HINT, 42, 190, 345, 48);
+    c = combo(ui, 1, ID_GROUP, "Bindings", 42, 247, 345);
     combo_item(c, "Controller buttons (all four players)", 0);
     combo_item(c, "Keyboard Xbox buttons", 1); combo_item(c, "Keyboard driving shortcuts", 2);
     combo_select(c, 0);
     add(ui, 1, "LISTBOX", "", LBS_NOTIFY | WS_BORDER | WS_VSCROLL | WS_TABSTOP,
-         ID_BINDINGS, 42, 266, 345, 292);
-    add(ui, 1, "STATIC", "", 0, ID_BIND_LABEL, 417, 213, 399, 48);
-    c = combo(ui, 1, ID_SOURCE, "Controller source", 417, 274, 399);
+         ID_BINDINGS, 42, 307, 345, 251);
+    add(ui, 1, "STATIC", "", 0, ID_BIND_LABEL, 417, 229, 399, 48);
+    c = combo(ui, 1, ID_SOURCE, "Controller source", 417, 285, 399);
     for (int i = 0; i < MM3_LAUNCHER_PAD_SOURCES; ++i) combo_item(c, mm3_launcher_pad_sources[i], i);
-    c = combo(ui, 1, ID_PAD_PORT, "Controller to use for capture", 417, 340, 399);
+    c = combo(ui, 1, ID_PAD_PORT, "Controller to use for capture", 417, 350, 399);
     for (int i = 0; i < 4; ++i) { char text[32]; snprintf(text, sizeof text, "Controller %d", i + 1); combo_item(c, text, i); }
     combo_select(c, 0);
     add(ui, 1, "BUTTON", "Capture controller button", BS_PUSHBUTTON | WS_TABSTOP,
@@ -659,6 +666,9 @@ static void mods_controls(Launcher *ui)
         int x = i < 8 ? 42 : 445, row = i < 8 ? i : i - 8;
         check(ui, 2, ID_OPTION + options[i], mm3_launcher_options[options[i]].label, x, 104 + row * 38, 371);
     }
+    /* HUD markers the original game shows, beside the field of view. */
+    check(ui, 2, ID_OPTION + MM3_LAUNCH_NORTH_MARKER, mm3_launcher_options[MM3_LAUNCH_NORTH_MARKER].label, 445, 440, 371);
+    check(ui, 2, ID_OPTION + MM3_LAUNCH_RACE_ARROW, mm3_launcher_options[MM3_LAUNCH_RACE_ARROW].label, 445, 478, 371);
     label(ui, 2, "Horizontal field of view", 42, 435, 260);
     add(ui, 2, "EDIT", "0", ES_NUMBER | WS_TABSTOP, ID_FOV, 310, 431, 77, 26);
     label(ui, 2, "0 = retail, or 60-110 degrees", 42, 466, 345);
@@ -716,20 +726,53 @@ static void pad_navigation(Launcher *ui, WORD pressed)
         else if (!_stricmp(kind, "COMBOBOX")) SendMessageA(focus, CB_SHOWDROPDOWN, !SendMessageA(focus, CB_GETDROPPEDSTATE, 0, 0), 0);
     }
 }
+static void pad_activity(const XINPUT_GAMEPAD *pad, char *text, size_t capacity)
+{
+    const char *parts[5];
+    int count = 0, source = pad_source(pad);
+    size_t at = 0;
+    if (source >= 0 && source < 14) parts[count++] = mm3_launcher_pad_sources[source];
+    if (pad->bLeftTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD) parts[count++] = "LT";
+    if (pad->bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD) parts[count++] = "RT";
+    if (abs((int)pad->sThumbLX) > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE ||
+        abs((int)pad->sThumbLY) > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE)
+        parts[count++] = "Left stick";
+    if (abs((int)pad->sThumbRX) > XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE ||
+        abs((int)pad->sThumbRY) > XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE)
+        parts[count++] = "Right stick";
+    text[0] = 0;
+    for (int i = 0; i < count; ++i)
+        at += (size_t)snprintf(text + at, capacity - at, "%s%s%s",
+            i ? ", " : " (", parts[i], i == count - 1 ? ")" : "");
+}
+
+static void status_text(HWND window, const char *text)
+{
+    char previous[512];
+    GetWindowTextA(window, previous, sizeof previous);
+    if (strcmp(previous, text)) SetWindowTextA(window, text);
+}
+
 static void poll_pads(Launcher *ui)
 {
-    char text[512] = "";
+    char text[512] = "", summary[128], hint[160];
     size_t at = 0;
+    int count = 0, highest_port = 0;
     int capture_port = combo_value(control(ui, ID_PAD_PORT));
+    ULONGLONG now = GetTickCount64();
+    if (!ui->device_poll_time || now - ui->device_poll_time >= 1000) {
+        ui->dualsense_count = mm3_dualsense_connected();
+        ui->device_poll_time = now;
+    }
     for (int i = 0; i < 4; ++i) {
         XINPUT_STATE state;
         int connected = XInputGetState((DWORD)i, &state) == ERROR_SUCCESS;
-        char buttons[48] = "";
+        char buttons[96] = "";
         WORD pressed = connected && ui->pad_seen[i] ? state.Gamepad.wButtons & (WORD)~ui->previous_pad[i] : 0;
         if (connected) {
             int source = pad_source(&state.Gamepad);
-            snprintf(buttons, sizeof buttons, "%s%s%s", source >= 0 ? " (" : "",
-                source >= 0 ? mm3_launcher_pad_sources[source] : "", source >= 0 ? ")" : "");
+            ++count; highest_port = i + 1;
+            pad_activity(&state.Gamepad, buttons, sizeof buttons);
             if (ui->capture && ui->group == 0 && i == capture_port && GetForegroundWindow() == ui->window) {
                 if (source < 0) ui->capture_armed = 1;
                 else if (ui->capture_armed) binding_set(ui, source);
@@ -739,9 +782,26 @@ static void poll_pads(Launcher *ui)
         ui->previous_pad[i] = connected ? state.Gamepad.wButtons : 0;
         ui->pad_seen[i] = connected;
         at += (size_t)snprintf(text + at, sizeof text - at, "P%d: %s%s%s", i + 1,
-            connected ? "connected" : "not connected", buttons, i == 1 ? "\r\n" : i == 3 ? "" : "       ");
+            connected ? "connected" : "not connected", buttons, i == 3 ? "" : "\r\n");
     }
-    SetWindowTextA(control(ui, ID_PAD_STATUS), text);
+    if (!count) {
+        if (ui->dualsense_count) {
+            snprintf(summary, sizeof summary, "DualSense connected. XInput needed for play (see Controls).");
+            snprintf(hint, sizeof hint, "DualSense found. Enable Steam Input\r\nfor this game (see Play_game.txt).");
+        } else {
+            snprintf(summary, sizeof summary, "No controller detected (XInput). Check Controls.");
+            snprintf(hint, sizeof hint, "No XInput controller detected.\r\nConnect/pair it or use XInput mode.");
+        }
+    } else {
+        snprintf(summary, sizeof summary, "%s detected: %d connected. Test sticks/triggers in Controls.",
+            count == 1 ? "Controller" : "Controllers", count);
+        if (highest_port > combo_value(control(ui, ID_PAD_COUNT)))
+            snprintf(hint, sizeof hint, "P%d detected outside enabled game ports.\r\nSet Controllers in game to %d to use it.", highest_port, highest_port);
+        else snprintf(hint, sizeof hint, "%d connected. Move a stick or squeeze a trigger to test.", count);
+    }
+    status_text(control(ui, ID_PAD_STATUS), text);
+    status_text(control(ui, ID_PAD_SUMMARY), summary);
+    status_text(control(ui, ID_PAD_HINT), hint);
 }
 
 static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
@@ -761,6 +821,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
         HWND title = add(ui, -1, "STATIC", "Midtown Madness 3", 0, -1, 25, 17, 570, 35);
         SendMessageA(title, WM_SETFONT, (WPARAM)ui->heading, TRUE);
+        add(ui, -1, "STATIC", "Detecting controllers...", 0, ID_PAD_SUMMARY, 620, 23, 570, 24);
         label(ui, -1, "Choose your settings. The guide explains each value as you select or change it.", 25, 55, 1150);
         ui->tabs = add(ui, -1, WC_TABCONTROLA, "", WS_TABSTOP, ID_TABS, 22, 85, 820, 550);
         tab.mask = TCIF_TEXT;
@@ -784,6 +845,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         add(ui, -1, "BUTTON", "Play", BS_DEFPUSHBUTTON | WS_TABSTOP, IDOK, 933, 699, 122, 34);
         add(ui, -1, "BUTTON", "Cancel", BS_PUSHBUTTON | WS_TABSTOP, IDCANCEL, 1068, 699, 122, 34);
         populate(ui); page_show(ui, 0);
+        poll_pads(ui);
         SetTimer(window, 1, 70, NULL);
         if (ui->smoke) SetTimer(window, 2, 150, NULL);
         return 0;
@@ -880,7 +942,8 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         if (wparam == 1) { poll_pads(ui); return 0; }
         if (wparam == 2) {
             static const int important[] = {ID_MODE, ID_FPS, ID_MINIMAP, ID_KEYBOARD,
-                ID_GROUP, ID_BINDINGS, ID_SOURCE, ID_CAPTURE, ID_PAD_COUNT, ID_FOV, IDOK, IDCANCEL};
+                ID_GROUP, ID_BINDINGS, ID_SOURCE, ID_CAPTURE, ID_PAD_COUNT, ID_PAD_STATUS,
+                ID_PAD_SUMMARY, ID_PAD_HINT, ID_FOV, IDOK, IDCANCEL};
             int valid = 1;
             for (int i = 0; i < (int)(sizeof important / sizeof important[0]); ++i)
                 if (!control(ui, important[i])) valid = 0;
@@ -888,11 +951,17 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             valid = valid && SendMessageA(control(ui, ID_BINDINGS), LB_GETCOUNT, 0, 0) == MM3_LAUNCHER_KEYS;
             page_show(ui, 2); valid = valid && IsWindowVisible(control(ui, ID_FOV));
             page_show(ui, 0);
-            fprintf(stderr, "[MM3_LAUNCHER_SMOKE] controls=%d tabs=3 keyboard_bindings=24 pad_ports=4 result=%s\n", ui->control_count, valid ? "PASS" : "FAIL");
+            fprintf(stderr, "[MM3_LAUNCHER_SMOKE] controls=%d tabs=3 keyboard_bindings=24 pad_ports=4 dualsense=%d xinput_connected=%d result=%s\n",
+                ui->control_count, ui->dualsense_count,
+                ui->pad_seen[0] + ui->pad_seen[1] + ui->pad_seen[2] + ui->pad_seen[3], valid ? "PASS" : "FAIL");
             if (!valid) ui->smoke = -1;
             DestroyWindow(window); return 0;
         }
         break;
+    case WM_DEVICECHANGE:
+        ui->device_poll_time = 0;
+        poll_pads(ui);
+        return 0;
     case WM_CLOSE: DestroyWindow(window); return 0;
     case WM_DESTROY:
         KillTimer(window, 1); KillTimer(window, 2);

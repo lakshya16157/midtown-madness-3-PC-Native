@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -17,8 +18,58 @@ static int g_mm3_frontend_icall_trace;
 
 /* Configure before guest workers start. cli/sti occur in tight polling loops;
  * querying the CRT environment on each no-op serializes those workers. */
+/* Producer run-ahead bound used by sub_00344AB0 (MM3_PRODUCER_LAG_KB,
+ * 0..65536, default 256; 0 waits at every kick). With renderer profiling on,
+ * kick waits are counted and reported once a second. MM3_PRODUCER_WRAP_SYNC=1
+ * restores the full synchronization at every ring wrap. */
+static uint32_t s_kick_lag = 0x40000u;
+static int s_kick_stats, s_kick_wrap_sync;
+static LARGE_INTEGER s_kick_frequency;
+static int64_t s_kick_window, s_kick_wait_ticks, s_kick_wait_max;
+static unsigned s_kick_count, s_kick_waits, s_kick_wraps;
+
+static void mm3_configure_kick_bound(void)
+{
+    const char *setting = getenv("MM3_PRODUCER_LAG_KB");
+    const char *profile = getenv("RECOMP_D3D_PROFILE");
+    const char *wrap = getenv("MM3_PRODUCER_WRAP_SYNC");
+    s_kick_wrap_sync = wrap && !strcmp(wrap, "1");
+    if (setting && *setting) {
+        char *end;
+        unsigned long kb = strtoul(setting, &end, 10);
+        if (!*end && kb <= 65536u) s_kick_lag = (uint32_t)kb * 1024u;
+        else fprintf(stderr, "[MM3_PRODUCER] invalid MM3_PRODUCER_LAG_KB; expected 0..65536, using 256\n");
+    }
+    s_kick_stats = profile && *profile && *profile != '0' &&
+                   QueryPerformanceFrequency(&s_kick_frequency) && s_kick_frequency.QuadPart > 0;
+    if (s_kick_lag != 0x40000u || s_kick_stats || s_kick_wrap_sync)
+        fprintf(stderr, "[MM3_PRODUCER] run-ahead bound %u KiB%s%s\n", s_kick_lag / 1024u,
+                s_kick_wrap_sync ? "; full sync at every ring wrap" : "; wrapped-ring distance",
+                s_kick_stats ? "; kick waits reported once a second" : "");
+}
+
+static void mm3_kick_report(int64_t now)
+{
+    double ms = 1000.0 / (double)s_kick_frequency.QuadPart;
+    DWORD saved_error;
+    int saved_errno;
+    if (!s_kick_window) { s_kick_window = now; return; }
+    if (now - s_kick_window < s_kick_frequency.QuadPart) return;
+    saved_error = GetLastError();
+    saved_errno = errno;
+    fprintf(stderr, "[MM3_PRODUCER] kicks=%u waits=%u wrapped=%u wait_ms=%.2f max_wait_ms=%.2f per %.2f s (bound %u KiB)\n",
+            s_kick_count, s_kick_waits, s_kick_wraps, s_kick_wait_ticks * ms, s_kick_wait_max * ms,
+            (now - s_kick_window) * ms / 1000.0, s_kick_lag / 1024u);
+    errno = saved_errno;
+    SetLastError(saved_error);
+    s_kick_window = now;
+    s_kick_count = s_kick_waits = s_kick_wraps = 0;
+    s_kick_wait_ticks = s_kick_wait_max = 0;
+}
+
 void mm3_configure_diagnostics(void)
 {
+    mm3_configure_kick_bound();
     mm3_producer_diagnostics_init();
     const char *trap = getenv("RECOMP_UNIMPL_TRAP");
     g_mm3_unimpl_trap = trap && *trap && *trap != '0';
@@ -1267,10 +1318,16 @@ void sub_00358FAC(void) {}
 extern void xbox_Nv2aWbcWait(uint32_t register_va);
 
 /* Most kicks only publish CPU stores. Bound the producer's distance from GET
- * to 256 KiB (and synchronize across a ring wrap), because later lighting
- * decisions can otherwise race the executor's readbacks. WBC is acknowledged
- * between executor passes; waiting at every kick would serialize the frame.
- * Keep the guest EAX/ECX results and return-stack adjustment unchanged. */
+ * to 256 KiB by default, because later lighting decisions can otherwise race
+ * the executor's readbacks. WBC is acknowledged between executor passes;
+ * waiting at every kick would serialize the frame. Keep the guest EAX/ECX
+ * results and return-stack adjustment.
+ *
+ * After the producer wraps (native 344770 writes a jump at the old PUT and
+ * restarts at the ring start, device+0x24..+0x28), GET still walks to the end
+ * before following that jump: the distance is (end - GET) + (PUT - start).
+ * Waiting at every wrap regardless of that distance drained the executor
+ * about once a frame. Layouts outside the ring keep the full synchronization. */
 void sub_00344AB0(void)
 {
     mm3_producer_diagnostics_kick();
@@ -1280,9 +1337,30 @@ void sub_00344AB0(void)
     _mm_sfence();
     uint32_t current = MEM32(device) & 0x0FFFFFFFu;
     uint32_t consumed = MEM32(MEM32(device + 0x17C0u) + 0x44u);
-    if (current < consumed || current - consumed > 0x40000u) {
+    uint32_t lag = current - consumed;
+    if (current < consumed) {
+        uint32_t start = MEM32(device + 0x24u) & 0x0FFFFFFFu;
+        uint32_t limit = MEM32(device + 0x28u) & 0x0FFFFFFFu;
+        lag = !s_kick_wrap_sync && start < limit && current >= start && consumed < limit ?
+              (limit - consumed) + (current - start) : 0xFFFFFFFFu;
+    }
+    LARGE_INTEGER begin = {0}, end;
+    if (s_kick_stats) {
+        ++s_kick_count;
+        if (current < consumed) ++s_kick_wraps;
+        QueryPerformanceCounter(&begin);
+    }
+    if (lag > s_kick_lag) {
         MEM32(g_eax + 0x100410u) = g_ecx;
         xbox_Nv2aWbcWait(g_eax + 0x100410u);
+        if (s_kick_stats) {
+            QueryPerformanceCounter(&end);
+            ++s_kick_waits;
+            s_kick_wait_ticks += end.QuadPart - begin.QuadPart;
+            if (end.QuadPart - begin.QuadPart > s_kick_wait_max) s_kick_wait_max = end.QuadPart - begin.QuadPart;
+            begin = end;
+        }
     }
+    if (s_kick_stats) mm3_kick_report(begin.QuadPart);
     g_esp += 4;
 }

@@ -317,6 +317,14 @@ static void time_of_day_visibility_checks(void)
         assert(MEM32(QUEUE+0x5810)==(dark?4u:2u) && !flares);
         /* Tail/brake remain active with negligible daylight surface spill
          * while only front sources are masked. */
+        if(period==2) {
+            /* Evening: the same lamps with a smaller, softer field. */
+            assert(MEMF(entry(1)+0x40)==CAR_TAIL_RADIUS_NIGHT*MM3_EVENING_LIGHT_REACH*2);
+            assert(MEMF(entry(2)+0x40)==CAR_BRAKE_RADIUS_NIGHT*MM3_EVENING_LIGHT_REACH*2);
+            assert(MEM32(entry(1)+0x4c)==0xff220000u);
+            assert(MEM32(entry(2)+0x4c)==0xff3d0000u);
+            continue;
+        }
         assert(MEMF(entry(dark?1:0)+0x40)==(dark?4.4f:.7f));
         assert(MEMF(entry(dark?2:1)+0x40)==(dark?6.8f:1.0f));
         assert(MEM32(entry(dark?1:0)+0x4c)==(dark?0xff2d0000u:0xff030000u));
@@ -362,36 +370,22 @@ static void volume_culling_checks(void)
     pose(OWNER+0x6c,0,0,0,.7f,-8);
     rejected_body(0,1);
     assert(MEM32(QUEUE+0x5810)==2);
-    native_reset(QUEUE);pose(OWNER+0x6c,0,0,0,.7f,-100);
-    rejected_body(0,1);assert(MEM32(QUEUE+0x5810)==0);
-    /* A conservative 5 cm border keeps rounding at a plane from dropping a
-     * touching volume. Cone bounds start at the bulb and extend forward. */
-    memset((void *)XBOX_PTR(CAMERA+0x1e54),0,5*16);
-    MEMF(CAMERA+0x1e54)=1;
-    matrix[12]=1.04f;assert(car_light_volume_visible(matrix,2,2,2,0));
-    matrix[12]=1.06f;assert(!car_light_volume_visible(matrix,2,2,2,0));
-    MEMF(CAMERA+0x1e54)=0;MEMF(CAMERA+0x1e54+8)=-1;
-    matrix[12]=0;matrix[14]=-CAR_BEAM_LENGTH-.04f;
-    assert(car_light_volume_visible(matrix,CAR_BEAM_WIDTH,CAR_BEAM_HEIGHT,CAR_BEAM_LENGTH,1));
-    matrix[14]=-CAR_BEAM_LENGTH-.06f;
-    assert(!car_light_volume_visible(matrix,CAR_BEAM_WIDTH,CAR_BEAM_HEIGHT,CAR_BEAM_LENGTH,1));
-    /* Unready/invalid view data must fail open, including a malformed later
-     * plane after an earlier plane would otherwise reject the source. */
-    MEMF(CAMERA+0x1e94)=NAN;
-    assert(car_light_volume_visible(matrix,CAR_BEAM_WIDTH,CAR_BEAM_HEIGHT,CAR_BEAM_LENGTH,1));
-    MEMF(CAMERA+0x1e94)=0;MEM32(CAMERA+0x1ea4)=4;
-    assert(car_light_volume_visible(matrix,CAR_BEAM_WIDTH,CAR_BEAM_HEIGHT,CAR_BEAM_LENGTH,1));
-    for(i=0;i<2;++i) {
-        MEM32(0x3c5588)=i?0x07ffffffu:0;
-        assert(car_light_volume_visible(matrix,CAR_BEAM_WIDTH,CAR_BEAM_HEIGHT,CAR_BEAM_LENGTH,1));
+    /* Off screen, behind the camera or with unusable plane data, a rejected
+     * body still lights its surroundings; the frame budget picks what is
+     * drawn. */
+    for(i=0;i<3;++i) {
+        native_reset(QUEUE);pose(OWNER+0x6c,0,0,0,.7f,i==0?-100.0f:i==1?500.0f:-8.0f);
+        if(i==2) MEMF(CAMERA+0x1e94)=NAN;
+        rejected_body(0,1);assert(MEM32(QUEUE+0x5810)==2);
     }
+    (void)matrix;
 }
 
 int main(void)
 {
     offscreen_motion_checks();mask_and_damage_checks();time_of_day_visibility_checks();
     bounded_walk_checks();volume_culling_checks();
-    puts("PASS: real native rejected-body seams (E01C2/E0277), live offscreen movement/turning/bank, native matrix reference, zero offscreen flares/geometry, current light masks/blink clock, actor/damage gates, later draw deduplication, bounded traversal, 320-model queue pressure and conservative full-volume frustum culling");
+    puts("PASS: real native rejected-body seams (E01C2/E0277), live offscreen movement/turning/bank, native matrix reference, zero offscreen flares/geometry, current light masks/blink clock, actor/damage gates, later draw deduplication, bounded traversal, 320-model queue pressure; off-screen fields kept for the frame budget");
     return 0;
 }
 '''
@@ -513,7 +507,7 @@ def main():
             subprocess.run([str(cmake), f"-DINPUT={original.as_posix()}", f"-DOUTPUT={modified.as_posix()}",
                             f"-DOWNER={owner}", "-P", str(seam)], check=True)
             native[owner] = modified.read_text()
-        for owner in ("sub_000CF2DA", "sub_0022FDFD"):
+        for owner in ("sub_000CF2DA", "sub_0022FDFD", "sub_000DFE0E"):
             native[owner] = native[owner].replace("void " + owner + "(void)",
                                                    "void " + owner + "_original(void)", 1)
         body = "\n".join(native.values())
@@ -521,7 +515,7 @@ def main():
         defined = set(NATIVE) | set(projector.UNUSED_FLARES) | {"sub_000DFEF9"}
         unused = "\n".join(f'void {name}(void) {{ assert(!"unused visibility boundary {name}"); }}'
                            for name in calls - defined)
-        names = set(NATIVE) | calls | {"sub_000CF2DA_original", "sub_0022FDFD_original"}
+        names = set(NATIVE) | calls | {"sub_000CF2DA_original", "sub_0022FDFD_original", "sub_000DFE0E_original"}
         declarations = "\n".join("void " + name + "(void);" for name in sorted(names))
         (folder / "native.inc").write_text(declarations + "\n" + unused + "\n" + body)
         (folder / "constants.inc").write_text(projector.constants(body))

@@ -13,9 +13,11 @@ import repair_wheel_headers
 
 class WheelHeaderRepairTest(unittest.TestCase):
     def test_available_packages_match_opaque_donor_wheels_and_reapply_exactly(self):
-        folders = list((ROOT / "out/car-models/packages").glob("*/package.json"))
+        # Packages recreated from an install (rebuild_packages_from_install.py)
+        # carry no conversion report, which this repair reads.
+        folders = list((ROOT / "out/car-models/packages").glob("*/conversion-report.json"))
         if not folders:
-            self.skipTest("Prepared imported cars are not available")
+            self.skipTest("Converted imported cars are not available")
         for path in folders:
             with self.subTest(car=path.parent.name):
                 updates, count = repair_wheel_headers.prepare(path.parent, ROOT / "game_files/Data")

@@ -95,9 +95,9 @@ def instrument(source):
     source = replace_function(source, "car_light_frame", frame)
     valid = function(source, "car_light_group_valid").replace("memcmp(", "bench_valid_memcmp(")
     valid = valid.replace(
-        "            if (MEM32(s_car_queue + 0x5410 + j * 4) == group->record[i]) break;",
-        "            { BENCH_ADD(membership_probes, 1);\n"
-        "              if (MEM32(s_car_queue + 0x5410 + j * 4) == group->record[i]) break; }")
+        "                if (MEM32(slots + j * 4) == group->record[i]) break;",
+        "                BENCH_ADD(membership_probes, 1);\n"
+        "                if (MEM32(slots + j * 4) == group->record[i]) break;")
     source = replace_function(source, "car_light_group_valid", valid)
     source = source.replace("        unsigned at = (slot + i) % CAR_AXIS_SLOTS;",
                             "        unsigned at = (slot + i) % CAR_AXIS_SLOTS; BENCH_ADD(axis_probes, 1);")
@@ -126,6 +126,7 @@ def instrument(source):
 
 
 COUNTERS = r'''
+#include "mm3_light_queue.c"
 #include <windows.h>
 #include <inttypes.h>
 struct bench_operations {
@@ -335,10 +336,11 @@ def main():
     variants = {"baseline": baseline, "no_scan": no_scan(baseline),
                 "one_check": one_check(baseline), "axis_break": empty_axis_break(baseline),
                 "combined": empty_axis_break(one_check(no_scan(baseline))), "current": current}
-    native_projector.NATIVE += ("sub_0022FDFD",)
+    native_projector.NATIVE += ("sub_0022FDFD", "sub_000DFE0E")
     native = native_projector.generated().replace(
         "void sub_000CF2DA(void)", "void sub_000CF2DA_original(void)")
     native = native.replace("void sub_0022FDFD(void)", "void sub_0022FDFD_original(void)")
+    native = native.replace("void sub_000DFE0E(void)", "void sub_000DFE0E_original(void)")
     prefix = native_projector.SOURCE.split("static unsigned submit", 1)[0]
     prefix = prefix.replace("memory[0x400000]", "memory[0x600000]")
     prefix = prefix.replace('void sub_001A842A(void) { assert(!"unexpected flare submission"); }',
@@ -347,7 +349,7 @@ def main():
         folder = Path(temporary)
         shutil.copyfile(ROOT / "src/mm3_recomp_types.h", folder / "recomp_types.h")
         declarations = "\n".join(f"void {name}(void);" for name in native_projector.NATIVE)
-        declarations += "\nvoid sub_000CF2DA_original(void);\n"
+        declarations += "\nvoid sub_000CF2DA_original(void);\nvoid sub_000DFE0E_original(void);\n"
         (folder / "native.inc").write_text(declarations + native)
         (folder / "constants.inc").write_text(native_projector.constants(native))
         for name in args.variants:

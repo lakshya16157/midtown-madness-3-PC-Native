@@ -701,6 +701,20 @@ def catalog_ranking(archive: zipfile.ZipFile, config: dict) -> list[dict]:
     return originals + sorted(extras, key=lambda car: (car["ratings"]["TOPSPEED"], car["id"]))
 
 
+def traffic_reflections(archive: bytes) -> dict[str, tuple[bytes, zipfile.ZipInfo]]:
+    """Same-length traffic body.cmp entries with uniform reflections.
+
+    MM3-Setup.exe carries only tools/car-mods, not the model tools (which need
+    numpy): its installs keep the retail traffic reflections."""
+    models = ROOT / "tools/car-models"
+    if not (models / "normalize_reflections.py").is_file():
+        return {}
+    if str(models) not in sys.path:
+        sys.path.insert(0, str(models))
+    import normalize_reflections
+    return normalize_reflections.normalized_zip_entries(archive)
+
+
 def build_plan(game_dir: Path, originals: dict[str, bytes], config: dict,
                config_dir: Path | None = None) -> tuple[dict[str, bytes], dict[str, int]]:
     output, counts = {}, {"cars": len(config["cars"]), "archive_entries": 0, "loose_files": 0}
@@ -767,9 +781,19 @@ def build_plan(game_dir: Path, originals: dict[str, bytes], config: dict,
             old = next((key for key in updates if key.casefold() == name.casefold()), None)
             template = updates.pop(old)[1] if old else zipfile.ZipInfo(name)
             updates[name] = (data, template)
+        # Traffic models are read from this archive, never from the loose
+        # copies: give them the same uniform paint/window/chrome reflections
+        # as the retail cars (tools/car-models/normalize_reflections.py).
+        reflections = {}
+        if relative == ARCHIVES[0]:
+            reflections = traffic_reflections(baseline)
+            for name, entry in reflections.items():
+                if not any(key.casefold() == name.casefold() for key in updates):
+                    updates[name] = entry
         existing = {i.filename.lower() for i in archive.infolist()}
         for name in updates:
-            if name.lower() in existing and name.lower() != "cars/tweak/sortorder":
+            if (name.lower() in existing and name.lower() != "cars/tweak/sortorder" and
+                    name not in reflections):
                 raise ValueError(f"Alias would overwrite an installed asset: {name}")
         result = append_zip(baseline, updates)
         with zipfile.ZipFile(io.BytesIO(result)) as check:

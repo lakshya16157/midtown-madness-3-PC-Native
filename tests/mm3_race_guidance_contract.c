@@ -18,6 +18,7 @@ static const uint32_t stack = 0x80000, node = 0x10000, property = 0x22000;
 static const uint32_t layout = 0x23000, markers = 0x24000, position = 0x28000;
 static const uint32_t origin = 0x28100, event = 0x60000, event_vtable = 0x61000;
 static const uint32_t event_list = 0x62000, event_head = 0x62100, list_nodes = 0x62200;
+static const uint32_t second_list = 0x62400, second_head = 0x62410, second_nodes = 0x62420;
 static const uint32_t empty_list = 0x62800, empty_head = 0x62810;
 static const uint32_t players = 0x62900, player_thing = 0x62A00;
 static const uint32_t renderer_vtable = 0x68000, viewport = 0x68100;
@@ -86,6 +87,7 @@ static void fake_icall(uint32_t address) {
         g_eax = result; g_esp += 8; return;
     }
     if (address == 0x10A) { g_eax = MEM32(g_esp + 4); g_esp += 8; return; }
+    if (address == 0x10B) { g_eax = second_list; g_esp += 4; return; }
     if (address == 0x0011964B) { sub_0011964B(); return; }
     fprintf(stderr, "unexpected guidance indirect call %08X\n", address); abort();
 }

@@ -135,6 +135,47 @@ static void rdoc_poll(void) {}
 static int xbox_FramebufferScanSource(uint32_t *address, uint32_t *pitch)
 { *address = 0x10000; *pitch = 2560; return cpu_scanout; }
 static int xbox_FramebufferOverlay(XboxOverlay *overlay) { (void)overlay; return overlay_ok; }
+/* Boundaries added after this contract was written: slow-frame accounting
+ * (off), the hitch clock, the cached swap-chain back buffer (acquired as the
+ * renderer does) and the black-frame sampler, which runs once per guest flip
+ * that reaches the window. */
+enum { SF_PACE_WAIT, SF_PRESENT_API };
+static LARGE_INTEGER s_hitch_freq = {1000};
+static int slow_frame_enabled(void) { return 0; }
+static int64_t slow_frame_begin(void) { return 0; }
+static void slow_frame_add_ticks(unsigned stage, int64_t ticks) { (void)stage; (void)ticks; }
+static void slow_frame_end(unsigned stage, int64_t begin) { (void)stage; (void)begin; }
+static void slow_frame_boundary(int64_t now, unsigned csv_line) { (void)now; (void)csv_line; }
+static ID3D11Texture2D *s_swap_buffer;
+static ID3D11RenderTargetView *s_swap_rtv;
+static int ensure_swap_backbuffer(void)
+{
+    void *buffer = NULL;
+    ID3D11RenderTargetView *view = NULL;
+    if (FAILED(IDXGISwapChain1_GetBuffer(s_swap, 0, &IID_ID3D11Texture2D, &buffer)) || !buffer) return 0;
+    if (FAILED(ID3D11Device_CreateRenderTargetView(s_dev, (ID3D11Resource *)buffer, NULL, &view)) || !view) {
+        if (view) ID3D11RenderTargetView_Release(view);
+        ID3D11Texture2D_Release((ID3D11Texture2D *)buffer);
+        return 0;
+    }
+    s_swap_buffer = (ID3D11Texture2D *)buffer;
+    s_swap_rtv = view;
+    return 1;
+}
+static unsigned black_samples;
+static void black_frame_sample(Surface *image, const PresentConsts *pc)
+{ CHECK(image == &surface && pc != NULL); black_samples++; }
+/* The screen-side statistics, read after each present that succeeded, with
+ * the pacing wait when it came before that present. */
+static unsigned display_reports, display_guest_reports;
+static int64_t display_pace;
+static void display_after_present(int guest_flip, int64_t pace_ticks)
+{
+    CHECK(present_result == S_OK);
+    display_reports++;
+    if (guest_flip) display_guest_reports++;
+    display_pace = pace_ticks;
+}
 
 #define getenv test_getenv
 #include "production_pacing.inc"
@@ -145,7 +186,8 @@ static void reset(void)
     memset(events, 0, sizeof(events)); event_count = 0;
     memset(s_prof, 0, sizeof(s_prof)); s_prof_on = 1;
     pace_calls = present_calls = csv_calls = scans = s_frame = 0;
-    texture_releases = view_releases = 0;
+    texture_releases = view_releases = black_samples = 0;
+    display_reports = display_guest_reports = 0; display_pace = -2;
     cpu_syncs = cpu_uploads = 0; cpu_write = s_wb_pending = 0;
     surface.gen = 1; surface.cpu_present_pending = 0;
     clock_ticks = 1000; csv_ticks = -1; test_now = 10000;
@@ -170,6 +212,9 @@ static void successful_flip(const char *expected)
     CHECK(s_prof[PROF_PACE] == 7 && s_prof[PROF_WRITEBACK] == 2);
     CHECK(s_frame == 1 && s_frame_tag_window == 1 && s_frame_bg_tex == 0);
     CHECK(s_depth_hazed == 0);
+    CHECK(black_samples == 1);
+    CHECK(display_reports == (present_result == S_OK ? 1u : 0u) && display_guest_reports == display_reports);
+    CHECK(!display_reports || display_pace == (after_policy ? -1 : 7));
 }
 
 static void depth_haze_cases(void)
@@ -236,6 +281,8 @@ static void tick_cases(void)
     nv2a_d3d_tick();
     CHECK(strcmp(events, "CKP") == 0 && present_calls == 1 && s_frame == 1 && scans == 1);
     CHECK(!pace_calls && !csv_calls && s_prof[PROF_PACE] == 0);
+    CHECK(!black_samples);      /* movie/scanout ticks are not guest flips */
+    CHECK(display_reports == 1 && !display_guest_reports && display_pace == -1);
     CHECK(!s_frame_csv_present && !s_frame_csv_present_prev);
     reset(); nv2a_d3d_tick();
     CHECK(strcmp(events, "CKP") == 0 && present_calls == 1 && !s_frame);

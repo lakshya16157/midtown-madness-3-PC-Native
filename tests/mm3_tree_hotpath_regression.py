@@ -78,10 +78,15 @@ int main(int argc,char **argv)
     /* The detached-draw path must still reject an unreadable model pointer. */
     MEM32(STACK)=0x00167D94;MEM32(STACK+4)=0x600000;
     reads=0;draw();assert(reads>0&&g_eax==0x600000&&!mm3_tree_fall_drawing());
-    /* Selected contacts retain guarded reads for an unreadable record/metadata. */
+    /* Every collision contact reaches the classifier. Fields inside committed
+     * guest RAM are copied directly; unreadable records/metadata keep guarded
+     * reads and are rejected. */
     reads=0;assert(!mm3_tree_use_solid_contact(0x600000,0)&&reads>0);
     MEM16(RECORD+0x100)=2;MEM32(RECORD+0x108)=0x600000;
-    reads=0;assert(!mm3_tree_use_solid_contact(RECORD,0)&&reads==3);
+    reads=0;assert(!mm3_tree_use_solid_contact(RECORD,0)&&reads==1);
+    /* A readable non-tree prop (empty event list, unnamed sound) costs no OS read. */
+    MEM32(RECORD+0x108)=0x150000;memset((void *)XBOX_PTR(0x150000),0,52);
+    reads=0;assert(!mm3_tree_use_solid_contact(RECORD,30.0f)&&reads==0);
     /* An ordinary contact cannot inspect even a deliberately unreadable car. */
     MEM32(STACK)=0x0016D123;MEM32(STACK+4)=0x600000;
     reads=0;contact();assert(!baseline?reads==0:reads>0);

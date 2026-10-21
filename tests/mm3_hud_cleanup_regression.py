@@ -7,6 +7,9 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 OWNER = "sub_001EC352"
+NATIVE_GATE = "    if (CMP_EQ(_fa, _fb)) goto loc_001EC3AC; /* je: equal / zero */"
+ARROW_GATE = ("    { extern int mm3_hud_race_arrow(void); if (CMP_EQ(_fa, _fb) || !mm3_hud_race_arrow()) "
+              "goto loc_001EC3AC; } /* Top navigation arrow only when shown. */")
 
 
 def native_owner(name):
@@ -48,17 +51,16 @@ def main():
 
         modified = transform(original)
         assert transform(original.replace("\n", "\r\n")) == modified
-        restored = modified.replace("    goto loc_001EC3AC; /* Top navigation arrow hidden. */",
-                                    "    if (CMP_EQ(_fa, _fb)) goto loc_001EC3AC; /* je: equal / zero */")
+        restored = modified.replace(ARROW_GATE, NATIVE_GATE)
         assert restored == original
-        assert modified.count("/* Top navigation arrow hidden. */") == 1
+        assert modified.count(ARROW_GATE) == 1
         unrelated = "\n" + minimap + "\n" + world
         assert transform(original + unrelated) == modified + unrelated
         for boundary in ("MEM32(esi + 0xE8)", "PUSH32(esp, edi);\n    if (CMP_EQ(_fa, _fb)) goto loc_001EC3AC;"):
             transform(original.replace(boundary, boundary + "BAD"), True)
         transform(original + "\n" + original, True)
         transform(modified, True)
-        native = original.replace(OWNER, "original_camera") + "\n" + modified.replace(OWNER, "hidden_camera")
+        native = original.replace(OWNER, "original_camera") + "\n" + modified.replace(OWNER, "gated_camera")
         # Run original minimap direction draws, including native pops/RET20.
         native += "\nvoid original_minimap(void)\n{\n" + minimap[minimap.index("loc_0011DC58: ;"):]
         (folder / "native_arrows.inc").write_text(native)
@@ -70,7 +72,7 @@ def main():
                         "/Fo:" + str(folder / "contract.obj"), "/Fe:" + str(executable)],
                        check=True, cwd=folder)
         subprocess.run([str(executable)], check=True, cwd=folder)
-    print("PASS HUD cleanup seam: only camera Arrow gate changes, native map/route/checkpoint owners unchanged, LF/CRLF and rejected invalid anchors")
+    print("PASS HUD cleanup seam: only the camera Arrow gate changes (hidden unless the launcher shows it), native map/route/checkpoint owners unchanged, LF/CRLF and rejected invalid anchors")
 
 
 if __name__ == "__main__":

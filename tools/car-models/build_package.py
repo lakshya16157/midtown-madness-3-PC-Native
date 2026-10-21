@@ -196,6 +196,7 @@ def build(source_path: Path, output: Path, car_id: int, *, y_offset=None,
             material_shading=material_shading)
         blob, report['lights'] = mm3_lights.align_lights(blob, light_anchors,
                                                            source_transform=transform)
+        blob, report['light_anchors'] = mm3_lights.anchor_lights_to_body(blob)
         asset('loose', f'Data/Shared/Cars/{alias}{suffix}/body.cmp', blob)
         reports[suffix or 'near'] = report
         material_blob = mm3_model.write_omb(native_materials)

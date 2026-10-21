@@ -20,6 +20,7 @@ Examples, appended one per line and acknowledged before the next dependent step:
    "time":"Day","season":"Summer","cops":0,"pedestrians":"Medium",
    "traffic":"Medium","car":"MINI Cooper S","transmission":"Automatic"}
   {"command":"measure"}   (uses run.ps1's recorded Scenario and Secs)
+  {"command":"stress","plan":"stress-plan-request.json"}
   {"command":"finish"}
 
 Confirm only after capturing the setup, selected car and live driving scene.
@@ -128,6 +129,33 @@ function Invoke-ControlledScene {
                         }
                         $raceValid = $true
                         $answer.position = $after
+                    }
+                    'stress' {
+                        if (-not $sceneConfirmed) { throw 'Confirm the captured native scene before stress testing.' }
+                        if ($script:windows.Count) { throw 'Use a fresh controlled session for repeated stress windows.' }
+                        if ($request.plan -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\.json$') {
+                            throw 'Stress plan must name a JSON file inside this run directory.'
+                        }
+                        $planFile = Join-Path $dir $request.plan
+                        if (-not (Test-Path -LiteralPath $planFile -PathType Leaf)) { throw 'Stress plan file is unavailable.' }
+                        $stressPython = Join-Path $repo 'tools\venv\Scripts\python.exe'
+                        if (-not (Test-Path -LiteralPath $stressPython)) { $stressPython = (Get-Command python.exe).Source }
+                        $stressScript = Join-Path $repo 'tools\bench\stress.py'
+                        & $stressPython $stressScript $dir --plan $planFile | Out-Host
+                        $stressExit = $LASTEXITCODE
+                        $stressReportFile = Join-Path $dir 'stress-report.json'
+                        if (-not (Test-Path -LiteralPath $stressReportFile)) { throw 'Stress controller did not produce evidence.' }
+                        $stressReport = Get-Content -LiteralPath $stressReportFile -Raw | ConvertFrom-Json
+                        if ($stressExit -gt 1 -or -not $stressReport.completed -or -not $stressReport.windows.Count) {
+                            throw "Stress controller stopped before completing its windows: $($stressReport.error)"
+                        }
+                        $script:windows = @($stressReport.windows)
+                        $raceValid = $true
+                        $answer.report = $stressReportFile
+                        $answer.verified = [bool]$stressReport.all_windows_verified
+                        $answer.windows = $stressReport.windows.Count
+                        # Command completion is separate from passing collision,
+                        # movement and applied-input requirements in the report.
                     }
                     'finish' {
                         if (-not $raceValid) { throw 'Measure a verified race before finishing.' }

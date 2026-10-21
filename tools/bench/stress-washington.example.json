@@ -1,0 +1,16 @@
+{
+  "coordinates": {"x": 1086.241943, "z": -700.769958, "heading": 3.138921},
+  "scene": {"city": 1, "mode": 1, "time": 2, "traffic": 1.0, "peds": 1.0},
+  "repeats": 3,
+  "window_seconds": 30,
+  "warmup_seconds": 3,
+  "poll_us": [250],
+  "police_count": 12,
+  "police_mode": "active",
+  "capture": true,
+  "minimum_displacement_m": 1,
+  "minimum_collisions": 1,
+  "collision_kind": "effects",
+  "minimum_traffic_cars": 1,
+  "sample_seconds": 1
+}

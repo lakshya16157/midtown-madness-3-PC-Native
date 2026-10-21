@@ -120,11 +120,14 @@ int main(int argc,char**argv){
 def diagnostics_fixture():
     source = (ROOT / 'src/recomp_manual.c').read_text()
     bodies = []
-    for name in ('mm3_configure_diagnostics', 'recomp_unimpl', 'recomp_icall_fail_log'):
+    for name in ('mm3_configure_kick_bound', 'mm3_configure_diagnostics', 'recomp_unimpl',
+                 'recomp_icall_fail_log'):
         body = re.search(r'void ' + name + r'\([^)]*\)\n\{.*?\n\}', source, re.S)
         assert body, name
         bodies.append(body.group())
     return (COMMON_NATIVE + '\nstatic int g_mm3_unimpl_trap,g_mm3_frontend_icall_trace;\n'
+            + 'static uint32_t s_kick_lag=0x40000u;static int s_kick_stats,s_kick_wrap_sync;\n'
+            + 'static LARGE_INTEGER s_kick_frequency;\n'
             + 'void mm3_producer_diagnostics_init(void) {}\n'
             + '\n'.join(bodies) + r'''
 int main(int argc,char**argv){

@@ -20,8 +20,8 @@ ROOT = common.ROOT
 ENTRIES = (0x1633B7, 0xF01B8, 0xF00AF, 0xEFE7D, 0x162F75)
 SELF, DEVICE, OBJECTS, VBS, BUFFER = 0x760000, 0x730000, 0x780000, 0x790000, 0x800000
 META = 0x670000
-CAPS = (0x3000, 0x800, 0x200)
-OFFSETS = (0x1ED0, 0x1F2C, 0x1F88)
+CAPS = (0x3000, 0x800, 0x200, 0x600)        # opaque28, alpha28, far24, detail32
+OFFSETS = (0x1ED0, 0x1F2C, 0x1F88, 0x48)
 
 
 def native_source():
@@ -110,7 +110,6 @@ def fixture(image, caps=CAPS):
         struct.pack_into('<' + 'I' * len(values), ram, address, *values)
     for offset, value in zip(OFFSETS, caps):
         put(SELF + offset, value)
-    put(SELF + 0x48, 0x600)
     put(SELF + 0x1F94, DEVICE)
     put(DEVICE + 0x4B8, 0x44444444)
     regs = list(graph.INITIAL)
@@ -179,7 +178,7 @@ def requests(memory):
 
 
 def expected_sizes(caps):
-    return (caps[0] * 28, caps[1] * 28, caps[2] * 24, 0x600 * 32) * 2
+    return (caps[0] * 28, caps[1] * 28, caps[2] * 24, caps[3] * 32) * 2
 
 
 def main():
@@ -235,7 +234,8 @@ def main():
             assert requests(retried[1]) == expected_sizes(wanted)
             assert retried[0][0] & 0xFF
             evidence.append({'case': 'retry-after-failed-creation', 'scale': scale, 'fail_at': fail_at})
-    for custom in ((0x2000, 0x800, 0x200), (0x3000, 0x400, 0x200), (0x3000, 0x800, 0x100)):
+    for custom in ((0x2000, 0x800, 0x200, 0x600), (0x3000, 0x400, 0x200, 0x600),
+                   (0x3000, 0x800, 0x100, 0x600), (0x3000, 0x800, 0x200, 0x400)):
         native = native_result(exe, directory, fixture(image, custom), 2)
         assert capacities(native[1]) == custom
         assert requests(native[1]) == expected_sizes(custom)
@@ -243,7 +243,7 @@ def main():
     encoded = json.dumps(evidence, indent=2)
     (directory / 'verification.json').write_text(encoded)
     (evidence_directory / 'verification.json').write_text(encoded)
-    print(f'PASS: {len(evidence)} facade capacity cases; stock raw-XBE ABI/memory, actual VB byte requests, bounded growth, recreation, failure restore, custom capacities, and original-full allocator success.')
+    print(f'PASS: {len(evidence)} facade capacity cases; stock raw-XBE ABI/memory, actual VB byte requests (detail stream included), bounded growth, recreation, failure restore, custom capacities, and original-full allocator success.')
 
 
 if __name__ == '__main__':

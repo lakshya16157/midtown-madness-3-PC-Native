@@ -40,7 +40,7 @@ from pathlib import Path
 # PyInstaller see and include them (it only analyses this file's own imports).
 _PAYLOAD_STDLIB = (argparse, collections, copy, hashlib, math, re, struct, tempfile, zipfile, zlib)
 
-VERSION = "1.1"
+VERSION = "1.2"
 TITLE = "Midtown Madness 3 - Setup"
 OWNERSHIP_NOTICE = (
     "Use your own original Xbox disc and a lawfully obtained game image and DLC. "

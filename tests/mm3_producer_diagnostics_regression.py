@@ -67,6 +67,12 @@ RECOMP_TLS int g_fp_top,g_df,g_fp_cmp;
 RECOMP_TLS uint16_t g_fp_control_word,g_fp_cc;
 RECOMP_TLS double g_fp_stack[8];
 static void xbox_Nv2aWbcWait(uint32_t address){(void)address;assert(!"Unexpected lag in observer fixture");}
+/* Production kick-bound state with renderer profiling off (the default). */
+static uint32_t s_kick_lag=0x40000u;
+static int s_kick_stats,s_kick_wrap_sync;
+static int64_t s_kick_wait_ticks,s_kick_wait_max;
+static unsigned s_kick_count,s_kick_waits,s_kick_wraps;
+static void mm3_kick_report(int64_t now){(void)now;assert(!"Report without profiling");}
 /* NATIVE_KICK */
 
 static void check_error(void){assert(errno==EDOM && GetLastError()==1234);}

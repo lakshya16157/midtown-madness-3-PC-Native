@@ -3,31 +3,63 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+static unsigned long long test_clock = 1;
+#define MM3_NATIVE_FOG_CLOCK() test_clock
 #include "../src/mm3_native_fog.c"
 ptrdiff_t g_xbox_mem_offset;
-RECOMP_TLS uint32_t g_eax, g_ecx, g_esp;
-static unsigned fog_calls, horizon_calls;
-static int available = 1;
+RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp, g_ebp, g_seh_ebp;
+static unsigned fog_calls, horizon_calls, space_calls;
+static int available = 1, space_room;
 static unsigned char *arena;
 static const uint32_t self = 0x10000, horizon = 0x12000, stack = 0x20000;
-static const uint32_t camera = 0x30000, device = 0x40000, packet = 0x50000;
+static const uint32_t camera = 0x30000, device = 0x40000, packet = 0x50000, space = 0x60000;
 int nv2a_d3d_distance_fog_ready(void) { return available; }
 void sub_000F8DCE_original(void) { ++fog_calls; assert(g_ecx == self && g_esp == stack); g_eax = 0x55660000; g_esp += 16; }
 void sub_000F8750_original(void) { ++horizon_calls; assert(g_ecx == horizon && g_esp == stack); g_eax = 0x77880000; g_esp += 8; }
+/* Title MakeSpace: stdcall (minimum, requested) below a return slot. With
+ * room it moves PUT to fresh space whose threshold leaves the packet room;
+ * it clobbers the scratch registers and the frame globals either way. */
+void sub_00344770(void)
+{
+    ++space_calls;
+    assert(g_esp == stack - 12 && MEM32(g_esp) == 0);
+    assert(MEM32(g_esp + 4) == 0x4000 && MEM32(g_esp + 8) == 0x8000);
+    assert(MEM32(stack + 4) == 0xFFAABBCC);
+    if (space_room) { MEM32(device) = space; MEM32(device + 4) = space + 0x100; }
+    g_eax = MEM32(device); g_ecx = 0xDEAD0001; g_edx = 0xDEAD0002;
+    g_ebp = 0xDEAD0003; g_seh_ebp = 0xDEAD0004;
+    g_esp += 12;
+}
 static void commit(uint32_t address, size_t bytes)
 { assert(VirtualAlloc(arena + address, bytes, MEM_COMMIT, PAGE_READWRITE) == arena + address); }
 static void setup(void)
 {
     memset(arena + 0x10000, 0xA5, 0x60000);
     MEM32(self + 12) = camera; MEM32(horizon + 0x28) = camera;
-    MEM32(0x351F48) = device;
-    MEM32(device) = packet; MEM32(device + 4) = packet + 48;
+    MEM32(0x351F48) = device; MEM32(0x352E00) = 0x8000;
+    MEM32(device) = packet; MEM32(device + 4) = packet + 48; MEM32(device + 8) = 0;
     MEMF(camera + 0x1ED8) = .25f; MEMF(camera + 0x1FB0) = 1000;
     MEMF(camera + 0x1EE4) = 2; MEMF(camera + 0x1EF8) = 4;
     MEMF(camera + 0x1F34) = 2; MEMF(camera + 0x1F38) = 4; MEMF(camera + 0x1F3C) = .5f;
     MEM32(stack) = 0x12345678; MEM32(stack + 4) = 0xFFAABBCC;
     g_ecx = self; g_esp = stack; g_eax = 0x12345678;
-    fog_calls = horizon_calls = 0; available = 1; s_native_fog_camera = 0;
+    g_edx = 0x2468ACE0; g_ebp = 0x00F00F00; g_seh_ebp = 0x00E00E00;
+    fog_calls = horizon_calls = space_calls = 0; available = 1; space_room = 0;
+    s_native_fog_camera = 0;
+}
+static void check_packet(uint32_t at)
+{
+    assert(!fog_calls && g_esp == stack + 16 && g_ecx == self && g_eax == 0x12345601);
+    assert(g_edx == 0x2468ACE0 && g_ebp == 0x00F00F00 && g_seh_ebp == 0x00E00E00);
+    assert(MEM32(device) == at + 48 && MEM32(at - 4) == 0xA5A5A5A5 && MEM32(at + 48) == 0xA5A5A5A5);
+    assert(MEM32(at) == 0x402C0100 && MEM32(at + 4) == 0x58424647);
+    assert(MEMF(at + 8) == 4 && MEMF(at + 12) == 1000);
+    assert(MEMF(at + 16) == 300 && MEMF(at + 20) == 900);
+    assert(MEM32(at + 24) == 0xFFAABBCC && MEM32(at + 28) == 7);
+    assert(MEMF(at + 32) == .25f && MEMF(at + 36) == .25f);
+    assert(MEMF(at + 40) == .5f && MEMF(at + 44) == 6.25f);
+    assert(MEM32(stack) == 0x12345678 && MEM32(stack + 4) == 0xFFAABBCC);
+    assert(s_native_fog_camera == camera);
 }
 static void check_fallback(void)
 {
@@ -47,19 +79,12 @@ int main(int argc, char **argv)
     assert(!_putenv_s("MM3_NATIVE_FOG", argv[1]));
     arena = VirtualAlloc(NULL, 0x84000000ull, MEM_RESERVE, PAGE_NOACCESS);
     assert(arena); g_xbox_mem_offset = (ptrdiff_t)arena;
-    commit(0x10000, 0x60000); commit(0x351000, 0x1000); commit(0x80010000, 0x1000);
+    commit(0x10000, 0x60000); commit(0x351000, 0x2000); commit(0x80010000, 0x1000);
     setup();
-    if (!strcmp(argv[1], "0")) { check_fallback(); goto done; }
+    if (!strcmp(argv[1], "0")) { check_fallback(); assert(!space_calls); goto done; }
     sub_000F8DCE();
-    assert(!fog_calls && g_esp == stack + 16 && g_ecx == self && g_eax == 0x12345601);
-    assert(MEM32(device) == packet + 48 && MEM32(packet - 4) == 0xA5A5A5A5 && MEM32(packet + 48) == 0xA5A5A5A5);
-    assert(MEM32(packet) == 0x402C0100 && MEM32(packet + 4) == 0x58424647);
-    assert(MEMF(packet + 8) == 4 && MEMF(packet + 12) == 1000);
-    assert(MEMF(packet + 16) == 300 && MEMF(packet + 20) == 900);
-    assert(MEM32(packet + 24) == 0xFFAABBCC && MEM32(packet + 28) == 7);
-    assert(MEMF(packet + 32) == .25f && MEMF(packet + 36) == .25f);
-    assert(MEMF(packet + 40) == .5f && MEMF(packet + 44) == 6.25f);
-    assert(MEM32(stack) == 0x12345678 && MEM32(stack + 4) == 0xFFAABBCC);
+    check_packet(packet);
+    assert(!space_calls);
     g_ecx = horizon; g_esp = stack; g_eax = 0xABCD0000;
     sub_000F8750(); assert(!horizon_calls && g_esp == stack + 8 && g_eax == 0xABCD0001);
     assert(!s_native_fog_camera);
@@ -71,6 +96,29 @@ int main(int argc, char **argv)
     setup(); sub_000F8DCE(); g_ecx = horizon;
     g_esp = stack; MEM32(horizon + 0x28) = camera + 4;
     sub_000F8750(); assert(horizon_calls == 1);
+    /* PUT short of room before the threshold, or already past it: ask the
+     * title for space as its own writers do, then write the packet there
+     * with every guest register and the stack as the caller left them. The
+     * horizon strip stays replaced: no retail fog frame. */
+    for (i = 0; i < 3; ++i) {
+        setup(); space_room = 1;
+        if (i == 0) MEM32(device + 4) = packet + 44;
+        if (i == 1) MEM32(device + 4) = packet - 4;
+        if (i == 2) MEM32(device + 4) = packet;
+        sub_000F8DCE();
+        assert(space_calls == 1);
+        check_packet(space);
+        assert(MEM32(packet) == 0xA5A5A5A5);
+        g_ecx = horizon; g_esp = stack; sub_000F8750(); assert(!horizon_calls);
+    }
+    /* Recording mode, a missing size and space that still does not fit keep
+     * the retail function, with its original arguments and registers. */
+    setup(); MEM32(device + 4) = packet + 44; MEM32(device + 8) = 4;
+    space_room = 1; check_fallback(); assert(!space_calls);
+    setup(); MEM32(device + 4) = packet + 44; MEM32(0x352E00) = 0;
+    space_room = 1; check_fallback(); assert(!space_calls);
+    setup(); MEM32(device + 4) = packet + 44;
+    check_fallback(); assert(space_calls == 1);
     /* No packet space, unavailable renderer, invalid pointers and matrices
      * must execute the retail function with its original arguments intact. */
     for (i = 0; i < 14; ++i) {
@@ -90,6 +138,8 @@ int main(int argc, char **argv)
         if (i == 12) MEMF(camera + 0x1FB0) = 1.0e-40f;
         if (i == 13) MEMF(camera + 0x1F34) = 1.0e30f;
         check_fallback();
+        /* Invalid input never asks for space; only a short ring does. */
+        assert(space_calls == (unsigned)(i == 0 || i == 5 || i == 10));
     }
     /* A failure following a good pass clears the horizon-omission decision. */
     setup(); sub_000F8DCE(); assert(s_native_fog_camera == camera);
@@ -100,8 +150,22 @@ int main(int argc, char **argv)
     sub_000F8DCE(); assert(!fog_calls && MEM32(0x80010004) == 0x58424647);
     assert(MEM32(device) == 0x80010030 && g_esp == stack + 16);
     assert(!fog_range(0xFFFFFFF0u, 48) && !fog_range(0x07FFFFF0u, 48));
+    /* Every 30 s: passes, passes that needed space, retail fallbacks. */
+    s_fog_window = 0; test_clock = 1000;
+    s_fog_packets = s_fog_made_space = s_fog_fallbacks = 0;
+    setup(); sub_000F8DCE();
+    assert(s_fog_window == 1000 && s_fog_packets == 1);
+    setup(); space_room = 1; MEM32(device + 4) = packet; sub_000F8DCE();
+    setup(); MEM32(self + 12) = 0; check_fallback();
+    assert(s_fog_packets == 2 && s_fog_made_space == 1 && s_fog_fallbacks == 1);
+    test_clock += 29999;
+    setup(); sub_000F8DCE();
+    assert(s_fog_window == 1000 && s_fog_packets == 3);
+    test_clock += 1;
+    setup(); sub_000F8DCE();
+    assert(s_fog_window == test_clock && s_fog_packets == 1 && !s_fog_made_space && !s_fog_fallbacks);
 done:
     assert(VirtualFree(arena, 0, MEM_RELEASE));
-    puts("PASS native fog ordered packet, camera projection, exact ring capacity, fallback, horizon ownership, high RAM alias and guest ABI");
+    puts("PASS native fog ordered packet, camera projection, title push-buffer space instead of a retail fog frame, fallback, horizon ownership, high RAM alias, 30 s report and guest ABI");
     return 0;
 }

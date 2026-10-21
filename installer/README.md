@@ -90,6 +90,21 @@ pre-fill the window. A quick way to test without a retail disc is to build a bar
 from an existing `game_files` (pristine `Data_*.zip` from `.mm3-car-mods`, minus the files in
 its `state.json`).
 
+### Validation of Setup 1.2 (21 October 2026)
+
+- Built with `--packages out\car-models\packages`: the nine cars as installed on the
+  maintainer's PC (recreated by `tools/car-models/rebuild_packages_from_install.py`, lamps
+  anchored to the body). Setup carries `tools/car-mods` but not the model tools, so
+  `prepare.py` leaves the traffic cars' retail reflections alone in its installs.
+- A `--cli` install from the same redump and DLC ZIP as 1.1 extracted all 456 disc files,
+  detected all six packs (596 files) and installed the nine cars. Its `mm3_recomp.exe` is
+  the newest local build, and the installed car models match the packages byte for byte.
+- Running Setup again over that install skipped extraction, replaced the executable and
+  changed no car file. A run without the cars restored the original car data and kept
+  the DLC and an existing save; only the cars' empty folders remain.
+- The installed game was not started in these runs; the same executable ran in the
+  maintainer's own sessions.
+
 ### Validation of Setup 1.1 (18 October 2026)
 
 - The supplied Europe/Australia multilingual redump (SHA-1

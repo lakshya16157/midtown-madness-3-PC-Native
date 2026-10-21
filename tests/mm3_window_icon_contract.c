@@ -23,6 +23,8 @@ static HWND WINAPI create_hidden_window(DWORD extended_style, LPCSTR class_name,
 ptrdiff_t xbox_GetMemoryOffset(void) { return 0; }
 bool nv2a_hook_pvideo_snapshot(uint32_t regs[0x1000 / 4])
 { (void)regs; return false; }
+bool nv2a_hook_pvideo_scanout_snapshot(Nv2aPvideoSnapshot *snapshot)
+{ (void)snapshot; return false; }
 void nv2a_hook_pvideo_consume(unsigned bank) { (void)bank; }
 float nv2a_d3d_display_aspect(void) { return 1.6f; }
 

@@ -19,5 +19,9 @@ MM3_MOD_FLAG(mm3_mod_lamp_lighting, "MM3_MOD_LAMP_LIGHTING", 1)
 MM3_MOD_FLAG(mm3_mod_world_lighting, "MM3_MOD_WORLD_LIGHTING", 1)
 MM3_MOD_FLAG(mm3_mod_dev_tools, "MM3_MOD_DEV_TOOLS", 1)
 MM3_MOD_FLAG(mm3_mod_native_fog, "MM3_NATIVE_FOG", 1)
+MM3_MOD_FLAG(mm3_mod_glow_lift, "MM3_GLOW_LIFT", 1)
+MM3_MOD_FLAG(mm3_mod_lamp_glows, "MM3_ALL_STREET_LAMPS", 1)
+MM3_MOD_FLAG(mm3_mod_north_marker, "MM3_HUD_NORTH_MARKER", 0)
+MM3_MOD_FLAG(mm3_mod_race_arrow, "MM3_HUD_RACE_ARROW", 0)
 #undef MM3_MOD_FLAG
 #endif

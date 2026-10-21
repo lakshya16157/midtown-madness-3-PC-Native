@@ -2,6 +2,7 @@
 #include "recomp_types.h"
 #include "nv2a_minimap_projection.h"
 extern int mm3_minimap_improved(void);
+extern int mm3_hud_north_marker(void);
 
 #define MAP_SPEED_SPAN 0.60f
 #define MAP_DETAIL_ZOOM 1.10f
@@ -422,7 +423,8 @@ void mm3_map_zoom_compass_geometry(uint32_t node, uint32_t vertices)
     float cx = 0, cy = 0;
     unsigned i;
     (void)node;
-    if (!vertices) return;
+    /* The launcher's north-marker option keeps the native letter. */
+    if (!vertices || mm3_hud_north_marker()) return;
     /* MapNorth is a separate native submission, outside marker dispatch.
      * Collapse only its quad before rotation; a zero-area triangle produces
      * no pixels and leaves the native packing/clip lifetime intact. */

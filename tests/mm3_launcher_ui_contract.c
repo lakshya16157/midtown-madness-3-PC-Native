@@ -1,9 +1,140 @@
 /* Real launcher, isolated preferences, controlled messages instead of global
  * keyboard automation. No renderer, game process or physical pad required. */
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <xinput.h>
+
+static SRWLOCK s_pad_lock = SRWLOCK_INIT;
+static XINPUT_STATE s_pad_states[4];
+static unsigned s_pad_mask;
+static UINT WINAPI fake_raw_input_device_list(PRAWINPUTDEVICELIST devices, PUINT count, UINT size);
+static UINT WINAPI fake_raw_input_device_info(HANDLE device, UINT command, LPVOID data, PUINT size);
+
+static DWORD WINAPI fake_xinput_get_state(DWORD port, XINPUT_STATE *state)
+{
+    DWORD result = ERROR_DEVICE_NOT_CONNECTED;
+    AcquireSRWLockShared(&s_pad_lock);
+    if (port < 4 && (s_pad_mask & (1u << port))) {
+        *state = s_pad_states[port];
+        result = ERROR_SUCCESS;
+    }
+    ReleaseSRWLockShared(&s_pad_lock);
+    return result;
+}
+
+/* Redirect after the platform declaration: production still calls real XInput,
+ * while this translation unit never depends on attached hardware. */
+#define XInputGetState fake_xinput_get_state
+#define GetRawInputDeviceList fake_raw_input_device_list
+#define GetRawInputDeviceInfoA fake_raw_input_device_info
 #include "../src/mm3_launcher.c"
+#undef XInputGetState
+#undef GetRawInputDeviceList
+#undef GetRawInputDeviceInfoA
 
 #define CHECK(test) do { if (!(test)) { fprintf(stderr, "FAIL launcher UI line %d: %s\n", __LINE__, #test); ExitProcess(1); } } while (0)
 static int s_play;
+static void capture_page(HWND window, const char *name);
+static RID_DEVICE_INFO s_raw_info[8];
+static unsigned s_raw_count, s_raw_info_errors;
+static int s_raw_count_error, s_raw_list_error, s_raw_resize_attempts;
+
+static UINT WINAPI fake_raw_input_device_list(PRAWINPUTDEVICELIST devices, PUINT count, UINT size)
+{
+    UINT result = (UINT)-1;
+    AcquireSRWLockExclusive(&s_pad_lock);
+    if (size != sizeof *devices || s_raw_count_error) SetLastError(ERROR_INVALID_PARAMETER);
+    else if (!devices) { *count = s_raw_count; result = 0; }
+    else if (s_raw_list_error) SetLastError(ERROR_INVALID_PARAMETER);
+    else if (s_raw_resize_attempts || *count < s_raw_count) {
+        if (s_raw_resize_attempts) --s_raw_resize_attempts;
+        *count = s_raw_count + 1;
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+    } else {
+        for (unsigned i = 0; i < s_raw_count; ++i) {
+            devices[i].hDevice = (HANDLE)(UINT_PTR)(i + 1);
+            devices[i].dwType = s_raw_info[i].dwType;
+        }
+        result = *count = s_raw_count;
+    }
+    ReleaseSRWLockExclusive(&s_pad_lock);
+    return result;
+}
+
+static UINT WINAPI fake_raw_input_device_info(HANDLE device, UINT command, LPVOID data, PUINT size)
+{
+    UINT result = (UINT)-1;
+    UINT_PTR port = (UINT_PTR)device;
+    AcquireSRWLockShared(&s_pad_lock);
+    if (command != RIDI_DEVICEINFO || !port || port > s_raw_count ||
+        (s_raw_info_errors & (1u << (port - 1))) || *size < sizeof(RID_DEVICE_INFO))
+        SetLastError(ERROR_INVALID_PARAMETER);
+    else {
+        *(RID_DEVICE_INFO *)data = s_raw_info[port - 1];
+        result = *size = sizeof(RID_DEVICE_INFO);
+    }
+    ReleaseSRWLockShared(&s_pad_lock);
+    return result;
+}
+
+static void fake_raw_reset(void)
+{
+    AcquireSRWLockExclusive(&s_pad_lock);
+    memset(s_raw_info, 0, sizeof s_raw_info);
+    s_raw_count = s_raw_info_errors = 0;
+    s_raw_count_error = s_raw_list_error = s_raw_resize_attempts = 0;
+    ReleaseSRWLockExclusive(&s_pad_lock);
+}
+
+static void fake_raw_device(DWORD type, DWORD vendor, DWORD product, USHORT page, USHORT usage)
+{
+    AcquireSRWLockExclusive(&s_pad_lock);
+    CHECK(s_raw_count < 8);
+    RID_DEVICE_INFO *info = &s_raw_info[s_raw_count++];
+    info->cbSize = sizeof *info;
+    info->dwType = type;
+    info->hid.dwVendorId = vendor; info->hid.dwProductId = product;
+    info->hid.usUsagePage = page; info->hid.usUsage = usage;
+    ReleaseSRWLockExclusive(&s_pad_lock);
+}
+
+static void dualsense_detection_contract(void)
+{
+    fake_raw_reset();
+    CHECK(mm3_dualsense_connected() == 0);
+    fake_raw_device(RIM_TYPEHID, 0x054c, 0x0ce6, 1, 5);
+    CHECK(mm3_dualsense_connected() == 1);
+    fake_raw_device(RIM_TYPEHID, 0x054c, 0x0df2, 1, 4);
+    CHECK(mm3_dualsense_connected() == 2);
+    fake_raw_device(RIM_TYPEHID, 0x1234, 0x0ce6, 1, 5);
+    fake_raw_device(RIM_TYPEHID, 0x054c, 0x9999, 1, 5);
+    fake_raw_device(RIM_TYPEHID, 0x054c, 0x0ce6, 2, 5);
+    fake_raw_device(RIM_TYPEHID, 0x054c, 0x0ce6, 1, 6);
+    fake_raw_device(RIM_TYPEKEYBOARD, 0x054c, 0x0ce6, 1, 5);
+    CHECK(mm3_dualsense_connected() == 2);
+    s_raw_info_errors = 1;
+    CHECK(mm3_dualsense_connected() == 1);
+    s_raw_info_errors = 0;
+    s_raw_resize_attempts = 1;
+    CHECK(mm3_dualsense_connected() == 2);
+    s_raw_resize_attempts = 3;
+    CHECK(mm3_dualsense_connected() == 0);
+    s_raw_list_error = 1;
+    CHECK(mm3_dualsense_connected() == 0);
+    s_raw_list_error = 0; s_raw_count_error = 1;
+    CHECK(mm3_dualsense_connected() == 0);
+    fake_raw_reset();
+}
+
+static void fake_ports(unsigned mask, int active_port, const XINPUT_GAMEPAD *active)
+{
+    AcquireSRWLockExclusive(&s_pad_lock);
+    memset(s_pad_states, 0, sizeof s_pad_states);
+    s_pad_mask = mask;
+    if (active && active_port >= 0 && active_port < 4)
+        s_pad_states[active_port].Gamepad = *active;
+    ReleaseSRWLockExclusive(&s_pad_lock);
+}
 
 typedef struct HelpText {
     char title[256], value[512], body[2048], effect[2048];
@@ -40,6 +171,33 @@ static RECT child_bounds(HWND window, int id)
     CHECK(GetWindowRect(GetDlgItem(window, id), &bounds));
     MapWindowPoints(NULL, window, (POINT *)&bounds, 2);
     return bounds;
+}
+
+static void text_fits(HWND window, int id)
+{
+    HWND child = GetDlgItem(window, id);
+    RECT bounds = child_bounds(window, id), measured = {0};
+    char text[1024];
+    GetWindowTextA(child, text, sizeof text);
+    measured.right = bounds.right - bounds.left;
+    HDC dc = GetDC(child);
+    HFONT previous = SelectObject(dc, (HFONT)SendMessageA(child, WM_GETFONT, 0, 0));
+    DrawTextA(dc, text, -1, &measured, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+    SelectObject(dc, previous); ReleaseDC(child, dc);
+    if (measured.bottom > bounds.bottom - bounds.top + 2)
+        fprintf(stderr, "Controller text id %d needs %ld px in %ld x %ld bounds: %s\n", id,
+            measured.bottom, bounds.right - bounds.left, bounds.bottom - bounds.top, text);
+    CHECK(measured.bottom <= bounds.bottom - bounds.top + 2);
+}
+
+static void controller_summary_layout(HWND window)
+{
+    RECT client, summary = child_bounds(window, ID_PAD_SUMMARY), tabs = child_bounds(window, ID_TABS);
+    GetClientRect(window, &client);
+    CHECK(IsWindowVisible(GetDlgItem(window, ID_PAD_SUMMARY)));
+    CHECK(summary.left >= client.left && summary.right <= client.right);
+    CHECK(summary.top >= client.top && summary.bottom <= tabs.top);
+    text_fits(window, ID_PAD_SUMMARY);
 }
 
 static void help_layout(HWND window)
@@ -97,7 +255,8 @@ static void edit_value(HWND window, int id, const char *value)
 
 static void controllers_layout(HWND window)
 {
-    RECT client, count, status, bindings;
+    Launcher *ui = (Launcher *)GetWindowLongPtrA(window, GWLP_USERDATA);
+    RECT client, count, status, bindings, hint = child_bounds(window, ID_PAD_HINT);
     GetClientRect(window, &client);
     GetWindowRect(GetDlgItem(window, ID_PAD_COUNT), &count);
     GetWindowRect(GetDlgItem(window, ID_PAD_STATUS), &status);
@@ -106,9 +265,16 @@ static void controllers_layout(HWND window)
     MapWindowPoints(NULL, window, (POINT *)&status, 2);
     MapWindowPoints(NULL, window, (POINT *)&bindings, 2);
     CHECK(IsWindowVisible(GetDlgItem(window, ID_PAD_COUNT)));
+    CHECK(IsWindowVisible(GetDlgItem(window, ID_PAD_STATUS)));
+    CHECK(IsWindowVisible(GetDlgItem(window, ID_PAD_HINT)));
     CHECK(count.left >= client.left && count.right <= status.left && count.top >= client.top);
     CHECK(status.right <= client.right && status.bottom <= bindings.top);
     CHECK(count.bottom <= bindings.top);
+    CHECK(hint.top >= count.bottom && hint.right <= status.left);
+    CHECK(hint.bottom <= bindings.top - (LONG)lroundf(24.f * ui->scale));
+    CHECK(status.bottom <= child_bounds(window, ID_BIND_LABEL).top);
+    text_fits(window, ID_PAD_STATUS); text_fits(window, ID_PAD_HINT);
+    controller_summary_layout(window);
 }
 
 static HWND wait_launcher(void)
@@ -131,6 +297,154 @@ static void select_page(HWND window, int page)
     NMHDR notification = {tabs, ID_TABS, TCN_SELCHANGE};
     SendMessageA(tabs, TCM_SETCURSEL, page, 0);
     SendMessageA(window, WM_NOTIFY, ID_TABS, (LPARAM)&notification);
+}
+
+static void expect_ports(HWND window, unsigned mask)
+{
+    char status[1024], summary[256], expected[256];
+    int count = 0, rows = 1;
+    GetDlgItemTextA(window, ID_PAD_STATUS, status, sizeof status);
+    GetDlgItemTextA(window, ID_PAD_SUMMARY, summary, sizeof summary);
+    for (int i = 0; i < 4; ++i) {
+        int connected = (mask & (1u << i)) != 0;
+        snprintf(expected, sizeof expected, "P%d: %s", i + 1, connected ? "connected" : "not connected");
+        CHECK(strstr(status, expected));
+        count += connected;
+    }
+    for (const char *at = status; *at; ++at) if (*at == '\n') ++rows;
+    CHECK(rows == 4);
+    if (count) snprintf(expected, sizeof expected, "%s detected: %d connected. Test sticks/triggers in Controls.",
+        count == 1 ? "Controller" : "Controllers", count);
+    else snprintf(expected, sizeof expected, "No controller detected (XInput). Check Controls.");
+    CHECK(!strcmp(summary, expected));
+    controller_summary_layout(window);
+}
+
+static void timer_ports(HWND window, unsigned mask, int active_port, const XINPUT_GAMEPAD *active)
+{
+    fake_ports(mask, active_port, active);
+    SendMessageA(window, WM_TIMER, 1, 0);
+    expect_ports(window, mask);
+}
+
+static void controller_detection(HWND window, const char *capture_name)
+{
+    char text[1024];
+    XINPUT_GAMEPAD active = {0};
+    choose(window, ID_PAD_COUNT, 1);
+    select_page(window, 1);
+    timer_ports(window, 0, -1, NULL);
+    GetDlgItemTextA(window, ID_PAD_HINT, text, sizeof text);
+    CHECK(strstr(text, "No XInput controller detected") && strstr(text, "XInput mode"));
+    controllers_layout(window);
+
+    /* A newly connected held button must be visible without navigating the UI. */
+    active.wButtons = XINPUT_GAMEPAD_A;
+    timer_ports(window, 1, 0, &active);
+    GetDlgItemTextA(window, ID_PAD_STATUS, text, sizeof text);
+    CHECK(strstr(text, "P1: connected (A)"));
+    for (int page = 0; page < 3; ++page) {
+        select_page(window, page);
+        expect_ports(window, 1);
+        CHECK((IsWindowVisible(GetDlgItem(window, ID_PAD_STATUS)) != 0) == (page == 1));
+    }
+    select_page(window, 1);
+
+    active.wButtons = 0;
+    active.bLeftTrigger = XINPUT_GAMEPAD_TRIGGER_THRESHOLD;
+    active.bRightTrigger = XINPUT_GAMEPAD_TRIGGER_THRESHOLD;
+    active.sThumbLX = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE - 1;
+    active.sThumbRY = -XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE + 1;
+    timer_ports(window, 1, 0, &active);
+    GetDlgItemTextA(window, ID_PAD_STATUS, text, sizeof text);
+    CHECK(!strstr(text, "LT") && !strstr(text, "RT") && !strstr(text, "stick"));
+    active.bLeftTrigger = XINPUT_GAMEPAD_TRIGGER_THRESHOLD + 1;
+    active.bRightTrigger = XINPUT_GAMEPAD_TRIGGER_THRESHOLD + 1;
+    active.sThumbLX = -XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE - 1;
+    active.sThumbRY = XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE + 1;
+    timer_ports(window, 1, 0, &active);
+    GetDlgItemTextA(window, ID_PAD_STATUS, text, sizeof text);
+    CHECK(strstr(text, "LT") && strstr(text, "RT"));
+    CHECK(strstr(text, "Left stick") && strstr(text, "Right stick"));
+    controllers_layout(window);
+
+    timer_ports(window, 15, 0, &active);
+    GetDlgItemTextA(window, ID_PAD_HINT, text, sizeof text);
+    CHECK(strstr(text, "Controllers in game") && strstr(text, "4"));
+    controllers_layout(window);
+    choose(window, ID_PAD_COUNT, 4);
+    SendMessageA(window, WM_TIMER, 1, 0);
+    GetDlgItemTextA(window, ID_PAD_HINT, text, sizeof text);
+    CHECK(strstr(text, "4 connected") && !strstr(text, "outside"));
+    controllers_layout(window);
+    capture_page(window, capture_name);
+
+    choose(window, ID_PAD_COUNT, 1);
+    timer_ports(window, 8, 3, &active);
+    GetDlgItemTextA(window, ID_PAD_STATUS, text, sizeof text);
+    CHECK(strstr(text, "P4: connected (LT, RT, Left stick, Right stick)"));
+    GetDlgItemTextA(window, ID_PAD_HINT, text, sizeof text);
+    CHECK(strstr(text, "P4 detected outside") && strstr(text, "Controllers in game to 4"));
+    controllers_layout(window);
+    choose(window, ID_PAD_COUNT, 4);
+    SendMessageA(window, WM_TIMER, 1, 0);
+    GetDlgItemTextA(window, ID_PAD_HINT, text, sizeof text);
+    CHECK(strstr(text, "1 connected") && !strstr(text, "outside"));
+
+    /* Simulate unplugging and reconnecting while the Settings page is open. */
+    select_page(window, 0);
+    timer_ports(window, 0, -1, NULL);
+    timer_ports(window, 1, -1, NULL);
+    select_page(window, 1);
+    expect_ports(window, 1);
+    controllers_layout(window);
+    timer_ports(window, 0, -1, NULL);
+    fake_raw_device(RIM_TYPEHID, 0x054c, 0x0ce6, 1, 5);
+    SendMessageA(window, WM_DEVICECHANGE, 0, 0);
+    GetDlgItemTextA(window, ID_PAD_SUMMARY, text, sizeof text);
+    CHECK(!strcmp(text, "DualSense connected. XInput needed for play (see Controls)."));
+    GetDlgItemTextA(window, ID_PAD_HINT, text, sizeof text);
+    CHECK(strstr(text, "DualSense found") && strstr(text, "Steam Input"));
+    controllers_layout(window);
+    /* A real HID may remain present after an input wrapper exposes XInput. */
+    timer_ports(window, 1, -1, NULL);
+    fake_raw_reset();
+    SendMessageA(window, WM_DEVICECHANGE, 0, 0);
+    expect_ports(window, 1);
+    timer_ports(window, 0, -1, NULL);
+    choose(window, ID_PAD_COUNT, 1);
+    select_page(window, 0);
+}
+
+static LRESULT CALLBACK count_text_updates(HWND window, UINT message, WPARAM wparam,
+    LPARAM lparam, UINT_PTR subclass, DWORD_PTR reference)
+{
+    (void)subclass;
+    if (message == WM_SETTEXT) ++*(int *)reference;
+    return DefSubclassProc(window, message, wparam, lparam);
+}
+
+static void stable_controller_text(HWND window)
+{
+    static const int ids[] = {ID_PAD_SUMMARY, ID_PAD_STATUS, ID_PAD_HINT};
+    int writes[3] = {0};
+    /* This helper runs on the window owner thread so the native subclass and
+     * its stack counters have a controlled lifetime. */
+    CHECK(GetWindowThreadProcessId(window, NULL) == GetCurrentThreadId());
+    timer_ports(window, 0, -1, NULL);
+    for (int i = 0; i < 3; ++i)
+        CHECK(SetWindowSubclass(GetDlgItem(window, ids[i]), count_text_updates, 47, (DWORD_PTR)&writes[i]));
+    SendMessageA(window, WM_TIMER, 1, 0);
+    SendMessageA(window, WM_TIMER, 1, 0);
+    for (int i = 0; i < 3; ++i) CHECK(writes[i] == 0);
+    timer_ports(window, 1, -1, NULL);
+    for (int i = 0; i < 3; ++i) CHECK(writes[i] == 1);
+    SendMessageA(window, WM_TIMER, 1, 0);
+    for (int i = 0; i < 3; ++i) {
+        CHECK(writes[i] == 1);
+        CHECK(RemoveWindowSubclass(GetDlgItem(window, ids[i]), count_text_updates, 47));
+    }
+    timer_ports(window, 0, -1, NULL);
 }
 
 static void contextual_help(HWND window)
@@ -303,6 +617,7 @@ static DWORD WINAPI exercise(void *unused)
     HWND play = GetDlgItem(window, IDOK); RECT footer;
     GetWindowRect(play, &footer);
     CHECK(footer.bottom <= bounds.bottom && footer.top >= bounds.top && IsWindowVisible(play));
+    controller_detection(window, "controls-detected");
     contextual_help(window);
     select_page(window, 1);
     controllers_layout(window);
@@ -367,10 +682,16 @@ static void smaller_layout(void)
     bounds.right = (LONG)lroundf((float)LAUNCHER_WIDTH * ui.scale);
     bounds.bottom = (LONG)lroundf((float)LAUNCHER_HEIGHT * ui.scale);
     AdjustWindowRectEx(&bounds, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE, WS_EX_CONTROLPARENT);
+    fake_ports(8, -1, NULL);
     HWND window = CreateWindowExA(WS_EX_CONTROLPARENT, "MM3NativeLauncher", "Midtown Madness 3 - 720p layout check",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, 0, 0,
         bounds.right - bounds.left, bounds.bottom - bounds.top, NULL, NULL, GetModuleHandleA(NULL), &ui);
     CHECK(window); ShowWindow(window, SW_SHOWNORMAL); UpdateWindow(window);
+    /* No messages have been pumped: connection discovery must happen during
+     * creation instead of waiting for the first 70 ms timer. */
+    expect_ports(window, 8);
+    stable_controller_text(window);
+    controller_detection(window, "controls-detected-720p");
     GetWindowRect(window, &bounds); GetWindowRect(GetDlgItem(window, IDOK), &footer);
     CHECK(bounds.bottom <= work.bottom && bounds.right <= work.right);
     CHECK(footer.bottom < bounds.bottom && IsWindowVisible(GetDlgItem(window, IDOK)));
@@ -407,6 +728,7 @@ int main(int argc, char **argv)
     MM3LauncherConfig config;
     MM3DisplaySettings display;
     CHECK(argc == 2);
+    dualsense_detection_contract();
     snprintf(display_path, sizeof display_path, "%s/display.ini", argv[1]);
     snprintf(launcher_path, sizeof launcher_path, "%s/launcher.ini", argv[1]);
     CHECK(!_putenv_s("MM3_DISPLAY_CONFIG", display_path));
@@ -450,6 +772,6 @@ int main(int argc, char **argv)
     CHECK(!mm3_launcher_run());
     smaller_layout();
     DeleteFileA(display_path); DeleteFileA(launcher_path);
-    puts("PASS launcher UI: contextual explanations and live values for all settings/mods/bindings, focus/hover, validation guidance, normal/720p help layout, keyboard capture/reserved keys, pad mapping, Cancel isolation, Play persistence, defaults, explicit USB overrides and bypass bootstrap");
+    puts("PASS launcher UI: deterministic XInput detection (zero/one/four and sparse ports), DualSense/Edge HID filtering and hotplug, live buttons/triggers/sticks, unplug/reconnect, persistent summary, stable idle text, normal/720p controller/help layout, contextual explanations and live values, keyboard capture/reserved keys, pad mapping, Cancel isolation, Play persistence, defaults, explicit USB overrides and bypass bootstrap");
     return 0;
 }

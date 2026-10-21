@@ -6,6 +6,7 @@ Run with the game closed:
 No visible lenses are invented. The native runtime supplies illumination from
 this explicitly disabled road-only handle. Authored meshes/materials and all
 existing nodes remain byte-identical. Existing backup folders are preserved.
+Downloadable content under TDATA is signed and is never modified.
 """
 from __future__ import annotations
 
@@ -72,8 +73,9 @@ def main():
     args = parser.parse_args()
     root = args.game_files.resolve()
     # Limit traversal to actual installed car roots, never prior backups.
+    # Never TDATA: downloadable content is signed, and the game reports any
+    # edited file there as damaged content (seen 16 and 19 October 2026).
     models = sorted((root / "Data/Shared/Cars").glob("*/body.cmp"))
-    models += sorted((root / "TDATA").rglob("body.cmp"))
     updates = []
     for path in models:
         before = path.read_bytes()

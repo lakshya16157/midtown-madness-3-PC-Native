@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <wchar.h>
 #include <windows.h>
 
 #include <xbox/xboxrecomp.h>
@@ -16,6 +17,8 @@
 #include "mm3_launcher.h"
 #include "mm3_crash_diagnostics.h"
 #include "mm3_world_lighting.h"
+#include "mm3_collision_profile.h"
+#include "mm3_direct_log.h"
 #include <xbox_host.h>
 #include <xinput_xbox.h>
 #include <video/fb_present.h>
@@ -233,12 +236,50 @@ fail:
     return 0;
 }
 
+static int mm3_is_file(const wchar_t *path)
+{
+    DWORD attributes = GetFileAttributesW(path);
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+           !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+/* The game reads game_files/ relative to the working directory. Steam starts a
+ * non-Steam shortcut in the executable's own folder (build\RelWithDebInfo, two
+ * levels below the repository), so look for the game beside the executable and
+ * in its parent folders. A working directory that already holds the game, such
+ * as the one set by play.ps1, is left alone. Returns the directory entered. */
+static const wchar_t *mm3_enter_game_directory(void)
+{
+    static wchar_t directory[4096];
+    wchar_t probe[4096];
+    DWORD length;
+
+    if (mm3_is_file(L"game_files\\default.xbe"))
+        return NULL;
+    length = GetModuleFileNameW(NULL, directory, 4096);
+    if (length == 0 || length >= 4096)
+        return NULL;
+    for (int level = 0; level < 5; ++level) {
+        wchar_t *slash = wcsrchr(directory, L'\\');
+        if (!slash)
+            return NULL;
+        *slash = L'\0';
+        if (_snwprintf_s(probe, 4096, _TRUNCATE, L"%ls\\game_files\\default.xbe",
+                         directory) > 0 && mm3_is_file(probe))
+            return SetCurrentDirectoryW(directory) ? directory : NULL;
+    }
+    return NULL;
+}
+
 int main(void)
 {
     void *xbe_data = NULL;
     size_t xbe_size = 0;
+    const wchar_t *entered_directory = mm3_enter_game_directory();
 
+    mm3_direct_launch_log();
     mm3_configure_diagnostics();
+    mm3_collision_profile_init();
     setvbuf(stdout, NULL, _IONBF, 0);
     /* Unbuffered redirected stderr made diagnostic formatting issue many
      * tiny Windows writes and stalled the renderer on the shared FILE lock.
@@ -250,6 +291,9 @@ int main(void)
     else
         setvbuf(stderr, stderr_buffer, _IOFBF, sizeof stderr_buffer);
     SetUnhandledExceptionFilter(mm3_crash_report);
+    if (entered_directory)
+        fprintf(stderr, "[MM3_CWD] game_files not in the launch folder; working directory is now %ls\n",
+                entered_directory);
     if (!mm3_launcher_run()) return 0;
     /* Bootstrap capture uses the real audio engine without displaying a game
      * window or changing the user's device volume or saved preferences. */

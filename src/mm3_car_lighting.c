@@ -3,12 +3,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "recomp_types.h"
 #include "mm3_mod_flags.h"
 #include "mm3_car_lighting.h"
+#include "mm3_world_lighting.h"
+#include "mm3_light_queue.h"
 
 extern void sub_000CF2DA_original(void);
 extern void sub_0022FDFD_original(void);
+extern void sub_000DFE0E_original(void);
 
 /* Road beam: a flat spot volume. The game's spot texture is a spindle that
  * starts at the lamp, is widest about a third of the way out and fades to
@@ -41,12 +45,30 @@ extern void sub_0022FDFD_original(void);
 #define CAR_BRAKE_RADIUS_NIGHT 3.4f
 #define CAR_BRAKE_GAIN_DAY 0.04f
 #define CAR_BRAKE_GAIN_NIGHT 0.40f
-/* Records per frame are scarce (256 slots shared with every street lamp), and
- * when the queue fills the later cars lose lights from frame to frame, which
- * reads as flicker. Same-kind lamps of one car share a record; its front uses
- * just one beam and one near field, irrespective of the model's lens count. */
-#define CAR_POINT_CAP 224u
-#define CAR_CONE_CAP 256u
+/* Turn signals: a small amber flash on the kerb and nearby cars at night,
+ * barely any spill in daylight (their native lenses keep blinking). */
+#define CAR_SIGNAL_RADIUS_DAY 0.4f
+#define CAR_SIGNAL_RADIUS_NIGHT 1.4f
+#define CAR_SIGNAL_GAIN_DAY 0.03f
+#define CAR_SIGNAL_GAIN_NIGHT 0.15f
+/* Reversing lamps face rearward (every model turns their nodes 180 degrees).
+ * A 9m cube around the bumper also lit both sides of the car and the road
+ * beneath it. Instead, a ground-level field starting just ahead of the lamps
+ * reaches about 4.5m behind the car and spans a lane's width. */
+#define CAR_REVERSE_WIDTH 3.6f
+#define CAR_REVERSE_HEIGHT 3.0f
+#define CAR_REVERSE_LENGTH 6.0f
+#define CAR_REVERSE_BEHIND 1.5f
+#define CAR_REVERSE_DROP 0.3f
+/* Records per frame are shared with every street lamp (256 on the Xbox, 1024
+ * queued by default here, mm3_light_queue.c, whose frame budget then draws
+ * the ones that show, car lights ranked well above lamps). Same-kind lamps of
+ * one car share a record; its front uses just one beam and one near field,
+ * irrespective of the model's lens count. Points stop 32 records short of
+ * the capacity so road beams always find room. */
+#define CAR_BEAM_RESERVE 32u
+static uint32_t car_cone_cap(uint32_t queue) { return mm3_light_queue_capacity(queue); }
+static uint32_t car_point_cap(uint32_t queue) { return mm3_light_queue_capacity(queue) - CAR_BEAM_RESERVE; }
 
 static int car_light_owner_address(uint32_t address, uint32_t size)
 {
@@ -56,15 +78,98 @@ static int car_light_owner_address(uint32_t address, uint32_t size)
 /* The race's primary driver owns its CMP graph at +8. Resolve the live
  * association rather than remembering an address across races/car swaps.
  * Native 21C6C8/21C77C use this same graph for its pose and effect mask. */
-static int car_light_player(uint32_t owner)
+static uint32_t car_light_player_object(uint32_t owner)
 {
     uint32_t manager = MEM32(0x003C5CDCu), race, player;
     if (!car_light_owner_address(manager, 0x58)) return 0;
     race = MEM32(manager + 0x54);
     if (!car_light_owner_address(race, 0xDC)) return 0;
     player = MEM32(race + 0xD8);
-    if (!car_light_owner_address(player, 0xC) || !car_light_owner_address(owner, 8)) return 0;
-    return MEM32(player + 8) == owner && MEM32(owner + 4) == player;
+    if (!car_light_owner_address(player, 0x658) || !car_light_owner_address(owner, 8)) return 0;
+    return MEM32(player + 8) == owner && MEM32(owner + 4) == player ? player : 0;
+}
+
+static int car_light_player(uint32_t owner)
+{
+    return car_light_player_object(owner) != 0;
+}
+
+/* Native 21C6C8 recomputes every driven vehicle's lamp mask each frame and
+ * sets its bits through DFE0E with ECX = the CMP graph and EDI = the vehicle.
+ * Remember that pairing: it identifies the driver's car in cruise as well as
+ * in races, without relying on the race's primary-driver association. */
+#define CAR_SWITCH_SLOTS 16u
+static struct { uint32_t graph, vehicle; int state; } s_car_switch[CAR_SWITCH_SLOTS];
+static unsigned s_car_switch_next, s_car_switch_lines;
+
+static void car_switch_remember(uint32_t graph, uint32_t vehicle)
+{
+    unsigned i;
+    if (!car_light_owner_address(graph, 0x128) || !car_light_owner_address(vehicle, 0x658)) return;
+    for (i = 0; i != CAR_SWITCH_SLOTS; ++i)
+        if (s_car_switch[i].graph == graph) {
+            if (s_car_switch[i].vehicle != vehicle) s_car_switch[i].state = -1;
+            s_car_switch[i].vehicle = vehicle;
+            return;
+        }
+    i = s_car_switch_next++ % CAR_SWITCH_SLOTS;
+    s_car_switch[i].graph = graph;
+    s_car_switch[i].vehicle = vehicle;
+    s_car_switch[i].state = -1;
+}
+
+static int car_switch_slot(uint32_t owner)
+{
+    unsigned i;
+    for (i = 0; i != CAR_SWITCH_SLOTS; ++i)
+        if (owner && s_car_switch[i].graph == owner) {
+            uint32_t vehicle = s_car_switch[i].vehicle;
+            if (car_light_owner_address(vehicle, 0x658) && MEM32(vehicle + 8) == owner) return (int)i;
+            return -1;
+        }
+    return -1;
+}
+
+void sub_000DFE0E(void)
+{
+    if (MEM32(g_esp) == 0x0021C789u && mm3_mod_car_lighting()) car_switch_remember(g_ecx, g_edi);
+    sub_000DFE0E_original();
+}
+
+/* The local driver's car (any mode), else the race's primary driver. */
+static int car_light_driver(uint32_t owner)
+{
+    int slot = car_switch_slot(owner);
+    if (slot >= 0 && MEM32(s_car_switch[slot].vehicle + 0x488) == 1u) return 1;
+    return car_light_player(owner);
+}
+
+/* The driver's own headlight switch (+0x657): native 21B40A turns it on at
+ * race start in evening/night and off by day for the local driver (+0x488 ==
+ * 1), and 21C1F6 flips it on the Light control (pad White, which LB/L1 and
+ * the Q key map to). That car's front lenses and beams follow it in any
+ * period, like a real light switch its evening/night tail lamps do too, and
+ * daytime tails, brake, reverse and signal lamps are unaffected. Every other
+ * car keeps the time-of-day rule. */
+uint32_t mm3_car_lighting_mask(uint32_t owner, uint32_t mask, uint32_t time_of_day)
+{
+    int slot = car_switch_slot(owner);
+    uint32_t vehicle = slot >= 0 ? s_car_switch[slot].vehicle : car_light_player_object(owner);
+    int on;
+    if (!vehicle || MEM32(vehicle + 0x488) != 1u) return mm3_car_lighting_effect_mask(mask, time_of_day);
+    on = MEM8(vehicle + 0x657) != 0;
+    if (slot >= 0 && s_car_switch[slot].state != on) {
+        if (s_car_switch_lines < 64) {
+            ++s_car_switch_lines;
+            fprintf(stderr, "[MM3_CARLIGHT] driver headlights %s (vehicle %08X)\n",
+                    on ? "on" : "off", (unsigned)vehicle);
+            fflush(stderr);
+        }
+        s_car_switch[slot].state = on;
+    }
+    if (on) return mask;
+    mask &= ~0x101u;
+    return mm3_car_lighting_dark_period(time_of_day) ? mask & ~0x2u : mask;
 }
 
 static int car_light_reclaim(uint32_t queue, uint32_t count);
@@ -92,58 +197,32 @@ static int car_debug(void)
     return s_dbg_on;
 }
 
-static int car_light_volume_visible(const float matrix[16], float width,
-                                     float height, float length, unsigned cone)
-{
-    uint32_t view = MEM32(0x003C5588u), count, plane;
-    float centre[3], half[3] = {width * .5f, height * .5f, length * .5f};
-    unsigned i, j;
-    /* Native view setup F4C71 publishes five world-space planes here. Keep
-     * alternate/uninitialized views conservative, rather than losing lights. */
-    if (view < 0x10000u || view > 0x08000000u - 0x1EA8u) return 1;
-    count = MEM32(view + 0x1EA4);
-    if (count != 5u) return 1;
-    for (i = 0; i != 3; ++i)
-        centre[i] = matrix[12 + i] + (cone ? matrix[8 + i] * half[2] : 0.0f);
-    for (i = 0; i != count; ++i)
-        for (j = 0; j != 4; ++j)
-            if (!isfinite(MEMF(view + 0x1E54 + i * 16 + j * 4))) return 1;
-    for (plane = view + 0x1E54, i = 0; i != count; ++i, plane += 16) {
-        float n[3] = {MEMF(plane), MEMF(plane + 4), MEMF(plane + 8)};
-        float distance = MEMF(plane + 12), radius = 0;
-        for (j = 0; j != 3; ++j) {
-            float projection = n[0] * matrix[j * 4] +
-                               n[1] * matrix[j * 4 + 1] + n[2] * matrix[j * 4 + 2];
-            distance += n[j] * centre[j];
-            radius += half[j] * fabsf(projection);
-        }
-        /* Native normals point outwards. Reject the complete light volume,
-         * never just its bulb/body; a car behind the camera can light the road
-         * ahead. A small margin absorbs float rounding at the frustum edge. */
-        if (distance > radius + .05f) return 0;
-    }
-    return 1;
-}
-
 /* Native local-light records contain a light-to-world matrix, three volume
  * dimensions, packed color and a point(0)/cone(1) selector. Keep the native
- * point-before-cone ordering and leave 32 slots available for road beams. */
+ * point-before-cone ordering and leave 32 slots available for road beams.
+ *
+ * Every car's fields are queued, on screen or not (the walker runs before
+ * the game's body culling). A per-volume frustum test used to drop the off
+ * screen ones; without it play was flicker-free and as smooth (exe 09:26:
+ * about 320 car fields a frame, 58 fps, no read-back stalls; the game thread
+ * waits on the renderer anyway). The frame budget (mm3_light_queue.c) ranks
+ * what is drawn and the GPU clips volumes outside the screen. */
 static uint32_t car_light_queue(const float matrix[16], float width, float height,
                             float length, uint32_t color, unsigned cone,
                             unsigned priority, unsigned *slot)
 {
     uint32_t queue = MEM32(0x003C5D8Cu), count, record, at;
     if (!queue || !(color & 0x00FFFFFFu)) return 0;
-    if (!car_light_volume_visible(matrix, width, height, length, cone)) return 0;
     count = MEM32(queue + 0x5810);
-    if (count >= (cone || priority ? CAR_CONE_CAP : CAR_POINT_CAP)) {
-        if (!priority || count != CAR_CONE_CAP || !car_light_reclaim(queue, count)) {
+    if (count >= (cone || priority ? car_cone_cap(queue) : car_point_cap(queue))) {
+        if (!priority || count != car_cone_cap(queue) || !car_light_reclaim(queue, count)) {
             if (s_dbg_on > 0) ++s_dbg.capped[cone];
+            mm3_light_queue_refused(cone);
             return 0;
         }
         --count;
     }
-    record = MEM32(queue + 0x5410 + count * 4);
+    record = MEM32(mm3_light_queue_slots(queue) + count * 4);
     if (!record) { if (s_dbg_on > 0) ++s_dbg.no_slot; return 0; }
     if (s_dbg_on > 0) {
         ++s_dbg.queued[cone];
@@ -163,12 +242,13 @@ static uint32_t car_light_queue(const float matrix[16], float width, float heigh
     MEM32(record + 0x4C) = color;
     MEM32(record + 0x50) = cone;
     at = count;
-    while (at && MEM32(MEM32(queue + 0x5410 + (at - 1) * 4) + 0x50) > cone) {
-        MEM32(queue + 0x5410 + at * 4) = MEM32(queue + 0x5410 + (at - 1) * 4);
+    while (at && MEM32(MEM32(mm3_light_queue_slots(queue) + (at - 1) * 4) + 0x50) > cone) {
+        MEM32(mm3_light_queue_slots(queue) + at * 4) = MEM32(mm3_light_queue_slots(queue) + (at - 1) * 4);
         --at;
     }
-    MEM32(queue + 0x5410 + at * 4) = record;
+    MEM32(mm3_light_queue_slots(queue) + at * 4) = record;
     MEM32(queue + 0x5810) = count + 1;
+    mm3_light_queue_tag(record, priority ? 2u : 1u);
     if (slot) *slot = at;
     return record;
 }
@@ -315,10 +395,10 @@ static uint32_t car_light_front_color(uint32_t color)
  * search over the shared street/car queue. The native queue-reset hook ends
  * each cache lifetime, including frames without any car callbacks. Matching
  * groups still validate their native records before updating them in place. */
-#define CAR_GROUP_SLOTS 256u
+#define CAR_GROUP_SLOTS 512u
 #define CAR_GROUP_PRIORITY_SLOTS 16u
 #define CAR_GROUP_TOTAL_SLOTS (CAR_GROUP_SLOTS + CAR_GROUP_PRIORITY_SLOTS)
-#define CAR_GROUP_HASH_SLOTS 1024u
+#define CAR_GROUP_HASH_SLOTS 2048u
 #define CAR_GROUP_LAMPS 16u
 struct car_light_group {
     uint32_t owner, color;
@@ -329,8 +409,9 @@ struct car_light_group {
 };
 static struct car_light_group s_car_group[CAR_GROUP_TOTAL_SLOTS];
 /* Values are group indices plus one; zero is the first unused probe. The
- * 1024-entry table includes 16 spare groups for the primary driver's front
- * colors when ordinary sources have exhausted their 256 host groups. */
+ * 2048-entry table includes 16 spare groups for the primary driver's front
+ * colors when ordinary sources have exhausted their 512 host groups (one
+ * per car and lamp kind; a 512-record queue can hold more than 256). */
 static uint16_t s_car_group_hash[CAR_GROUP_HASH_SLOTS];
 static unsigned s_car_groups;
 static uint32_t s_car_queue, s_car_frame, s_car_count;
@@ -338,11 +419,11 @@ static uint32_t s_car_queue, s_car_frame, s_car_count;
 /* Only a primary driver's front light may replace an existing field. Prefer
  * weak traffic pools, then other points, then beams. Protect every already
  * submitted player front color. Removing/reinserting the pointer retains the
- * native point-before-cone order and all 256 reusable record allocations. */
+ * native point-before-cone order and every reusable record allocation. */
 static int car_light_reclaim(uint32_t queue, uint32_t count)
 {
-    unsigned char protected_record[CAR_CONE_CAP] = {0};
-    unsigned char traffic_record[CAR_CONE_CAP] = {0};
+    unsigned char protected_record[MM3_LIGHT_QUEUE_MAXIMUM] = {0};
+    unsigned char traffic_record[MM3_LIGHT_QUEUE_MAXIMUM] = {0};
     unsigned i, j, k, victim = count, best_tier = 3, best_energy = ~0u;
     uint32_t record;
     for (i = 0; i < s_car_groups; ++i) {
@@ -350,9 +431,9 @@ static int car_light_reclaim(uint32_t queue, uint32_t count)
         for (j = 0; j < 2; ++j) {
             if (!group->record[j]) continue;
             k = group->slot[j];
-            if (k >= count || MEM32(queue + 0x5410 + k * 4) != group->record[j]) {
+            if (k >= count || MEM32(mm3_light_queue_slots(queue) + k * 4) != group->record[j]) {
                 for (k = 0; k < count; ++k)
-                    if (MEM32(queue + 0x5410 + k * 4) == group->record[j]) break;
+                    if (MEM32(mm3_light_queue_slots(queue) + k * 4) == group->record[j]) break;
                 if (k == count) continue;
                 group->slot[j] = k;
             }
@@ -363,7 +444,7 @@ static int car_light_reclaim(uint32_t queue, uint32_t count)
     for (i = 0; i < count; ++i) {
         uint32_t color;
         unsigned tier, energy;
-        record = MEM32(queue + 0x5410 + i * 4);
+        record = MEM32(mm3_light_queue_slots(queue) + i * 4);
         if (!record || protected_record[i]) continue;
         tier = MEM32(record + 0x50) ? 2 : traffic_record[i] ? 0 : 1;
         color = MEM32(record + 0x4C);
@@ -373,7 +454,7 @@ static int car_light_reclaim(uint32_t queue, uint32_t count)
         }
     }
     if (victim == count) return 0;
-    record = MEM32(queue + 0x5410 + victim * 4);
+    record = MEM32(mm3_light_queue_slots(queue) + victim * 4);
     /* A replacement can have identical bytes. Invalidate by allocation,
      * before writing it, so a displaced vehicle cannot update this field. */
     for (i = 0; i < s_car_groups; ++i)
@@ -384,14 +465,101 @@ static int car_light_reclaim(uint32_t queue, uint32_t count)
                 memset(s_car_group[i].image[j], 0, sizeof s_car_group[i].image[j]);
             }
     for (i = victim; i + 1 < count; ++i)
-        MEM32(queue + 0x5410 + i * 4) = MEM32(queue + 0x5410 + (i + 1) * 4);
-    MEM32(queue + 0x5410 + (count - 1) * 4) = record;
+        MEM32(mm3_light_queue_slots(queue) + i * 4) = MEM32(mm3_light_queue_slots(queue) + (i + 1) * 4);
+    MEM32(mm3_light_queue_slots(queue) + (count - 1) * 4) = record;
     MEM32(queue + 0x5810) = count - 1;
+    mm3_light_queue_tag(record, 0);
     return 1;
+}
+
+/* Renderer-profile report (RECOMP_D3D_PROFILE, as Steam launches set): how
+ * often a car that stays lit from one frame to the next drops or regains one
+ * kind of field, one line a second. Brake lamps follow the driver's pedal and
+ * signals blink; tails and fronts of a car still in view should hold steady.
+ * Fields left out later by the frame budget are counted there. */
+#define CAR_WATCH_SLOTS 1024u
+static struct car_watch { uint32_t owner, kinds; } s_car_watch[2][CAR_WATCH_SLOTS];
+static unsigned s_car_watch_now;
+static struct { unsigned off[10], on[10], cars, frames, driver_frames; double driver_distance; clock_t start; } s_car_switches;
+static int s_car_report_on = -1;
+
+static struct car_watch *car_watch_find(struct car_watch *table, uint32_t owner, int insert)
+{
+    unsigned slot = ((owner >> 4) * 0x9E3779B1u >> 16) % CAR_WATCH_SLOTS, i;
+    for (i = 0; i != CAR_WATCH_SLOTS; ++i, slot = (slot + 1) % CAR_WATCH_SLOTS) {
+        if (table[slot].owner == owner) return table + slot;
+        if (!table[slot].owner) {
+            if (!insert) return NULL;
+            table[slot].owner = owner;
+            return table + slot;
+        }
+    }
+    return NULL;
+}
+
+static void car_watch_frame(void)
+{
+    static const char *const names[10] = {"front", "tail", "brake", "reverse", "siren",
+                                          "signal-left", "signal-right", "", "", "siren2"};
+    struct car_watch *now = s_car_watch[s_car_watch_now], *before = s_car_watch[s_car_watch_now ^ 1];
+    unsigned i, k;
+    clock_t clock_now;
+    if (s_car_report_on < 0) {
+        const char *profile = getenv("RECOMP_D3D_PROFILE");
+        s_car_report_on = profile && *profile && *profile != '0';
+    }
+    if (!s_car_report_on) return;
+    memset(now, 0, sizeof s_car_watch[0]);
+    for (i = 0; i < s_car_groups; ++i) {
+        const struct car_light_group *group = s_car_group + i;
+        struct car_watch *watch;
+        if (!group->owner || group->kind > 9 || (!group->record[0] && !group->record[1])) continue;
+        if ((watch = car_watch_find(now, group->owner, 1)) != NULL) watch->kinds |= 1u << group->kind;
+        /* The camera's distance from the driver's own lamps checks the eye:
+         * a chase camera sits a few metres away. */
+        if (group->priority && group->count) {
+            float eye[3], offset = 0.0f;
+            if (mm3_light_queue_last_eye(eye)) {
+                for (k = 0; k != 3; ++k)
+                    offset += (group->lamp[0].source[9 + k] - eye[k]) * (group->lamp[0].source[9 + k] - eye[k]);
+                if (isfinite(offset)) {
+                    s_car_switches.driver_distance += sqrtf(offset);
+                    ++s_car_switches.driver_frames;
+                }
+            }
+        }
+    }
+    for (i = 0; i != CAR_WATCH_SLOTS; ++i) {
+        const struct car_watch *was;
+        if (!now[i].owner || (was = car_watch_find(before, now[i].owner, 0)) == NULL) continue;
+        ++s_car_switches.cars;
+        for (k = 0; k != 10; ++k) {
+            uint32_t bit = 1u << k;
+            if (!(was->kinds & now[i].kinds & ~bit)) continue;
+            if ((was->kinds & bit) && !(now[i].kinds & bit)) ++s_car_switches.off[k];
+            else if (!(was->kinds & bit) && (now[i].kinds & bit)) ++s_car_switches.on[k];
+        }
+    }
+    s_car_watch_now ^= 1u;
+    ++s_car_switches.frames;
+    clock_now = clock();
+    if (!s_car_switches.start) { s_car_switches.start = clock_now; return; }
+    if (clock_now - s_car_switches.start < CLOCKS_PER_SEC) return;
+    fprintf(stderr, "[MM3_CARLIGHT] cars lit in consecutive frames %.0f; lights off/on:",
+            s_car_switches.frames ? (double)s_car_switches.cars / s_car_switches.frames : 0.0);
+    for (k = 0; k != 10; ++k)
+        if (*names[k]) fprintf(stderr, " %s %u/%u", names[k], s_car_switches.off[k], s_car_switches.on[k]);
+    if (s_car_switches.driver_frames)
+        fprintf(stderr, "; camera %.1f m from the driver's lamps",
+                s_car_switches.driver_distance / s_car_switches.driver_frames);
+    fprintf(stderr, " per %.2f s\n", (double)(clock_now - s_car_switches.start) / CLOCKS_PER_SEC);
+    memset(&s_car_switches, 0, sizeof s_car_switches);
+    s_car_switches.start = clock_now;
 }
 
 static void car_light_reset(uint32_t queue, uint32_t frame, uint32_t count)
 {
+    car_watch_frame();
     s_car_groups = 0;
     memset(s_car_group_hash, 0, sizeof s_car_group_hash);
     memset(s_car_axis, 0, sizeof s_car_axis);
@@ -444,17 +612,26 @@ static unsigned car_light_group_bucket(uint32_t owner, unsigned kind, uint32_t c
 
 static int car_light_group_valid(struct car_light_group *group)
 {
-    uint32_t count = s_car_count > 256u ? 256u : s_car_count;
-    unsigned i, j;
+    /* The whole live queue: road beams sort last, so in a PC-sized queue
+     * they sit past the retail 256. Searching only those lost every beam
+     * once the queue passed 256, and each lens then queued another beam and
+     * pool (stacked, then refused when full: the flickering beam). */
+    uint32_t count = MEM32(s_car_queue + 0x5810), slots = mm3_light_queue_slots(s_car_queue);
+    unsigned i, j, k, start;
+    if (count > mm3_light_queue_capacity(s_car_queue)) count = mm3_light_queue_capacity(s_car_queue);
     for (i = 0; i != 2; ++i) {
         if (!group->record[i]) continue;
         j = group->slot[i];
         /* In-place updates and most second lenses retain their native slot.
-         * A new point can shift cones; repair just that matching entry then. */
-        if (j >= count || MEM32(s_car_queue + 0x5410 + j * 4) != group->record[i]) {
-            for (j = 0; j != count; ++j)
-                if (MEM32(s_car_queue + 0x5410 + j * 4) == group->record[i]) break;
-            if (j == count) return 0;
+         * Points queued since only move it towards the end, so search
+         * forward from there first; repair just that matching entry. */
+        if (j >= count || MEM32(slots + j * 4) != group->record[i]) {
+            start = j < count ? j : 0;
+            for (k = 0; k != count; ++k) {
+                j = start + k < count ? start + k : start + k - count;
+                if (MEM32(slots + j * 4) == group->record[i]) break;
+            }
+            if (k == count) return 0;
             group->slot[i] = j;
         }
         if (memcmp((const void *)XBOX_PTR(group->record[i]), group->image[i], 0x54)) return 0;
@@ -470,7 +647,9 @@ static void car_light_group_record(struct car_light_group *group, unsigned index
                                    unsigned cone)
 {
     uint32_t record = group->record[index];
-    if (!(color & 0x00FFFFFFu)) return;
+    /* No new record for a field that emits nothing; one already queued this
+     * frame takes the dark color rather than keeping its earlier one. */
+    if (!record && !(color & 0x00FFFFFFu)) return;
     if (!record) record = car_light_queue(matrix, width, height, length, color, cone,
                                          group->priority, group->slot + index);
     else {
@@ -486,18 +665,27 @@ static void car_light_group_record(struct car_light_group *group, unsigned index
     }
 }
 
+/* A car's fields keep the same strength at every camera distance. Each
+ * frame draws a car through more than one pass (pre-cull and visible draw),
+ * and a camera-distance fade evaluated per pass could leave a tail lamp lit in
+ * one frame and dimmed in the next. Far and faint lights are left out by the
+ * frame budget instead (mm3_light_queue.c), from one camera per frame. */
 static void car_light_group_draw(struct car_light_group *group, float radius)
 {
     float centre[12] = {0}, forward[3] = {0}, matrix[16], maximum = 0, total = 0;
+    uint32_t time_of_day = MEM32(0x00407C30u);
+    float reach = mm3_local_light_reach(time_of_day);
     unsigned i, j;
     for (i = 0; i != group->count; ++i) total += group->lamp[i].strength;
     if (!isfinite(total) || total <= 0) return;
+    radius *= reach;
     for (i = 0; i != group->count; ++i) {
         float weight = group->lamp[i].strength / total;
         for (j = 0; j != 12; ++j) centre[j] += group->lamp[i].source[j] * weight;
         for (j = 0; j != 3; ++j) forward[j] += group->lamp[i].heading[j] * weight;
         if (group->lamp[i].strength > maximum) maximum = group->lamp[i].strength;
     }
+    maximum *= mm3_local_light_gain(time_of_day);
     if (group->kind == 0) {
         float up[3] = {centre[3], centre[4], centre[5]}, level[3], vertical;
         if (!car_light_normalize(up) || !car_light_normalize(forward)) return;
@@ -506,13 +694,29 @@ static void car_light_group_draw(struct car_light_group *group, float radius)
         if (!car_light_normalize(level)) return;
         if (car_light_matrix(centre, level, 0, matrix)) {
             for (i = 0; i != 3; ++i)
-                matrix[12 + i] += level[i] * CAR_POOL_AHEAD - up[i] * CAR_POOL_DROP;
-            car_light_group_record(group, 0, matrix, CAR_POOL_WIDTH, CAR_POOL_HEIGHT,
-                                    CAR_POOL_LENGTH, car_light_color(group->color, CAR_POOL_GAIN * maximum), 0);
+                matrix[12 + i] += level[i] * CAR_POOL_AHEAD * reach - up[i] * CAR_POOL_DROP;
+            car_light_group_record(group, 0, matrix, CAR_POOL_WIDTH * reach, CAR_POOL_HEIGHT,
+                                    CAR_POOL_LENGTH * reach,
+                                    car_light_color(group->color, CAR_POOL_GAIN * maximum), 0);
         }
+        /* Height keeps the road inside the beam over bumps; only its
+         * footprint (width and throw) shortens in the evening. */
         if (car_light_matrix(centre, forward, CAR_BEAM_PITCH, matrix))
-            car_light_group_record(group, 1, matrix, CAR_BEAM_WIDTH, CAR_BEAM_HEIGHT,
-                                    CAR_BEAM_LENGTH, car_light_color(group->color, CAR_BEAM_GAIN * maximum), 1);
+            car_light_group_record(group, 1, matrix, CAR_BEAM_WIDTH * reach, CAR_BEAM_HEIGHT,
+                                    CAR_BEAM_LENGTH * reach,
+                                    car_light_color(group->color, CAR_BEAM_GAIN * maximum), 1);
+    } else if (group->kind == 3) {
+        float up[3] = {centre[3], centre[4], centre[5]}, level[3], vertical;
+        if (!car_light_normalize(up) || !car_light_normalize(forward)) return;
+        vertical = car_light_dot(forward, up);
+        for (i = 0; i != 3; ++i) level[i] = forward[i] - vertical * up[i];
+        if (!car_light_normalize(level)) return;
+        if (car_light_matrix(centre, level, 0, matrix)) {
+            for (i = 0; i != 3; ++i)
+                matrix[12 + i] += level[i] * CAR_REVERSE_BEHIND * reach - up[i] * CAR_REVERSE_DROP;
+            car_light_group_record(group, 0, matrix, CAR_REVERSE_WIDTH * reach, CAR_REVERSE_HEIGHT,
+                                    CAR_REVERSE_LENGTH * reach, car_light_color(group->color, maximum), 0);
+        }
     } else {
         memset(matrix, 0, sizeof matrix);
         matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1;
@@ -531,7 +735,9 @@ static void car_light_submit(uint32_t owner, uint32_t node, unsigned kind,
                              uint32_t color, float strength, float radius)
 {
     struct car_light_group *group = NULL;
-    unsigned i, j, bucket, appended = 0, priority = kind == 0 && car_light_player(owner);
+    /* Every lamp of the driver's own car may claim a queue record: its
+     * beam, tails, brakes, reverse and signals are the lights always in view. */
+    unsigned i, j, bucket, appended = 0, priority = car_light_driver(owner);
     for (i = 0; i != 12; ++i) if (!isfinite(source[i])) return;
     if (!(color & 0x00FFFFFFu)) return;
     /* A source below packed-RGB precision emits no field. Do not let its
@@ -548,8 +754,9 @@ static void car_light_submit(uint32_t owner, uint32_t node, unsigned kind,
     if (!group || !car_light_group_valid(group)) {
         /* Existing native records can still be updated when full. A new
          * group that cannot get any record must not consume host capacity. */
-        if (!priority && MEM32(s_car_queue + 0x5810) >= (kind == 0 ? CAR_CONE_CAP : CAR_POINT_CAP)) {
+        if (!priority && MEM32(s_car_queue + 0x5810) >= (kind == 0 ? car_cone_cap(s_car_queue) : car_point_cap(s_car_queue))) {
             if (group) { group->record[0] = group->record[1] = 0; group->count = 0; }
+            mm3_light_queue_refused(kind == 0);
             return;
         }
         if (!group) {
@@ -591,7 +798,7 @@ static void car_light_submit(uint32_t owner, uint32_t node, unsigned kind,
      * preserves linear-probe lookup. Keep genuine missing-slot retry groups. */
     if (appended && !group->record[0] && !group->record[1]) {
         uint32_t count = MEM32(s_car_queue + 0x5810);
-        if (count < CAR_CONE_CAP && MEM32(s_car_queue + 0x5410 + count * 4)) {
+        if (count < car_cone_cap(s_car_queue) && MEM32(mm3_light_queue_slots(s_car_queue) + count * 4)) {
             s_car_group_hash[bucket] = 0;
             --s_car_groups;
         }
@@ -623,9 +830,10 @@ void mm3_car_lighting_emit(uint32_t node, uint32_t mask, const float source[12])
     uint32_t owner = MEM32(node + 4);
     float heading[3], brightness;
     int enabled = world && !MEM8(world + 0x2A8) && MEM32(world + 0x24C);
-    mask = mm3_car_lighting_effect_mask(mask, time_of_day);
+    mask = mm3_car_lighting_mask(owner, mask, time_of_day);
     car_light_frame();
     if (!enabled) { if (s_dbg_on > 0) ++s_dbg.disabled; return; }
+    mm3_light_queue_camera();
 
     if (kind == 8) {
         if (!(mask & 0x101u)) return;
@@ -672,11 +880,14 @@ void mm3_car_lighting_emit(uint32_t node, uint32_t mask, const float source[12])
                           brightness * (dark ? CAR_BRAKE_GAIN_NIGHT : CAR_BRAKE_GAIN_DAY),
                           dark ? CAR_BRAKE_RADIUS_NIGHT : CAR_BRAKE_RADIUS_DAY);
     } else if (kind == 3) {
-        car_light_submit(owner, node, kind, source, NULL, color, brightness * .35f, 4.5f);
+        car_light_submit(owner, node, kind, source, NULL, color, brightness * .35f, 0);
     } else if (kind == 4 || kind == 9) {
         car_light_submit(owner, node, kind, source, NULL, color, brightness * .25f, 3.0f);
     } else {
-        car_light_submit(owner, node, kind, source, NULL, color, brightness * .18f, 2.0f);
+        int dark = mm3_car_lighting_dark_period(time_of_day);
+        car_light_submit(owner, node, kind, source, NULL, color,
+                          brightness * (dark ? CAR_SIGNAL_GAIN_NIGHT : CAR_SIGNAL_GAIN_DAY),
+                          dark ? CAR_SIGNAL_RADIUS_NIGHT : CAR_SIGNAL_RADIUS_DAY);
     }
 }
 
@@ -685,7 +896,7 @@ static void car_light_hook(void)
     uint32_t node = g_ecx, stack = g_esp, kind = MEM32(node + 0x34);
     uint32_t mask = MEM32(stack + 12), color = MEM32(node + 0x64);
     uint32_t transform = MEM32(stack + 4);
-    uint32_t draw_mask = mm3_car_lighting_effect_mask(mask, MEM32(0x00407C30u));
+    uint32_t draw_mask = mm3_car_lighting_mask(MEM32(node + 4), mask, MEM32(0x00407C30u));
     float source[12];
     memcpy(source, (const void *)XBOX_PTR(transform), sizeof source);
     if (car_debug() && kind < 10) {

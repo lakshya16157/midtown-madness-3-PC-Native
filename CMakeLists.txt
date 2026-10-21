@@ -74,7 +74,8 @@ endif()
 # Render distance renames definitions only: renaming every reference with a
 # compile definition would bypass the hooks for callers in the same chunk.
 set(MM3_DISTANCE_FUNCTIONS sub_000D9E2E sub_000E2D5B sub_000F4AC3 sub_000FE71E
-    sub_001661D0 sub_001633B7 sub_002256C7 sub_002203E5 sub_0022F298)
+    sub_001661D0 sub_001633B7 sub_002256C7 sub_002203E5 sub_0022F298
+    sub_00162EBA sub_00162EF3)       # facade detail/far stream use (mm3_facade_streams.c)
 set(MM3_DEFINITION_ONLY_FUNCTIONS ${MM3_DISTANCE_FUNCTIONS})
 # Repair newly decoded collision cells once, before the native queries use them.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0015A929)
@@ -115,12 +116,18 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001466D9)
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001093BB sub_00069807)
 # The hot visibility leaf keeps its balanced x87 scratch stack in native locals.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001C793A)
+# Keep the matrix leaf's x87 scratch in scalars, with retail exceptional paths.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00259982)
 # Scope even world lighting to the native full-scene composite and its colors.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000FF19A)
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000FF324 sub_000FF15C sub_00230DEE)
 # Local light sources retain native activation, with forward car beams and
 # source-sized illumination around vehicle and city lamps.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000CF2DA sub_000489A6 sub_00021E18)
+# Lamp glows clear their own lens/housing: lift appended glow points toward the eye.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001A831B)
+# Pair each driven vehicle with its lamp graph so its own headlight switch governs.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000DFE0E)
 # Expire car-light caches at the native queue reset rather than rescanning
 # every queued light at each lamp callback; retain same-chunk wrapper calls.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0022FDFD)
@@ -136,6 +143,16 @@ list(JOIN MM3_DEFINITION_ONLY_FUNCTIONS "|" distance_names)
 set(MM3_SEAM_FUNCTIONS sub_00344900 sub_003449B0 sub_0013FE96 sub_0014E808)
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_dma_publish_seam.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_collision_call_seam.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_ai_query_stack_seam.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_masked_visibility_seam.cmake")
+list(APPEND MM3_SEAM_FUNCTIONS sub_0013AB27)
+include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_route_diagnostics_seam.cmake")
+list(APPEND MM3_SEAM_FUNCTIONS sub_0024FA01 sub_0024F917 sub_0024F964)
+include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_route_cancel_seam.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_apu_mmio_seam.cmake")
+list(APPEND MM3_SEAM_FUNCTIONS sub_0027DCDA sub_0027DD72)
+include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_audio_resource_pool_seam.cmake")
+list(APPEND MM3_SEAM_FUNCTIONS sub_0017BB4B)
 list(APPEND MM3_SEAM_FUNCTIONS sub_00224A07)
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_city_streaming_seam.cmake")
 list(APPEND MM3_SEAM_FUNCTIONS sub_0023F09B)
@@ -147,6 +164,8 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_hud_cleanup_seam.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_name_marker_seam.cmake")
 list(APPEND MM3_SEAM_FUNCTIONS sub_000E10A5 sub_000E1F49 sub_000E2385 sub_000E247C)
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_lamp_lighting_seam.cmake")
+list(APPEND MM3_SEAM_FUNCTIONS sub_00254FDD sub_0022FF8B sub_0022FFD1 sub_0023006E sub_00230970)
+include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_light_queue_seam.cmake")
 list(APPEND MM3_SEAM_FUNCTIONS sub_000E01C2 sub_000E0277)
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_car_light_culling_seam.cmake")
 list(APPEND MM3_SEAM_FUNCTIONS sub_00201BCA sub_0011CAE8 sub_00120091 sub_00116535 sub_0014BAE9 sub_0014C121)
@@ -232,6 +251,9 @@ foreach(distance_input IN LISTS distance_owners)
                 distance_content "${distance_content}")
         endif()
     endforeach()
+    if(owner_sub_001C7B15 STREQUAL distance_input)
+        mm3_keep_masked_visibility_fallback(distance_content)
+    endif()
     if(MM3_NATIVE_FENCE_WAIT AND owner_sub_00344640 STREQUAL distance_input)
         mm3_add_fence_wait(distance_content)
     endif()
@@ -245,6 +267,25 @@ foreach(distance_input IN LISTS distance_owners)
             mm3_fix_collision_calls(distance_content ${collision_owner})
         endif()
     endforeach()
+    if(owner_sub_0013AB27 STREQUAL distance_input)
+        mm3_fix_ai_query_stack(distance_content)
+    endif()
+    foreach(route_owner sub_0013AB27 sub_0024FA01 sub_0024F917 sub_0024F964)
+        if(owner_${route_owner} STREQUAL distance_input)
+            mm3_add_route_diagnostics(distance_content ${route_owner})
+        endif()
+    endforeach()
+    if(owner_sub_0024F964 STREQUAL distance_input)
+        mm3_fix_route_cancellation(distance_content)
+    endif()
+    foreach(apu_owner sub_0027DCDA sub_0027DD72)
+        if(owner_${apu_owner} STREQUAL distance_input)
+            mm3_add_apu_mmio(distance_content ${apu_owner})
+        endif()
+    endforeach()
+    if(owner_sub_0017BB4B STREQUAL distance_input)
+        mm3_guard_audio_resource_pool(distance_content)
+    endif()
     if(owner_sub_0023F09B STREQUAL distance_input)
         mm3_add_speedometer_readout(distance_content)
     endif()
@@ -269,6 +310,11 @@ foreach(distance_input IN LISTS distance_owners)
             else()
                 mm3_add_lamp_lighting_seam(distance_content ${lamp_owner})
             endif()
+        endif()
+    endforeach()
+    foreach(light_queue_owner sub_00254FDD sub_0022FF8B sub_0022FFD1 sub_0023006E sub_00230970)
+        if(owner_${light_queue_owner} STREQUAL distance_input)
+            mm3_add_light_queue_seam(distance_content ${light_queue_owner})
         endif()
     endforeach()
     foreach(car_light_owner sub_000E01C2 sub_000E0277)
@@ -337,16 +383,25 @@ add_executable(${PROJECT_NAME}
  src/mm3_widescreen.c
  src/mm3_name_markers.c
  src/mm3_map_zoom.c
+ src/mm3_hud_options.c
  src/mm3_race_guidance.c
  src/mm3_render_distance.c
  src/mm3_facade_capacity.c
+ src/mm3_facade_streams.c
  src/mm3_building_diagnostics.c
  src/mm3_producer_diagnostics.c
+ src/mm3_route_diagnostics.c
+ src/mm3_apu_mmio.c
+ src/mm3_direct_log.c
+    src/mm3_collision_profile.c
  src/mm3_tree_diagnostics.c
  src/mm3_tree_body.c
  src/mm3_tree_audio.c
  src/mm3_visibility.c
+ src/mm3_masked_visibility.c
+ src/mm3_matrix.c
  src/mm3_debug_teleport.c
+ src/mm3_stress_debug.c
  src/mm3_custom_car_names.c
  src/mm3_car_selection_compat.c
  src/mm3_car_order.c
@@ -357,6 +412,9 @@ add_executable(${PROJECT_NAME}
  src/mm3_car_lighting.c
  src/mm3_car_light_visibility.c
  src/mm3_lamp_lighting.c
+ src/mm3_lamp_glow.c
+ src/mm3_light_queue.c
+ src/mm3_darkness_monitor.c
  src/recomp_trace_probe.c
  ${RECOMP_GEN_SOURCES})
 
@@ -366,6 +424,9 @@ endif()
 
 set_property(SOURCE src/recomp_manual.c APPEND PROPERTY COMPILE_DEFINITIONS
     "recomp_lookup_manual=recomp_lookup_manual_base" "sub_00083A6C=sub_00083A6C_original")
+# The game's per-frame light level is watched from the light-queue consumer
+# (src/mm3_darkness_monitor.c); unit tests that include the queue source skip it.
+set_property(SOURCE src/mm3_light_queue.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_DARKNESS_MONITOR=1)
 if(MM3_MOVIE_INPUT_TRACE)
     target_sources(${PROJECT_NAME} PRIVATE src/mm3_movie_input_trace.c)
 endif()

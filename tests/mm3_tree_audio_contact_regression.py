@@ -17,7 +17,13 @@ PREFIX = PREFIX.replace('#include "mm3_tree_audio.c"', '''#include "mm3_tree_aud
 #define MM3_TREE_CLOCK audio_clock
 #define MM3_TREE_LOG(...) ((void)0)
 #define MM3_TREE_FLUSH() ((void)0)
-#include "mm3_tree_diagnostics.c"''')
+#include "mm3_tree_diagnostics.c"
+/* Collision profiling is opt-in (RECOMP_COLLISION_PROFILE); keep it off. */
+int mm3_collision_profile_on;
+MM3CollisionSample mm3_collision_profile_begin(uint32_t car, uint32_t contacts)
+{MM3CollisionSample sample={0};(void)car;(void)contacts;return sample;}
+void mm3_collision_profile_end(MM3CollisionSample sample, uint32_t contacts){(void)sample;(void)contacts;}
+void mm3_collision_profile_effect(void){}''')
 INTEGRATION = r'''
 static const uint32_t CONTACT=0x110000,METADATA=0x120000,CITY=0x130000;
 static const uint32_t CAR=0x140000,SIM=0x141000,BODY=0x150000;

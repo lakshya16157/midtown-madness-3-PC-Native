@@ -70,6 +70,7 @@ class PackageBuilderTest(unittest.TestCase):
             with patch.object(builder, "Data") as data, \
                     patch.object(builder, "alias_paths", side_effect=lambda blob, donor, alias: blob), \
                     patch.object(builder.mm3_model, "convert_exterior", side_effect=capture), \
+                    patch.object(builder.mm3_lights, "anchor_lights_to_body", side_effect=lambda blob: (blob, {})), \
                     patch.object(builder.mm3_textures, "image_to_cdds", return_value=b"test-cdds"), \
                     patch("sys.stdout", new=io.StringIO()):
                 data.return_value.read.return_value = b"donor"
@@ -139,6 +140,7 @@ class PackageBuilderTest(unittest.TestCase):
             with patch.object(builder, "Data") as data, \
                     patch.object(builder, "alias_paths", side_effect=lambda blob, donor, alias: blob), \
                     patch.object(builder.mm3_model, "convert_exterior", side_effect=capture), \
+                    patch.object(builder.mm3_lights, "anchor_lights_to_body", side_effect=lambda blob: (blob, {})), \
                     patch.object(builder.mm3_textures, "image_to_cdds", return_value=b"test-cdds"), \
                     patch("sys.stdout", new=io.StringIO()):
                 data.return_value.read.return_value = b"donor"

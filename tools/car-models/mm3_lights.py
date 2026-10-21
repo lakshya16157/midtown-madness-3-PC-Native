@@ -278,6 +278,85 @@ def align_lights(blob: bytes, anchors: dict, *, source_transform=None) -> tuple[
     return model.write(), report
 
 
+PLACEHOLDER_VERTICES = 3
+_IDENTITY_TRANSFORM = (1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+
+
+def _stored_matrices(node: mm3_model.Node) -> tuple[tuple, tuple]:
+    """A transform's stored world and parent-relative 3x4 matrices."""
+    values = struct.unpack_from("<24f", node.prefix, node.transform_offset + 4)
+    return values[:12], values[12:]
+
+
+def _placeholder_part(node: mm3_model.Node, version: int) -> bool:
+    """True when the part's own meshes are the converter's invisible stubs."""
+    for child in node.children:
+        for block in child.meshes if child.kind in (2, 6) else ():
+            if not block.payload or mm3_model.mesh_metadata(block, version)["vertex_count"] > PLACEHOLDER_VERTICES:
+                return False
+    return True
+
+
+def anchor_lights_to_body(blob: bytes) -> tuple[bytes, dict]:
+    """Attach lamps on invisible loose parts to the car's body.
+
+    Imported exteriors keep their whole visible shell in the body mesh; the
+    donor's hoods, hatches and lamp glasses remain only as 3-vertex stubs so
+    native damage code still finds them. A lamp under such a stub wobbled
+    with the hidden hood after a crash, or flew off with it, while its
+    visible lens stayed on the body. Re-parent each such lamp transform to the
+    body with an unchanged stored world matrix. Lamps under any part with
+    real geometry, and every mesh, effect and other node, are untouched.
+    """
+    model = mm3_model.read_model(blob)
+    report = {"anchored": [], "kept": []}
+    car = next((child for child in model.root.children
+                if child.kind == 1 and child.name.lower() == "car"), None)
+    body = car and next((child for child in car.children
+                         if child.kind == 1 and child.name.lower() == "body"), None)
+    loose = car and next((child for child in car.children
+                          if child.kind == 1 and child.name.lower() == "loseparts"), None)
+    if body is None or loose is None:
+        return blob, report
+    body_world, body_relative = _stored_matrices(body)
+    if any(abs(a - b) > 1e-6 for a, b in zip(body_world + body_relative, _IDENTITY_TRANSFORM * 2)):
+        raise mm3_model.FormatError("Car body is not at the model origin; lamps cannot be re-anchored exactly")
+    moves = []
+
+    def visit(node, parent, stub_chain, matrix, path):
+        path += "/" + node.name
+        matrix = matrix @ node.relative_matrix()
+        if node.kind == 1 and len(node.children) == 1 and node.children[0].kind == 4:
+            if stub_chain:
+                moves.append((node, parent, matrix, path))
+            else:
+                report["kept"].append(path)
+            return
+        if node.kind == 1:
+            stub_chain = stub_chain and _placeholder_part(node, model.version)
+            for child in list(node.children):
+                visit(child, node, stub_chain, matrix, path)
+
+    base = model.root.relative_matrix() @ car.relative_matrix() @ loose.relative_matrix()
+    for part in list(loose.children):
+        visit(part, loose, True, base, "/" + car.name + "/" + loose.name)
+    for node, parent, matrix, path in moves:
+        world, _ = _stored_matrices(node)
+        stored = np.eye(4)
+        stored[:3, :3] = np.asarray(world[:9]).reshape(3, 3)
+        stored[:3, 3] = np.asarray(world[9:]) * (1, 1, -1)
+        if not np.allclose(stored, matrix, atol=1e-3):
+            raise mm3_model.FormatError(f"Stored world matrix disagrees with its parents: {path}")
+        prefix = bytearray(node.prefix)
+        struct.pack_into("<12f", prefix, node.transform_offset + 4 + 48, *world)
+        node.prefix = bytes(prefix)
+        parent.children.remove(node)
+        body.children.append(node)
+        report["anchored"].append({"node": path, "to": "/" + car.name + "/" + body.name + "/" + node.name,
+                                   "position": stored[:3, 3].round(4).tolist()})
+    return (model.write() if moves else blob), report
+
+
 def align_rear_lights(blob: bytes, anchors: dict, *, source_transform=None) -> tuple[bytes, dict]:
     """Compatibility entry point for existing rear-only repair callers."""
     return align_lights(blob, anchors, source_transform=source_transform)

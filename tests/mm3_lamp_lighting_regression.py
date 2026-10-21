@@ -15,6 +15,7 @@ from mm3_headlight_projector_regression import constants
 
 ROOT = Path(__file__).resolve().parents[1]
 SEAMS = ("sub_000E10A5", "sub_000E1F49", "sub_000E2385", "sub_000E247C")
+QUEUE_SEAMS = ("sub_0022FF8B", "sub_0022FFD1", "sub_0023006E")
 NATIVE = SEAMS + (
     "sub_000489A6", "sub_00021E18", "sub_0022FFD1", "sub_0023006E",
     "sub_00230342", "sub_002300C6", "sub_002598CD", "sub_000139C8",
@@ -72,11 +73,12 @@ RECOMP_TLS uint16_t g_fp_control_word,g_fp_cc;
 RECOMP_TLS double g_fp_stack[8];
 RECOMP_TLS RecompMmx g_mm0,g_mm1,g_mm2,g_mm3,g_mm4,g_mm5,g_mm6,g_mm7;
 RECOMP_TLS RecompXmm g_xmm0,g_xmm1,g_xmm2,g_xmm3,g_xmm4,g_xmm5,g_xmm6,g_xmm7;
-static unsigned char memory[0x400000];
+static unsigned char memory[0x410000]; /* through time of day at 0x407C30 */
 enum { SOURCE=0x10000, MANAGER=0x11000, MATRIX=0x13000, POSITION=0x14000,
        DIRECTION=0x15000, FLAG=0x16000, QUEUE=0x20000, RECORD=0x30000,
        MINIMUM=0x40000, MAXIMUM=0x41000, RETAIL_MINIMUM=0x42000,
-       RETAIL_MAXIMUM=0x43000, STACK=0x90000 };
+       RETAIL_MAXIMUM=0x43000, VIEW=0x60000, STACK=0x90000 };
+#include "mm3_light_queue.c"
 #include "mm3_lamp_lighting.c"
 #pragma warning(push)
 #pragma warning(disable:4101 4102 4127 4189 4702)
@@ -92,6 +94,10 @@ static void reset(void)
     g_ecx=SOURCE;g_esp=STACK;g_fp_top=g_df=g_fp_cmp=0;
     g_fp_cc=0;g_fp_control_word=0x27f;
     memset(g_fp_stack,0,sizeof g_fp_stack);native_constants();
+    s_lamp_height=s_lamp_drop=0;
+    s_lamp_reach=LAMP_ADDED_MAX_REACH;s_lamp_frame_queue=s_lamp_frame_stamp=s_lamp_frame_count=0;
+    s_lamp_frame_base=s_lamp_frame_capped=s_lamp_frame_seen=0;memset(s_lamp_distance,0,sizeof s_lamp_distance);
+    s_queue=s_slots=s_allocation=0;s_capacity=MM3_LIGHT_QUEUE_RETAIL;
     MEM32(0x3c5d8c)=QUEUE;MEM32(QUEUE+0x5410)=RECORD;
     MEMF(MATRIX)=MEMF(MATRIX+0x10)=MEMF(MATRIX+0x20)=1;
     MEMF(POSITION)=12;MEMF(POSITION+4)=5;MEMF(POSITION+8)=-3;
@@ -104,6 +110,30 @@ static void reset(void)
     MEM32(STACK+8)=FLAG;MEM32(STACK+12)=MATRIX;
     MEM32(STACK+16)=POSITION;MEM32(STACK+20)=DIRECTION;
     MEM32(STACK+32)=2;
+}
+
+/* A live 90-degree view looking down +Z from eye: four side planes through
+ * the eye with outward normals, and a near plane 1m ahead. */
+static void view(const float eye[3])
+{
+    static const float n[5][3]={{-.70710678f,0,-.70710678f},{.70710678f,0,-.70710678f},
+                                {0,-.70710678f,-.70710678f},{0,.70710678f,-.70710678f},{0,0,-1}};
+    unsigned i;
+    MEM32(0x3c5588)=VIEW;MEM32(VIEW+0x1ea4)=5;
+    /* World-to-camera rows (identity rotation, translation -eye) and the
+     * camera position native F3F93 derives from them; the side planes below
+     * pass through it. */
+    for(i=0;i!=3;++i) {
+        unsigned j;
+        for(j=0;j!=3;++j) MEMF(VIEW+0x1f24+i*16+j*4)=i==j?1.0f:0.0f;
+        MEMF(VIEW+0x1f54+i*4)=-eye[i];MEMF(VIEW+0x1ea8+i*4)=eye[i];
+    }
+    for(i=0;i!=5;++i) {
+        float d=-(n[i][0]*eye[0]+n[i][1]*eye[1]+n[i][2]*eye[2]);
+        if(i==4) d-=1;
+        MEMF(VIEW+0x1e54+i*16)=n[i][0];MEMF(VIEW+0x1e58+i*16)=n[i][1];
+        MEMF(VIEW+0x1e5c+i*16)=n[i][2];MEMF(VIEW+0x1e60+i*16)=d;
+    }
 }
 
 static unsigned produce(void)
@@ -189,6 +219,7 @@ static void source_colors(void)
     const uint32_t colored[]={0xffff0000,0xff00ff00,0xff0000ff,
         0xff806040,0xff40ffff,0xffff40ff};
     reset();MEMF(SOURCE+0x4f)=7;MEM32(SOURCE+0x2b)=0x00ffffffu;
+    lamp_set_mount(POSITION,DIRECTION); /* a street lamp: 5m post, lighting down */
     /* Both dim and bright neutral fixtures get warmth without channel clipping;
      * each step of a native fade remains at most one output channel step. */
     for(level=0;level<256;level++) {
@@ -205,20 +236,28 @@ static void source_colors(void)
         previous=output;
     }
     assert(previous==0xa0d9b282u);
-    /* Different nearly-neutral authored shades cross the warmth blend smoothly. */
-    MEM32(SOURCE+0x2b)=0xffffff00u;
-    previous=lamp_source_color(SOURCE,0xffffff00u);
-    for(level=1;level<256;level++) {
+    /* Different nearly-neutral authored shades cross the warmth blend smoothly
+     * (from 0xFFFF2B up, the yellowest shade that still counts as lamp light;
+     * a fixture's class comes from its authored colour, so its fades stay
+     * smooth). */
+    MEM32(SOURCE+0x2b)=0xffffff2au;assert(!lamp_is_street(SOURCE));
+    MEM32(SOURCE+0x2b)=0xffffff2bu;assert(lamp_is_street(SOURCE));
+    previous=lamp_source_color(SOURCE,0xffffff2bu);
+    for(level=0x2c;level<256;level++) {
         MEM32(SOURCE+0x2b)=0xffffff00u|level;
         uint32_t output=lamp_source_color(SOURCE,0xffffff00u|level);
         for(shift=0;shift<=16;shift+=8)
             assert(abs((int)channel(output,shift)-(int)channel(previous,shift))<=2);
         previous=output;
     }
-    /* Saturated authored hues receive only uniform dimming, including alpha. */
+    /* Saturated authored hues receive only uniform dimming, including alpha:
+     * signs and neon at retail strength through the 1.3 composite gain, the
+     * warm lamp shade at the street-lamp 0.85. */
     for(i=0;i<sizeof colored/sizeof colored[0];i++) {
         MEM32(SOURCE+0x2b)=colored[i];
-        assert(lamp_source_color(SOURCE,colored[i])==lamp_color_gain(colored[i],.85f));
+        assert(lamp_source_color(SOURCE,colored[i])==
+               lamp_color_gain(colored[i],lamp_is_street(SOURCE) ? .85f : LAMP_ARCHITECTURE_GAIN));
+        assert(lamp_is_street(SOURCE)==(colored[i]==0xff806040u));
     }
     assert(lamp_source_color(SOURCE,0x7f000000u)==0x7f000000u);
     /* Queue both native source types to verify the warm conversion is wired in. */
@@ -275,14 +314,199 @@ static void queued_source_fades(void)
     }
 }
 
+/* The PC-sized queue: an enlarged manager gets a 512-record pointer array
+ * after the retail object, the seamed native submission fills it past 256
+ * records in point-before-cone order, and the lamp limit follows. */
+static void queue_extension(void)
+{
+    enum { BIG=0x200000 };
+    unsigned i,j,cones=0;
+    uint32_t slots;
+    reset();
+    s_requested=512;
+    assert(mm3_light_queue_alloc_size()==0x5B20+512*4+256*0x54);
+    for(i=0;i<256;i++) MEM32(BIG+0x5410+i*4)=BIG+0x10+i*0x54;
+    MEM32(0x3c5d8c)=BIG;mm3_light_queue_allocated(BIG);mm3_light_queue_attach();
+    assert(mm3_light_queue_capacity(BIG)==512 && mm3_light_queue_capacity(QUEUE)==256);
+    slots=mm3_light_queue_slots(BIG);
+    assert(slots==BIG+0x5B20 && mm3_light_queue_slots(QUEUE)==QUEUE+0x5410);
+    for(i=0;i<512;i++)
+        assert(MEM32(slots+i*4)==(i<256 ? BIG+0x10+i*0x54 : BIG+0x5B20+512*4+(i-256)*0x54));
+    assert(lamp_added_limit(BIG)==384 && lamp_added_limit(QUEUE)==144);
+    /* 600 submissions through native point (21E18) and spot (489A6) entry
+     * points: the seamed queue takes exactly 512 distinct records. */
+    for(i=0;i<600;i++) {
+        g_esp=STACK;g_ebx=SOURCE;MEM32(STACK)=0x12345678;MEM32(STACK+4)=MATRIX;
+        MEM32(STACK+8)=0x00404040u+i;MEMF(STACK+12)=3;
+        if(i%5==0) { MEMF(STACK+16)=30;sub_000489A6();assert(g_esp==STACK+20); }
+        else { sub_00021E18();assert(g_esp==STACK+16); }
+        assert(g_fp_top==0);
+    }
+    assert(MEM32(BIG+0x5810)==512);
+    for(i=0;i<512;i++) {
+        uint32_t record=MEM32(slots+i*4);
+        assert(record);
+        if(MEM32(record+0x50)) cones++;
+        else assert(!cones);                    /* points before cones */
+        for(j=0;j<i;j+=37) assert(MEM32(slots+j*4)!=record);
+    }
+    assert(cones>90 && cones<120);
+    /* Another manager, or a failed larger allocation, keeps the retail layout. */
+    mm3_light_queue_allocated(BIG+0x100000);MEM32(0x3c5d8c)=BIG+0x180000;
+    s_queue=0;s_capacity=256;mm3_light_queue_attach();
+    assert(mm3_light_queue_capacity(BIG+0x180000)==256 &&
+           mm3_light_queue_slots(BIG+0x180000)==BIG+0x180000+0x5410);
+    mm3_light_queue_allocated(0);MEM32(0x3c5d8c)=0;mm3_light_queue_attach();
+    assert(mm3_light_queue_capacity(0)==256);
+    s_requested=256;assert(mm3_light_queue_alloc_size()==0x5B20);
+    s_requested=0;s_queue=0;s_slots=0;s_capacity=256;s_allocation=0;
+    printf("queue extension: 512 records after the retail manager, native submission past 256 in order, retail fallback\n");fflush(stdout);
+}
+
+/* Lamp pools follow a per-frame distance reach so a crowded queue keeps the
+ * nearest lamps steady instead of first-come pools that flicker. */
+static unsigned reach_frame(unsigned base,unsigned first,unsigned last,unsigned stamp,
+                            unsigned *capped,float *farthest)
+{
+    unsigned d,lit=0;
+    MEM32(QUEUE+0x5acc)=stamp;MEM32(QUEUE+0x5810)=base;*capped=0;*farthest=0;
+    for(d=first;d<=last;d++) {
+        unsigned before=s_lamp_added_capped;
+        MEMF(POSITION)=0;MEMF(POSITION+4)=5;MEMF(POSITION+8)=(float)d;
+        assert(!mm3_lamp_density_skip(1,MATRIX,POSITION,DIRECTION,SOURCE));
+        if(s_lamp_added_capped!=before) (*capped)++;
+        if(!s_lamp_glow_only) {
+            lit++;MEM32(QUEUE+0x5810)++;
+            if((float)d>*farthest) *farthest=(float)d;
+            if(d<=15) assert(s_lamp_added_fade==1.0f);
+        }
+    }
+    return lit;
+}
+
+static void adaptive_reach(void)
+{
+    static const float eye[3]={0,5,0};
+    unsigned frame,capped,lit;
+    float farthest,crowded;
+    reset();view(eye);
+    /* 100 records queued before 80 added lamps at 10..89m: 44 fit under 144. */
+    lit=reach_frame(100,10,89,0,&capped,&farthest);
+    assert(lit==44 && capped>0);
+    lit=reach_frame(100,10,89,1,&capped,&farthest);
+    assert(!capped && farthest<s_lamp_reach+0.001f && s_lamp_reach>=40 && s_lamp_reach<=48);
+    for(frame=2;frame<40;frame++) {
+        lit=reach_frame(100,10,89,frame&3,&capped,&farthest);
+        assert(!capped && lit>=30 && lit<=44 && s_lamp_reach<=48.001f);
+    }
+    crowded=s_lamp_reach;
+    /* A quiet street: the reach grows back half a metre a frame to 100m. */
+    for(frame=40;frame<200;frame++) reach_frame(100,10,14,frame&3,&capped,&farthest);
+    assert(fabsf(s_lamp_reach-100.0f)<.001f);
+    printf("adaptive reach: crowded frames settle at %.1fm without hitting the limit, quiet ones return to 100m\n",
+           (double)crowded);fflush(stdout);
+}
+
+/* Lamp pools reach the ground below their mounting height (locator Y). */
+static void mount_reach(void)
+{
+    /* A warm 2m lamp on a 4m post: 2.9m tuned -> 7m (1.75 x 4m). */
+    reset();MEMF(POSITION+4)=4;MEMF(SOURCE+0x4f)=2;MEM32(SOURCE+0x2b)=0x00ded57d;
+    assert(produce()==1 && MEM32(RECORD+0x50)==0);
+    assert(fabsf(MEMF(RECORD+0x40)-14.0f)<.01f);
+    /* Its bounds use the same reach around the locator. */
+    run_bounds(sub_000E10A5,MINIMUM,MAXIMUM);
+    assert(fabsf(MEMF(MINIMUM)-5.0f)<.01f && fabsf(MEMF(MAXIMUM)-19.0f)<.01f);
+    /* Sodium amber and white lamps count; neon and signal hues are not street
+     * lamps and keep the retail 2m. */
+    reset();MEMF(POSITION+4)=4;MEMF(SOURCE+0x4f)=2;MEM32(SOURCE+0x2b)=0x00ffaf48;
+    assert(produce()==1 && fabsf(MEMF(RECORD+0x40)-14.0f)<.01f);
+    reset();MEMF(POSITION+4)=4;MEMF(SOURCE+0x4f)=2;MEM32(SOURCE+0x2b)=0x0064ebff;
+    assert(produce()==1 && fabsf(MEMF(RECORD+0x40)-4.0f)<.01f);
+    reset();MEMF(POSITION+4)=4;MEMF(SOURCE+0x4f)=2;MEM32(SOURCE+0x2b)=0x00ff6464;
+    assert(produce()==1 && fabsf(MEMF(RECORD+0x40)-4.0f)<.01f);
+    reset();MEMF(POSITION+4)=4;MEMF(SOURCE+0x4f)=2;MEM32(SOURCE+0x2b)=0x00ebe100;
+    assert(produce()==1 && fabsf(MEMF(RECORD+0x40)-4.0f)<.01f);
+    /* Ground-level (monument floodlights, bollards) and implausible mounts
+     * are not street lamps: the retail reach. */
+    reset();MEMF(POSITION+4)=.5f;MEMF(SOURCE+0x4f)=2;MEM32(SOURCE+0x2b)=0x00ded57d;
+    assert(produce()==1 && fabsf(MEMF(RECORD+0x40)-4.0f)<.01f);
+    reset();MEMF(POSITION+4)=30;MEMF(SOURCE+0x4f)=2;MEM32(SOURCE+0x2b)=0x00ded57d;
+    assert(produce()==1 && fabsf(MEMF(RECORD+0x40)-4.0f)<.01f);
+    /* A tall lamp that already reaches the road is unchanged (13.05m). */
+    reset();MEMF(POSITION+4)=6;MEMF(SOURCE+0x4f)=9;MEM32(SOURCE+0x2b)=0x00ffd57d;
+    assert(produce()==1 && fabsf(MEMF(RECORD+0x40)-26.1f)<.01f);
+    /* A small downward spot reaches 1.5x its height along the axis; the
+     * same spot aimed sideways (a facade floodlight) keeps the retail 3m. */
+    reset();MEMF(POSITION+4)=4;MEMF(SOURCE+0x4f)=3;MEM8(SOURCE+0x53)=226;MEM32(SOURCE+0x2b)=0x00ffffff;
+    assert(produce()==1 && MEM32(RECORD+0x50)==1 && fabsf(MEMF(RECORD+0x48)-6.0f)<.01f);
+    reset();MEMF(POSITION+4)=4;MEMF(SOURCE+0x4f)=3;MEM8(SOURCE+0x53)=226;MEM32(SOURCE+0x2b)=0x00ffffff;
+    MEMF(DIRECTION)=1;MEMF(DIRECTION+4)=0;
+    assert(produce()==1 && fabsf(MEMF(RECORD+0x48)-3.0f)<.01f);
+    /* The authored 7m street spot on a 5m post is unchanged (10.15m). */
+    reset();MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;
+    assert(produce()==1 && fabsf(MEMF(RECORD+0x48)-10.15f)<.001f);
+    /* Evening still shrinks the grown pool. */
+    reset();MEMF(POSITION+4)=4;MEMF(SOURCE+0x4f)=2;MEM32(SOURCE+0x2b)=0x00ded57d;
+    lamp_set_mount(POSITION,DIRECTION);MEM32(0x407c30)=2;
+    assert(fabsf(mm3_lamp_source_range(SOURCE)-7.0f*MM3_EVENING_LIGHT_REACH)<.01f);
+    MEM32(0x407c30)=0;assert(fabsf(mm3_lamp_source_range(SOURCE)-7.0f)<.01f);
+    printf("mount reach: small lamps reach the road, signs/tall lamps/sideways spots unchanged\n");fflush(stdout);
+}
+
+/* Monuments: a white floodlight at the base of a monument aimed up its wall
+ * (one-in-two density) is not a street lamp. The skipped one stays dark as
+ * on the Xbox (no pool, no glow); the lit one keeps the retail 20m throw,
+ * cone and colour at retail strength. Street lamps beside it still all light. */
+static void architecture(void)
+{
+    uint32_t color;
+    reset();MEMF(POSITION+4)=.3f;MEMF(DIRECTION+4)=1;
+    MEMF(SOURCE+0x4f)=20;MEM8(SOURCE+0x53)=60;MEM32(SOURCE+0x2b)=0x00ffffff;
+    MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;
+    assert(produce()==0 && !s_lamp_glow_only);
+    reset();MEMF(POSITION+4)=.3f;MEMF(DIRECTION+4)=1;
+    MEMF(SOURCE+0x4f)=20;MEM8(SOURCE+0x53)=60;MEM32(SOURCE+0x2b)=0x00ffffff;
+    MEM8(SOURCE+8)=2;MEM32(STACK+32)=4;
+    assert(produce()==1 && MEM32(RECORD+0x50)==1 && MEMF(RECORD+0x48)==20.0f);
+    color=MEM32(RECORD+0x4c);
+    assert(channel(color,16)==channel(color,8) && channel(color,8)==channel(color,0));
+    assert(fabsf(mm3_lamp_source_cone(SOURCE)-60.0f*90.0f/255.0f)<.001f);
+    /* The same fixture on a 6m post aimed up is still a floodlight. */
+    reset();MEMF(POSITION+4)=6;MEMF(DIRECTION+4)=1;
+    MEMF(SOURCE+0x4f)=20;MEM8(SOURCE+0x53)=60;MEM32(SOURCE+0x2b)=0x00ffffff;
+    MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;
+    assert(produce()==0);
+    /* A 40m floodlight on a 10m mast aimed steeply down is still a floodlight. */
+    reset();MEMF(POSITION+4)=10;
+    MEMF(SOURCE+0x4f)=40;MEM8(SOURCE+0x53)=125;MEM32(SOURCE+0x2b)=0x00805a3c;
+    MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;
+    assert(produce()==0);
+    reset();MEMF(POSITION+4)=10;
+    MEMF(SOURCE+0x4f)=40;MEM8(SOURCE+0x53)=125;MEM32(SOURCE+0x2b)=0x00805a3c;
+    MEM8(SOURCE+8)=2;MEM32(STACK+32)=4;
+    assert(produce()==1 && MEMF(RECORD+0x48)==40.0f);
+    /* Red warning lights (one in two) stay one in two. */
+    reset();MEMF(SOURCE+0x4f)=8;MEM32(SOURCE+0x2b)=0x00b4001e;MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;
+    assert(produce()==0);
+    /* A bulb with only a glow, on a monument's wall at 1.5m: no new pool. */
+    reset();MEMF(POSITION+4)=1.5f;assert(produce()==0);
+    /* A street lamp beside them: every one lights, pool included. */
+    reset();MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;assert(produce()==1 && !s_lamp_glow_only);
+    printf("architecture: monument floodlights and wall bulbs keep the retail density, reach, cone and colour\n");fflush(stdout);
+}
+
 int main(void)
 {
-    unsigned i,lights=0,fallbacks=0,dark=0,warm=0,colored=0;
+    unsigned i,lights=0,fallbacks=0,dark=0,warm=0,colored=0,floodlights=0;
     float tiny,large;
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    /* The default locator is 5m up: the 5.65m bulb pool grows to 1.75x that
+     * height so it reaches the ground. A glow-only bulb at ground level is not
+     * a street lamp and, as on the Xbox, casts no pool. */
     reset();assert(produce()==1);assert(MEM32(RECORD+0x50)==0);
-    assert(MEMF(RECORD+0x40)>11 && MEMF(RECORD+0x40)<11.6f);
-    assert(MEM32(RECORD+0x4c)==0x00291F15);
+    assert(fabsf(MEMF(RECORD+0x40)-17.5f)<.01f);
+    reset();MEMF(POSITION+4)=.5f;assert(produce()==0);
     reset();MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;
     assert(produce()==1);assert(MEM32(RECORD+0x50)==1);
     assert(fabsf(MEMF(RECORD+0x48)-10.15f)<.001f);
@@ -303,12 +527,83 @@ int main(void)
     reset();MEM8(SOURCE+0x4d)=0;assert(!produce());
     reset();MEM32(SOURCE+0x2b)=0;assert(!produce());
     reset();MEM32(0x3c5d8c)=0;assert(!produce());
+    {
+        /* One-in-N fixtures (byte 8): a hash multiple lights natively and
+         * the others now light too, pool included, along the same path. */
+        unsigned lit;
+        reset();MEM8(SOURCE+8)=2;MEM32(STACK+32)=4;assert(produce()==1);lit=g_eax&255u;
+        assert(!s_lamp_glow_only);
+        reset();MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;assert(produce()==1);
+        assert((g_eax&255u)==lit && !s_lamp_glow_only);
+        reset();MEM8(SOURCE+8)=3;MEM32(STACK+32)=7;assert(produce()==1);
+        /* Once 144 records are queued, added fixtures keep only their glow
+         * (112 records stay for vehicles); authored ones still queue. */
+        reset();MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;MEM32(QUEUE+0x5810)=144;
+        assert(produce()==144 && s_lamp_glow_only);
+        reset();MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;MEM32(QUEUE+0x5810)=143;
+        MEM32(QUEUE+0x5410+143*4)=RECORD;assert(produce()==144 && !s_lamp_glow_only);
+        /* The next fixture is unaffected by the previous glow-only one. */
+        reset();MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;MEM32(QUEUE+0x5810)=144;
+        assert(produce()==144 && s_lamp_glow_only);
+        reset();MEM8(SOURCE+8)=2;MEM32(STACK+32)=4;MEM32(QUEUE+0x5810)=144;
+        MEM32(QUEUE+0x5410+144*4)=RECORD;assert(s_lamp_glow_only);
+        assert(produce()==145 && !s_lamp_glow_only);
+        {
+            /* With a trusted camera, added pools follow distance: full up to
+             * 70m, eased (same tint, lower energy) to 100m, glow only beyond.
+             * Authored fixtures keep their pool at every distance. */
+            static const float near_eye[3]={12,5,-53},mid_eye[3]={12,5,-88},far_eye[3]={12,5,-113};
+            uint32_t full,eased;
+            reset();view(near_eye);MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;
+            assert(produce()==1 && !s_lamp_glow_only && s_lamp_added_fade==1.0f);
+            full=MEM32(RECORD+0x4c);
+            reset();view(mid_eye);MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;
+            assert(produce()==1 && !s_lamp_glow_only && s_lamp_added_fade>0 && s_lamp_added_fade<1);
+            eased=MEM32(RECORD+0x4c);
+            assert(channel(eased,16)<channel(full,16) && channel(eased,0)<channel(full,0));
+            reset();view(far_eye);MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;
+            assert(produce()==0 && s_lamp_glow_only);
+            reset();view(far_eye);MEM8(SOURCE+8)=2;MEM32(STACK+32)=4;
+            assert(produce()==1 && !s_lamp_glow_only && MEM32(RECORD+0x4c)==full);
+            /* The fixture's object matrix places it: moved 60m nearer, lit. */
+            reset();view(far_eye);MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;MEMF(MATRIX+0x2c)=-60;
+            assert(produce()==1 && s_lamp_added_fade==1.0f);
+            /* An untrusted eye (off its planes) keeps the full pool. */
+            reset();view(far_eye);MEMF(VIEW+0x1ea8)+=7;MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;
+            assert(produce()==1 && s_lamp_added_fade==1.0f);
+        }
+        /* Retail's own denser streaming mode (N/4) still lights it fully. */
+        reset();MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;MEM8(MANAGER+0x15f5)=1;
+        assert(produce()==1 && !s_lamp_glow_only);
+    }
     reset();MEM32(QUEUE+0x5810)=256;assert(produce()==256);
-    reset();MEMF(SOURCE+0x49)=.1f;MEM8(SOURCE+0x4d)=25;tiny=mm3_lamp_source_range(SOURCE);
+    /* Glow-only bulbs: on a 2m post a tiny dim one (0.75m from its flare)
+     * still reaches the ground (3.5m), a large bright one keeps 8m; the same
+     * bulbs without a street mount (walls, monuments) cast no pool. */
+    reset();MEMF(POSITION+4)=2;lamp_set_mount(POSITION,DIRECTION);
+    MEMF(SOURCE+0x49)=.1f;MEM8(SOURCE+0x4d)=25;tiny=mm3_lamp_source_range(SOURCE);
     MEMF(SOURCE+0x49)=.5f;MEM8(SOURCE+0x4d)=255;large=mm3_lamp_source_range(SOURCE);
-    assert(tiny>0 && tiny<1 && large>7.9f && large<8.1f);
-    MEMF(SOURCE+0x4f)=50;assert(mm3_lamp_source_range(SOURCE)==56);
+    assert(fabsf(tiny-3.5f)<.001f && large>7.9f && large<8.1f);
+    s_lamp_height=0;assert(mm3_lamp_source_range(SOURCE)==0.0f);
+    lamp_set_mount(POSITION,DIRECTION);
+    /* A 50m throw is a floodlight: retail reach; a 12m lamp gains 5.4m. */
+    MEMF(SOURCE+0x4f)=50;assert(mm3_lamp_source_range(SOURCE)==50);
+    MEMF(SOURCE+0x4f)=12;assert(fabsf(mm3_lamp_source_range(SOURCE)-17.4f)<.001f);
+    /* Evening (time 2) keeps every fixture on with a shorter, softer pool;
+     * morning, noon and night keep the full reach and color. */
+    MEM32(0x407c30)=2;
+    assert(fabsf(mm3_lamp_source_range(SOURCE)-17.4f*MM3_EVENING_LIGHT_REACH)<.001f);
+    MEMF(SOURCE+0x4f)=50;assert(mm3_lamp_source_range(SOURCE)==50*MM3_EVENING_LIGHT_REACH);
+    MEMF(SOURCE+0x4f)=0;assert(mm3_lamp_source_range(SOURCE)==large*MM3_EVENING_LIGHT_REACH);
+    MEMF(SOURCE+0x4f)=7;MEM32(SOURCE+0x2b)=0x00ffffffu;
+    assert(channel(lamp_source_color(SOURCE,0x00ffffffu),16)<channel(0x00d9b282u,16));
+    MEM32(0x407c30)=3;assert(lamp_source_color(SOURCE,0x00ffffffu)==0x00d9b282u);
+    MEM32(0x407c30)=0;
     MEMF(SOURCE+0x4f)=NAN;assert(mm3_lamp_source_range(SOURCE)==0);
+    mount_reach();
+    architecture();
+    queue_extension();
+    adaptive_reach();
     direct_spot(0x0016945a);direct_spot(0x000CF5ED);direct_spot(0x12345678);
     source_colors();
     queued_source_fades();
@@ -317,11 +612,21 @@ int main(void)
     for(i=0;i<sizeof retail/sizeof retail[0];i++) {
         float before,after,size;
         uint32_t original_color,tuned_color;
-        unsigned shift,peak=0,minimum=255;
+        unsigned shift,peak=0,minimum=255,street;
+        int bulb;
         reset();memcpy(memory+SOURCE,retail[i],0x56);
         before=MEMF(SOURCE+0x4f);size=MEMF(SOURCE+0x49);
-        after=mm3_lamp_source_range(SOURCE);
         original_color=MEM32(SOURCE+0x2b);
+        bulb=before==0 && size>0 && MEM8(SOURCE+0x4d) && (original_color&0xffffff);
+        /* At ground level or on a wall (no street mount): exactly retail. */
+        after=mm3_lamp_source_range(SOURCE);
+        assert(!lamp_is_street(SOURCE) && after==(before>0 ? before : 0.0f));
+        if(original_color&0xffffff)
+            assert(lamp_source_color(SOURCE,original_color)==lamp_color_gain(original_color,LAMP_ARCHITECTURE_GAIN));
+        /* On a 5m post lighting the road. */
+        lamp_set_mount(POSITION,DIRECTION);
+        street=lamp_is_street(SOURCE);
+        after=mm3_lamp_source_range(SOURCE);
         tuned_color=lamp_source_color(SOURCE,original_color);
         assert(!memcmp(memory+SOURCE,retail[i],0x56));
         assert((original_color&0xff000000u)==(tuned_color&0xff000000u));
@@ -331,7 +636,7 @@ int main(void)
             if(value<minimum)minimum=value;
             assert(channel(tuned_color,shift)<=value);
         }
-        if(after>0 && peak) {
+        if(street && after>0 && peak) {
             source_fade();
             if(minimum*4>peak*3)warm++;
             else {
@@ -340,13 +645,18 @@ int main(void)
                 colored++;
             }
         }
-        if(before>0) { assert(after>before && after<=before+6.001f);lights++; }
-        else if(size>0 && MEM8(SOURCE+0x4d) && (MEM32(SOURCE+0x2b)&0xffffff)) {
-            assert(after>0 && after<=10.001f);fallbacks++;lights++;
+        if(before>0) {
+            if(street) assert(after>before && after<=fmaxf(before+6.001f,8.751f));
+            else { assert(after==before); ++floodlights; }
+            lights++;
+        } else if(bulb) {
+            if(street) { assert(after>0 && after<=10.001f); fallbacks++; }
+            else assert(after==0);
+            lights++;
         } else {assert(after==0);dark++;}
     }
-    assert(lights==157 && dark==455 && fallbacks>25 && warm>0 && colored>0);
-    printf("PASS: %u city light descriptors (%u added local bulbs), %u dark effects; fixed fixture warmth, monotone 256-step authored/queued fades, authored saturated hues, native source gates, source-sized reach, matched bounds, point/spot queues, traffic-signal tint and guest ABI\n",lights,fallbacks,dark);
+    assert(lights==157 && dark==455 && fallbacks>25 && warm>0 && colored>0 && floodlights>0);
+    printf("PASS: %u city light descriptors (%u added local bulbs on street posts, %u authored fixtures kept retail as floodlights/signs), %u dark effects; fixed fixture warmth, monotone 256-step authored/queued fades, authored saturated hues, native source gates, source-sized reach, matched bounds, point/spot queues, traffic-signal tint and guest ABI\n",lights,fallbacks,floodlights,dark);
     return 0;
 }
 '''
@@ -375,6 +685,18 @@ def main():
             subprocess.run([str(cmake), f"-DINPUT={original.as_posix()}", f"-DOUTPUT={modified.as_posix()}",
                             f"-DOWNER={owner}", "-P", str(script)], check=True)
             native[owner] = modified.read_text()
+        # The production PC-sized light queue seam on the native queue owners.
+        queue_script = folder / "queue_seam.cmake"
+        queue_script.write_text(f'include("{(ROOT / "scripts/mm3_light_queue_seam.cmake").as_posix()}")\n'
+                                'file(READ "${INPUT}" content)\n'
+                                'mm3_add_light_queue_seam(content "${OWNER}")\n'
+                                'file(WRITE "${OUTPUT}" "${content}")\n')
+        for owner in QUEUE_SEAMS:
+            original, modified = folder / "original.c", folder / "modified.c"
+            original.write_text(native[owner])
+            subprocess.run([str(cmake), f"-DINPUT={original.as_posix()}", f"-DOUTPUT={modified.as_posix()}",
+                            f"-DOWNER={owner}", "-P", str(queue_script)], check=True)
+            native[owner] = modified.read_text().replace("#include <stdint.h>\n", "")
         for owner in ("sub_000489A6", "sub_00021E18"):
             native[owner] = native[owner].replace("void " + owner + "(void)", "void " + owner + "_original(void)", 1)
         body = "\n".join(list(native.values()) + [retail_bounds])

@@ -1,11 +1,20 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <errno.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "mm3_recomp_types.h"
 #include "mm3_tree_body.h"
+#include "mm3_collision_profile.h"
+#ifdef MM3_TREE_TEST_HELPERS
+static int s_tree_test_collision_profile_on;
+#define mm3_collision_profile_on s_tree_test_collision_profile_on
+#define mm3_collision_profile_begin(car, count) ((MM3CollisionSample){0})
+#define mm3_collision_profile_end(sample, count) ((void)0)
+#define mm3_collision_profile_effect() ((void)0)
+#endif
 #ifndef MM3_TREE_TEST_HELPERS
 #include "mm3_tree_audio.h"
 #else
@@ -76,13 +85,47 @@ static int tree_enabled(void)
     return (int)s_tree_enabled;
 }
 
+/* The contact seam runs for every collision contact of every car, before
+ * the native speed/flag tests, and classifying one walks interned name tries
+ * a node per read. A kernel ReadProcessMemory per read cost about 4% of the
+ * game thread in Washington traffic (19 October 2026 profile). Guest RAM is
+ * one committed page-file mapping for the whole run; guest frees only zero
+ * its pages. Copy directly inside the committed readable region holding
+ * guest 0x10000, found once per memory base; keep the checked copy for any
+ * address outside it (reserved, foreign or corrupt pointers). */
 static int tree_read(uint32_t address, void *out, size_t size)
 {
+    static ptrdiff_t region_offset;
+    static uintptr_t region_lo, region_hi;
     SIZE_T copied = 0;
     uintptr_t host;
     if (address < 0x10000u || size > UINT32_MAX || address > UINT32_MAX - size) return 0;
     host = (uintptr_t)address + (uintptr_t)g_xbox_mem_offset;
     if (host > UINTPTR_MAX - size) return 0;
+    if (region_offset != g_xbox_mem_offset) {
+        MEMORY_BASIC_INFORMATION info;
+        DWORD saved_error = GetLastError();
+        int saved_errno = errno;
+        region_lo = region_hi = 0;
+        if (VirtualQuery((const void *)((uintptr_t)0x10000u + (uintptr_t)g_xbox_mem_offset),
+                         &info, sizeof info) && info.State == MEM_COMMIT &&
+            (info.Protect & (PAGE_READWRITE | PAGE_READONLY | PAGE_EXECUTE_READWRITE |
+                             PAGE_EXECUTE_READ | PAGE_WRITECOPY)) &&
+            !(info.Protect & (PAGE_GUARD | PAGE_NOACCESS))) {
+            region_lo = (uintptr_t)info.BaseAddress;
+            region_hi = region_lo + info.RegionSize;
+        }
+        region_offset = g_xbox_mem_offset;
+        fprintf(stderr, "[MM3_TREE] direct contact reads cover guest 0x%08llX-0x%08llX\n",
+                region_hi ? (unsigned long long)(region_lo - (uintptr_t)g_xbox_mem_offset) : 0ull,
+                region_hi ? (unsigned long long)(region_hi - (uintptr_t)g_xbox_mem_offset) : 0ull);
+        errno = saved_errno;
+        SetLastError(saved_error);
+    }
+    if (host >= region_lo && host < region_hi && size <= region_hi - host) {
+        memcpy(out, (const void *)host, size);
+        return 1;
+    }
     return ReadProcessMemory(GetCurrentProcess(), (const void *)host, out, size, &copied) && copied == size;
 }
 
@@ -404,9 +447,12 @@ static void tree_apply_impact_resistance(void)
 
 void sub_001D137B(void)
 {
+    MM3CollisionSample collision_sample = {0};
     /* Native arguments and the title's static contact counter are mapped
      * throughout this call. Keep checked reads for indirect car/body data. */
     s_tree_contact_car = MEM32(g_esp + 4u);
+    if (mm3_collision_profile_on)
+        collision_sample = mm3_collision_profile_begin(s_tree_contact_car, MEM32(0x3C0344u));
     s_tree_contact_trees = 0;
     s_tree_contact_log = 0;
     s_tree_break_pending = s_tree_broken = 0;
@@ -428,6 +474,8 @@ void sub_001D137B(void)
             && MEM32(0x3C0344u) > s_tree_solid_before,
         s_tree_broken ? s_tree_break_position : s_tree_audio_position, s_tree_audio_speed);
     s_tree_break_pending = 0;
+    if (mm3_collision_profile_on)
+        mm3_collision_profile_end(collision_sample, MEM32(0x3C0344u));
     if (s_tree_contact_log) {
         float velocity[3] = {0}, position[3] = {0};
         uint32_t contacts = MEM32(0x3C0344u);
@@ -507,6 +555,9 @@ void sub_000E1F49(void)
     char particle[TREE_NAME_SIZE] = {0}, sound[TREE_NAME_SIZE] = {0};
     int valid, velocity_valid;
     unsigned render_depth;
+    if (mm3_collision_profile_on && s_tree_render_depth == 0 &&
+        (tree_word(g_ecx + 0xD) & 3u) == 1u)
+        mm3_collision_profile_effect();
     if (!tree_enabled()) { sub_000E1F49_original(); return; }
     /* Reject render-only events before the expensive metadata/name reads. */
     flags = tree_word(g_ecx + 0xD);

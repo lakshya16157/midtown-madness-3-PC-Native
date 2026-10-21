@@ -306,7 +306,14 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   Escalade, Avalanche,
   ambulances, armoured cars) no longer throw their light sideways. A night
   driving beam also covers the Formula 1 model without adding bodywork lenses.
-  Tail, brake and reversing lights cast smaller tinted pools. Neutral street
+  Tail, brake, reversing and turn-signal lights cast smaller tinted pools,
+  barely any in daylight. The driver's headlights follow the game's own Light
+  control (pad White, mapped to LB/L1 by default; keyboard Q): on at the
+  start of evening/night races, off by day, and switchable either way at any
+  time, in cruise as well as races. Switched off in the evening or at night,
+  the tail lamps go off with them; brake, reverse and signal lamps keep
+  working. Each change is logged as `[MM3_CARLIGHT] driver headlights on/off`.
+  Other cars keep the time-of-day rule. Neutral street
   fixtures cast warm amber gradients with modest extra reach, and bulbs that
   previously supplied only a visible flare have bounded local pools. Colored
   fixtures and traffic signals retain their intended hues. Soft attenuation
@@ -320,8 +327,11 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   player's front beam and near field can reclaim dim non-player records when
   the shared queue fills, keeping traffic submission order from dropping them.
   Push-buffer kicks also synchronize when the producer is more than 256 KiB
-  ahead or crosses the ring boundary, with host waits for the actual WBC
-  acknowledgment rather than serializing every kick. This targets a separate
+  ahead, with host waits for the actual WBC acknowledgment rather than
+  serializing every kick. After the producer wraps around the ring the
+  distance is measured through the wrap ((end - GET) + (PUT - start)) instead
+  of always draining the executor, which had happened about once a frame;
+  `MM3_PRODUCER_WRAP_SYNC=1` restores that full drain. This targets a separate
   one-frame lighting race; driving validation remains necessary.
   Native time, breakage and authored flicker
   controls continue to govern world lights.
@@ -329,12 +339,16 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   surfaces from raw scene depth. The light shader receives the constant and
   separate high/low depth bytes its reconstruction rows require, so nearby
   roads and walls stay in the correct light volumes as the camera moves.
-  Lamp glows use the scene depth buffer's encoding when testing occlusion.
+  Lamp glows use the scene depth buffer's encoding when testing occlusion,
+  and are tested slightly nearer the camera so a lamp's own lens or housing
+  cannot hide it. Every street lamp is lit at night (retail lit only one in N
+  of each type); reversing lights cast a lane-wide pool behind the car.
   Imported wheel references retain their opaque donor headers, and rear lamp
   effects sit outside the imported lens surfaces.
   Road spline addressing uses an unbiased floor, keeping its control-point
   index consistent with the fractional interpolation at road seams.
-  The top HUD direction arrows are hidden. Original cars retain their retail
+  The top HUD direction arrow is hidden unless Mods > "Show the race direction
+  arrow" (`MM3_HUD_RACE_ARROW=1`) brings it back. Original cars retain their retail
   speedometers by default, including the numeric readout in numeric-only HUD layouts.
   Cubic B-spline sampling smooths the distant skyline, and corrected frame/depth
   alignment removes the sampling offsets that caused bright silhouette rims
@@ -910,7 +924,9 @@ car around 70% down the visible road plane. The stopped view shows nearby
 streets with an additional 10% zoom, while the player marker keeps its original size.
 It stays in the bottom-left corner. Holding Ctrl opens a flat, centered
 overview; its roads and checkpoints share the same expanded window.
-The north-letter sprite is hidden in both map styles.
+The north-letter sprite is hidden in both map styles unless Mods > "Show the
+north marker on the minimap" (`MM3_HUD_NORTH_MARKER=1`) keeps it; it then sits
+where the game places it, on the rim of the original round map.
 The map rotates with your heading. Cruise also shows roads without race data.
 Washington's park, plaza and block paths use thin, subdued strokes underneath
 the streets. Fine path details fade as the map zooms out, keeping dense areas
@@ -935,7 +951,10 @@ icons use 75% of their original width and height at every speed, retaining
 their colors and pulsing. World hoops retain their original size.
 Undercover jobs also route to the currently selected pickup, drop-off or other
 visible objective. The path updates when the mission selects its next stop and
-clears when the mission hides that objective.
+clears when the mission hides that objective. Jobs that show all their zones at
+once, such as the paper routes, draw the whole remaining course: the bright leg
+from the car to the selected zone, then the dimmer path through every later
+zone the mission is showing. Visited zones drop off the front of the course.
 Both Blitz and Checkpoint races end at their final gate. Return legs only appear
 when the ordered checkpoints explicitly revisit a road.
 Choose **Manual** transmission in car setup, then tap **R** to shift up and **F** to shift down
@@ -1153,6 +1172,8 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `RECOMP_PADMAP` | saved bindings | Controller button/trigger bindings, edited through Controls; maps use `DESTINATION:SOURCE` pairs such as `A:RB`. Applies to all four XInput ports. |
 | `RECOMP_LOADING_SPINNER` | saved setting or `1` | Show the native loading animation during long gaps between game flips. |
 | `MM3_NATIVE_FOG` | saved setting or `1` | Enable native depth fog, skyline masking and camera-aware sky blending. |
+| `MM3_HUD_NORTH_MARKER` | saved setting or `0` | `1` shows the game's north letter on the minimap (Mods tab). |
+| `MM3_HUD_RACE_ARROW` | saved setting or `0` | `1` shows the game's top-screen arrow toward the next race checkpoint (Mods tab). |
 | `RECOMP_NET` | saved setting or `0` | `nat` or `1` enables the System Link adapter and UDP peer transport. |
 | `RECOMP_NET_PORT` / `RECOMP_NET_PEERS` | `3075` / empty | Local UDP tunnel port and up to eight comma-separated peer `host:port` entries. |
 | `RECOMP_DSP_PROGRAM_DIR` | `game_files/dsp` | Runtime DSP capture cache. Native compilation uses CMake's `XBOXRECOMP_DSP_PROGRAM_DIR`, with the same default. |
@@ -1170,6 +1191,8 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `MM3_EVEN_LIGHTING` | `0` | Optional readability boost: `1` imposes a 48/255 minimum on world ambient, diffuse and backlight colors (75% unlit texture brightness). Default `0` lets night lighting come mainly from local sources. Native local lights, material alpha, UI and emissive lamps are preserved. Requires restart. |
 | `MM3_AMBIENT_LIFT` | `0` | Optional added packed-RGB ambient lift, integer 0-16. Default `0` adds no artificial ambient light. Both lighting boosts are disabled by default. Requires restart. |
 | `MM3_LOCAL_LIGHT_GAIN` | `1.3` | Strength of the local-light buffer (headlights, street lamps, tail lights, signals), 1-8; `1` uses the retail composite gain. Overlap uses bounded screen accumulation per pixel, so intersections brighten progressively without changing isolated beams or adding render passes. Daylight, night world fill and emissive lamps are unaffected. Requires restart. |
+| `MM3_GLOW_LIFT` | `1` | Lamp glows (car lenses, street lamps) are tested a little nearer the camera, along the line of sight: 12 cm plus 0.3% of the distance, at most 3 m. Their screen position is unchanged, but a glow no longer blinks out behind its own lens rim or lamp housing; buildings and hills still hide it. `0` keeps the retail glow positions. |
+| `MM3_ALL_STREET_LAMPS` | `1` | Retail lights only one in N street lamps of a type (half of most Paris and Washington lamps stay dark). With this on, every lamp is lit, glow and pool. The added lamps' pools are chosen by distance from the camera (full within 70 m, easing out by 100 m) and only while fewer than 144 of the shared 256 light records are queued, so at least 112 stay free for car lights; beyond that they still glow. Every lamp of the driver's own car can reclaim a record when the queue is full. With renderer profiling on, `[MM3_LAMPS]` reports added lamps lit/glow-only once a second. `0` restores the retail pattern. Requires the street-lamp lighting option. |
 | `MM3_FOV_DEGREES` | unset | Driving horizontal FOV at the display aspect, 60–110 degrees; unset or invalid values retain the existing widescreen FOV. Set with `scripts\play.ps1 -Fov 100`. |
 | `RECOMP_SUPERSAMPLE` | `2` | In auto resolution mode, render N×N pixels per window pixel (1–4). |
 | `RECOMP_RENDER_SCALE` | profile: `2.0` | Internal height as a multiple of 480 lines (0.5–8): Balanced 960, Quality 1440, LowPower 720; `2.25` = 1080. `auto` follows the window and uses supersampling. |
@@ -1196,12 +1219,23 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `RECOMP_PAD_SCRIPT=<spec>` | Timed scripted pad input (format in `src/usb/usb_gamepad.c`). |
 | `RECOMP_PAD_PRESS=<mask>[,period,hold]` | Pulse digital buttons (`0x10` = Start) periodically. |
 | `RECOMP_FRAME_CSV=<file>` | One row per flip: QPC time, frame time, pacing time, and successful DXGI Present return time/interval. Summarise flip intervals with `tools\xboxrecomp\tools\bench\frames.py`. |
+| `RECOMP_BLACK_FRAME` | On by default; `0` disables. Samples every flip at 64x40 and logs `[BLACK_FRAME]` short dark runs and `[ODD_FRAME]` frames unlike both neighbours, (nearly) unchanged pictures held while the scene moves, and parts of the picture that change for one frame only, plus `[LIGHT_FRAME]` flips whose street-lamp and car-light pass differed from the flips either side (lights missing or extra, the light buffer laid over the frame a different number of times, the blend changed, or the light volumes elsewhere), each with its time, per-frame renderer activity and pictures next to the frame CSV; flashes and light changes are logged a few a minute, and a per-minute count of everything follows even when nothing was found. **F9** on the game window saves the last 2.5 s as one `-black-capture-HHMMSS.bmp` sheet (16 frames a row), a `.csv` with each flip's numbers, light pass and what the screen did with it, then the next 6 flips at 1280x800 as `-black-capture-HHMMSS-sharp.bmp` (up to 12 per run, the first 6 with the sharp pictures; the renderer pauses briefly while it saves). |
+| `RECOMP_DISPLAY_STATS` | On by default; `0` disables. Reads the swap chain's frame statistics after every present, plus one GPU event query per present (sent at once) checked at the next one: `[DISPLAY]` logs every hold of two or more refreshes at once and a per-minute summary of refreshes repeated (after a late frame, after an on-time frame the GPU had not finished a refresh later, or after an on-time finished frame, which points at the compositor or display), frames replaced before reaching the screen, the panel's measured refresh rate and where paced presents land in the refresh. |
 | `RECOMP_PACE_AFTER_PRESENT` | `1`: restore the previous wait-after-submission order for timing comparisons. |
 | `RECOMP_D3D_PROFILE` | Print per-second fps, worst frame and renderer stage costs to stderr. |
 | `RECOMP_KERNEL_SUMMARY` | `1`: collect and print periodic kernel-call totals (off during normal play). |
 | `RECOMP_CS_COUNTERS` | `1`: count critical-section entries/exits for contention diagnostics (off during normal play). |
 | `RECOMP_CS_TRACE_CONTENTION` | `1`: print the first 16 contended lock waits, holder sites, guest stacks and matching acquisitions. Off during normal play to avoid synchronous logging around allocator/audio locks. |
 | `RECOMP_HITCH_TRACE` | `1`: report slow command submissions, shader compilation, GPU waits, and file reads with QPC timestamps (off during normal play). |
+| `RECOMP_AUDIO_PROFILE` | `1`: bounded one-second audio processing, deadline, condition-wait and output-queue observations, with QPC timestamps; stops after 600 reports. Queue observations are not an underrun counter. Off during normal play. |
+| `RECOMP_AUDIO_HIRES_WAIT` | MM3 game profiles default to `1`: use a native Windows high-resolution timer and wake event for audio deadlines. Ordinary commands wake the idle producer without interrupting an unchanged native deadline; pause, exit and backend changes remain urgent. Falls back to the existing condition wait if unavailable. Set `0` to use the condition wait. |
+| `MM3_NATIVE_APU_MMIO` | Default `1`: route checked constant-register sound updates directly to the same native APU register backend, avoiding Windows access-violation dispatch. `0` retains the original exception path for comparisons. Explicit `RECOMP_APU_TRACE` also retains the original path. |
+| `RECOMP_XA2_STARTUP_BUFFERS` | Default `5`: queue five immutable 256-frame silence buffers immediately before the first sound, adding 26.667 ms of startup headroom against scheduler jitter. `0` disables this padding for comparison. Subsequent sound samples and submission cadence are unchanged. |
+| `RECOMP_AUDIO_DSP_HANDOFF` | MM3 game profiles default to `1`: hand the DSP lock to pending control requests at existing execution-quantum boundaries, avoiding unconditional OS yields when no control request is pending. Set `0` to retain the original yield path for comparisons. |
+| `RECOMP_COLLISION_PROFILE` | `1`: time native contact processing and count contact-producing calls and collision-kind effects. Reports do not classify wall versus vehicle impacts. Off during normal play. |
+| `RECOMP_READBACK_POLL_US` | Default `250`: minimum microseconds between repeated pending GPU-completion queries, `1`–`1000`. `0` disables the interval; invalid values also disable it. The first query and blocking staging-buffer reuse remain immediate. |
+| `RECOMP_READBACK_FENCE` | MM3 game profiles default to `1`: prefer native D3D11 fences for GPU readback readiness at the same polling cadence. Unsupported adapters or failed fences use the existing EVENT query. Pixel copying and guest completion ordering are preserved. Set `0` to use EVENT queries. |
+| `RECOMP_READBACK_IDLE_WAIT` | Experimental `1`: when the trapped-MMIO renderer is idle with unchanged PUT and GET held on a valid native readback fence, wait on its completion event and a short high-resolution timer. Wakeups never publish guest completion before the normal copy checks. Unsupported or failed waits retain yielding/polling. Default off. |
 | `RECOMP_FILE_READ_CPU_TRACE` | `1`: add thread CPU-cycle samples around file reads when hitch tracing is enabled. Full diagnostics enables it; light diagnostics clears it. Slow reads include their actual path and native caching mode after timing ends. CPU cycles are not elapsed milliseconds. |
 | `RECOMP_PB_CAPTURE=<prefix>` | Diagnose the first bounded-parser limit by saving fetched command words, parser state, and guest RAM; disabled during normal play. |
 | `RECOMP_PRESENT_CAPTURE=<prefix>` | With `<prefix>.flag` containing N, save the next N frames as `<prefix>-*.bmp`. |
@@ -1267,7 +1301,11 @@ unchanged versions cannot leave stale shader data in subsequent frames.
 Pixel shader constants reuse their last successful upload only when all bytes,
 including dynamic lighting, fog, alpha and texture scales, are identical.
 GPU readbacks use one completion query per copy batch before mapping the pixels;
-query failures retain the original per-surface polling path. Pushbuffer packets
+pending queries are spaced by 250 microseconds to reduce repeated driver calls.
+The first query in each batch is immediate, and blocking staging-buffer reuse
+bypasses the interval. Clock failures fall back to immediate polling; query
+failures retain the original per-surface polling path. Guest completion still
+waits for the real pixel copies. Pushbuffer packets
 and called command lists pause at the published PUT position and resume with
 their packet and return state intact. A bounded parser pass cannot acknowledge
 commands it has not consumed.
@@ -1604,11 +1642,21 @@ remove passed gates and finish at the final checkpoint; a single remaining gate
 still receives guidance, without an invented return to the first gate.
 
 Undercover Work also publishes objectives through the native HUD's two other
-marker collections. Guidance copies the selected objective's live position
-after its native getter runs, including taxi pickup and drop-off zones. It
-clears hidden or unavailable targets and never joins future mission stops into
-an assumed course. Both map sizes share this behavior. `[RACE_ROUTE]` logs
-objective changes.
+marker collections. Guidance copies the live position of every visible stop
+after its native getter runs, including taxi pickup and drop-off zones, and
+clears hidden or unavailable targets. Hidden stops never join a route, so taxi
+jobs, which enable one zone at a time, keep a single leg to the selected stop.
+Paper-route style jobs enable every zone together and bind the arrow to the
+lowest unvisited one while hiding visited zones. When the selected stop is the
+first of the stops visible in its collection, the collection is in mission order
+and the course runs through all of them; when it is the last, the collection
+is exactly reversed and the course runs from the end back to the front. A
+selected stop in the middle of the list gives no sign of the ordering, so it
+keeps the single leg rather than an invented course. Only stops of the
+selected stop's own collection and native class join the course, and a stop
+listed twice counts once. Both map sizes share this behavior. `[RACE_ROUTE]`
+logs objective changes with the number of stops and the order used
+(`forward`, `reverse` or `single`).
 
 Road geometry is copied after native city loading and cleared on unload.
 Unavailable or disconnected paths are omitted. The line uses the same map
@@ -1706,6 +1754,33 @@ producer-gap timings and the passive hang observer, and removes high-volume trac
 `logs/diagnostics-*`. Change one distance control at a time, restart, and compare
 the same approach to objects and buildings. Use the full-diagnostics shortcut
 when detailed command, texture or building evidence is needed.
+
+After an interactive capture, correlate slow frames with its Play log:
+
+```powershell
+tools\venv\Scripts\python.exe tools\diagnostics\analyze_stutter.py logs\full-diagnostics-<run>\frames.csv logs\play-<run>.log --top 5
+```
+
+The report separates guest flips from host Present intervals and lists overlapping
+hitch phases with log line references. Use `--start-ms` and `--end-ms` with QPC
+timestamps to select a known driving segment; the complete capture also includes
+menus and loading. Overlapping phases are evidence of timing, not proof of cause.
+Use `--json` for a machine-readable report.
+
+For repeated traffic, steering, collision and police stress tests, use the
+[native stress harness](tools/bench/STRESS.md). It validates native scene values,
+resets an explicit car pose for each window, and records actual actor IDs and
+body positions when testing nearby active police. Shader preparation, captures,
+spawning and resets occur outside the measured windows.
+
+The D3D11 renderer retains unchanged topology, rasterizer, scissor, blend and
+depth/stencil bindings across draws, including auxiliary passes. Its one-second
+profile reports issued and avoided pipeline setters. Presentation reuses the
+swap-chain buffer/view until a resize or window replacement; allocation failures
+retry on a later frame. The DSP worker notifies queue-drain waiters only when
+the queue becomes empty. These changes preserve rendering and audio output.
+Opt-in hitch traces distinguish presentation resource acquisition, compositing,
+capture probing, pacing, CSV writing and housekeeping from the Present call.
 
 The later `play-20261015-182224-716-2bc3afaa.log` capture contains seven
 post-load frames above 40 ms, with a maximum of 121.98 ms. The corresponding
@@ -1858,9 +1933,29 @@ rollback, unchanged stock/custom sizes and successful allocation of the logged
 upper-floor workload. The repaired USB waits also complete successfully in this
 capture with intact request callbacks.
 
+The fourth pool, the 32-byte facade detail stream (+0x48, taken by
+`sub_00162EBA`), had kept its Xbox 1,536 vertices while the doubled facade
+zones cover four times the area. Requests past it are refused, so the
+buildings whose detail came last lost it, and which ones changed with the
+camera. Every stream is drawn as a quad list from its own VB, so the detail
+stream now grows with the other three. Every 30 s while buildings are drawn,
+`[MM3_DISTANCE] facade streams last 30 s: ...` gives each stream's highest use
+in a frame, the detail and far streams' demand (use plus refused vertices) and
+their refused requests (`src/mm3_facade_streams.c`). The one-frame flicker of
+distant buildings seen at midday (F9 captures, 2026-10-21) was the native fog
+falling back to the retail fog for single frames; see below.
+
 ### Diagnostics
 
-Off unless set; for debugging the runtime, not for play. See the source named for each.
+A launch that bypasses `scripts/play.ps1` (a Steam shortcut, or opening the exe) writes
+its log to `logs/direct-<UTC time>.log` with a per-frame CSV and once-a-second renderer
+timing; the newest five are kept and `MM3_DIRECT_LOG=0` keeps the console instead.
+To see where an already running game spends CPU time, run
+**Profile the running game (CPU).cmd** while driving: it samples for a minute and
+writes `logs/cpu-profile-<time>`. Read that profile against the same exe build.
+
+The settings below are off unless set; they are for debugging the runtime, not for play.
+See the source named for each.
 
 - **Renderer** (`nv2a_d3d11.c`, `nv2a_pb_exec.c`): `RECOMP_D3D_TRACE`, `RECOMP_D3D_DEBUG`,
   `RECOMP_D3D_NO_WRITEBACK`, `RECOMP_D3D_SKIP_CMASK`, `RECOMP_D3D_SKIP_SFACTOR`,
@@ -1919,11 +2014,36 @@ retaining the skyline alpha mask. Its sky blend follows each camera; fog uses
 the existing depth samples without changing them. Shaders are prepared during
 startup. Failed preparation or an invalid guest submission retains the original
 fog/horizon path. Switch it in Mods or use `MM3_NATIVE_FOG=0` for comparisons.
+When the fog packet does not fit before the push-buffer threshold, the hook
+asks the title's own MakeSpace (0x344770) for room, as the title's command
+writers do. It used to fall back to the retail fog for that one frame, so
+distant buildings lost their haze and the horizon brightened for a frame, a
+flicker in the distance. Every 30 s in a race,
+`[MM3_FOG] last 30 s: N native fog passes, M after asking the title for
+push-buffer space, F retail fog fallbacks` shows how often that happens; F
+should stay 0 (`src/mm3_native_fog.c`).
 
 Audio uses a bounded eight-frame DSP worker queue. The worker sleeps when idle,
 uses normal Windows thread priority, and discards obsolete queued work after a
 reset. A failed worker creation retains synchronous processing. Existing PCM
 buffering, HRTF, resampling and fractional 48 kHz scheduling remain in use.
+
+The audio path was made cheaper without changing a single output sample
+(2026-10-21; every change is checked byte for byte against the old code):
+- The voice processor, which runs with the sound processor on or off, takes
+  about half its former time on an MM3-like load: the HRTF filter computes
+  four samples per SSE instruction and stops smoothing settled coefficients,
+  ADPCM decoding has no data-dependent branches, voice registers and sample
+  pages are translated once instead of per read, pitch and low-pass constants
+  are reused while their inputs stay put, and silent bins are not mixed.
+- The accurate sound processor replays MM3's race frame about 17% faster
+  (the GP; the EP 24%): one 64-bit multiply instead of 12-bit partial
+  products, the hot arithmetic helpers inlined, and the mix buffer copied
+  directly instead of one memory call per word.
+`tests/dsp/vp_frame_bench.c` replays the voice processor (`--emit` for a
+byte comparison of two builds, `--bench` for timing); the GP/EP captures under
+`conformance_tmp/audio-live-replay` time the sound processor with
+`dsp_frame_replay <capture> <repeats>`.
 
 `scripts\setup.ps1` captures the supplied game's GP/EP programs with isolated
 saves and muted device output, then compiles their executed instructions to

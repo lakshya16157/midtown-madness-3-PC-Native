@@ -16,17 +16,20 @@ spec = importlib.util.spec_from_file_location(
     "native_projector", ROOT / "tests/mm3_headlight_projector_regression.py")
 native_projector = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(native_projector)
-native_projector.NATIVE += ("sub_0022FDFD",)
+native_projector.NATIVE += ("sub_0022FDFD", "sub_000DFE0E")
 
 
 def audit_assets():
     sys.path.insert(0, str(ROOT / "tools/car-models"))
     import mm3_model
     from ensure_night_lights import ensure_night_light
-    models = shared = ambient = fallback = 0
+    models = shared = ambient = fallback = unlit_dlc = 0
     installed = sorted((ROOT / "game_files/Data/Shared/Cars").glob("*/body.cmp"))
     installed += sorted((ROOT / "game_files/TDATA").rglob("body.cmp"))
     for path in installed:
+        # Downloadable content is signed: an edited file is reported as
+        # damaged content, so an unlit DLC model (car213) stays authored.
+        signed = "TDATA" in path.parts
         model = mm3_model.read_model(path.read_bytes())
         lamps = []
         for _, node in model.root.walk():
@@ -47,16 +50,22 @@ def audit_assets():
             fallback += not heads
         elif heads:
             ambient += 1
+        elif signed:
+            unlit_dlc += 1
+            models += 1
+            continue
         else:
             raise AssertionError(f"No front-light source; run ensure_night_lights.py: {path}")
         assert ensure_night_light(path.read_bytes()) == (path.read_bytes(), None), path
         models += 1
     assert shared and ambient and fallback, (models, shared, ambient, fallback)
     print(f"PASS: {models} installed models; {shared} shared-beam models, "
-          f"{ambient} front-lamp-only traffic models, {fallback} zero-color fallbacks")
+          f"{ambient} front-lamp-only traffic models, {fallback} zero-color fallbacks, "
+          f"{unlit_dlc} unlit signed DLC models left authored")
 
 
 CHECKS = r'''
+#include "mm3_light_queue.c"
 #include "mm3_car_lighting.c"
 static void native_reset(uint32_t queue)
 {
@@ -172,12 +181,26 @@ static void time_of_day_checks(void)
             setup(kind,0xffff0000u,.8f,1u<<kind,0);MEM32(0x407c30)=times[i];run();
             assert(MEM32(QUEUE+0x5810)==1 && flares==night_flares);
             assert(flare_color==night_flare_color);
-            if(kind==1 || kind==2) {
-                float diameter=kind==1?(dark?4.4f:.7f):(dark?6.8f:1.0f);
-                uint32_t day_color=kind==1?0xff030000u:0xff080000u;
+            if(kind==1 || kind==2 || kind==5 || kind==6) {
+                float night_radius=kind==1?CAR_TAIL_RADIUS_NIGHT:kind==2?CAR_BRAKE_RADIUS_NIGHT:
+                                   CAR_SIGNAL_RADIUS_NIGHT;
+                float day_radius=kind==1?CAR_TAIL_RADIUS_DAY:kind==2?CAR_BRAKE_RADIUS_DAY:
+                                 CAR_SIGNAL_RADIUS_DAY;
+                float diameter=(dark?night_radius:day_radius)*2;
+                uint32_t day_color=kind==1?0xff030000u:kind==2?0xff080000u:0xff060000u;
+                if(kind==1) assert(diameter==(dark?4.4f:.7f));
+                if(kind>=5) assert(diameter==(dark?2.8f:.8f));
+                /* Evening keeps night lamps on with a smaller, softer field. */
+                if(times[i]==2) {
+                    diameter=night_radius*MM3_EVENING_LIGHT_REACH*2;
+                    night_color=kind==1?0xff220000u:kind==2?0xff3d0000u:0xff170000u;
+                }
                 assert(MEM32(entry(0)+0x4c)==(dark?night_color:day_color));
                 assert(MEMF(entry(0)+0x40)==diameter);
                 assert(MEMF(entry(0)+0x44)==diameter && MEMF(entry(0)+0x48)==diameter);
+            } else if(times[i]==2) {
+                uint32_t red=(MEM32(entry(0)+0x4c)>>16)&255u;
+                assert(red && red<((night_color>>16)&255u));
             } else assert(MEM32(entry(0)+0x4c)==night_color);
         }
     }
@@ -194,7 +217,7 @@ static void time_of_day_checks(void)
     }
     /* Both native draws and source-only collection use the same rear-light
      * daylight attenuation. Repeated period switches cannot alter lenses or
-     * leave the old daytime/night field size and intensity behind. */
+     * leave the old daytime/evening/night field size and intensity behind. */
     for(j=1;j<=2;++j) {
         setup(j,0xffff0000u,.8f,1u<<j,0);
         for(i=0;i<sizeof sequence/sizeof sequence[0];++i) {
@@ -202,6 +225,11 @@ static void time_of_day_checks(void)
             uint32_t color=j==1?(dark?0xff2d0000u:0xff030000u):
                                      (dark?0xff520000u:0xff080000u);
             float diameter=j==1?(dark?4.4f:.7f):(dark?6.8f:1.0f);
+            if(sequence[i]==2) {
+                color=j==1?0xff220000u:0xff3d0000u;
+                diameter=(j==1?CAR_TAIL_RADIUS_NIGHT:CAR_BRAKE_RADIUS_NIGHT)*
+                         MM3_EVENING_LIGHT_REACH*2;
+            }
             native_reset(QUEUE);flares=0;MEM32(0x407c30)=sequence[i];
             mm3_car_lighting_emit(NODE,1u<<j,(const float *)XBOX_PTR(MATRIX));
             assert(MEM32(QUEUE+0x5810)==1 && !flares);
@@ -214,7 +242,7 @@ static void time_of_day_checks(void)
             assert(MEM32(STACK+12)==(1u<<j));
         }
     }
-    puts("PASS: front lenses/fields only light evening/night; morning/noon tail and brake spill stays faint/tight while native rear lenses and evening/night illumination retain authoring; reverse/signal/emergency unchanged; native/offscreen sources and repeated period transitions agree");
+    puts("PASS: front lenses/fields only light evening/night; morning/noon tail, brake and indicator spill stays faint/tight while native lenses keep authoring; evening fields are smaller and dimmer than night; reverse/emergency unchanged by day; native/offscreen sources and repeated period transitions agree");
 }
 static void direction_checks(void)
 {
@@ -588,9 +616,8 @@ static void scalability_checks(void)
         assert(car_light_heading(OWNER+i*0x1000,source,heading));
         assert(fabsf(heading[0]-sinf(angle))<.001f && fabsf(heading[2]-cosf(angle))<.001f);
     }
-    /* Complete-volume rejection must not spend host group capacity. Nearby
-     * relevant traffic still needs slots after many offscreen cars and
-     * repeated/paired callbacks have produced no native records. */
+    /* Off-screen cars still get their fields (no per-volume frustum test);
+     * the frame budget decides what is drawn. */
     {
         const uint32_t view=0x160000;
         const float unit=.7071067812f;
@@ -601,13 +628,200 @@ static void scalability_checks(void)
         MEMF(view+0x1e74+4)=-unit;MEMF(view+0x1e74+8)=-unit;
         MEMF(view+0x1e84+4)=unit;MEMF(view+0x1e84+8)=-unit;
         MEMF(view+0x1e94+8)=1;MEMF(view+0x1e94+12)=-80;
-        for(i=0;i<320;++i) {
+        for(i=0;i<20;++i) {
             uint32_t owner=OWNER+i*0x1000;
             lamp(NODE,owner,1000);lamp(NODE+0x200,owner,1001.4f);lamp(NODE,owner,1000);
         }
-        assert(!MEM32(QUEUE+0x5810) && !s_car_groups);
-        lamp(NODE,OWNER+0x200000,0);
-        assert(MEM32(QUEUE+0x5810)==2 && s_car_groups==1);
+        assert(MEM32(QUEUE+0x5810)==40 && s_car_groups==20);
+    }
+}
+static void primary_driver(void);
+static void camera_at(float x,float y,float z);
+static void camera_behind(float back);
+/* PC-sized queue (512): 300 street-lamp records first, then 40 cars whose
+ * two front lenses each arrive twice (pre-cull and visible draw). Every car
+ * keeps exactly one pool and one beam. Beams sort past slot 256 and must be
+ * found there, not queued again per lens (stacked, then flickering beams). */
+static void extended_queue_checks(void)
+{
+    enum { BIG=0x200000, BIG_RECORDS=0x280000 };
+    uint32_t slots;
+    unsigned i,pass;
+    setup(0,0xffffffffu,.8f,1,0);
+    MEM32(0x3c5d8c)=BIG;
+    for(i=0;i<256;++i) MEM32(BIG+0x5410+i*4)=BIG_RECORDS+i*0x54;
+    s_requested=512;mm3_light_queue_allocated(BIG);mm3_light_queue_attach();
+    assert(mm3_light_queue_capacity(BIG)==512);
+    native_reset(BIG);
+    slots=mm3_light_queue_slots(BIG);
+    for(i=0;i<300;++i) {
+        uint32_t record=MEM32(slots+i*4);
+        MEMF(record)=MEMF(record+0x14)=MEMF(record+0x28)=1;
+        MEM32(record+0x4c)=0xff102030;MEM32(record+0x50)=0;
+    }
+    MEM32(BIG+0x5810)=300;
+    for(i=0;i<40;++i)
+        for(pass=0;pass<2;++pass) {
+            lamp(NODE,OWNER+i*0x1000,13+i*.05f);
+            lamp(NODE+0x200,OWNER+i*0x1000,14.4f+i*.05f);
+        }
+    assert(MEM32(BIG+0x5810)==380 && s_car_groups==40);
+    for(i=0;i<380;++i) assert(MEM32(MEM32(slots+i*4)+0x50)==(i>=340?1u:0u));
+    for(i=0;i<40;++i) assert(s_car_group[i].count==2 && s_car_group[i].record[0] && s_car_group[i].record[1]);
+    /* 120 more cars fill the queue: pools stop once 480 records are queued
+     * (50 more cars), the next 32 cars still get their beams, and nothing is
+     * queued twice. */
+    for(i=40;i<160;++i)
+        for(pass=0;pass<2;++pass) {
+            lamp(NODE,OWNER+i*0x1000,13+i*.05f);
+            lamp(NODE+0x200,OWNER+i*0x1000,14.4f+i*.05f);
+        }
+    assert(MEM32(BIG+0x5810)==512);
+    {
+        unsigned points=0,cones=0;
+        for(i=0;i<512;++i) {
+            if(MEM32(MEM32(slots+i*4)+0x50)) ++cones; else ++points;
+            if(i) assert(MEM32(MEM32(slots+(i-1)*4)+0x50)<=MEM32(MEM32(slots+i*4)+0x50));
+        }
+        assert(points==390 && cones==122);
+    }
+    s_queue=s_slots=s_allocation=s_requested=0;s_capacity=MM3_LIGHT_QUEUE_RETAIL;
+}
+/* Frame budget at the consumer. 807 of 1024 records queued: 700 street-lamp
+ * points along +z at 11..710 m (in queue order the nearest last), 60 car
+ * tail pools at 50..109 m, 40 spots at 15..210 m, 4 driver records 2 km away,
+ * a dark record and 2 tiny bulb pools (30 m and 400 m). The near lamps and
+ * spots, every car light and the driver's car are drawn; the far lamps, the
+ * far tiny pool and the dark record are not; points stay before spots and
+ * the pointer array keeps every record. */
+static uint32_t budget_record(uint32_t slots,unsigned i,float z,float size,uint32_t color,unsigned spot)
+{
+    uint32_t record=MEM32(slots+i*4);
+    memset((void *)XBOX_PTR(record),0,0x54);
+    MEMF(record)=MEMF(record+0x14)=MEMF(record+0x28)=1;
+    MEMF(record+0x30)=0;MEMF(record+0x34)=5;MEMF(record+0x38)=z;
+    MEMF(record+0x40)=MEMF(record+0x44)=MEMF(record+0x48)=size;
+    MEM32(record+0x4c)=color;MEM32(record+0x50)=spot;
+    return record;
+}
+static unsigned budget_frame(uint32_t queue,float drift)
+{
+    uint32_t slots=mm3_light_queue_slots(queue),record;
+    unsigned i,n=0;
+    for(i=0;i<700;++i) budget_record(slots,n++,710-i+drift,18,0xffffd9a0u,0);
+    for(i=0;i<60;++i) mm3_light_queue_tag(budget_record(slots,n++,50+i+drift,4.4f,0xff380000u,0),1);
+    budget_record(slots,n++,30+drift,3,0xff806040u,0);
+    budget_record(slots,n++,400+drift,3,0xff806040u,0);
+    budget_record(slots,n++,20+drift,18,0xff000000u,0);
+    for(i=0;i<4;++i) mm3_light_queue_tag(budget_record(slots,n++,2000+drift,4.4f,0xff380000u,0),2);
+    for(i=0;i<40;++i) budget_record(slots,n++,15+i*5+drift,12,0xff808080u,1);
+    for(;n<1024;++n) { record=budget_record(slots,n,50,18,0xff808080u,0); MEM32(record+0x50)=1; }
+    MEM32(queue+0x5810)=807;
+    mm3_light_queue_frame(queue);
+    return MEM32(queue+0x5810);
+}
+static void budget_checks(void)
+{
+    enum { BIG=0x200000, BIG_RECORDS=0x280000 };
+    uint32_t slots,seen[1024],record;
+    unsigned i,j,drawn,frame,cars,drivers,spots,near_spots,near_lamps,far_lamps,tiny_near,tiny_far,dark;
+    camera_at(0,5,0);
+    MEM32(0x3c5d8c)=BIG;
+    for(i=0;i<256;++i) MEM32(BIG+0x5410+i*4)=BIG_RECORDS+i*0x54;
+    s_requested=1024;mm3_light_queue_allocated(BIG);mm3_light_queue_attach();
+    assert(mm3_light_queue_capacity(BIG)==1024);
+    slots=mm3_light_queue_slots(BIG);
+    s_budget=512;s_threshold=0;
+    /* The first crowded frame may overshoot by a quarter rather than cut
+     * hard; within a second the drawn set settles to the budget. */
+    drawn=budget_frame(BIG,0);
+    assert(drawn<=4+640 && drawn>512);
+    for(frame=0;frame<90;++frame) drawn=budget_frame(BIG,frame*.01f);
+    drawn=budget_frame(BIG,0);
+    assert(drawn<=512+8 && drawn>=500);
+    cars=drivers=spots=near_spots=near_lamps=far_lamps=tiny_near=tiny_far=dark=0;
+    for(i=0;i<drawn;++i) {
+        record=MEM32(slots+i*4);
+        if(i) assert(MEM32(MEM32(slots+(i-1)*4)+0x50)<=MEM32(record+0x50));
+        if(MEM32(record+0x50)) { ++spots; near_spots+=MEMF(record+0x38)<=100; continue; }
+        if(MEMF(record+0x38)>=2000) ++drivers;
+        else if(MEMF(record+0x40)==4.4f) { ++cars; assert(MEM32(record+0x4c)==0xff380000u); }
+        else if(MEMF(record+0x40)==3) { if(MEMF(record+0x38)<100) ++tiny_near; else ++tiny_far; }
+        else if(!(MEM32(record+0x4c)&0xffffff)) ++dark;
+        else if(MEMF(record+0x38)<=100) { ++near_lamps; assert(MEM32(record+0x4c)==0xffffd9a0u); }
+        else if(MEMF(record+0x38)>=650) ++far_lamps;
+    }
+    assert(drivers==4 && cars==60 && tiny_near==1 && !tiny_far && !dark);
+    assert(near_lamps==90 && !far_lamps && near_spots==18 && spots<40);
+    /* Every allocated record is still in the array exactly once. */
+    for(i=0;i<1024;++i) seen[i]=MEM32(slots+i*4);
+    for(i=0;i<1024;++i) for(j=i+1;j<1024;++j) assert(seen[i]!=seen[j]);
+    /* Lights near the cut-off fade over frames instead of blinking: a lamp
+     * just inside the budget changes colour gradually as demand rises. */
+    {
+        float before=s_threshold;
+        drawn=budget_frame(BIG,1.0f);
+        assert(fabsf(s_threshold-before)<=.35f*fabsf(before)+1e-6f);
+    }
+    /* Quiet frames: nothing over budget, no fading beyond the tiny floor. */
+    for(frame=0;frame<200;++frame) {
+        MEM32(BIG+0x5810)=0;
+        budget_record(slots,0,40,18,0xffffd9a0u,0);
+        mm3_light_queue_tag(budget_record(slots,1,30,4.4f,0xff380000u,0),1);
+        MEM32(BIG+0x5810)=2;mm3_light_queue_frame(BIG);
+    }
+    assert(MEM32(BIG+0x5810)==2 && s_threshold==0);
+    assert(MEM32(MEM32(slots)+0x4c)==0xffffd9a0u || MEM32(MEM32(slots+4)+0x4c)==0xffffd9a0u);
+    /* MM3_LIGHT_BUDGET=0 draws everything, as before. */
+    s_budget=0;s_threshold=0;
+    assert(budget_frame(BIG,0)==807);
+    s_budget=~0u;s_threshold=0;
+    MEM32(0x3c5588)=0;
+    s_queue=s_slots=s_allocation=s_requested=0;s_capacity=MM3_LIGHT_QUEUE_RETAIL;
+}
+/* A live camera at `eye` looking along +z, as native F3F93 leaves it:
+ * world-to-camera rows (identity rotation, translation -eye), the camera
+ * position at +0x1EA8 and side planes through it. */
+static void camera_at(float x,float y,float z)
+{
+    const uint32_t view=0x170000;
+    const float eye[3]={x,y,z};
+    static const float n[5][3]={{-.70710678f,0,-.70710678f},{.70710678f,0,-.70710678f},
+                                {0,-.70710678f,-.70710678f},{0,.70710678f,-.70710678f},{0,0,-1}};
+    unsigned i,j;
+    MEM32(0x3c5588)=view;MEM32(view+0x1ea4)=5;
+    for(i=0;i<3;++i) {
+        for(j=0;j<3;++j) MEMF(view+0x1f24+i*16+j*4)=i==j?1.0f:0.0f;
+        MEMF(view+0x1f54+i*4)=-eye[i];MEMF(view+0x1ea8+i*4)=eye[i];
+    }
+    for(i=0;i<5;++i) {
+        float d=-(n[i][0]*eye[0]+n[i][1]*eye[1]+n[i][2]*eye[2])-(i==4?1.0f:0.0f);
+        for(j=0;j<3;++j) MEMF(view+0x1e54+i*16+j*4)=n[i][j];
+        MEMF(view+0x1e60+i*16)=d;
+    }
+}
+/* A camera `back` metres behind the lamps (at z=-8), looking along +z. */
+static void camera_behind(float back) {camera_at(13,.7f,-8-back);}
+/* A car's fields do not depend on the camera: a pass seen from another view,
+ * or a camera that moves, cannot change a tail lamp or beam from one frame to
+ * the next (far/faint lights are the frame budget's job). */
+static void distance_detail_checks(void)
+{
+    static const float backs[]={30,90,150,250,1000};
+    uint32_t near_tail,near_pool,near_beam;
+    unsigned i;
+    setup(1,0xffff0000u,.8f,2,0);run();
+    assert(MEM32(QUEUE+0x5810)==1);near_tail=MEM32(entry(0)+0x4c);
+    setup(0,0xffffffffu,.8f,1,0);run();
+    assert(MEM32(QUEUE+0x5810)==2);near_pool=MEM32(entry(0)+0x4c);near_beam=MEM32(entry(1)+0x4c);
+    for(i=0;i<sizeof backs/sizeof backs[0];++i) {
+        setup(1,0xffff0000u,.8f,2,0);camera_behind(backs[i]);run();
+        assert(MEM32(QUEUE+0x5810)==1 && MEM32(entry(0)+0x4c)==near_tail);
+        /* Same frame, second pass from another camera: unchanged. */
+        camera_behind(backs[(i+2)%5]);again(1,2);
+        assert(MEM32(QUEUE+0x5810)==1 && MEM32(entry(0)+0x4c)==near_tail);
+        setup(0,0xffffffffu,.8f,1,0);camera_behind(backs[i]);run();
+        assert(MEM32(QUEUE+0x5810)==2 && MEM32(entry(0)+0x4c)==near_pool && MEM32(entry(1)+0x4c)==near_beam);
     }
 }
 static void primary_driver(void)
@@ -615,7 +829,105 @@ static void primary_driver(void)
     enum { MANAGER=0x180000, RACE=0x181000, PLAYER=0x182000 };
     MEM32(0x3c5cdc)=MANAGER;MEM32(MANAGER+0x54)=RACE;
     MEM32(RACE+0xd8)=PLAYER;MEM32(PLAYER+8)=OWNER;MEM32(OWNER+4)=PLAYER;
+    MEM8(PLAYER+0x657)=1; /* Native headlight switch: on, as at a night start. */
+    MEM32(PLAYER+0x488)=1; /* The local driver. */
     assert(car_light_player(OWNER));
+}
+/* The player's front lenses/beams follow the game's own headlight switch
+ * (Light control); every other car and every rear lamp keeps its rule. */
+static void headlight_switch_checks(void)
+{
+    const uint32_t switch_byte=0x182000+0x657;
+    uint32_t time;
+    for(time=0;time<4;++time) {
+        unsigned dark=time>=2;
+        /* Switched off: no lens, beam or near field, even at night. */
+        setup(0,0xffffffffu,.8f,0x101,0);primary_driver();MEM8(switch_byte)=0;
+        MEM32(0x407c30)=time;run();
+        assert(!MEM32(QUEUE+0x5810) && !flares && MEM32(STACK+12)==0x101);
+        /* Switched on: lit in every period, daytime included. */
+        setup(0,0xffffffffu,.8f,0x101,0);primary_driver();MEM32(0x407c30)=time;run();
+        assert(MEM32(QUEUE+0x5810)==2 && flares==1);
+        /* The shared road-light handle obeys the same switch. */
+        setup(8,0,0,0x101,0);primary_driver();MEM8(switch_byte)=0;MEM32(0x407c30)=time;run();
+        assert(!MEM32(QUEUE+0x5810));
+        /* Source-only collection agrees with the native draw. */
+        setup(0,0xffffffffu,.8f,0x101,0);primary_driver();MEM8(switch_byte)=0;MEM32(0x407c30)=time;
+        mm3_car_lighting_emit(NODE,0x101,(const float *)XBOX_PTR(MATRIX));
+        assert(!MEM32(QUEUE+0x5810));
+        /* Switched off, evening/night tails go dark with it; daytime tails stay. */
+        setup(1,0xffff0000u,.8f,2,0);primary_driver();MEM8(switch_byte)=0;MEM32(0x407c30)=time;run();
+        assert(MEM32(QUEUE+0x5810)==(dark?0u:1u) && flares==(dark?0u:1u));
+        setup(1,0xffff0000u,.8f,2,0);primary_driver();MEM32(0x407c30)=time;run();
+        assert(MEM32(QUEUE+0x5810)==1);
+        /* Brake lamps always work. */
+        setup(2,0xffff0000u,.8f,4,0);primary_driver();MEM8(switch_byte)=0;MEM32(0x407c30)=time;run();
+        assert(MEM32(QUEUE+0x5810)==1);
+        /* A traffic car keeps the time-of-day rule. */
+        setup(0,0xffffffffu,.8f,0x101,0);MEM32(0x407c30)=time;run();
+        assert(MEM32(QUEUE+0x5810)==(dark?2u:0u));
+        /* A non-local driver keeps it too, whatever its switch byte says. */
+        setup(0,0xffffffffu,.8f,0x101,0);primary_driver();MEM32(0x182000+0x488)=0;
+        MEM8(switch_byte)=0;MEM32(0x407c30)=time;run();
+        assert(MEM32(QUEUE+0x5810)==(dark?2u:0u));
+    }
+    puts("PASS: player headlights follow the native Light switch in every period (lens, beam, road handle, offscreen); evening/night tails follow it, brake/daytime tails and traffic unchanged");
+}
+/* Native 21C6C8 sets each driven vehicle's mask through DFE0E (ECX graph,
+ * EDI vehicle). Without any race association (cruise) that call alone lets
+ * the driver's own switch govern its lamps. */
+static void native_vehicle_mask(uint32_t vehicle, uint32_t bits)
+{
+    uint32_t saved[2],saved_esp=g_esp,saved_ecx=g_ecx,saved_edi=g_edi,saved_eax=g_eax;
+    memcpy(saved,(const void *)XBOX_PTR(STACK),sizeof saved);
+    MEM32(STACK)=0x0021C789u;MEM32(STACK+4)=0;
+    g_esp=STACK;g_ecx=OWNER;g_edi=vehicle;g_eax=bits;
+    sub_000DFE0E();
+    assert(g_esp==STACK+8 && (MEM32(OWNER+0x124)&bits&0x7fu)==(bits&0x7fu));
+    memcpy((void *)XBOX_PTR(STACK),saved,sizeof saved);
+    g_esp=saved_esp;g_ecx=saved_ecx;g_edi=saved_edi;g_eax=saved_eax;
+}
+static void driven(uint32_t vehicle, unsigned local, unsigned on, uint32_t time)
+{
+    MEM32(vehicle+8)=OWNER;MEM32(vehicle+0x488)=local;MEM8(vehicle+0x657)=(uint8_t)on;
+    native_vehicle_mask(vehicle,0x83);MEM32(0x407c30)=time;
+}
+static void cruise_switch_checks(void)
+{
+    enum { VEHICLE=0x184000, OTHER=0x186000 };
+    uint32_t time;
+    for(time=0;time<4;++time) {
+        unsigned dark=time>=2;
+        setup(0,0xffffffffu,.8f,0x101,0);driven(VEHICLE,1,0,time);run();
+        assert(!MEM32(QUEUE+0x5810) && !flares && MEM32(STACK+12)==0x101);
+        setup(0,0xffffffffu,.8f,0x101,0);driven(VEHICLE,1,1,time);run();
+        assert(MEM32(QUEUE+0x5810)==2 && flares==1);
+        setup(1,0xffff0000u,.8f,2,0);driven(VEHICLE,1,0,time);run();
+        assert(MEM32(QUEUE+0x5810)==(dark?0u:1u));
+        /* The same graph driven by another vehicle follows that vehicle. */
+        setup(0,0xffffffffu,.8f,0x101,0);driven(VEHICLE,1,0,time);driven(OTHER,1,1,time);run();
+        assert(MEM32(QUEUE+0x5810)==2);
+        /* A stale pairing (graph no longer the vehicle's) is not trusted. */
+        setup(0,0xffffffffu,.8f,0x101,0);driven(VEHICLE,1,0,time);MEM32(VEHICLE+8)=0;run();
+        assert(MEM32(QUEUE+0x5810)==(dark?2u:0u));
+        /* Opponents (not the local driver) keep the time-of-day rule. */
+        setup(0,0xffffffffu,.8f,0x101,0);driven(VEHICLE,2,0,time);run();
+        assert(MEM32(QUEUE+0x5810)==(dark?2u:0u));
+    }
+    /* Other DFE0E callers neither register nor change the native result. */
+    memset(s_car_switch,0,sizeof s_car_switch);
+    setup(0,0xffffffffu,.8f,0x101,0);MEM32(VEHICLE+8)=OWNER;MEM32(VEHICLE+0x488)=1;
+    MEM8(VEHICLE+0x657)=0;
+    {
+        uint32_t saved[2];
+        memcpy(saved,(const void *)XBOX_PTR(STACK),sizeof saved);
+        MEM32(STACK)=0x00133E97u;MEM32(STACK+4)=0;g_esp=STACK;g_ecx=OWNER;g_edi=VEHICLE;g_eax=0x60;
+        MEM32(OWNER+0x124)=0x7f;sub_000DFE0E();
+        assert(g_esp==STACK+8 && MEM32(OWNER+0x124)==0x1f);
+        memcpy((void *)XBOX_PTR(STACK),saved,sizeof saved);g_esp=STACK;g_ecx=NODE;g_edi=g_eax=0;
+    }
+    MEM32(0x407c30)=3;run();assert(MEM32(QUEUE+0x5810)==2);
+    puts("PASS: cruise driver pairing via the native vehicle mask update: switch off/on, night tails, re-driven graphs, stale pairs, opponents and other callers");
 }
 static void full_native_queue(unsigned mode)
 {
@@ -732,6 +1044,19 @@ static void player_priority_checks(void)
     assert(!car_light_player(OWNER));
     MEM32(0x180054)=0x181000;MEM32(0x1810d8)=0x07fffffc;
     assert(!car_light_player(OWNER));
+    {
+        /* With every shared record taken, the driver's own tail lamp (found
+         * through the native vehicle mask update, as in cruise) reclaims one;
+         * a traffic car's tail lamp does not. */
+        enum { VEHICLE=0x184000 };
+        setup(1,0xffff0000u,.8f,2,0);driven(VEHICLE,1,1,3);full_native_queue(2);run();
+        assert(MEM32(QUEUE+0x5810)==256 && s_car_groups==1 && s_car_group[0].priority);
+        assert(s_car_group[0].record[0] && MEM32(s_car_group[0].record[0]+0x4c)==0xff2d0000u);
+        queue_permutation();
+        memset(s_car_switch,0,sizeof s_car_switch);
+        setup(1,0xffff0000u,.8f,2,0);full_native_queue(2);run();
+        assert(MEM32(QUEUE+0x5810)==256 && !s_car_groups);queue_permutation();
+    }
     puts("PASS: primary-driver fill+beam survive full native/traffic queues, 24 frame/order changes, paired/env/displaced callbacks, identical-image aliases, multiple front colors and 256 occupied host groups; queue pointer permutation/order and activation/identity gates");
 }
 int main(void)
@@ -740,6 +1065,8 @@ int main(void)
     time_of_day_checks();
     direction_checks();axis_checks();current_axis_checks();fading_checks();
     grouping_checks();reset_lifecycle_checks();banked_pool_checks();crowded_queue_checks();scalability_checks();player_priority_checks();
+    extended_queue_checks();distance_detail_checks();budget_checks();
+    headlight_switch_checks();cruise_switch_checks();
     setup(0,0xffffffffu,.8f,0,0);run();assert(!MEM32(QUEUE+0x5810)&&!flares);
     setup(0,0xffffffffu,0,1,0);run();assert(!MEM32(QUEUE+0x5810)&&!flares);
     setup(0,0xffffffffu,.8f,1,0);MEM8(WORLD+0x2a8)=1;run();assert(!MEM32(QUEUE+0x5810));
@@ -758,7 +1085,17 @@ int main(void)
             uint32_t color=MEM32(entry(0)+0x4c);
             assert((color&255)==((color>>8)&255) && (color&255)==((color>>16)&255));
         }
-        assert(MEMF(entry(0)+0x40)==(kind==1?4.4f:kind==2?6.8f:9.0f));
+        assert(MEMF(entry(0)+0x40)==(kind==1?4.4f:kind==2?6.8f:3.6f));
+        if(kind==3) {
+            /* A lane-wide field behind the car along the lamp's rearward
+             * facing, not a 9m cube around the bumper. */
+            assert(MEMF(entry(0)+0x44)==3.0f && MEMF(entry(0)+0x48)==6.0f);
+            assert(fabsf(MEMF(entry(0)+0x30)-13)<1e-4f && fabsf(MEMF(entry(0)+0x34)-.4f)<1e-4f);
+            assert(fabsf(MEMF(entry(0)+0x38)+6.5f)<1e-4f && fabsf(MEMF(entry(0)+0x28)-1)<1e-4f);
+            setup(kind,0xffffffffu,.8f,1u<<kind,1.5707964f);run();
+            assert(MEM32(QUEUE+0x5810)==1 && fabsf(MEMF(entry(0)+0x30)-14.5f)<1e-4f);
+            assert(fabsf(MEMF(entry(0)+0x38)+8)<1e-4f && fabsf(MEMF(entry(0)+0x20)-1)<1e-4f);
+        }
         setup(kind,0xffffffffu,.8f,0,0);run();assert(!MEM32(QUEUE+0x5810));
     }
     for(kind=5;kind<=6;++kind) {
@@ -784,6 +1121,7 @@ def main():
     native = native_projector.generated().replace(
         "void sub_000CF2DA(void)", "void sub_000CF2DA_original(void)")
     native = native.replace("void sub_0022FDFD(void)", "void sub_0022FDFD_original(void)")
+    native = native.replace("void sub_000DFE0E(void)", "void sub_000DFE0E_original(void)")
     source = native_projector.SOURCE.split("static unsigned submit", 1)[0]
     source = source.replace("memory[0x400000]", "memory[0x500000]")
     source = source.replace('void sub_001A842A(void) { assert(!"unexpected flare submission"); }',
@@ -793,7 +1131,7 @@ def main():
         folder = Path(temporary)
         shutil.copyfile(ROOT / "src/mm3_recomp_types.h", folder / "recomp_types.h")
         declarations = "\n".join(f"void {name}(void);" for name in native_projector.NATIVE)
-        declarations += "\nvoid sub_000CF2DA_original(void);\nvoid sub_0022FDFD_original(void);\n"
+        declarations += "\nvoid sub_000CF2DA_original(void);\nvoid sub_0022FDFD_original(void);\nvoid sub_000DFE0E_original(void);\n"
         (folder / "native.inc").write_text(declarations + native)
         (folder / "constants.inc").write_text(native_projector.constants(native))
         (folder / "contract.c").write_text(source)

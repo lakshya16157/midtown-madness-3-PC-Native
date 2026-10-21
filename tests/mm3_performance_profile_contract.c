@@ -7,7 +7,8 @@
 
 static const char *keys[] = {
     "RECOMP_RENDER_SCALE", "RECOMP_MSAA", "RECOMP_DRAW_DISTANCE", "RECOMP_VIEW_DISTANCE",
-    "RECOMP_ANISO", "RECOMP_FPS_LIMIT", "RECOMP_BUFFERED_ASSET_READS"
+    "RECOMP_ANISO", "RECOMP_FPS_LIMIT", "RECOMP_BUFFERED_ASSET_READS",
+    "RECOMP_READBACK_FENCE", "RECOMP_AUDIO_HIRES_WAIT", "RECOMP_AUDIO_DSP_HANDOFF"
 };
 
 static void setting(const char *key, const char *value)
@@ -38,13 +39,16 @@ static void profile(const char *name, const char *scale, const char *msaa,
     assert(strcmp(getenv("RECOMP_ANISO"), "16") == 0);
     assert(strcmp(getenv("RECOMP_FPS_LIMIT"), fps) == 0);
     assert(strcmp(getenv("RECOMP_BUFFERED_ASSET_READS"), "1") == 0);
+    assert(strcmp(getenv("RECOMP_READBACK_FENCE"), "1") == 0);
+    assert(strcmp(getenv("RECOMP_AUDIO_HIRES_WAIT"), "1") == 0);
+    assert(strcmp(getenv("RECOMP_AUDIO_DSP_HANDOFF"), "1") == 0);
     assert(mm3_frame_limit(getenv("RECOMP_FPS_LIMIT")) == atoi(fps));
 }
 
 int main(void)
 {
     const char *names[] = {"Balanced", "Quality", "LowPower"};
-    const char *overrides[] = {"2.25", "8", "1.25", "3.5", "4", "45", "0"};
+    const char *overrides[] = {"2.25", "8", "1.25", "3.5", "4", "45", "0", "0", "0", "0"};
     size_t i, j;
     profile(NULL, "2.0", "4", "2", "60");
     profile("", "2.0", "4", "2", "60");

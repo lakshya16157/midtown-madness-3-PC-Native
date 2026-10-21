@@ -38,6 +38,8 @@ static void sub_001C1585(void)
 #define ebp g_ebp
 static uint32_t _fa, _fb;
 static int32_t _fas, _fbs;
+static int show_arrow;
+int mm3_hud_race_arrow(void) { return show_arrow; }
 #include "native_arrows.inc"
 
 static void check_camera(void (*draw)(void), unsigned flags, unsigned mask, int hidden)
@@ -85,10 +87,11 @@ int main(void)
     for(flags=0;flags<8;++flags) {
         for(mask=0;mask<16;++mask) {
             check_camera(original_camera,flags,mask,0);
-            check_camera(hidden_camera,flags,mask,1);
+            show_arrow=0; check_camera(gated_camera,flags,mask,1);
+            show_arrow=1; check_camera(gated_camera,flags,mask,0);
         }
         check_minimap(flags);
     }
-    puts("PASS top camera Arrow hidden across 128 states; player visibility, native ABI and all minimap turn icons retained");
+    puts("PASS top camera Arrow hidden across 128 states and native when shown; player visibility, native ABI and all minimap turn icons retained");
     return 0;
 }

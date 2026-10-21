@@ -1139,13 +1139,27 @@ static inline RecompXmm XMM_FROM_PI(RecompXmm dst, RecompMmx src)
     return dst;
 }
 
+/* movq through memory. memcpy is recomp_guest_memcpy here, which tested both
+ * pointers against the hardware window and went through a stack copy for
+ * every 8 bytes: D3D's push-buffer copy (sub_0034A1A0, ~2% of the game
+ * thread) moves 64 bytes as eight of them. Below the window one plain 8-byte
+ * access is the same memory operation; the window keeps the scalar moves its
+ * trap handlers decode. */
 static inline RecompMmx MMX_MEM(uint32_t addr) {
     RecompMmx r;
+    if (addr <= 0xFE000000u - 8u) {
+        r.q = *(const volatile uint64_t *)XBOX_PTR(addr);
+        return r;
+    }
     memcpy(&r, (const void *)XBOX_PTR(addr), 8);
     return r;
 }
 
 static inline void MMX_STORE(uint32_t addr, RecompMmx v) {
+    if (addr <= 0xFE000000u - 8u) {
+        *(volatile uint64_t *)XBOX_PTR(addr) = v.q;
+        return;
+    }
     memcpy((void *)XBOX_PTR(addr), &v, 8);
 }
 
