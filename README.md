@@ -2014,6 +2014,20 @@ CMake options default to a clean build. `MM3_FRONTEND_WATCH`, `MM3_MOVIE_INPUT_T
 `MM3_TRACY` and `MM3_RECOMP_ABI_CHECK` add diagnostics that cost performance (the first
 roughly halves menu frame rate); leave them off for play.
 
+`MM3_PGO` (`GEN` or `USE`, MSVC) builds the game with profile-guided
+optimisation in a folder of its own (`build-pgo`). Every game and toolkit source is
+compiled with `/GL`, an instrumented build records which code a real play session
+runs, and the final link lays out and inlines the code for those paths. Results are
+unchanged; only speed differs. `scripts\pgo.ps1 train` builds the instrumented game
+and installs it where Steam and the `.cmd` start the game, keeping the normal one as
+`mm3_recomp.normal.exe`. Play it for a while, preferably day and night with traffic,
+quit normally, then run `scripts\pgo.ps1 optimise`; `restore` puts the normal build
+back. The instrumented build runs slower (its audio could not keep up, which
+delayed race intros), so use it only for training. On 2026-10-21 the optimised
+build held 59.5-60 fps in the densest Washington scenes (250-300K+ vertices a
+frame) where the normal build had dropped to 47-55. After code changes, `optimise`
+reuses the recorded profile; functions that changed are compiled without it.
+
 ### PC runtime upgrades
 
 The requested collision repair, native launcher with keyboard/controller

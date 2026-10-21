@@ -26,6 +26,34 @@ if(MM3_TRACY)
     add_subdirectory("${MM3_TRACY_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/tracy" EXCLUDE_FROM_ALL)
 endif()
 
+# Profile-guided optimisation (MSVC Release/RelWithDebInfo), in a build
+# folder of its own; the code it produces computes exactly the same results.
+#   cmake -S . -B build-pgo -G "Ninja Multi-Config" -DMM3_PGO=GEN
+#     instrumented build: play it, exit normally (writes mm3_recomp!N.pgc)
+#   cmake -B build-pgo -DMM3_PGO=USE    then build: optimised with that profile
+# Every C source of the game and the toolkit is compiled with /GL, so both the
+# generated game code and the renderer are laid out for the measured run.
+set(MM3_PGO "" CACHE STRING "MSVC profile-guided optimisation: empty (off), GEN or USE")
+set(MM3_PGO_PGD "${CMAKE_BINARY_DIR}/pgo/mm3_recomp.pgd" CACHE FILEPATH
+    "Profile database for MM3_PGO")
+if(MM3_PGO)
+    if(NOT MSVC OR NOT MM3_PGO MATCHES "^(GEN|USE)$")
+        message(FATAL_ERROR "MM3_PGO must be GEN or USE, with MSVC")
+    endif()
+    add_compile_options("$<$<NOT:$<CONFIG:Debug>>:/GL>")
+    foreach(pgo_config RELEASE RELWITHDEBINFO)
+        string(APPEND CMAKE_STATIC_LINKER_FLAGS_${pgo_config} " /LTCG")
+        string(REGEX REPLACE "/INCREMENTAL(:NO)?" "" CMAKE_EXE_LINKER_FLAGS_${pgo_config}
+            "${CMAKE_EXE_LINKER_FLAGS_${pgo_config}}")
+        string(APPEND CMAKE_EXE_LINKER_FLAGS_${pgo_config} " /INCREMENTAL:NO /LTCG /CGTHREADS:8")
+    endforeach()
+    get_filename_component(pgo_folder "${MM3_PGO_PGD}" DIRECTORY)
+    file(MAKE_DIRECTORY "${pgo_folder}")
+    if(MM3_PGO STREQUAL "USE" AND NOT EXISTS "${MM3_PGO_PGD}")
+        message(FATAL_ERROR "MM3_PGO=USE needs the trained profile ${MM3_PGO_PGD}")
+    endif()
+endif()
+
 # Programs captured from the user's disc remain local derived data. An empty
 # directory still builds the interpreter, which can capture them on first run.
 set(XBOXRECOMP_DSP_PROGRAM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/game_files/dsp" CACHE PATH
@@ -482,4 +510,16 @@ endif()
 
 if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE /bigobj)
+endif()
+if(MM3_PGO)
+    target_sources(${PROJECT_NAME} PRIVATE src/mm3_pgo_link_stubs.c)
+    file(TO_NATIVE_PATH "${MM3_PGO_PGD}" pgo_database)
+    if(MM3_PGO STREQUAL "GEN")
+        # Fast counters keep the instrumented build playable for training.
+        target_link_options(${PROJECT_NAME} PRIVATE
+            "$<$<NOT:$<CONFIG:Debug>>:/FASTGENPROFILE:PGD=${pgo_database}>")
+    else()
+        target_link_options(${PROJECT_NAME} PRIVATE
+            "$<$<NOT:$<CONFIG:Debug>>:/USEPROFILE:PGD=${pgo_database}>")
+    endif()
 endif()
