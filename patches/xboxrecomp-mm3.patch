@@ -8682,6 +8682,148 @@ index f8a502c6e76cbd7da7cfe1d23086791043c658de..d6ff6f05199798bab35e46f6d8cdbf91
  }
  
  VOID __stdcall xbox_XcCryptService(ULONG Operation, PVOID Param)
+diff --git a/src/kernel/kernel_delay.h b/src/kernel/kernel_delay.h
+new file mode 100644
+index 0000000..86541e7
+--- /dev/null
++++ b/src/kernel/kernel_delay.h
+@@ -0,0 +1,136 @@
++/*
++ * kernel_delay.h - guest delays (KeDelayExecutionThread) at Xbox precision
++ *
++ * The Xbox clock interrupt ticks every millisecond, so a title's 1 ms delay
++ * lasts about 1 ms. Win32 Sleep rounds every delay up to the process timer
++ * resolution, 15.6 ms unless something raises it: a title that polls a loader
++ * with 1 ms delays waited 15.6 ms a poll, and in MM3 race and start-up loads
++ * the game thread slept about 40% of the time. Each delaying thread instead
++ * waits on its own high-resolution waitable timer (Windows 10 1803 and later),
++ * which waits the requested interval without raising the system-wide timer
++ * resolution; Sleep/SleepEx remain the fallback. RECOMP_PRECISE_DELAY=0 keeps
++ * plain Sleep. With renderer profiling on (RECOMP_D3D_PROFILE), one line every
++ * 30 s reports the delays: calls by requested length, requested and slept time.
++ */
++#ifndef KERNEL_DELAY_H
++#define KERNEL_DELAY_H
++
++#include <windows.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++#if defined(_MSC_VER)
++#define KDELAY_TLS __declspec(thread)
++#else
++#define KDELAY_TLS __thread
++#endif
++
++#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
++#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
++#endif
++
++/* The thread's timer: created on its first delay and kept for the thread's
++ * life (guest threads are few and long-lived). */
++static KDELAY_TLS HANDLE s_kdelay_timer;
++static KDELAY_TLS int s_kdelay_timer_state; /* 0 untried, 1 ready, -1 unavailable */
++static volatile LONG s_kdelay_mode = -1;      /* 1 precise, 0 Sleep */
++static volatile LONG s_kdelay_report_on = -1;
++static volatile LONG64 s_kdelay_calls, s_kdelay_short, s_kdelay_mid, s_kdelay_long;
++static volatile LONG64 s_kdelay_requested, s_kdelay_slept, s_kdelay_precise, s_kdelay_report_ms;
++
++static int kdelay_precise_enabled(void)
++{
++    LONG mode = InterlockedCompareExchange(&s_kdelay_mode, -1, -1);
++    if (mode < 0) {
++        const char *value = getenv("RECOMP_PRECISE_DELAY");
++        mode = !(value && value[0] == '0');
++        InterlockedExchange(&s_kdelay_mode, mode);
++    }
++    return mode != 0;
++}
++
++/* Wait `relative_100ns` on this thread's high-resolution timer: 1 waited,
++ * 2 alerted (a user APC ran during an alertable wait), 0 unavailable (the
++ * caller falls back to Sleep). */
++static int kdelay_precise_wait(LONGLONG relative_100ns, BOOLEAN alertable)
++{
++    LARGE_INTEGER due;
++    DWORD result;
++    if (s_kdelay_timer_state == 0) {
++        s_kdelay_timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
++                                                TIMER_MODIFY_STATE | SYNCHRONIZE);
++        s_kdelay_timer_state = s_kdelay_timer ? 1 : -1;
++    }
++    if (s_kdelay_timer_state < 0) return 0;
++    due.QuadPart = -relative_100ns;
++    if (!SetWaitableTimer(s_kdelay_timer, &due, 0, NULL, NULL, FALSE)) return 0;
++    result = WaitForSingleObjectEx(s_kdelay_timer, INFINITE, alertable ? TRUE : FALSE);
++    if (result == WAIT_OBJECT_0) return 1;
++    CancelWaitableTimer(s_kdelay_timer);
++    return result == WAIT_IO_COMPLETION ? 2 : 0;
++}
++
++static void kdelay_account(LONGLONG requested_100ns, LONGLONG start_qpc, int precise)
++{
++    LARGE_INTEGER end, frequency;
++    LONG64 last, now_ms;
++    LONG report = InterlockedCompareExchange(&s_kdelay_report_on, -1, -1);
++    if (report < 0) {
++        const char *profile = getenv("RECOMP_D3D_PROFILE");
++        report = profile && *profile && *profile != '0';
++        InterlockedExchange(&s_kdelay_report_on, report);
++    }
++    if (!report) return;
++    QueryPerformanceCounter(&end);
++    QueryPerformanceFrequency(&frequency);
++    InterlockedIncrement64(&s_kdelay_calls);
++    InterlockedIncrement64(requested_100ns <= 10000 ? &s_kdelay_short :
++                           requested_100ns <= 50000 ? &s_kdelay_mid : &s_kdelay_long);
++    InterlockedAdd64(&s_kdelay_requested, requested_100ns);
++    InterlockedAdd64(&s_kdelay_slept, (end.QuadPart - start_qpc) * 10000000 / frequency.QuadPart);
++    if (precise) InterlockedIncrement64(&s_kdelay_precise);
++    now_ms = (LONG64)GetTickCount64();
++    last = InterlockedCompareExchange64(&s_kdelay_report_ms, 0, 0);
++    if (!last) { InterlockedCompareExchange64(&s_kdelay_report_ms, now_ms, 0); return; }
++    if (now_ms - last < 30000 || InterlockedCompareExchange64(&s_kdelay_report_ms, now_ms, last) != last)
++        return;
++    {
++        LONG64 calls = InterlockedExchange64(&s_kdelay_calls, 0);
++        LONG64 shorter = InterlockedExchange64(&s_kdelay_short, 0);
++        LONG64 middle = InterlockedExchange64(&s_kdelay_mid, 0);
++        LONG64 longer = InterlockedExchange64(&s_kdelay_long, 0);
++        LONG64 requested = InterlockedExchange64(&s_kdelay_requested, 0);
++        LONG64 slept = InterlockedExchange64(&s_kdelay_slept, 0);
++        LONG64 precise_calls = InterlockedExchange64(&s_kdelay_precise, 0);
++        fprintf(stderr, "[KERNEL] guest delays last %.0f s: %lld calls (1 ms or less %lld, up to 5 ms %lld, "
++                "longer %lld), requested %.0f ms, slept %.0f ms, %lld on the precise timer "
++                "(RECOMP_PRECISE_DELAY=0 uses Sleep)\n",
++                (double)(now_ms - last) / 1000.0, (long long)calls, (long long)shorter, (long long)middle,
++                (long long)longer, (double)requested / 10000.0, (double)slept / 10000.0,
++                (long long)precise_calls);
++        fflush(stderr);
++    }
++}
++
++/* Delay the calling thread `relative_100ns` (positive, 100 ns units), at
++ * least the Xbox's 1 ms tick. Returns 1 when a user APC interrupted an
++ * alertable delay (STATUS_ALERTED), else 0. */
++static int kdelay_run(LONGLONG relative_100ns, BOOLEAN alertable)
++{
++    LARGE_INTEGER start;
++    int precise = 0, alerted = 0;
++    if (relative_100ns < 10000) relative_100ns = 10000;
++    QueryPerformanceCounter(&start);
++    if (kdelay_precise_enabled()) precise = kdelay_precise_wait(relative_100ns, alertable);
++    if (precise == 2) {
++        alerted = 1;
++    } else if (!precise) {
++        DWORD ms = (DWORD)(relative_100ns / 10000);
++        if (alertable) alerted = SleepEx(ms, TRUE) == WAIT_IO_COMPLETION;
++        else Sleep(ms);
++    }
++    kdelay_account(relative_100ns, start.QuadPart, precise > 0);
++    return alerted;
++}
++
++#endif
 diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
 index 1133eb5304987fd16f7b2cc3ad12c40e8e7377f9..794dda786989b74029ced5d8d9a94a159c709e32 100644
 --- a/src/kernel/kernel_file.c
@@ -10118,6 +10260,75 @@ index 97607350b22259203046c24eb6166ea06c80a0e3..f9e4df4b6d9a9a21eb26448fbef30aab
          case STATUS_NO_SUCH_FILE:               return ERROR_FILE_NOT_FOUND;
          case STATUS_END_OF_FILE:                return ERROR_HANDLE_EOF;
          case STATUS_INVALID_HANDLE:             return ERROR_INVALID_HANDLE;
+diff --git a/src/kernel/kernel_thread.c b/src/kernel/kernel_thread.c
+index 17cb31f..f5eb30e 100644
+--- a/src/kernel/kernel_thread.c
++++ b/src/kernel/kernel_thread.c
+@@ -12,6 +12,7 @@
+  */
+ 
+ #include "kernel.h"
++#include "kernel_delay.h"
+ #include "xbox_memory_layout.h"   /* XBOX_WORKER_STACK_* + worker-stack decls */
+ 
+ /* ============================================================================
+@@ -152,7 +153,8 @@ NTSTATUS __stdcall xbox_PsTerminateSystemThread(NTSTATUS ExitStatus)
+  *   - Positive values = absolute time (rare)
+  *   - Zero = yield
+  *
+- * Maps to: SleepEx (for alertable waits) or Sleep
++ * Maps to a per-thread high-resolution timer (kernel_delay.h), with SleepEx
++ * (alertable waits) or Sleep as the fallback.
+  * ============================================================================ */
+ 
+ NTSTATUS __stdcall xbox_KeDelayExecutionThread(
+@@ -160,7 +162,7 @@ NTSTATUS __stdcall xbox_KeDelayExecutionThread(
+     BOOLEAN Alertable,
+     PLARGE_INTEGER Interval)
+ {
+-    DWORD ms;
++    LONGLONG relative_100ns;
+ 
+     (void)WaitMode;
+ 
+@@ -174,31 +176,19 @@ NTSTATUS __stdcall xbox_KeDelayExecutionThread(
+     }
+ 
+     if (Interval->QuadPart < 0) {
+-        /* Negative = relative time in 100ns units. Convert to milliseconds. */
+-        LONGLONG relative_100ns = -Interval->QuadPart;
+-        ms = (DWORD)(relative_100ns / 10000);
+-        /* Ensure at least 1ms for very short intervals */
+-        if (ms == 0 && relative_100ns > 0)
+-            ms = 1;
++        /* Negative = relative time in 100ns units. */
++        relative_100ns = -Interval->QuadPart;
+     } else {
+         /* Positive = absolute time. Calculate relative delay from now. */
+         LARGE_INTEGER now;
+         GetSystemTimeAsFileTime((LPFILETIME)&now);
+-        LONGLONG diff = Interval->QuadPart - now.QuadPart;
+-        if (diff <= 0)
++        relative_100ns = Interval->QuadPart - now.QuadPart;
++        if (relative_100ns <= 0)
+             return STATUS_SUCCESS; /* Already past */
+-        ms = (DWORD)(diff / 10000);
+     }
+ 
+-    if (Alertable) {
+-        DWORD result = SleepEx(ms, TRUE);
+-        if (result == WAIT_IO_COMPLETION)
+-            return STATUS_ALERTED;
+-    } else {
+-        Sleep(ms);
+-    }
+-
+-    return STATUS_SUCCESS;
++    /* At least the Xbox's 1 ms tick, as before. */
++    return kdelay_run(relative_100ns, Alertable) ? STATUS_ALERTED : STATUS_SUCCESS;
+ }
+ 
+ /* ============================================================================
 diff --git a/src/kernel/kernel_xbox.c b/src/kernel/kernel_xbox.c
 index 04570467183fb81136a011d558f7fcd65155e987..e5fe5d6256d2571dc71cc4a1d240335615b97b11 100644
 --- a/src/kernel/kernel_xbox.c
