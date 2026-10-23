@@ -4549,7 +4549,7 @@ index 62c36eed48afe18be19fc317e745e1cac0387070..b28bc91c3a03c00a94f725cbf92d6ebe
      /* Transfers above have completed; polling never manufactures completion. */
      if (s->next_block & NODE_POINTER_EOL) {
 diff --git a/src/apu/dsp/interp/dsp_cpu.c b/src/apu/dsp/interp/dsp_cpu.c
-index 012a67b869c756061090a3e4c196d9a42c869c27..cc9fdab1197012b4f525bb42eeaeab4263cf2b87 100644
+index 012a67b869c756061090a3e4c196d9a42c869c27..1f462e1756daabd107129cc5fcac1e616961abd3 100644
 --- a/src/apu/dsp/interp/dsp_cpu.c
 +++ b/src/apu/dsp/interp/dsp_cpu.c
 @@ -45,6 +45,15 @@
@@ -4980,7 +4980,7 @@ index 012a67b869c756061090a3e4c196d9a42c869c27..cc9fdab1197012b4f525bb42eeaeab42
          value &= ~(1ULL << (position + 1));
      value &= ~low_mask;
      dest[0] = (uint32_t)(value >> (2*width)) & 0xff;
-@@ -1490,3 +1565,354 @@ static uint32_t dsp_signextend(int bits, uint32_t v) {
+@@ -1490,3 +1565,395 @@ static uint32_t dsp_signextend(int bits, uint32_t v) {
      assert(shift > 0);
      return (uint32_t)(((int32_t)v << shift) >> shift);
  }
@@ -5015,35 +5015,84 @@ index 012a67b869c756061090a3e4c196d9a42c869c27..cc9fdab1197012b4f525bb42eeaeab42
 +    return sr;
 +}
 +
++/* dsp_add56 / dsp_sub56 / dsp_abs56 on scalars, d0:d1:d2 = 55..48:47..24:23..0:
++ * the same arithmetic, which the compiler then keeps in registers (the
++ * array forms stay in memory, a carry chain through store forwarding). */
++static DSP_PREAD_INLINE uint32_t dsp_rb_add56(uint32_t s0, uint32_t s1, uint32_t s2,
++                                              uint32_t *d0, uint32_t *d1, uint32_t *d2)
++{
++    uint32_t flg_s = (s0 >> 7) & 1, flg_d = (*d0 >> 7) & 1;
++    uint32_t r2 = *d2 + s2;
++    uint32_t r1 = *d1 + s1 + ((r2 >> 24) & 1);
++    uint32_t r0 = *d0 + s0 + ((r1 >> 24) & 1);
++    uint32_t carry = (r0 >> 8) & 1;
++    r2 &= BITMASK(24); r1 &= BITMASK(24); r0 &= BITMASK(8);
++    uint32_t flg_r = (r0 >> 7) & 1;
++    uint32_t overflow = (flg_s ^ flg_r) & (flg_d ^ flg_r);
++    *d0 = r0; *d1 = r1; *d2 = r2;
++    return (overflow << DSP_SR_L) | (overflow << DSP_SR_V) | (carry << DSP_SR_C);
++}
++
++static DSP_PREAD_INLINE uint32_t dsp_rb_sub56(uint32_t s0, uint32_t s1, uint32_t s2,
++                                              uint32_t *d0, uint32_t *d1, uint32_t *d2)
++{
++    uint32_t flg_d = ((uint16_t)*d0 >> 7) & 1;
++    uint32_t r2 = *d2 - s2;
++    uint32_t r1 = *d1 - (s1 + ((r2 >> 24) & 1));
++    uint32_t r0 = *d0 - (s0 + ((r1 >> 24) & 1));
++    uint32_t carry = (r0 >> 8) & 1;
++    r2 &= BITMASK(24); r1 &= BITMASK(24); r0 &= BITMASK(8);
++    uint32_t flg_s = (s0 >> 7) & 1, flg_r = (r0 >> 7) & 1;
++    uint32_t overflow = (flg_s ^ flg_d) & (flg_r ^ flg_d);
++    *d0 = r0; *d1 = r1; *d2 = r2;
++    return (overflow << DSP_SR_L) | (overflow << DSP_SR_V) | (carry << DSP_SR_C);
++}
++
++static DSP_PREAD_INLINE void dsp_rb_abs56(uint32_t *d0, uint32_t *d1, uint32_t *d2)
++{
++    if (!(*d0 & (1 << 7))) return;
++    uint32_t z0 = 0, z1 = 0, z2 = 0;
++    dsp_rb_sub56(*d0, *d1, *d2, &z0, &z1, &z2);
++    *d0 = z0; *d1 = z1; *d2 = z2;
++}
++
 +/* dsp_rnd56_sr for that mode: without scaling (24-bit words, convergent)
 + * branch-free, otherwise dsp_rnd56_sr itself. */
-+static DSP_PREAD_INLINE void dsp_rb_rnd(uint32_t sr, uint32_t *dest)
++static DSP_PREAD_INLINE void dsp_rb_rnd(uint32_t sr, uint32_t *d0, uint32_t *d1, uint32_t *d2)
 +{
-+    if (DSP_RB_SCALING(sr)) { dsp_rnd56_sr(sr, dest); return; }
++    if (DSP_RB_SCALING(sr)) {
++        uint32_t dest[3] = {*d0, *d1, *d2};
++        dsp_rnd56_sr(sr, dest);
++        *d0 = dest[0]; *d1 = dest[1]; *d2 = dest[2];
++        return;
++    }
 +    const uint64_t low_mask = (1ULL << 24) - 1;
-+    uint64_t value = ((uint64_t)dest[0] << 48) | ((uint64_t)dest[1] << 24) | dest[2];
++    uint64_t value = ((uint64_t)*d0 << 48) | ((uint64_t)*d1 << 24) | *d2;
 +    value += 1ULL << 23;
 +    value &= ~((uint64_t)((value & low_mask) == 0) << 24);
 +    value &= ~low_mask;
-+    dest[0] = (uint32_t)(value >> 48) & 0xff;
-+    dest[1] = (uint32_t)(value >> 24) & BITMASK(24);
-+    dest[2] = (uint32_t)value & BITMASK(24);
++    *d0 = (uint32_t)(value >> 48) & 0xff;
++    *d1 = (uint32_t)(value >> 24) & BITMASK(24);
++    *d2 = (uint32_t)value & BITMASK(24);
 +}
 +
 +/* dsp_mul56 for 24-bit operands as one signed multiply; anything wider
 + * takes dsp_mul56 itself. */
-+static DSP_PREAD_INLINE void dsp_rb_mul56(uint32_t s1, uint32_t s2, uint32_t *dest, unsigned negative)
++static DSP_PREAD_INLINE void dsp_rb_mul56(uint32_t s1, uint32_t s2, unsigned negative,
++                                          uint32_t *d0, uint32_t *d1, uint32_t *d2)
 +{
 +    if ((s1 | s2) & 0xff000000) {
++        uint32_t dest[3];
 +        dsp_mul56(s1, s2, dest, (uint8_t)negative);
++        *d0 = dest[0]; *d1 = dest[1]; *d2 = dest[2];
 +        return;
 +    }
 +    int64_t product = (int64_t)((int32_t)(s1 << 8) >> 8) * ((int32_t)(s2 << 8) >> 8);
 +    if (negative) product = -product;
 +    uint64_t value = ((uint64_t)product << 1) & ((UINT64_C(1) << 56) - 1);
-+    dest[0] = (uint32_t)(value >> 48) & BITMASK(8);
-+    dest[1] = (uint32_t)(value >> 24) & BITMASK(24);
-+    dest[2] = (uint32_t)value & BITMASK(24);
++    *d0 = (uint32_t)(value >> 48) & BITMASK(8);
++    *d1 = (uint32_t)(value >> 24) & BITMASK(24);
++    *d2 = (uint32_t)value & BITMASK(24);
 +}
 +
 +/* emu_pm_read_accu24 outside SA: the scaled, limited 24-bit value. */
@@ -5065,14 +5114,10 @@ index 012a67b869c756061090a3e4c196d9a42c869c27..cc9fdab1197012b4f525bb42eeaeab42
 +static DSP_PREAD_INLINE void dsp_rb_add(uint32_t *a2, uint32_t *a1, uint32_t *a0, uint32_t s,
 +                                        int subtract, int store, uint32_t *sr)
 +{
-+    uint32_t source[3], dest[3];
-+    source[2] = 0;
-+    source[1] = s;
-+    source[0] = s & (1<<23) ? 0xff : 0x0;
-+    dest[0] = *a2; dest[1] = *a1; dest[2] = *a0;
-+    uint16_t newsr = subtract ? dsp_sub56(source, dest) : dsp_add56(source, dest);
-+    if (store) { *a2 = dest[0]; *a1 = dest[1]; *a0 = dest[2]; }
-+    *sr = dsp_rb_ccr(*sr, dest[0], dest[1], dest[2]);
++    uint32_t d0 = *a2, d1 = *a1, d2 = *a0, s0 = s & (1<<23) ? 0xff : 0x0;
++    uint32_t newsr = subtract ? dsp_rb_sub56(s0, s, 0, &d0, &d1, &d2) : dsp_rb_add56(s0, s, 0, &d0, &d1, &d2);
++    if (store) { *a2 = d0; *a1 = d1; *a0 = d2; }
++    *sr = dsp_rb_ccr(*sr, d0, d1, d2);
 +    *sr &= ~((1u << DSP_SR_V) | (1u << DSP_SR_C));
 +    *sr |= newsr;
 +}
@@ -5081,20 +5126,20 @@ index 012a67b869c756061090a3e4c196d9a42c869c27..cc9fdab1197012b4f525bb42eeaeab42
 +static DSP_PREAD_INLINE void dsp_rb_mul(uint32_t *a2, uint32_t *a1, uint32_t *a0, uint32_t s1, uint32_t s2,
 +                                        unsigned negative, int accumulate, int round, uint32_t *sr)
 +{
-+    uint32_t source[3], dest[3];
-+    dsp_rb_mul56(s1, s2, source, negative);
++    uint32_t p0, p1, p2;
++    dsp_rb_mul56(s1, s2, negative, &p0, &p1, &p2);
 +    if (!accumulate) {
-+        if (round) dsp_rb_rnd(*sr, source);
-+        *a2 = source[0]; *a1 = source[1]; *a0 = source[2];
-+        *sr = dsp_rb_ccr(*sr, source[0], source[1], source[2]);
++        if (round) dsp_rb_rnd(*sr, &p0, &p1, &p2);
++        *a2 = p0; *a1 = p1; *a0 = p2;
++        *sr = dsp_rb_ccr(*sr, p0, p1, p2);
 +        *sr &= ~(1u << DSP_SR_V);
 +        return;
 +    }
-+    dest[0] = *a2; dest[1] = *a1; dest[2] = *a0;
-+    uint16_t newsr = dsp_add56(source, dest);
-+    if (round) dsp_rb_rnd(*sr, dest);
-+    *a2 = dest[0]; *a1 = dest[1]; *a0 = dest[2];
-+    *sr = dsp_rb_ccr(*sr, dest[0], dest[1], dest[2]);
++    uint32_t d0 = *a2, d1 = *a1, d2 = *a0;
++    uint32_t newsr = dsp_rb_add56(p0, p1, p2, &d0, &d1, &d2);
++    if (round) dsp_rb_rnd(*sr, &d0, &d1, &d2);
++    *a2 = d0; *a1 = d1; *a0 = d2;
++    *sr = dsp_rb_ccr(*sr, d0, d1, d2);
 +    *sr &= ~(1u << DSP_SR_V);
 +    *sr |= newsr & 0xfe;
 +}
@@ -5122,15 +5167,11 @@ index 012a67b869c756061090a3e4c196d9a42c869c27..cc9fdab1197012b4f525bb42eeaeab42
 +/* CMPM: magnitudes compared. */
 +static DSP_PREAD_INLINE void dsp_rb_cmpm(uint32_t a2, uint32_t a1, uint32_t a0, uint32_t s, uint32_t *sr)
 +{
-+    uint32_t source[3], dest[3];
-+    dest[0] = a2; dest[1] = a1; dest[2] = a0;
-+    dsp_abs56(dest);
-+    source[2] = 0;
-+    source[1] = s;
-+    source[0] = s & (1<<23) ? 0xff : 0x0;
-+    dsp_abs56(source);
-+    uint16_t newsr = dsp_sub56(source, dest);
-+    *sr = dsp_rb_ccr(*sr, dest[0], dest[1], dest[2]);
++    uint32_t d0 = a2, d1 = a1, d2 = a0, s0 = s & (1<<23) ? 0xff : 0x0, s1 = s, s2 = 0;
++    dsp_rb_abs56(&d0, &d1, &d2);
++    dsp_rb_abs56(&s0, &s1, &s2);
++    uint32_t newsr = dsp_rb_sub56(s0, s1, s2, &d0, &d1, &d2);
++    *sr = dsp_rb_ccr(*sr, d0, d1, d2);
 +    *sr &= ~((1u << DSP_SR_V) | (1u << DSP_SR_C));
 +    *sr |= newsr;
 +}
