@@ -32,6 +32,15 @@ int mm3_display_settings_commit(const MM3DisplaySettings *settings, char *messag
     snprintf(message, capacity, "Saved. Display changes applied.");
     return 1;
 }
+static int circuit_mode = -1;
+static uint32_t circuit_city_screen, circuit_setup_screen;
+static unsigned circuit_name_blocks;
+void mm3_circuit_set_mode(int on) { circuit_mode = on; }
+void mm3_circuit_set_screens(uint32_t city_select, uint32_t race_setup)
+{
+    circuit_city_screen = city_select;
+    circuit_setup_screen = race_setup;
+}
 void mm3_display_settings_defaults(MM3DisplaySettings *settings, const char *profile)
 {
     (void)profile;
@@ -46,11 +55,14 @@ void mm3_display_settings_defaults(MM3DisplaySettings *settings, const char *pro
 
 void sub_0016FF04(void)
 {
-    assert(MEM32(g_esp + 4u) == 16u);
+    uint32_t size = MEM32(g_esp + 4u);
+    /* Bindings are 16 bytes; the circuit screen names one 96-byte block. */
+    assert(size == 16u || (size == 96u && !circuit_name_blocks));
     assert(MEM32(g_esp) == 0x001268C8u);
     g_eax = next_binding;
-    next_binding += 16u;
-    ++allocated;
+    next_binding += size;
+    if (size == 16u) ++allocated;
+    else ++circuit_name_blocks;
     g_esp += 8u; /* allocator RET 4 consumes the size argument */
 }
 
@@ -173,6 +185,11 @@ int main(void)
     sub_001C5E11();
     assert(allocated == GRAPHICS_ACTION_COUNT && constructed == allocated && registered == allocated);
     assert(loaded == 1 && g_eax == 0x1111 && g_esp == test_stack + 8u);
+    assert(circuit_name_blocks == 1 && circuit_setup_screen == circuit_city_screen + 48u);
+    assert(guest_string(circuit_city_screen, label, sizeof label) &&
+           !strcmp(label, "singlePlayer/screenCircuitCitySelect"));
+    assert(guest_string(circuit_setup_screen, label, sizeof label) &&
+           !strcmp(label, "singlePlayer/screenCircuitRaceSetup"));
 
     execute(GRAPHICS_BEGIN);
     get_native_label("SID_MM3_GRAPHICS_FPS", label, sizeof label);
@@ -297,7 +314,7 @@ int main(void)
     memset(&expected_loader_state, 0, sizeof expected_loader_state);
     save_guest(&expected_loader_state);
     sub_001C5E11();
-    assert(registered == GRAPHICS_ACTION_COUNT * 2 && loaded == 3);
+    assert(registered == GRAPHICS_ACTION_COUNT * 2 && loaded == 3 && circuit_name_blocks == 1);
     get_native_label("SID_MM3_GRAPHICS_HUD_MINIMAP_STOCK", label, sizeof label);
     assert(!strcmp(label, "Minimap: Stock  (Selected)"));
     fail_commit = 0;
@@ -309,6 +326,11 @@ int main(void)
     fail_commit = 1;
     execute(GRAPHICS_MINIMAP_STOCK);
     assert(commits == 4 && saved_settings.minimap_improved == 1);
+    /* The single player mode rows switch the circuit race list, nothing else. */
+    execute(CIRCUIT_BEGIN);
+    assert(circuit_mode == 1 && commits == 4);
+    execute(CIRCUIT_END);
+    assert(circuit_mode == 0 && commits == 4);
     puts("Native graphics menu contract passed.");
     return 0;
 }

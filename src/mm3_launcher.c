@@ -256,7 +256,8 @@ static void help_show(Launcher *ui, int id)
             "Run the game's sound-processor programs for effects such as reverb, spatial processing and final mixing. Off uses a simpler voice mix.",
             "Enable System Link networking for local multiplayer and configured UDP peers. This does not provide Xbox Live sign-in. Leave off for ordinary offline play.",
             "Show the game's N letter, which marks north on the edge of the minimap as the map turns. Off keeps the minimap free of it.",
-            "Show the game's yellow arrow at the top of the screen, which points toward the next checkpoint in races. Off hides it; the minimap still shows the route."
+            "Show the game's yellow arrow at the top of the screen, which points toward the next checkpoint in races. Off hides it; with Route navigation on, the minimap still shows the route.",
+            "Draw the route to the next checkpoint or job target on the race map, like a navigation system, along the roads the course takes. Off shows the map without a drawn route, as in the original game."
         };
         int option = id - ID_OPTION, on = checked(ui, id);
         title = mm3_launcher_options[option].label;
@@ -780,12 +781,13 @@ static void mods_controls(Launcher *ui)
     /* HUD markers the original game shows, beside the field of view. */
     check(ui, 2, ID_OPTION + MM3_LAUNCH_NORTH_MARKER, mm3_launcher_options[MM3_LAUNCH_NORTH_MARKER].label, 445, 440, 371);
     check(ui, 2, ID_OPTION + MM3_LAUNCH_RACE_ARROW, mm3_launcher_options[MM3_LAUNCH_RACE_ARROW].label, 445, 478, 371);
+    check(ui, 2, ID_OPTION + MM3_LAUNCH_ROUTE_NAVIGATION, mm3_launcher_options[MM3_LAUNCH_ROUTE_NAVIGATION].label, 445, 516, 371);
     label(ui, 2, "Horizontal field of view", 42, 435, 260);
     add(ui, 2, "EDIT", "0", ES_NUMBER | WS_TABSTOP, ID_FOV, 310, 431, 77, 26);
     label(ui, 2, "0 = retail, or 60-110 degrees", 42, 466, 345);
     add(ui, 2, "STATIC", "Developer tools need the prepared scripts from tools\\debug-features\\prepare.py. These options invoke the game's own developer commands.",
         0, -1, 445, 370, 371, 60);
-    HWND fixed = check(ui, 2, ID_REQUIRED, "Collision-cell safety repair (required)", 42, 521, 774);
+    HWND fixed = check(ui, 2, ID_REQUIRED, "Collision-cell safety repair (required)", 42, 516, 371);
     SendMessageA(fixed, BM_SETCHECK, BST_CHECKED, 0); EnableWindow(fixed, FALSE);
     label(ui, 2, "Preferences apply when Play starts the game. Graphics Settings remain available in game with F10.", 42, 560, 774);
 }
@@ -862,6 +864,59 @@ static void status_text(HWND window, const char *text)
     char previous[512];
     GetWindowTextA(window, previous, sizeof previous);
     if (strcmp(previous, text)) SetWindowTextA(window, text);
+}
+
+/* Windows lets a window come to the front only for the foreground process
+ * or the one that had the last keyboard or mouse input. Play pressed with a
+ * controller leaves no such input, and the launcher's window closes before
+ * the game opens its own, so the game window could open without the focus -
+ * and Steam Input keeps a controller on its desktop setup until the game
+ * window has it. While the launcher is still in front, a thread waits for the
+ * game window and brings it forward. */
+static BOOL CALLBACK game_window_found(HWND window, LPARAM param)
+{
+    DWORD pid;
+    char name[80];
+    GetWindowThreadProcessId(window, &pid);
+    if (pid == GetCurrentProcessId() && GetClassNameA(window, name, sizeof name) &&
+        !strcmp(name, "XboxRecompFramebuffer") && IsWindowVisible(window)) {
+        *(HWND *)param = window;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static DWORD WINAPI game_window_forward(LPVOID unused)
+{
+    HWND game = NULL;
+    (void)unused;
+    for (int wait = 0; !game && wait < 1200; ++wait) {   /* up to two minutes */
+        EnumWindows(game_window_found, (LPARAM)&game);
+        if (!game) Sleep(100);
+    }
+    for (int attempt = 0; game && attempt < 20 && GetForegroundWindow() != game; ++attempt) {
+        HWND front = GetForegroundWindow();
+        DWORD front_thread = front ? GetWindowThreadProcessId(front, NULL) : 0;
+        DWORD self = GetCurrentThreadId();
+        BOOL attached = front_thread && front_thread != self && AttachThreadInput(self, front_thread, TRUE);
+        if (IsIconic(game)) ShowWindow(game, SW_RESTORE);
+        BringWindowToTop(game);
+        SetForegroundWindow(game);
+        if (attached) AttachThreadInput(self, front_thread, FALSE);
+        if (GetForegroundWindow() != game) Sleep(100);
+        else fprintf(stderr, "[MM3_LAUNCHER] game window brought to the front (attempt %d)\n", attempt + 1);
+    }
+    if (game && GetForegroundWindow() != game)
+        fprintf(stderr, "[MM3_LAUNCHER] could not bring the game window to the front\n");
+    return 0;
+}
+
+static void game_window_follow(void)
+{
+    HANDLE thread;
+    AllowSetForegroundWindow(GetCurrentProcessId());
+    thread = CreateThread(NULL, 0, game_window_forward, NULL, 0, NULL);
+    if (thread) CloseHandle(thread);
 }
 
 static void poll_pads(Launcher *ui)
@@ -979,7 +1034,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             help_show(ui, LOWORD(wparam));
         switch (LOWORD(wparam)) {
         case IDOK:
-            if (!ui->capture && apply(ui)) { ui->result = 1; DestroyWindow(window); }
+            if (!ui->capture && apply(ui)) { ui->result = 1; game_window_follow(); DestroyWindow(window); }
             return 0;
         case IDCANCEL:
             if (ui->capture) { ui->capture = 0; SetWindowTextA(control(ui, ID_STATUS), "Capture cancelled."); help_show(ui, ID_CAPTURE); }

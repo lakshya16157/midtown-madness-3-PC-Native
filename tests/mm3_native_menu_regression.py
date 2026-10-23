@@ -13,7 +13,9 @@ from generate import (ADVANCED, ADVANCED_ROWS, DISPLAY, DISPLAY_ROWS, GRAPHICS_I
                       GRAPHICS_INFO_WIDGET, INFOBOX, INFO_WIDGET, MAIN, MULTIPOP_TEMPLATE, OPTIONS,
                       PAUSE_HUD, PAUSE_OPTIONS, PICKER_COUNTS, PICKERS, PICKER_TITLES, RESOLUTION_OTHER,
                       RESOLUTION_PRIMARY, RESOLUTION_SECONDARY, ROW_DESTINATIONS,
-                      TITLE, TITLE_ADVANCED, TITLE_DISPLAY, generate_resources, picker_rows, write_header)
+                      TITLE, TITLE_ADVANCED, TITLE_DISPLAY, generate_resources, picker_rows, write_header,
+                      CHECKPOINT_MODE, CIRCUIT_CITY, CIRCUIT_FIRST_RACE, CIRCUIT_MODE, CIRCUIT_SETUP,
+                      CIRCUIT_TITLE, CITY_SELECT, SP_SETUP, SP_TYPE, TITLE_GAME_MODE)
 
 
 def function_names(obj):
@@ -60,6 +62,9 @@ class NativeMenuTests(unittest.TestCase):
         action_list = row_button(graphics).parts[3].object
         self.assertEqual(action_list.references()[0].object.kind, "CallFunctionAction")
         self.assertEqual(function_names(action_list), ["functions/graphicsBegin"])
+        for label, _, row in rows(menu):
+            if label in ("SID_CAREER", "SID_SINGLE_PLAYER", "SID_MULTIPLAYER", "SID_OPTIONS"):
+                self.assertEqual(function_names(row_button(row).parts[3].object), ["functions/circuitEnd"])
         self.assertEqual(action_list.references()[1].object.references()[1].name, DISPLAY)
         # The new help item occupies the same position as its controller focus.
         data = named_references(menu, "main/oftMain")[0].object
@@ -227,7 +232,7 @@ class NativeMenuTests(unittest.TestCase):
         self.assertNotEqual(PICKERS["VIEW_DISTANCE"], PICKERS["DISTANCE"])
 
     def test_header_and_determinism(self):
-        self.assertEqual(len(self.encoded), 7 + 2 * len(PICKER_COUNTS) + 1 + 2)
+        self.assertEqual(len(self.encoded), 7 + 2 * len(PICKER_COUNTS) + 1 + 2 + 7)
         self.assertEqual(generate_resources(self.archive), self.encoded)
         with tempfile.TemporaryDirectory(prefix="mm3-native-menu-") as directory:
             header = Path(directory) / "resources.h"
@@ -265,6 +270,57 @@ class NativeMenuTests(unittest.TestCase):
         self.assertEqual(len(back), 1)
         self.assertEqual(len(named_references(hud, "variables/indexHud")), 1)
         self.assertEqual(named_references(hud, "variables/indexOptions"), [])
+
+    def test_circuit_mode_opens_its_own_race_list(self):
+        modes = self.resources[SP_TYPE]
+        self.assertEqual([(label, rect) for label, rect, _ in rows(modes)],
+                         [("SID_CRUISE", (0, 0, 250, 30)), ("SID_BLITZ", (0, 30, 250, 30)),
+                          ("SID_CHECKPOINT", (0, 60, 250, 30)), ("SID_MM3_CIRCUIT", (0, 90, 250, 30))])
+        for label, _, row in rows(modes):
+            actions = row_button(row).parts[3].object
+            self.assertEqual(function_names(actions), ["functions/circuitBegin" if label == "SID_MM3_CIRCUIT"
+                                                       else "functions/circuitEnd"])
+            pushes = [node for node in actions.walk() if node.kind == "PushPathAction"]
+            self.assertEqual(len(pushes), 1)
+            self.assertEqual(pushes[0].references()[1].name,
+                             CIRCUIT_CITY if label == "SID_MM3_CIRCUIT" else CITY_SELECT)
+            # Circuit is a Checkpoint game: same game mode constant as the retail row.
+            modes_set = [ref.name for node in actions.walk() if node.kind == "SetVariableAction"
+                         for ref in node.references() if ref.name.startswith("constants/gameMode/")]
+            if label in ("SID_CHECKPOINT", "SID_MM3_CIRCUIT"):
+                self.assertEqual(modes_set, ["constants/gameMode/03Checkpoint"])
+        help_lists = [node for node in modes.root.walk() if node.kind == "DataListData"]
+        texts = [[sid_text(ref.object) for ref in node.references() if ref.object] for node in help_lists]
+        self.assertIn(["SID_OFT_SRT_CRUISE", "SID_OFT_SRT_BLITZ", "SID_OFT_SRT_CHECKPOINT",
+                       "SID_MM3_OFT_SRT_CIRCUIT"], texts)
+        # Each screen sets the mode as it comes up (also back from a race).
+        for name, function in ((CIRCUIT_CITY, "circuitBegin"), (CIRCUIT_SETUP, "circuitBegin"),
+                               (CITY_SELECT, "circuitEnd"), (SP_SETUP, "circuitEnd")):
+            self.assertEqual(function_names(self.resources[name].root), ["functions/" + function], name)
+        city = self.resources[CIRCUIT_CITY]
+        self.assertEqual(len(named_references(city, CIRCUIT_SETUP)), 1)
+        self.assertEqual(named_references(city, SP_SETUP), [])
+        self.assertEqual(len(named_references(city, CIRCUIT_TITLE)), 1)
+        setup = self.resources[CIRCUIT_SETUP]
+        self.assertEqual(len(named_references(setup, CIRCUIT_MODE)), 1)
+        self.assertEqual(named_references(setup, CHECKPOINT_MODE), [])
+        self.assertEqual(named_references(setup, TITLE_GAME_MODE), [])
+        title_texts = [sid_text(node) for node in self.resources[CIRCUIT_TITLE].root.walk() if node.kind == "WSidData"]
+        self.assertIn("SID_MM3_CIRCUIT", title_texts)
+        self.assertNotIn("SID_CHECKPOINT", title_texts)
+        button = next(node for node in self.resources[CIRCUIT_MODE].root.walk()
+                      if node.kind == "MmxCheckpointRaceButtonNode")
+        values = [struct.unpack("<i", ref.object.parts[0])[0] for ref in button.references()
+                  if not ref.name and ref.object and ref.object.kind == "IntData"]
+        self.assertEqual(values, [1, CIRCUIT_FIRST_RACE])  # step, first race
+        # The picture strip counts from the first circuit: Race is the selection less 20.
+        strip = next(node for node in self.resources[CIRCUIT_MODE].root.walk() if node.kind == "MmxRaceListNode")
+        self.assertEqual([ref.name for ref in strip.references()],
+                         ["", "variables/varCity", "variables/varGameMode", "", "variables/varCheckpointRaces"])
+        offset = strip.references()[3].object
+        self.assertEqual(offset.kind, "SubData")
+        self.assertEqual(offset.references()[0].name, "variables/varCheckpointRace")
+        self.assertEqual(offset.references()[1].object.parts, [struct.pack("<i", CIRCUIT_FIRST_RACE)])
 
 
 if __name__ == "__main__":

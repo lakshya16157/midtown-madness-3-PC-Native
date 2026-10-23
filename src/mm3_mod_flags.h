@@ -23,5 +23,6 @@ MM3_MOD_FLAG(mm3_mod_glow_lift, "MM3_GLOW_LIFT", 1)
 MM3_MOD_FLAG(mm3_mod_lamp_glows, "MM3_ALL_STREET_LAMPS", 1)
 MM3_MOD_FLAG(mm3_mod_north_marker, "MM3_HUD_NORTH_MARKER", 0)
 MM3_MOD_FLAG(mm3_mod_race_arrow, "MM3_HUD_RACE_ARROW", 0)
+MM3_MOD_FLAG(mm3_mod_route_navigation, "MM3_ROUTE_NAVIGATION", 1)
 #undef MM3_MOD_FLAG
 #endif

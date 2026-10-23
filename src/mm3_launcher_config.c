@@ -34,7 +34,8 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"RECOMP_APU_DSP", "Accurate sound processor", 1},
     {"RECOMP_NET", "System Link networking", 0},
     {"MM3_HUD_NORTH_MARKER", "Show the north marker on the minimap", 0},
-    {"MM3_HUD_RACE_ARROW", "Show the race direction arrow", 0}
+    {"MM3_HUD_RACE_ARROW", "Show the race direction arrow", 0},
+    {"MM3_ROUTE_NAVIGATION", "Route navigation line on the map", 1}
 };
 const char *const mm3_launcher_key_names[MM3_LAUNCHER_KEYS] = {
     "A", "B", "X", "Y", "WHITE", "BLACK", "LT", "RT", "START", "BACK",

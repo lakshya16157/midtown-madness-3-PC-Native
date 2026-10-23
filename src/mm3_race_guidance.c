@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "recomp_types.h"
+#include "mm3_mod_flags.h"
 extern int mm3_minimap_improved(void);
 extern int mm3_minimap_origin(uint32_t, float *);
 extern int mm3_minimap_heading(uint32_t, float *);
@@ -837,6 +838,56 @@ static unsigned road_object_index(uint32_t object, uint32_t base, unsigned count
     return (object - base) / stride;
 }
 
+/* Circuit-race design data (tools/races): once per city and build, write the
+ * street graph just built to logs/city-roads-<roads>r-<junctions>j.json --
+ * junction positions, each road's sampled centre line and every edge with its
+ * width -- unless that file already exists. Car paths through plazas are left
+ * out; circuits use streets. Read-only on guest state. */
+static FILE *road_open(const char *path, const char *mode)
+{
+#ifdef _MSC_VER
+    FILE *file = NULL;
+    return fopen_s(&file, path, mode) ? NULL : file;
+#else
+    return fopen(path, mode);
+#endif
+}
+
+static void road_graph_dump(const RoadCurve *curves, unsigned road_count, unsigned junction_count,
+                            unsigned street_nodes, uint32_t road_base)
+{
+    char path[96];
+    FILE *file;
+    unsigned i, j, edges = 0;
+    snprintf(path, sizeof path, "logs/city-roads-%ur-%uj.json", road_count, junction_count);
+    file = road_open(path, "rb");
+    if (file) { fclose(file); return; }
+    file = road_open(path, "wb");
+    if (!file) return;
+    fprintf(file, "{\"roads\":%u,\"junctions\":%u,\"street_nodes\":%u,\"nodes\":[", road_count,
+            junction_count, street_nodes);
+    for (i = 0; i < street_nodes; ++i) {
+        RoadPoint p = s_roads.nodes[i].position;
+        fprintf(file, "%s[%.2f,%.2f,%.2f]", i ? "," : "", p.x, p.y, p.z);
+    }
+    fprintf(file, "],\"road_nodes\":[");
+    for (i = 0; i < road_count; ++i)
+        fprintf(file, "%s[%u,%u]", i ? "," : "", curves[i].first, curves[i].last);
+    fprintf(file, "],\"edges\":[");
+    for (i = 0; i < street_nodes; ++i)
+        for (j = s_roads.nodes[i].first; j != NO_NODE; j = s_roads.edges[j].next) {
+            const RoadEdge *edge = s_roads.edges + j;
+            unsigned road = edge->road >= road_base && (edge->road - road_base) % 0xDC == 0 &&
+                            (edge->road - road_base) / 0xDC < road_count ? (edge->road - road_base) / 0xDC : NO_NODE;
+            if (edge->to >= street_nodes || edge->to < i) continue;
+            fprintf(file, "%s[%u,%u,%d,%.2f]", edges++ ? "," : "", i, edge->to,
+                    road == NO_NODE ? -1 : (int)road, edge->width);
+        }
+    fprintf(file, "]}\n");
+    fclose(file);
+    fprintf(stderr, "[RACE_ROUTE] wrote the street graph to %s (%u nodes, %u edges)\n", path, street_nodes, edges);
+}
+
 void mm3_race_guidance_roads(uint32_t city, uint32_t loaded)
 {
     uint32_t arrays[4], links;
@@ -940,6 +991,7 @@ void mm3_race_guidance_roads(uint32_t city, uint32_t loaded)
     if (!road_traffic_joins(traffic, traffic_count, curves, road_count, links, MEM32(city + 0xB0),
                             arrays[0], arrays[2], junction_count)) goto invalid;
     road_traffic_routing(street_nodes);
+    road_graph_dump(curves, road_count, junction_count, street_nodes, arrays[0]);
     if (road_map_areas_build(city))
         fprintf(stderr, "[RACE_ROUTE] map-only Washington areas=%u paths=%u samples=%u\n",
                 (unsigned)(sizeof s_map_area_indices / sizeof *s_map_area_indices),
@@ -1558,7 +1610,9 @@ void mm3_race_map_route(uint32_t node, uint32_t table,
         }
         s_road_layer = 0;
     }
-    if (!s_race[player].valid) return;
+    /* Launcher Mods "Route navigation line on the map" (MM3_ROUTE_NAVIGATION):
+     * off keeps the street map but draws no course or car-to-target route. */
+    if (!s_race[player].valid || !mm3_mod_route_navigation()) return;
     {
         float player_angle;
         RoadPoint heading = {0, 0, 0};

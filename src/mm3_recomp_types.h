@@ -389,7 +389,8 @@ void recomp_trace_esp(const char *name, const char *tag);
  * uintptr_t cast preserves the overflow bits, landing us 4GB+ past
  * our mapping and causing access violations.
  */
-#define XBOX_PTR(addr) ((uintptr_t)(uint32_t)(addr) + g_xbox_mem_offset)
+#define RECOMP_MEM_BASE g_xbox_mem_offset   /* generated functions use a local copy (RECOMP_GEN_PROLOGUE) */
+#define XBOX_PTR(addr) ((uintptr_t)(uint32_t)(addr) + RECOMP_MEM_BASE)
 
 /** Read/write N bytes at a flat Xbox memory address. */
 #define MEM8(addr)   (*(volatile uint8_t  *)XBOX_PTR(addr))
@@ -1379,5 +1380,75 @@ void recomp_unimpl(const char *text, uint32_t va);
     else \
         recomp_unimpl((_text), (_va)); \
 } while (0)
+
+/* ================================================================
+ * Per-function register and memory-base cache (generated code)
+ *
+ * Every guest memory access is volatile, and MSVC treats a volatile access as
+ * a full compiler barrier: after each one, generated code reloaded
+ * g_xbox_mem_offset and walked the TLS chain again (_tls_index, gs:[58h], the
+ * thread's block) for every register it touched. That was about a quarter of
+ * all generated instructions (a third in the x87-heavy functions).
+ *
+ * The build inserts RECOMP_GEN_PROLOGUE at the top of every generated
+ * function (CMakeLists.txt, MM3_GEN_REGISTER_CACHE, via
+ * scripts/mm3_gen_register_cache.py, which leaves data decoded as code on the
+ * thread-local names: mm3_gen_cache_off.h / _on.h). It takes the addresses
+ * of this thread's register variables and the guest base once, into const
+ * locals the compiler keeps in registers. Every access still goes to the same
+ * thread-local storage, so state stays shared with callees and the kernel
+ * exactly as before. Valid because a guest function runs start to finish on
+ * one host thread (no fibers) and the base never changes after memory
+ * initialisation. The helpers below are defined before the names are
+ * redefined, so they still reach the real variables.
+ * ================================================================ */
+#if defined(RECOMP_GENERATED_CODE) && defined(MM3_GEN_REGISTER_CACHE)
+#define RECOMP_GEN_ADDR(type, name) \
+    static __forceinline type *recomp_addr_##name(void) { return &name; }
+RECOMP_GEN_ADDR(uint32_t, g_eax) RECOMP_GEN_ADDR(uint32_t, g_ecx) RECOMP_GEN_ADDR(uint32_t, g_edx)
+RECOMP_GEN_ADDR(uint32_t, g_esp) RECOMP_GEN_ADDR(uint32_t, g_ebx) RECOMP_GEN_ADDR(uint32_t, g_esi)
+RECOMP_GEN_ADDR(uint32_t, g_edi) RECOMP_GEN_ADDR(uint32_t, g_ebp) RECOMP_GEN_ADDR(uint32_t, g_eflags)
+RECOMP_GEN_ADDR(uint32_t, g_seh_ebp) RECOMP_GEN_ADDR(uint32_t, g_fs_base) RECOMP_GEN_ADDR(int, g_df)
+RECOMP_GEN_ADDR(int, g_fp_top) RECOMP_GEN_ADDR(uint16_t, g_fp_control_word)
+RECOMP_GEN_ADDR(int, g_fp_cmp) RECOMP_GEN_ADDR(uint16_t, g_fp_cc)
+RECOMP_GEN_ADDR(RecompXmm, g_xmm0) RECOMP_GEN_ADDR(RecompXmm, g_xmm1) RECOMP_GEN_ADDR(RecompXmm, g_xmm2)
+RECOMP_GEN_ADDR(RecompXmm, g_xmm3) RECOMP_GEN_ADDR(RecompXmm, g_xmm4) RECOMP_GEN_ADDR(RecompXmm, g_xmm5)
+RECOMP_GEN_ADDR(RecompXmm, g_xmm6) RECOMP_GEN_ADDR(RecompXmm, g_xmm7)
+RECOMP_GEN_ADDR(RecompMmx, g_mm0) RECOMP_GEN_ADDR(RecompMmx, g_mm1) RECOMP_GEN_ADDR(RecompMmx, g_mm2)
+RECOMP_GEN_ADDR(RecompMmx, g_mm3) RECOMP_GEN_ADDR(RecompMmx, g_mm4) RECOMP_GEN_ADDR(RecompMmx, g_mm5)
+RECOMP_GEN_ADDR(RecompMmx, g_mm6) RECOMP_GEN_ADDR(RecompMmx, g_mm7)
+static __forceinline double *recomp_addr_g_fp_stack(void) { return g_fp_stack; }
+#undef RECOMP_GEN_ADDR
+
+#define RECOMP_GEN_PTR(type, name) type *const recomp_p_##name = recomp_addr_##name();
+#define RECOMP_GEN_PROLOGUE \
+    RECOMP_GEN_PTR(uint32_t, g_eax) RECOMP_GEN_PTR(uint32_t, g_ecx) RECOMP_GEN_PTR(uint32_t, g_edx) \
+    RECOMP_GEN_PTR(uint32_t, g_esp) RECOMP_GEN_PTR(uint32_t, g_ebx) RECOMP_GEN_PTR(uint32_t, g_esi) \
+    RECOMP_GEN_PTR(uint32_t, g_edi) RECOMP_GEN_PTR(uint32_t, g_ebp) RECOMP_GEN_PTR(uint32_t, g_eflags) \
+    RECOMP_GEN_PTR(uint32_t, g_seh_ebp) RECOMP_GEN_PTR(uint32_t, g_fs_base) RECOMP_GEN_PTR(int, g_df) \
+    RECOMP_GEN_PTR(int, g_fp_top) RECOMP_GEN_PTR(uint16_t, g_fp_control_word) \
+    RECOMP_GEN_PTR(int, g_fp_cmp) RECOMP_GEN_PTR(uint16_t, g_fp_cc) \
+    RECOMP_GEN_PTR(RecompXmm, g_xmm0) RECOMP_GEN_PTR(RecompXmm, g_xmm1) RECOMP_GEN_PTR(RecompXmm, g_xmm2) \
+    RECOMP_GEN_PTR(RecompXmm, g_xmm3) RECOMP_GEN_PTR(RecompXmm, g_xmm4) RECOMP_GEN_PTR(RecompXmm, g_xmm5) \
+    RECOMP_GEN_PTR(RecompXmm, g_xmm6) RECOMP_GEN_PTR(RecompXmm, g_xmm7) \
+    RECOMP_GEN_PTR(RecompMmx, g_mm0) RECOMP_GEN_PTR(RecompMmx, g_mm1) RECOMP_GEN_PTR(RecompMmx, g_mm2) \
+    RECOMP_GEN_PTR(RecompMmx, g_mm3) RECOMP_GEN_PTR(RecompMmx, g_mm4) RECOMP_GEN_PTR(RecompMmx, g_mm5) \
+    RECOMP_GEN_PTR(RecompMmx, g_mm6) RECOMP_GEN_PTR(RecompMmx, g_mm7) \
+    RECOMP_GEN_PTR(double, g_fp_stack) \
+    const uintptr_t recomp_mem_base = (uintptr_t)g_xbox_mem_offset; \
+    (void)recomp_mem_base; RECOMP_GEN_UNUSED
+#define RECOMP_GEN_UNUSED \
+    (void)recomp_p_g_eax; (void)recomp_p_g_ecx; (void)recomp_p_g_edx; (void)recomp_p_g_esp; \
+    (void)recomp_p_g_ebx; (void)recomp_p_g_esi; (void)recomp_p_g_edi; (void)recomp_p_g_ebp; \
+    (void)recomp_p_g_eflags; (void)recomp_p_g_seh_ebp; (void)recomp_p_g_fs_base; (void)recomp_p_g_df; \
+    (void)recomp_p_g_fp_top; (void)recomp_p_g_fp_control_word; (void)recomp_p_g_fp_cmp; \
+    (void)recomp_p_g_fp_cc; (void)recomp_p_g_xmm0; (void)recomp_p_g_xmm1; (void)recomp_p_g_xmm2; \
+    (void)recomp_p_g_xmm3; (void)recomp_p_g_xmm4; (void)recomp_p_g_xmm5; (void)recomp_p_g_xmm6; \
+    (void)recomp_p_g_xmm7; (void)recomp_p_g_mm0; (void)recomp_p_g_mm1; (void)recomp_p_g_mm2; \
+    (void)recomp_p_g_mm3; (void)recomp_p_g_mm4; (void)recomp_p_g_mm5; (void)recomp_p_g_mm6; \
+    (void)recomp_p_g_mm7; (void)recomp_p_g_fp_stack;
+
+#include "mm3_gen_cache_on.h"
+#endif
 
 #endif /* RECOMP_TYPES_H */

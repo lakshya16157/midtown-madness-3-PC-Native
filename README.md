@@ -173,6 +173,15 @@ add missing packs. Installed data lives under `game_files\TDATA\4d53002a\$C`.
 - **Changing your mind:** run the installer again with different options. Your saved games
   are kept. They live in the install folder under `game_files\UDATA`. To uninstall, delete
   the folder.
+- **A save from a real Xbox says it is damaged:** the console signed it with its own keys.
+  `python tools\saves\resign_save.py <its UDATA folder> <new folder>` writes a copy this
+  port accepts (the game data is unchanged; only the signatures are redone). Copy the new
+  `4d53002a` folder into `game_files\UDATA`.
+- **Car Workshop**, the car toolkit in `tools\car-mods` (`editor.cmd`, needs Python 3),
+  changes the extra cars' names, ratings, handling, speedometers and bodies. See
+  [Added cars and editing stats](#added-cars-and-editing-stats).
+- **Route line on the map:** the launcher's Mods tab has **Route navigation line on the
+  map** (on by default); turn it off for the original map without a drawn route.
 - **Something wrong?** The game writes `logs\last-run.log` in the install folder. Please
   [open an issue](https://github.com/lakshya16157/midtown-madness-3-PC-Native/issues)
   and attach it.
@@ -271,6 +280,17 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
 
 ## Improvements in this fork
 
+- **New in Setup 1.6:**
+  - **Circuit races:** ten lapped circuit races in each city, with their own Circuit button. The last ones run around the city on the highways. Opponents follow Midtown Madness 1-style paths, and side roads are closed with single rows of containers.
+  - **Faster game code:** every recompiled game function keeps its register addresses and the memory base in locals instead of re-reading them after each memory access. That is about a quarter fewer instructions in the game's own code, with identical results.
+  - **Faster sound processor:** its programs run as compiled blocks with native loops, checked byte for byte against the interpreter.
+  - **Cheaper texture checks:** a write watch skips re-hashing textures the game has not written to. `RECOMP_TEXTURE_WATCH=0` turns it off, and `RECOMP_TEXTURE_WATCH_VERIFY=1` checks it.
+  - **Fixes:**
+    - Trees now follow the native distance fog instead of turning grey early.
+    - The launcher hands controller focus to the game window.
+    - The Mods tab can turn off the route line on the map.
+  - **Save repair:** console saves that load as "damaged" can be re-signed with `tools\saves\resign_save.py`.
+  - **Tools:** Car Workshop (`tools\car-mods`) edits the extra cars.
 - **Visuals:** fixed refreshing of streamed textures and CPU-written swizzled
   surfaces, and prevented stale vertex programs/constants after failed GPU
   uploads. Building-detail fades scale with extended draw distance, and the car

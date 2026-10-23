@@ -16,6 +16,8 @@ tools/packages/
 tools/source/
 tools/venv/
 tools/.generator/
+# Street graphs the game writes from the user's city files (tools/races/design.py)
+tools/races/data/
 
 # Build and runtime evidence
 conformance_tmp/

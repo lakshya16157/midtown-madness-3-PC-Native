@@ -353,6 +353,7 @@ def main():
         (folder / "native_race_guidance.inc").write_text(
             declarations + "\n" + body + constants(file_constants) + ui_declaration_data() + retail_big_one_checkpoints())
         shutil.copyfile(ROOT / "src/mm3_recomp_types.h", folder / "recomp_types.h")
+        shutil.copyfile(ROOT / "src/mm3_mod_flags.h", folder / "mm3_mod_flags.h")
         shutil.copyfile(ROOT / "src/mm3_race_guidance.c", folder / "production_race_guidance.c")
         executable = folder / "contract.exe"
         subprocess.run(["cl", "/nologo", "/W3", "/WX", "/wd4102", "/Od", "/std:c11",

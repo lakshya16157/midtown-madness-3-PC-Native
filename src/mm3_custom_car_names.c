@@ -1,6 +1,7 @@
 #include <string.h>
 #include "recomp_types.h"
 #include "mm3_graphics_menu.h"
+#include "mm3_circuit_races.h"
 
 extern void sub_0011C194_original(void);
 extern void sub_00016148(void);
@@ -45,6 +46,17 @@ static const struct {
     { "SID_CAR_SHORT_9014", "Lamborghini Aventador" }
 };
 
+/* Circuit race names and lap messages (mm3_circuit_races.c). Their keys are
+ * short; copy at most 40 guest bytes before matching. */
+static const char *circuit_key(uint32_t key)
+{
+    char text[40];
+    unsigned i;
+    for (i = 0; i < sizeof text; ++i)
+        if (!(text[i] = (char)MEM8(key + i))) return mm3_circuit_label(text);
+    return NULL;
+}
+
 void sub_0011C194(void)
 {
     uint32_t entry_sp = g_esp;
@@ -52,6 +64,8 @@ void sub_0011C194(void)
     uint32_t key = MEM32(entry_sp + 8u);
     const char *value = mm3_graphics_menu_label((const char *)XBOX_PTR(key));
     size_t i;
+
+    if (!value) value = circuit_key(key);
 
     /* The guest key is NUL-terminated by the existing locale API. Prefix
      * matching bounds every read to the exact custom key, including its NUL. */

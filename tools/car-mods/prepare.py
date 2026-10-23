@@ -39,6 +39,20 @@ native_overrides = importlib.util.module_from_spec(_native_spec)
 _native_spec.loader.exec_module(native_overrides)
 
 
+def _load_circuits():
+    """tools/races/circuits.py (the circuit races), when present beside this tool."""
+    path = Path(__file__).resolve().parent.parent / "races" / "circuits.py"
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("mm3_circuits", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+circuits = _load_circuits()
+
+
 def default_config_path(directory: Path | None = None) -> Path:
     """Prefer machine-local settings without shipping model asset paths."""
     folder = Path(directory) if directory is not None else Path(__file__).resolve().parent
@@ -60,6 +74,7 @@ ORIGINAL_CAR_IDS = (
 SPEEDOMETER = {"max_kmh": (100, 1200), "max_mph": (60, 750)}
 SPEEDOMETER_FILE = "Data/mm3_speedometers.ini"
 FACTORY_PHYSICS_FILE = "Data/mm3_factory_physics.ini"
+CIRCUITS_FILE = "Data/mm3_circuits.ini"
 ORIGINAL_SPEEDOMETERS = {
     "AudiTT": "Audi TT", "Avalanche": "Chevrolet Avalanche", "Avant": "Audi RS 6 Avant",
     "ChevySSR": "Chevrolet SSR", "Corvette": "Chevrolet Corvette", "Crossfire": "Chrysler Crossfire",
@@ -734,6 +749,14 @@ def build_plan(game_dir: Path, originals: dict[str, bytes], config: dict,
     for car in config["cars"]:
         if car["id"] in installed_ids:
             raise ValueError(f"Car ID already exists: {car['id']}")
+    # Circuit races (tools/races) are added with or without extra cars. They
+    # read only the pristine archives, never the installed ones.
+    race_files = {}
+    if circuits:
+        with zipfile.ZipFile(io.BytesIO(originals[ARCHIVES[1]])) as dvd:
+            # Opponents drive original cars only (retail AI handles no others).
+            race_files = circuits.race_entries(hd, dvd, sorted(original_stats.ORIGINAL_ALIASES.values()))
+    counts["races"] = sum(name.endswith("Config") for name in race_files.get("Data_hd.zip", {}))
     for relative, baseline in originals.items():
         archive = zipfile.ZipFile(io.BytesIO(baseline))
         updates = {}
@@ -795,6 +818,10 @@ def build_plan(game_dir: Path, originals: dict[str, bytes], config: dict,
             if (name.lower() in existing and name.lower() != "cars/tweak/sortorder" and
                     name not in reflections):
                 raise ValueError(f"Alias would overwrite an installed asset: {name}")
+        for name, data in race_files.get(Path(relative).name, {}).items():
+            if name.lower() in existing or any(key.casefold() == name.casefold() for key in updates):
+                raise ValueError(f"A circuit race would overwrite an existing asset: {name}")
+            updates[name] = (data, zipfile.ZipInfo(name, (2026, 10, 22, 0, 0, 0)))
         result = append_zip(baseline, updates)
         with zipfile.ZipFile(io.BytesIO(result)) as check:
             if len(check.namelist()) != len(set(n.lower() for n in check.namelist())) or check.testzip():
@@ -827,6 +854,10 @@ def build_plan(game_dir: Path, originals: dict[str, bytes], config: dict,
     # It participates in the same backup/ownership/rollback path as gauges.
     output[FACTORY_PHYSICS_FILE] = factory_specs.factory_physics_settings(config)
     counts["loose_files"] += 1
+    if circuits and race_files.get("Data_hd.zip"):
+        # The circuit names for the race list (src/mm3_circuit_races.c).
+        output[CIRCUITS_FILE] = circuits.names_ini()
+        counts["loose_files"] += 1
     return output, counts
 
 
@@ -957,7 +988,8 @@ def main() -> int:
         for place, car in enumerate(ranking, 1):
             print(f"{place:2}. {car['display_name'] if 'display_name' in car else car['alias']} "
                   f"[{car['id']}] speed {car['ratings']['TOPSPEED']}/9")
-        print(f"Prepared {counts['archive_entries']} archive entries and {counts['loose_files']} loose assets.")
+        print(f"Prepared {counts['archive_entries']} archive entries ({counts['races']} circuit races) "
+              f"and {counts['loose_files']} loose assets.")
         if args.apply:
             changed = apply_plan(game_dir, state, originals, output, config)
             print(f"Installed; {changed} files changed. Restart the game to load the catalog.")

@@ -27,6 +27,12 @@ static uint64_t s_prof_sync_checks, s_prof_sync_bytes, s_prof_sync_changed, s_pr
 static uint32_t s_prof_upload_last[7];
 static uint64_t s_prof_upload_pixels;
 static uint64_t s_prof_tex_hashes, s_prof_tex_hash_bytes;
+/* The texture write-watch segment prints only with a watch; none here. */
+typedef struct { void (*stats)(uint64_t *faults, uint64_t *armed_pages); } GwwOps;
+static const GwwOps *s_watch;
+static uint64_t s_prof_watch_clean, s_prof_watch_armed;
+static uint64_t s_prof_watch_faults_last, s_prof_watch_pages_last, s_watch_missed;
+static int watch_verify(void) { return 0; }
 static uint64_t s_prof_vb_bytes, s_prof_vb_epoch_repeat, s_prof_vb_frame_repeat, s_prof_vb_prev_frame;
 static uint64_t s_prof_vb_reused, s_prof_vconst_uploads, s_prof_epochs;
 static int64_t s_prof_draw_setup, s_prof_draw_upload;

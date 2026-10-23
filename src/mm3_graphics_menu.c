@@ -6,6 +6,7 @@
 #include "mm3_display_config.h"
 #include "mm3_display_settings.h"
 #include "mm3_graphics_menu.h"
+#include "mm3_circuit_races.h"
 
 extern void sub_001C5E11_original(void);
 extern void sub_0006B3EF_original(void);
@@ -60,7 +61,11 @@ static const char *const setting_titles[GRAPHICS_SETTING_COUNT] = {
     "Building View Distance"
 };
 static const unsigned choice_counts[GRAPHICS_SETTING_COUNT] = {12, 2, 7, 2, 9, 2, 5, 4, 5, 5, 2, 5};
-#define GRAPHICS_ACTION_COUNT (GRAPHICS_COMMAND_COUNT + 60u)
+#define GRAPHICS_CHOICE_COUNT 60u
+/* The single player Circuit row and the other mode rows (mm3_circuit_races.c),
+ * after the choices so every earlier action ID stays the same. */
+enum { CIRCUIT_BEGIN = GRAPHICS_COMMAND_COUNT + GRAPHICS_CHOICE_COUNT, CIRCUIT_END };
+#define GRAPHICS_ACTION_COUNT (CIRCUIT_END + 1u)
 static const int resolutions[][2] = {
     {800, 600}, {1024, 768}, {1280, 720}, {1280, 800}, {1366, 768},
     {1536, 960}, {1600, 900}, {1920, 1080}, {1920, 1200},
@@ -86,7 +91,7 @@ static unsigned choice_action(unsigned setting, unsigned choice)
 static int decode_choice(unsigned action, unsigned *setting, unsigned *choice)
 {
     unsigned i;
-    if (action < GRAPHICS_COMMAND_COUNT || action >= GRAPHICS_ACTION_COUNT) return 0;
+    if (action < GRAPHICS_COMMAND_COUNT || action >= GRAPHICS_COMMAND_COUNT + GRAPHICS_CHOICE_COUNT) return 0;
     for (i = 0; i < GRAPHICS_SETTING_COUNT; ++i) {
         unsigned first = choice_action(i, 0);
         if (action >= first && action < first + choice_counts[i]) {
@@ -102,6 +107,8 @@ static void action_name(unsigned action, char *name, size_t capacity)
     unsigned setting, choice;
     if (action < GRAPHICS_COMMAND_COUNT)
         snprintf(name, capacity, "%s", command_names[action]);
+    else if (action == CIRCUIT_BEGIN || action == CIRCUIT_END)
+        snprintf(name, capacity, "%s", action == CIRCUIT_BEGIN ? "circuitBegin" : "circuitEnd");
     else if (decode_choice(action, &setting, &choice))
         snprintf(name, capacity, "graphicsSelect%s%u", setting_keys[setting], choice);
     else if (capacity) name[0] = 0;
@@ -256,6 +263,10 @@ static void choice_label(unsigned setting, unsigned choice, char *label, size_t 
 static void run_action(unsigned action)
 {
     unsigned setting, choice;
+    if (action == CIRCUIT_BEGIN || action == CIRCUIT_END) {
+        mm3_circuit_set_mode(action == CIRCUIT_BEGIN);
+        return;
+    }
     /* Pause HUD choices publish just this preference, using a fresh snapshot
      * so the F10 panel and an old graphics draft cannot overwrite each other. */
     if (action == GRAPHICS_MINIMAP_STOCK || action == GRAPHICS_MINIMAP_IMPROVED) {
@@ -440,6 +451,11 @@ void sub_0006B3EF(void)
 /* This is the same construction and root-namespace registration sequence used
  * by movieBonus, resumeRace and the other native menu callbacks. Register before
  * the graph deserializer resolves CallFunctionAction's Function references. */
+#define CIRCUIT_SCREEN_NAME_BYTES 48u
+#define CIRCUIT_CITY_SCREEN "singlePlayer/screenCircuitCitySelect"
+#define CIRCUIT_SETUP_SCREEN "singlePlayer/screenCircuitRaceSetup"
+static uint32_t circuit_screens;
+
 static void register_functions(uint32_t root)
 {
     GraphicsGuestState saved;
@@ -482,6 +498,23 @@ static void register_functions(uint32_t root)
                 guest_field(binding, 0u), guest_field(binding, 8u),
                 guest_field(binding, 12u), g_eax, g_esp, scratch);
         if (!g_eax) fprintf(stderr, "[MM3_GRAPHICS_MENU] cannot register %s\n", binding_name);
+    }
+    /* The circuit screens' names, for the menu path rebuilt after a race
+     * (mm3_circuit_races.c); allocated once and never freed. */
+    if (!circuit_screens) {
+        g_esp = scratch;
+        PUSH32(g_esp, CIRCUIT_SCREEN_NAME_BYTES * 2u);
+        PUSH32(g_esp, 0x001268C8u);
+        sub_0016FF04();
+        circuit_screens = g_eax;
+        if (circuit_screens) {
+            snprintf((char *)XBOX_PTR(circuit_screens), CIRCUIT_SCREEN_NAME_BYTES, "%s", CIRCUIT_CITY_SCREEN);
+            snprintf((char *)XBOX_PTR(circuit_screens + CIRCUIT_SCREEN_NAME_BYTES), CIRCUIT_SCREEN_NAME_BYTES,
+                     "%s", CIRCUIT_SETUP_SCREEN);
+            mm3_circuit_set_screens(circuit_screens, circuit_screens + CIRCUIT_SCREEN_NAME_BYTES);
+        } else {
+            fprintf(stderr, "[MM3_GRAPHICS_MENU] cannot allocate the circuit screen names\n");
+        }
     }
     restore_guest(&saved);
 }

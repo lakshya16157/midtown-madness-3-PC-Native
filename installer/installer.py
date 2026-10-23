@@ -40,8 +40,16 @@ from pathlib import Path
 # PyInstaller see and include them (it only analyses this file's own imports).
 _PAYLOAD_STDLIB = (argparse, collections, copy, hashlib, math, re, struct, tempfile, zipfile, zlib)
 
-VERSION = "1.5"
+VERSION = "1.6"
 TITLE = "Midtown Madness 3 - Setup"
+# The car toolkit is in the project repository (it needs Python), not in the install.
+CAR_WORKSHOP_URL = "https://github.com/lakshya16157/midtown-madness-3-PC-Native/tree/main/tools/car-mods"
+CAR_WORKSHOP_TEXT = (
+    "Car Workshop is the project's car toolkit. With it you can change the new cars: their names, "
+    "menu ratings, handling (mass, engine, grip, gears), speedometers and which body each one uses, "
+    "then apply the result to your game. It is in the GitHub project under tools\\car-mods "
+    "(editor.cmd) and runs with Python 3."
+)
 OWNERSHIP_NOTICE = (
     "Use your own original Xbox disc and a lawfully obtained game image and DLC. "
     "Owning a disc does not automatically authorize third-party downloads."
@@ -499,17 +507,18 @@ def apply_cars(game_dir: Path, enable: bool, log) -> None:
     prepare = load_module("mm3_prepare", PAYLOAD / "tools" / "car-mods" / "prepare.py")
     sink = LineSink(lambda line: None)
     state, originals = prepare.read_install(game_dir)
-    if not enable:
-        if state:
-            log("Removing the extra cars (restoring the original game data)...")
-            prepare.restore(game_dir, state, originals)
-        return
-    log("Adding the extra cars (this takes a minute)...")
-    config = prepare.load_config(CARS_CONFIG)
+    if enable:
+        log("Adding the extra cars and the circuit races (this takes a minute)...")
+        config = prepare.load_config(CARS_CONFIG)
+    else:
+        # The circuit races are always installed; without extra cars the
+        # catalog keeps only the original cars.
+        log("Adding the circuit races...")
+        config = {"version": 1, "cars": []}
     with contextlib.redirect_stdout(sink):
         output, counts = prepare.build_plan(game_dir, originals, config, CARS_CONFIG.parent)
         changed = prepare.apply_plan(game_dir, state, originals, output, config)
-    log(f"Extra cars installed: {counts['cars']} cars, {changed} files updated.")
+    log(f"Installed {counts['cars']} extra cars and {counts.get('races', 0)} circuit races, {changed} files updated.")
 
 
 def write_credits(dest: Path) -> None:
@@ -519,7 +528,13 @@ def write_credits(dest: Path) -> None:
              "for Midtown Madness 2 from models made by the studios named. They were converted",
              "again for Midtown Madness 3 by the tools in this project. Please respect the",
              "authors' terms: several ask that their cars are not modified or reposted without",
-             "their permission.", "", "WHO MADE WHAT", "-" * 14, ""]
+             "their permission.", "",
+             "CHANGING THE NEW CARS", "-" * 21, "",
+             "Car Workshop, the project's car toolkit, changes the new cars' names, menu",
+             "ratings, handling, speedometers and bodies for your own game. It is in the",
+             "GitHub project under tools\\car-mods (editor.cmd) and needs Python 3:",
+             CAR_WORKSHOP_URL, "",
+             "WHO MADE WHAT", "-" * 14, ""]
     for name, converter, sources, page in CAR_CREDITS.values():
         lines += [name, f"  Converted for Midtown Madness 2 by: {converter}", f"  Original model: {sources}",
                   f"  Download page: {page}", ""]
@@ -594,6 +609,7 @@ def install(iso_path, dest, extra_cars: bool, improvements: bool, log, progress,
     apply_cars(game_dir, extra_cars, log)
     if extra_cars:
         write_credits(dest)
+        log(f"To change the new cars, use Car Workshop, the car toolkit: {CAR_WORKSHOP_URL}")
     else:
         (dest / "Extra cars - credits.txt").unlink(missing_ok=True)
     progress(0.98, "Writing the launcher...")
@@ -688,9 +704,17 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
         cars_details.state(["disabled"])
     cars_label = tk.Label(frame, font=body, fg=grey, justify="left", anchor="w",
                           text=("Adds %d community cars. Review the names and authors with Car list and credits.\n"
-                                "The full credits are also saved with the game." % len(cars))
+                                "The full credits are also saved with the game. Change the new cars\n"
+                                "with Car Workshop, the car toolkit." % len(cars))
                           if cars else "The extra cars are not included in this build.")
     cars_label.grid(row=4, column=0, sticky="w", padx=(40, 18), pady=(2, 10))
+
+    def car_workshop():
+        if messagebox.askyesno("Car Workshop", CAR_WORKSHOP_TEXT + "\n\nOpen its page on GitHub?"):
+            import webbrowser
+            webbrowser.open(CAR_WORKSHOP_URL)
+    workshop = ttk.Button(frame, text="Car Workshop...", command=car_workshop)
+    workshop.grid(row=4, column=0, sticky="ne", padx=18, pady=(2, 0))
 
     # 3 - improvements
     improvements_check = ttk.Checkbutton(frame, text="3.  Add game improvements", variable=improvements_var)

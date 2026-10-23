@@ -109,6 +109,8 @@ set(MM3_DEFINITION_ONLY_FUNCTIONS ${MM3_DISTANCE_FUNCTIONS})
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0015A929)
 # Ordered host depth fog and its optional horizon replacement.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000F8DCE sub_000F8750)
+# Car-to-car damage scaling: src/mm3_damage_diagnostics.c logs each scaled hit.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00021DCF)
 # Building diagnostics keep same-chunk calls routed through opt-in wrappers.
 set(MM3_BUILDING_FUNCTIONS sub_00168A77 sub_001C7B15 sub_001A67BA sub_00166E01
     sub_001681FB sub_00167DA5 sub_00166B3E sub_00162F75)
@@ -126,6 +128,13 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0011C742 sub_0011CAAC sub_0007CEC3
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0009BC04 sub_0009BC35 sub_0009BC52)
 # Preserve same-chunk locale calls to the custom vehicle-name extension.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0011C194)
+# Circuit mode lists only the circuit races, with their own picture strip;
+# Checkpoint lists the rest.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001238B7 sub_00103BE1 sub_001038D0)
+# Back from a circuit race the menu returns to the Circuit screens.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00120A9A)
+# Race script errors are printed to the log as well.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0020F684)
 # Native graphics pages retain the retail Meme parser and controller UI.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS
     sub_00119AEE sub_00102168 sub_00102191 sub_001021B5 sub_0006EA22
@@ -269,6 +278,22 @@ endforeach()
 foreach(hooked IN LISTS MM3_SEAM_FUNCTIONS)
     list(APPEND distance_owners "${owner_${hooked}}")
 endforeach()
+# Every generated chunk caches its register addresses and the guest base at
+# function entry (RECOMP_GEN_PROLOGUE in src/mm3_recomp_types.h); it goes
+# through the same transformed copy.
+option(MM3_GEN_REGISTER_CACHE "Generated functions keep register addresses and the guest base in locals" ON)
+if(MM3_GEN_REGISTER_CACHE)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_gen_register_cache.py")
+    foreach(gen_source IN LISTS RECOMP_GEN_SOURCES)
+        get_filename_component(gen_dir "${gen_source}" DIRECTORY)
+        # Not the dispatch table or the one-line unresolved-call stubs.
+        if(gen_dir STREQUAL RECOMP_GEN_DIR AND NOT gen_source MATCHES "/recomp_(dispatch|stubs_unresolved)\\.c$")
+            list(APPEND distance_owners "${gen_source}")
+        endif()
+    endforeach()
+endif()
 list(REMOVE_DUPLICATES distance_owners)
 # Regeneration must refresh every transformed copy, including definition-only
 # hooks, even when the generated filenames stay the same or owners move chunks.
@@ -376,6 +401,25 @@ foreach(distance_input IN LISTS distance_owners)
             mm3_add_tree_geometry(distance_content ${tree_geometry_owner})
         endif()
     endforeach()
+    set(distance_cache OFF)
+    if(MM3_GEN_REGISTER_CACHE)
+        string(FIND "${distance_content}" "#define RECOMP_GENERATED_CODE" distance_generated)
+        if(NOT distance_generated EQUAL -1)
+            # Last, after the seams: they anchor on the untouched function text.
+            set(distance_plain "${CMAKE_CURRENT_BINARY_DIR}/render_distance/${distance_name}.plain")
+            file(WRITE "${distance_plain}" "${distance_content}")
+            execute_process(COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_gen_register_cache.py"
+                    "${distance_plain}" "${distance_plain}.cached"
+                RESULT_VARIABLE distance_result OUTPUT_QUIET)
+            if(NOT distance_result EQUAL 0)
+                message(FATAL_ERROR "mm3_gen_register_cache.py failed on ${distance_name}")
+            endif()
+            file(READ "${distance_plain}.cached" distance_content)
+            file(REMOVE "${distance_plain}" "${distance_plain}.cached")
+            set(distance_cache ON)
+        endif()
+    endif()
     file(CONFIGURE OUTPUT "${distance_output}" CONTENT "${distance_content}" @ONLY)
     foreach(distance_property COMPILE_DEFINITIONS COMPILE_OPTIONS)
         get_source_file_property(distance_value "${distance_input}" ${distance_property})
@@ -383,6 +427,9 @@ foreach(distance_input IN LISTS distance_owners)
             set_property(SOURCE "${distance_output}" PROPERTY ${distance_property} "${distance_value}")
         endif()
     endforeach()
+    if(distance_cache)
+        set_property(SOURCE "${distance_output}" APPEND PROPERTY COMPILE_DEFINITIONS MM3_GEN_REGISTER_CACHE=1)
+    endif()
     list(REMOVE_ITEM RECOMP_GEN_SOURCES "${distance_input}")
     list(APPEND RECOMP_GEN_SOURCES "${distance_output}")
 endforeach()
@@ -442,6 +489,9 @@ add_executable(${PROJECT_NAME}
  src/mm3_debug_teleport.c
  src/mm3_stress_debug.c
  src/mm3_custom_car_names.c
+ src/mm3_circuit_races.c
+ src/mm3_lua_errors.c
+ src/mm3_damage_diagnostics.c
  src/mm3_car_selection_compat.c
  src/mm3_car_order.c
  src/mm3_speedometer.c

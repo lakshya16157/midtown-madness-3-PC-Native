@@ -30,7 +30,8 @@ CREDITS = {
 }
 CAR_MODS_FILES = ("prepare.py", "factory_specs.py", "factory_specs.json", "original_stats.py",
                   "native_overrides.py", "driving_defaults.py", "race_stability.py")
-STDLIB_HIDDEN = ("argparse", "collections", "copy", "hashlib", "math", "re", "struct", "tempfile", "zipfile", "zlib")
+RACE_FILES = ("circuits.py", "circuits.json", "logic_circuit.lua")
+STDLIB_HIDDEN =("argparse", "collections", "copy", "hashlib", "math", "re", "struct", "tempfile", "zipfile", "zlib")
 
 
 def newest_game_exe(repo: Path) -> Path:
@@ -69,6 +70,11 @@ def stage_payload(payload: Path, repo: Path, packages: Path, downloads: Path) ->
     mods.mkdir(parents=True)
     for name in CAR_MODS_FILES:
         shutil.copy2(repo / "tools" / "car-mods" / name, mods)
+    # The circuit races, added by prepare.py with or without the extra cars.
+    races = payload / "tools" / "races"
+    races.mkdir(parents=True)
+    for name in RACE_FILES:
+        shutil.copy2(repo / "tools" / "races" / name, races)
     # cars.local.json is the maintainer's tuned setup; the tracked cars.json is the untuned preset
     # (and carries no model packages). Either way, model_package paths are ../../out/car-models/packages.
     manifest = repo / "tools" / "car-mods" / "cars.local.json"
