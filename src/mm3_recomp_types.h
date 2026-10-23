@@ -287,14 +287,32 @@ static inline double recomp_frndint(double value, uint16_t control) {
     return rounded == 0.0 ? copysign(0.0, value) : rounded;
 }
 
-static inline double recomp_fp_round24(double value) {
+#if defined(_MSC_VER)
+#  define RECOMP_ALWAYS_INLINE static __forceinline
+#  define RECOMP_NEVER_INLINE static __inline __declspec(noinline)
+#else
+#  define RECOMP_ALWAYS_INLINE static inline __attribute__((always_inline))
+#  define RECOMP_NEVER_INLINE static inline __attribute__((noinline))
+#endif
+
+/* x87 precision control at 24 bits (the title runs single precision): round
+ * the significand to a float's, keeping the x87's wider exponent range. Every
+ * x87 arithmetic step goes through this, about 31,000 sites; MSVC kept it out
+ * of line, so each step was a call that also spilled the live SSE registers.
+ * The usual normal-float case is now inline; the rest is unchanged. */
+RECOMP_NEVER_INLINE double recomp_fp_round24_rare(double value) {
     double magnitude = fabs(value);
     int exponent;
-    if ((magnitude <= 3.4028234663852886e38 && magnitude >= 1.1754943508222875e-38)
-        || magnitude == 0.0 || value != value || magnitude == INFINITY)
+    if (magnitude == 0.0 || value != value || magnitude == INFINITY)
         return (double)(float)value;
     value = frexp(value, &exponent);
     return ldexp((double)(float)value, exponent);
+}
+RECOMP_ALWAYS_INLINE double recomp_fp_round24(double value) {
+    double magnitude = fabs(value);
+    if (magnitude <= 3.4028234663852886e38 && magnitude >= 1.1754943508222875e-38)
+        return (double)(float)value;
+    return recomp_fp_round24_rare(value);
 }
 #define RECOMP_FP_PC(value) ((g_fp_control_word & 0x300u) ? (double)(value) : recomp_fp_round24(value))
 
@@ -1404,7 +1422,7 @@ void recomp_unimpl(const char *text, uint32_t va);
  * ================================================================ */
 #if defined(RECOMP_GENERATED_CODE) && defined(MM3_GEN_REGISTER_CACHE)
 #define RECOMP_GEN_ADDR(type, name) \
-    static __forceinline type *recomp_addr_##name(void) { return &name; }
+    RECOMP_ALWAYS_INLINE type *recomp_addr_##name(void) { return &name; }
 RECOMP_GEN_ADDR(uint32_t, g_eax) RECOMP_GEN_ADDR(uint32_t, g_ecx) RECOMP_GEN_ADDR(uint32_t, g_edx)
 RECOMP_GEN_ADDR(uint32_t, g_esp) RECOMP_GEN_ADDR(uint32_t, g_ebx) RECOMP_GEN_ADDR(uint32_t, g_esi)
 RECOMP_GEN_ADDR(uint32_t, g_edi) RECOMP_GEN_ADDR(uint32_t, g_ebp) RECOMP_GEN_ADDR(uint32_t, g_eflags)
@@ -1417,7 +1435,7 @@ RECOMP_GEN_ADDR(RecompXmm, g_xmm6) RECOMP_GEN_ADDR(RecompXmm, g_xmm7)
 RECOMP_GEN_ADDR(RecompMmx, g_mm0) RECOMP_GEN_ADDR(RecompMmx, g_mm1) RECOMP_GEN_ADDR(RecompMmx, g_mm2)
 RECOMP_GEN_ADDR(RecompMmx, g_mm3) RECOMP_GEN_ADDR(RecompMmx, g_mm4) RECOMP_GEN_ADDR(RecompMmx, g_mm5)
 RECOMP_GEN_ADDR(RecompMmx, g_mm6) RECOMP_GEN_ADDR(RecompMmx, g_mm7)
-static __forceinline double *recomp_addr_g_fp_stack(void) { return g_fp_stack; }
+RECOMP_ALWAYS_INLINE double *recomp_addr_g_fp_stack(void) { return g_fp_stack; }
 #undef RECOMP_GEN_ADDR
 
 #define RECOMP_GEN_PTR(type, name) type *const recomp_p_##name = recomp_addr_##name();

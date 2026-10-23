@@ -284,7 +284,9 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
   - **Circuit races:** ten lapped circuit races in each city, with their own Circuit button. The last ones run around the city on the highways. Opponents follow Midtown Madness 1-style paths, and side roads are closed with single rows of containers.
   - **Faster game code:** every recompiled game function keeps its register addresses and the memory base in locals instead of re-reading them after each memory access. That is about a quarter fewer instructions in the game's own code, with identical results.
   - **Faster sound processor:** its programs run as compiled blocks with native loops, checked byte for byte against the interpreter.
-  - **Cheaper texture checks:** a write watch skips re-hashing textures the game has not written to. `RECOMP_TEXTURE_WATCH=0` turns it off, and `RECOMP_TEXTURE_WATCH_VERIFY=1` checks it.
+  - **Cheaper texture and render-target checks:** a write watch skips re-hashing textures and render targets the game has not written to. `RECOMP_TEXTURE_WATCH=0` turns it off, and `RECOMP_TEXTURE_WATCH_VERIFY=1` checks it.
+  - **Wreck jobs fixed at 60 fps:** collision hits used to count about half at 60 fps (Inga's escape and the other wreck jobs). In those jobs they now count as at the console's 30 fps. `MM3_DAMAGE_FRAME_FIX=0` restores the old behaviour.
+  - **x87 maths:** single-precision rounding is inline instead of a call on every step, with bit-identical results.
   - **Fixes:**
     - Trees now follow the native distance fog instead of turning grey early.
     - The launcher hands controller focus to the game window.

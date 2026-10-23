@@ -6868,10 +6868,10 @@ index 6c8bacdb2b146d3bc5cd4f10cad5faa1280b6ba4..dfcba736e7fcc71c52387c5e6fa79cc1
      nv2a_pb_scan.c
 diff --git a/src/kernel/guest_write_watch.c b/src/kernel/guest_write_watch.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..dd9cc35dba49f85eae3f01e20bf58fe05e12cf0d
+index 0000000000000000000000000000000000000000..678ef13852f2e816d69e9a23ffa6b4067d3fc74e
 --- /dev/null
 +++ b/src/kernel/guest_write_watch.c
-@@ -0,0 +1,367 @@
+@@ -0,0 +1,438 @@
 +/* Write stamps for guest pages of the contiguous window; see the header. */
 +#include "kernel.h"
 +#include "guest_write_watch.h"
@@ -6888,6 +6888,7 @@ index 0000000000000000000000000000000000000000..dd9cc35dba49f85eae3f01e20bf58fe0
 +static int s_active;
 +static uint32_t s_guest;                 /* guest VA of page 0 */
 +static uint8_t *s_contig, *s_tiled;      /* host views of the same pages */
++static uint8_t *s_writer;                /* a third view, never protected */
 +static size_t s_pages, s_tiled_pages;
 +static uint64_t *s_stamp;                /* clock value of the last write */
 +static uint8_t *s_flags;
@@ -7158,7 +7159,49 @@ index 0000000000000000000000000000000000000000..dd9cc35dba49f85eae3f01e20bf58fe0
 +    return ok;
 +}
 +
-+static const GwwOps s_ops = { gww_covers, gww_arm, gww_clean, gww_stats };
++uint8_t *gww_host_writer(uint32_t va, uint32_t bytes)
++{
++    GwwRange r;
++    size_t first, last, p;
++    int ok = 1;
++    r.va = va; r.bytes = bytes;
++    if (!s_active || !s_writer || !guest_span(&r, &first, &last)) return NULL;
++    AcquireSRWLockShared(&s_lock);
++    /* A page the guest protected keeps its own behaviour: write it through
++     * the guest's view, as before the watch. */
++    for (p = first; p <= last; ++p)
++        if (s_flags[p] & F_EXCLUDED) { ok = 0; break; }
++    ReleaseSRWLockShared(&s_lock);
++    return ok ? s_writer + ((size_t)va - s_guest) : NULL;
++}
++
++uint64_t gww_host_wrote(const GwwRange *ranges, int count, uint64_t prior, int *still_clean)
++{
++    uint64_t seq;
++    int still = s_active, i;
++    if (!s_active) { *still_clean = 0; return 0; }
++    AcquireSRWLockExclusive(&s_lock);
++    /* Judge and stamp under one lock: a CPU write either faulted before
++     * (still_clean is 0) or stamps after the returned snapshot. */
++    for (i = 0; i < count; ++i) {
++        size_t first, last, p;
++        if (!guest_span(&ranges[i], &first, &last)) { still = 0; continue; }
++        for (p = first; p <= last; ++p)
++            if (!(s_flags[p] & F_ARMED) || s_stamp[p] > prior) still = 0;
++    }
++    for (i = 0; i < count; ++i) {
++        size_t first, last, p;
++        if (!guest_span(&ranges[i], &first, &last)) continue;
++        for (p = first; p <= last; ++p) s_stamp[p] = ++s_clock;
++    }
++    seq = s_clock;
++    ReleaseSRWLockExclusive(&s_lock);
++    *still_clean = still;
++    return seq;
++}
++
++static const GwwOps s_ops = { gww_covers, gww_arm, gww_clean, gww_stats,
++                              gww_host_writer, gww_host_wrote };
 +
 +const GwwOps *gww_ops(void)
 +{
@@ -7166,19 +7209,40 @@ index 0000000000000000000000000000000000000000..dd9cc35dba49f85eae3f01e20bf58fe0
 +}
 +
 +int gww_init(uint32_t contig_guest, void *contig_host, size_t contig_bytes,
-+             void *tiled_host, size_t tiled_bytes)
++             void *tiled_host, size_t tiled_bytes, void *section)
 +{
 +    const char *setting = getenv("RECOMP_TEXTURE_WATCH");
 +    SYSTEM_INFO si;
++    volatile uint8_t *probe_guest, *probe_writer;
++    uint8_t saved;
 +    if (s_active) return 1;
 +    if (setting && !strcmp(setting, "0")) {
 +        fprintf(stderr, "  Texture write watch: off (RECOMP_TEXTURE_WATCH=0)\n");
 +        return 0;
 +    }
 +    GetSystemInfo(&si);
-+    if (!contig_host || contig_bytes < GWW_PAGE || si.dwPageSize != GWW_PAGE ||
++    if (!contig_host || !section || contig_bytes < GWW_PAGE || si.dwPageSize != GWW_PAGE ||
 +        ((uintptr_t)contig_host | (uintptr_t)tiled_host) & (GWW_PAGE - 1))
 +        return 0;
++    /* The renderer's writer view. Prove it aliases the guest's view (one
++     * byte, restored) rather than assume it. */
++    s_writer = (uint8_t *)MapViewOfFile((HANDLE)section, FILE_MAP_ALL_ACCESS, 0, 0, contig_bytes);
++    if (!s_writer) {
++        fprintf(stderr, "  Texture write watch: no writer view (error %lu); off\n", GetLastError());
++        return 0;
++    }
++    probe_guest = (volatile uint8_t *)contig_host + 8;
++    probe_writer = (volatile uint8_t *)s_writer + 8;
++    saved = *probe_guest;
++    *probe_writer = (uint8_t)(saved ^ 0xA5u);
++    if (*probe_guest != (uint8_t)(saved ^ 0xA5u)) {
++        *probe_writer = saved;
++        UnmapViewOfFile(s_writer);
++        s_writer = NULL;
++        fprintf(stderr, "  Texture write watch: writer view does not alias the window; off\n");
++        return 0;
++    }
++    *probe_writer = saved;
 +    s_pages = contig_bytes / GWW_PAGE;
 +    s_stamp = (uint64_t *)calloc(s_pages, sizeof *s_stamp);
 +    s_flags = (uint8_t *)calloc(s_pages, sizeof *s_flags);
@@ -7186,6 +7250,8 @@ index 0000000000000000000000000000000000000000..dd9cc35dba49f85eae3f01e20bf58fe0
 +    if (!s_stamp || !s_flags || !s_pins) {
 +        free(s_stamp); free(s_flags); free(s_pins);
 +        s_stamp = NULL; s_flags = NULL; s_pins = NULL;
++        UnmapViewOfFile(s_writer);
++        s_writer = NULL;
 +        return 0;
 +    }
 +    s_guest = contig_guest;
@@ -7193,19 +7259,24 @@ index 0000000000000000000000000000000000000000..dd9cc35dba49f85eae3f01e20bf58fe0
 +    s_tiled = tiled_host && tiled_bytes >= GWW_PAGE ? (uint8_t *)tiled_host : NULL;
 +    s_tiled_pages = s_tiled ? (tiled_bytes / GWW_PAGE < s_pages ? tiled_bytes / GWW_PAGE : s_pages) : 0;
 +    s_active = 1;
-+    fprintf(stderr, "  Texture write watch: %zu pages at 0x%08X (contiguous %p, tiled alias %p)\n",
-+            s_pages, contig_guest, (void *)s_contig, (void *)s_tiled);
++    fprintf(stderr, "  Texture write watch: %zu pages at 0x%08X (contiguous %p, tiled alias %p, writer %p)\n",
++            s_pages, contig_guest, (void *)s_contig, (void *)s_tiled, (void *)s_writer);
 +    return 1;
 +}
 +
 +#else /* Not on this host: every check reads the bytes, as before. */
 +
 +int gww_init(uint32_t contig_guest, void *contig_host, size_t contig_bytes,
-+             void *tiled_host, size_t tiled_bytes)
++             void *tiled_host, size_t tiled_bytes, void *section)
 +{
 +    (void)contig_guest; (void)contig_host; (void)contig_bytes;
-+    (void)tiled_host; (void)tiled_bytes;
++    (void)tiled_host; (void)tiled_bytes; (void)section;
 +    return 0;
++}
++uint8_t *gww_host_writer(uint32_t va, uint32_t bytes) { (void)va; (void)bytes; return NULL; }
++uint64_t gww_host_wrote(const GwwRange *ranges, int count, uint64_t prior, int *still_clean)
++{
++    (void)ranges; (void)count; (void)prior; *still_clean = 0; return 0;
 +}
 +const GwwOps *gww_ops(void) { return NULL; }
 +int gww_covers(uint32_t va, uint32_t bytes) { (void)va; (void)bytes; return 0; }
@@ -7241,10 +7312,10 @@ index 0000000000000000000000000000000000000000..dd9cc35dba49f85eae3f01e20bf58fe0
 +#endif
 diff --git a/src/kernel/guest_write_watch.h b/src/kernel/guest_write_watch.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..a18e7b5162ae462cbe3f2507bd64ac9e0088b61f
+index 0000000000000000000000000000000000000000..bb8e703869adeca64e9f6cad5486c53fe8b3f833
 --- /dev/null
 +++ b/src/kernel/guest_write_watch.h
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,103 @@
 +/* Write stamps for guest pages of the contiguous window.
 + *
 + * The renderer re-reads a texture's guest bytes at every pushbuffer kick to
@@ -7262,6 +7333,13 @@ index 0000000000000000000000000000000000000000..a18e7b5162ae462cbe3f2507bd64ac9e
 + * The handler makes the page writable before it stamps it, and arming,
 + * stamping and the clean check share one lock, so a write either lands
 + * before the read that follows the arm or leaves a stamp newer than seq.
++ *
++ * The renderer writes rendered pixels back into guest render targets. It
++ * does so through a third, never-protected view of the same pages
++ * (gww_host_writer), so the guest's views stay armed and every CPU write
++ * still faults, and then stamps the pages (gww_host_wrote): other ranges on
++ * them re-read, while the writer, which mirrored its bytes in its own copy,
++ * may keep its snapshot when no CPU write arrived since.
 + *
 + * Kernel-mode writers (ReadFile into a guest buffer) do not fault into user
 + * mode: they fail on a read-only page. They bracket the call with
@@ -7292,13 +7370,25 @@ index 0000000000000000000000000000000000000000..a18e7b5162ae462cbe3f2507bd64ac9e
 +    int (*clean)(const GwwRange *ranges, int count, uint64_t since);
 +    /* Cumulative write faults taken and pages armed. */
 +    void (*stats)(uint64_t *faults, uint64_t *armed_pages);
++    /* A host pointer to [va, va + bytes) through the unprotected view, or
++     * NULL (not watched, no such view, or a page the guest protected).
++     * Writes through it neither fault nor stamp: follow them with
++     * host_wrote. */
++    uint8_t *(*host_writer)(uint32_t va, uint32_t bytes);
++    /* After writing through host_writer: *still_clean = every page armed and
++     * unwritten since prior; then stamps every page and returns the clock,
++     * a snapshot the writer may keep when *still_clean. */
++    uint64_t (*host_wrote)(const GwwRange *ranges, int count, uint64_t prior,
++                           int *still_clean);
 +} GwwOps;
 +
 +/* Called once the contiguous window and its tiled alias are mapped.
 + * contig_guest is the window's guest base (0x80000000). tiled_host may be
-+ * NULL. Returns 1 when the watch is available. */
++ * NULL. section is the file-mapping handle both views map; the watch maps
++ * its unprotected writer view from it. Returns 1 when the watch is
++ * available. */
 +int gww_init(uint32_t contig_guest, void *contig_host, size_t contig_bytes,
-+             void *tiled_host, size_t tiled_bytes);
++             void *tiled_host, size_t tiled_bytes, void *section);
 +/* The renderer's operations, or NULL when the watch is inactive. */
 +const GwwOps *gww_ops(void);
 +
@@ -7306,6 +7396,8 @@ index 0000000000000000000000000000000000000000..a18e7b5162ae462cbe3f2507bd64ac9e
 +uint64_t gww_arm(const GwwRange *ranges, int count, int *complete);
 +int gww_clean(const GwwRange *ranges, int count, uint64_t since);
 +void gww_stats(uint64_t *faults, uint64_t *armed_pages);
++uint8_t *gww_host_writer(uint32_t va, uint32_t bytes);
++uint64_t gww_host_wrote(const GwwRange *ranges, int count, uint64_t prior, int *still_clean);
 +
 +/* A host write through a host pointer into guest memory. Unprotects and
 + * stamps the watched pages it touches; other addresses are ignored. */
@@ -12623,7 +12715,7 @@ index b0c315e..d451c58 100644
  void nv2a_vsh_set_constant(uint32_t index, const float v[4]);
  const float *nv2a_vsh_constant(uint32_t index);   /* for traces */
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
-index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7a59cf2b7 100644
+index a2e99fb9bcc3fab36a90f955167eec99000e6473..e7a1629d2391e9923c90616d6ce4e823a469bf3c 100644
 --- a/src/kernel/xbox_memory_layout.c
 +++ b/src/kernel/xbox_memory_layout.c
 @@ -15,6 +15,8 @@
@@ -13396,7 +13488,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
          if (g_nv2a_memory) {
              DWORD old_protect;
              if (VirtualProtect((char *)g_nv2a_memory + 0x8000, 0x1000,
-@@ -2892,6 +3306,18 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+@@ -2892,6 +3306,19 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
          }
      }
  
@@ -13408,14 +13500,15 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
 +        size_t tiled_bytes = xbox_TiledApertureSize();
 +        if (tiled_bytes > XBOX_CONTIG_SIZE) tiled_bytes = XBOX_CONTIG_SIZE;
 +        if (gww_init(XBOX_CONTIG_BASE, g_contig_memory, XBOX_CONTIG_SIZE,
-+                     g_tiled_view, g_tiled_view ? tiled_bytes : 0))
++                     g_tiled_view, g_tiled_view ? tiled_bytes : 0,
++                     g_contig_is_view ? (void *)g_contig_mapping : NULL))
 +            nv2a_d3d_set_write_watch(gww_ops());
 +    }
 +#endif
      xbox_WatchInit();
      fprintf(stderr, "xbox_MemoryLayoutInit: complete\n");
      return TRUE;
-@@ -2935,6 +3361,7 @@ void xbox_MemoryLayoutShutdown(void)
+@@ -2935,6 +3362,7 @@ void xbox_MemoryLayoutShutdown(void)
      g_kernel_memory_owned = 0;
      if (g_nv2a_ack_thread) {
          InterlockedExchange(&g_nv2a_ack_stop, 1);
@@ -13423,7 +13516,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
          WaitForSingleObject(g_nv2a_ack_thread, 1000);
          CloseHandle(g_nv2a_ack_thread);
          g_nv2a_ack_thread = NULL;
-@@ -3036,8 +3463,10 @@ void xbox_MemoryLayoutShutdown(void)
+@@ -3036,8 +3464,10 @@ void xbox_MemoryLayoutShutdown(void)
   * memory through the mirrors.
   *
   * So reservations come from the mapped space *above* RAM instead. Those pages
@@ -13436,7 +13529,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
   *
   * Returns 0 when the mapping is no larger than RAM -- the default for titles
   * that never call xbox_SetMapSize -- which leaves the old behaviour untouched.
-@@ -3047,29 +3476,13 @@ void xbox_MemoryLayoutShutdown(void)
+@@ -3047,29 +3477,13 @@ void xbox_MemoryLayoutShutdown(void)
   * a real allocator; none has yet.
   */
  static uint32_t g_reserve_next;
@@ -13473,7 +13566,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
  
  BOOL xbox_IsXboxAddress(uintptr_t address)
  {
-@@ -3143,7 +3556,7 @@ uint32_t xbox_AllocThreadTib(void)
+@@ -3143,7 +3557,7 @@ uint32_t xbox_AllocThreadTib(void)
  {
      /* XBOX_VA is scoped to the loader; the same arithmetic, spelled here. */
      #define TIB_VA(va) ((void *)((uintptr_t)(va) + g_memory_offset))
@@ -13482,7 +13575,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
      const uint32_t context_size = 0x200;
      uint32_t tib, block, thread_data, context, total;
  
-@@ -3158,9 +3571,13 @@ uint32_t xbox_AllocThreadTib(void)
+@@ -3158,9 +3572,13 @@ uint32_t xbox_AllocThreadTib(void)
      thread_data = block + total;
      context = thread_data + g_tls_thread_size;
  
@@ -13499,7 +13592,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
      memcpy(TIB_VA(block), TIB_VA(g_tls_template_va), total);
      memset(TIB_VA(thread_data), 0, g_tls_thread_size);
      /* XAPI's native thread bootstrap follows fs:[0x28]+0x28 to the TLS
-@@ -3173,6 +3590,7 @@ uint32_t xbox_AllocThreadTib(void)
+@@ -3173,6 +3591,7 @@ uint32_t xbox_AllocThreadTib(void)
      *(uint32_t *)TIB_VA(block)      = thread_data;   /* slot 0           */
      *(uint32_t *)TIB_VA(tib + 0x04) = block + total; /* fs:[4], see above*/
      *(uint32_t *)TIB_VA(tib + 0x18) = tib;
@@ -13507,7 +13600,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
      *(uint32_t *)TIB_VA(tib + 0x28) = context;
      if (getenv("RECOMP_THREAD_TLS_TRACE"))
          fprintf(stderr, "[THREAD_TLS] tib=%08X fs4=%08X context=%08X block=%08X slot0=%08X\n",
-@@ -3250,8 +3668,8 @@ void xbox_FreeThreadStack(uint32_t stack_top)
+@@ -3250,8 +3669,8 @@ void xbox_FreeThreadStack(uint32_t stack_top)
   *
   * Grows up from the base; XBOX_GPU_INSTANCE_DEFAULT is carved off the top by
   * the GPU-instance bridge, so the two do not meet until the window is full.
@@ -13518,7 +13611,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
  /* Starts one page in. Physical page 0 is never handed out by the real
   * kernel, and the XDK's USB stack relies on that: XPP carves its host
   * controller structures from a private 0xFE0-byte arena ending at
-@@ -3283,9 +3701,109 @@ static void contig_remove(LONG at)
+@@ -3283,9 +3702,109 @@ static void contig_remove(LONG at)
      InterlockedDecrement(&g_contig_alloc_count);
  }
  
@@ -13629,7 +13722,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
  
      /* The kernel allocates physical pages, not byte-sized fragments. XDK
       * DirectSound keeps its silent samples in the remainder of a small
-@@ -3296,8 +3814,9 @@ uint32_t xbox_ContiguousAlloc(uint32_t size, uint32_t alignment)
+@@ -3296,8 +3815,9 @@ uint32_t xbox_ContiguousAlloc(uint32_t size, uint32_t alignment)
          return 0;
      size = (size + 0xFFFu) & ~0xFFFu;
  
@@ -13640,7 +13733,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
      /* Reuse freed pages first-fit by address, carving from the front of the
       * lowest free extent that fits; freed neighbours are coalesced on free.
       * Consecutive requests therefore come out adjacent, as they do from the
-@@ -3309,20 +3828,10 @@ uint32_t xbox_ContiguousAlloc(uint32_t size, uint32_t alignment)
+@@ -3309,20 +3829,10 @@ uint32_t xbox_ContiguousAlloc(uint32_t size, uint32_t alignment)
      for (LONG i = 0; i < g_contig_alloc_count; ++i) {
          uint32_t offset = g_contig_allocs[i].offset;
          uint32_t span = g_contig_allocs[i].size;
@@ -13664,7 +13757,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
          head = start - offset;
          tail = offset + span - (start + size);
          if (g_contig_alloc_count + (head ? 1 : 0) + (tail ? 1 : 0) > XBOX_CONTIG_MAX_ALLOCS)
-@@ -3337,6 +3846,8 @@ uint32_t xbox_ContiguousAlloc(uint32_t size, uint32_t alignment)
+@@ -3337,6 +3847,8 @@ uint32_t xbox_ContiguousAlloc(uint32_t size, uint32_t alignment)
          if (tail)
              contig_insert(i + 1, start + size, tail, 0);
          result = XBOX_CONTIG_BASE + start;
@@ -13673,7 +13766,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
          memset((void *)((uintptr_t)result + g_memory_offset), 0, size);
          if (getenv("RECOMP_CONTIG_TRACE"))
              fprintf(stderr, "[CONTIG_REUSE] address=%08X size=%u extent=%u\n",
-@@ -3344,26 +3855,30 @@ uint32_t xbox_ContiguousAlloc(uint32_t size, uint32_t alignment)
+@@ -3344,26 +3856,30 @@ uint32_t xbox_ContiguousAlloc(uint32_t size, uint32_t alignment)
          LeaveCriticalSection(&g_allocator_lock);
          return result;
      }
@@ -13716,7 +13809,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
          fflush(stderr);
          LeaveCriticalSection(&g_allocator_lock);
          return 0;
-@@ -3374,12 +3889,10 @@ uint32_t xbox_ContiguousAlloc(uint32_t size, uint32_t alignment)
+@@ -3374,12 +3890,10 @@ uint32_t xbox_ContiguousAlloc(uint32_t size, uint32_t alignment)
          return 0;
      }
  
@@ -13732,7 +13825,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
      if (getenv("RECOMP_CONTIG_TRACE"))
          fprintf(stderr, "[CONTIG_NEW] address=%08X size=%u esp=%08X ret=%08X\n", result, size,
                  g_esp, *(const uint32_t *)((uintptr_t)g_esp + g_memory_offset));
-@@ -3444,8 +3957,8 @@ uint32_t xbox_ContiguousBlockSize(uint32_t xbox_va)
+@@ -3444,8 +3958,8 @@ uint32_t xbox_ContiguousBlockSize(uint32_t xbox_va)
      return r;
  }
  
@@ -13743,7 +13836,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
  int xbox_HeapReclaimEnabled(void)
  {
      static int enabled = -1;
-@@ -3453,14 +3966,22 @@ int xbox_HeapReclaimEnabled(void)
+@@ -3453,14 +3967,22 @@ int xbox_HeapReclaimEnabled(void)
      return enabled;
  }
  
@@ -13770,7 +13863,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
      /* The table is split and coalesced in place; read it under the lock. */
      EnterCriticalSection(&g_allocator_lock);
      hi = g_contig_alloc_count;
-@@ -3479,7 +4000,6 @@ int xbox_ContiguousRangeAllocated(uint32_t physical_offset, uint32_t size)
+@@ -3479,7 +4001,6 @@ int xbox_ContiguousRangeAllocated(uint32_t physical_offset, uint32_t size)
       * the code bytes as colour static. A range may run on through adjacent
       * spans. */
      if (lo) {
@@ -13778,7 +13871,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
          i = lo - 1;
          covered = (uint64_t)g_contig_allocs[i].offset + g_contig_allocs[i].size;
          while (covered < end && i + 1 < g_contig_alloc_count &&
-@@ -3488,11 +4008,45 @@ int xbox_ContiguousRangeAllocated(uint32_t physical_offset, uint32_t size)
+@@ -3488,11 +4009,45 @@ int xbox_ContiguousRangeAllocated(uint32_t physical_offset, uint32_t size)
              covered += g_contig_allocs[i].size;
          }
          result = physical_offset >= g_contig_allocs[lo - 1].offset && end <= covered;
@@ -13824,7 +13917,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
  
  /* RECOMP_HEAP_WATCH=<hex address>: report heap blocks handed out over it. */
  static void heap_watch(const char *how, uint32_t addr, uint32_t size)
-@@ -3507,12 +4061,26 @@ static void heap_watch(const char *how, uint32_t addr, uint32_t size)
+@@ -3507,12 +4062,26 @@ static void heap_watch(const char *how, uint32_t addr, uint32_t size)
                  addr + size, g_esp, *(const uint32_t *)((uintptr_t)g_esp + g_memory_offset));
  }
  
@@ -13852,7 +13945,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
      if (size >= 16u * 1024u * 1024u) {
          static unsigned large_reports;
          if (large_reports++ < 24) {
-@@ -3535,7 +4103,7 @@ uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment)
+@@ -3535,7 +4104,7 @@ uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment)
       * capabilities that return 0 (since we don't have real NV2A hardware),
       * resulting in zero-size allocations. With a bump allocator, these all
       * return the same address, causing overlapping structures. Enforce a
@@ -13861,7 +13954,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
      if (size < 16) size = 16;
  
      /* Reuse a freed block first. Without this the heap only ever grows: Halo's
-@@ -3544,46 +4112,57 @@ uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment)
+@@ -3544,46 +4113,57 @@ uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment)
       * with E_OUTOFMEMORY -- which the title reports by clearing
       * global_d3d_device, so the rasterizer asserts and startup stops. */
      for (int i = 0; i < g_heap_block_count; i++) {
@@ -13943,7 +14036,7 @@ index a2e99fb9bcc3fab36a90f955167eec99000e6473..b7806473a67c10a9d59f2f77c9eaeaa7
          fprintf(stderr, "xbox_HeapAlloc: out of memory (requested %u, used %u/%u)\n",
                  size, g_heap_next - XBOX_HEAP_BASE,
                  (unsigned)(XBOX_HEAP_TOP - XBOX_HEAP_BASE));
-@@ -3618,7 +4197,14 @@ uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment)
+@@ -3618,7 +4198,14 @@ uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment)
          LeaveCriticalSection(&g_allocator_lock);
          return 0;
      }
@@ -17478,7 +17571,7 @@ index 0000000..ba782e5
 +#endif /* NV2A_BLACK_FRAME_LOGIC_ONLY */
 +#endif /* NV2A_BLACK_FRAME_H */
 diff --git a/src/video/nv2a_d3d11.c b/src/video/nv2a_d3d11.c
-index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e65454122e22 100644
+index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec241624baca 100644
 --- a/src/video/nv2a_d3d11.c
 +++ b/src/video/nv2a_d3d11.c
 @@ -19,9 +19,10 @@
@@ -17567,7 +17660,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  /* RECOMP_D3D_PROFILE: per-frame cost of each stage, printed once a second. */
  enum { PROF_VERTEX, PROF_TEXTURE, PROF_DRAW, PROF_SYNC, PROF_WRITEBACK,
         PROF_PRESENT, PROF_PACE, PROF_EXEC, PROF_COUNT };
-@@ -83,6 +140,33 @@ static const char *const s_prof_name[PROF_COUNT] = {
+@@ -83,6 +140,36 @@ static const char *const s_prof_name[PROF_COUNT] = {
      "vertex", "texture", "draw", "cpu-sync", "writeback", "present", "pace", "exec(all)" };
  static int64_t s_prof[PROF_COUNT];
  static uint64_t s_prof_verts, s_prof_draws;
@@ -17591,6 +17684,9 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 +/* Texture write watch: checks the stamps vouched for, re-arms, and the
 + * watch's cumulative fault/armed-page counts at the previous report. */
 +static uint64_t s_prof_watch_clean, s_prof_watch_armed;
++/* Render targets: syncs the stamps vouched for, re-arms, and write-backs
++ * that kept a surface's snapshot. */
++static uint64_t s_prof_sync_watch_clean, s_prof_sync_watch_armed, s_prof_wb_watch_kept;
 +static uint64_t s_prof_watch_faults_last, s_prof_watch_pages_last;
 +static const GwwOps *s_watch;
 +static uint64_t s_watch_missed;
@@ -17601,7 +17697,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  static int s_prof_on = -1;
  
  static int64_t qpc(void)
-@@ -92,6 +176,58 @@ static int64_t qpc(void)
+@@ -92,6 +179,58 @@ static int64_t qpc(void)
      return t.QuadPart;
  }
  
@@ -17660,7 +17756,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
  {
      s_prof[slot] += ticks;
-@@ -100,7 +236,10 @@ void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
+@@ -100,7 +239,10 @@ void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
  
  int nv2a_d3d_prof_enabled(void)
  {
@@ -17672,7 +17768,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      return s_prof_on;
  }
  
-@@ -108,9 +247,10 @@ static void prof_report(void)
+@@ -108,9 +250,10 @@ static void prof_report(void)
  {
      static int64_t last, frames, prev, worst;
      static LARGE_INTEGER freq;
@@ -17684,7 +17780,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
      frames++;
      if (prev && now - prev > worst) worst = now - prev;
-@@ -123,40 +263,146 @@ static void prof_report(void)
+@@ -123,40 +266,150 @@ static void prof_report(void)
      for (i = 0; i < PROF_COUNT; i++)
          fprintf(stderr, " %s %.2f", s_prof_name[i],
                  s_prof[i] * 1000.0 / (double)freq.QuadPart / (double)frames);
@@ -17729,6 +17825,9 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 +                (unsigned long long)s_watch_missed);
 +        s_prof_watch_faults_last = faults;
 +        s_prof_watch_pages_last = pages;
++        fprintf(stderr, " | surface-watch %.1f %s %.1f rearmed %.1f written-back/frame",
++                (double)s_prof_sync_watch_clean / frames, watch_verify() ? "verified" : "skipped",
++                (double)s_prof_sync_watch_armed / frames, (double)s_prof_wb_watch_kept / frames);
 +    }
 +    fprintf(stderr, " | vertex-copy %.2f MB, reused in kick %.2f, repeated in kick %.2f in frame %.2f, seen last frame %.2f MB/frame",
 +            s_prof_vb_bytes / 1048576.0 / frames, s_prof_vb_reused / 1048576.0 / frames,
@@ -17764,6 +17863,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 +    s_prof_upload_pixels = 0;
 +    s_prof_tex_hashes = s_prof_tex_hash_bytes = 0;
 +    s_prof_watch_clean = s_prof_watch_armed = 0;
++    s_prof_sync_watch_clean = s_prof_sync_watch_armed = s_prof_wb_watch_kept = 0;
 +    s_prof_vb_bytes = s_prof_vb_epoch_repeat = s_prof_vb_frame_repeat = s_prof_vb_prev_frame = 0;
 +    s_prof_vb_reused = s_prof_vconst_uploads = s_prof_epochs = 0;
 +    s_prof_draw_setup = s_prof_draw_upload = 0;
@@ -17851,7 +17951,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  }
  
  static uint32_t             s_frame = 1;
-@@ -164,9 +410,24 @@ static uint32_t             s_frame = 1;
+@@ -164,9 +417,24 @@ static uint32_t             s_frame = 1;
   * between kicks, so a surface needs checking at most once per kick. */
  static uint32_t             s_epoch = 1;
  
@@ -17876,7 +17976,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  }
  
  /* Internal resolution relative to the guest's: s_scale vertically, and
-@@ -188,6 +449,65 @@ static UINT s_msaa = 4, s_aniso = 16;
+@@ -188,6 +456,65 @@ static UINT s_msaa = 4, s_aniso = 16;
  static volatile LONG s_edge_hud;
  static uint32_t s_frame_bg_tex;     /* this frame's background image; reset at flip */
  static int s_frame_tag_window;      /* still in the frame's leading name tags */
@@ -17942,7 +18042,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  
  /* Name tags over cars (world-anchored 2D) are the first 2D a race frame
   * draws, ahead of the HUD; the title names the HUD's first element by its
-@@ -200,6 +520,17 @@ static float s_hud_start[4];
+@@ -200,6 +527,17 @@ static float s_hud_start[4];
  static uint32_t s_hud_tex[32];
  static int s_hud_tex_n;
  
@@ -17960,7 +18060,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  void nv2a_d3d_set_hud_start(float x0, float y0, float x1, float y1)
  {
      s_hud_start[0] = x0; s_hud_start[1] = y0; s_hud_start[2] = x1; s_hud_start[3] = y1;
-@@ -225,18 +556,21 @@ static int world_tag_draw(float lo, float hi, float ylo, float yhi, uint32_t tex
+@@ -225,18 +563,21 @@ static int world_tag_draw(float lo, float hi, float ylo, float yhi, uint32_t tex
  
  void nv2a_d3d_set_edge_hud(int on)
  {
@@ -17985,7 +18085,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      s_zview_remap[1] = knee;
      s_zview_remap[0] = scale;            /* views rebuild on the next depth bind */
  }
-@@ -246,21 +580,33 @@ static int nv2a_d3d_hud_active(void)
+@@ -246,21 +587,33 @@ static int nv2a_d3d_hud_active(void)
      return !s_frame_bg_tex && InterlockedCompareExchange(&s_edge_hud, 0, 0) != 0;
  }
  
@@ -18023,7 +18123,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      if (e && sscanf(e, "%f:%f", &w, &h) == 2 && h > 0 && w > 0) return clamp_aspect(w / h);
      if (e && sscanf(e, "%f", &w) == 1 && w > 0) return clamp_aspect(w);
      return 0;
-@@ -288,7 +634,7 @@ float nv2a_d3d_display_aspect(void)
+@@ -288,7 +641,7 @@ float nv2a_d3d_display_aspect(void)
      {
          /* No window yet (sizing it): the monitor it will open on. */
          MONITORINFO mi = { sizeof mi };
@@ -18032,7 +18132,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
              mi.rcMonitor.bottom > mi.rcMonitor.top)
              return clamp_aspect((float)(mi.rcMonitor.right - mi.rcMonitor.left) /
                                  (float)(mi.rcMonitor.bottom - mi.rcMonitor.top));
-@@ -309,6 +655,7 @@ static ID3D11PixelShader  *s_y16_ps[2];      /* [msaa] */
+@@ -309,6 +662,7 @@ static ID3D11PixelShader  *s_y16_ps[2];      /* [msaa] */
  static ID3D11PixelShader  *s_y16d_ps[2];     /* [msaa], from a depth buffer */
  /* s_raw: the vertex-data ring ub_vs reads (raw view s_raw_srv) */
  static ID3D11Buffer *s_raw, *s_ib, *s_cb_ub, *s_cb_prog, *s_cb_vconst, *s_cb_ps, *s_cb_present, *s_cb_clear;
@@ -18040,7 +18140,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  static ID3D11ShaderResourceView *s_raw_srv;
  static UINT s_raw_pos, s_ib_pos;
  static int s_raw_nooverwrite;
-@@ -319,6 +666,160 @@ static ID3D11BlendState *s_blend_opaque;
+@@ -319,6 +673,160 @@ static ID3D11BlendState *s_blend_opaque;
  static ID3D11RasterizerState *s_rs_plain;
  static ID3D11DepthStencilState *s_ds_off;
  
@@ -18201,7 +18301,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  static void fail(const char *what, HRESULT hr)
  {
      fprintf(stderr, "[D3D11] %s failed: 0x%08lX\n", what, (unsigned long)hr);
-@@ -346,24 +847,7 @@ static uint32_t phys(uint32_t va)
+@@ -346,24 +854,7 @@ static uint32_t phys(uint32_t va)
      return va >= CONTIG_BASE ? va - CONTIG_BASE : va;
  }
  
@@ -18227,7 +18327,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  
  /* ---------------------------------------------------------------- shaders */
  
-@@ -454,7 +938,9 @@ static const char s_hlsl[] =
+@@ -454,7 +945,9 @@ static const char s_hlsl[] =
  "      else if (mac == 10u) mr = A >= B ? A : B;\n"
  "      else if (mac == 11u) mr = A < B ? 1.0 : 0.0;\n"
  "      else if (mac == 12u) mr = A >= B ? 1.0 : 0.0;\n"
@@ -18238,15 +18338,19 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  "      float x = Cc.x;\n"
  "      if (ilu == 2u) ir = (x == 0.0 ? asfloat(0x7F800000u) : 1.0 / x).xxxx;\n"
  "      else if (ilu == 3u) { float f = 1.0 / x; float af = clamp(abs(f), 5.42101e-20, 1.884467e19);\n"
-@@ -493,7 +979,6 @@ static const char s_hlsl[] =
+@@ -492,8 +985,10 @@ static const char s_hlsl[] =
+ "    d0 = fetch(3, vid); d1 = fetch(4, vid);\n"
  "    t0 = fetch(9, vid); t1 = fetch(10, vid); t2 = fetch(11, vid); t3 = fetch(12, vid);\n"
  "  }\n"
++"  /* MM3 native fog: the title's vertex programs write their own fog amount;\n"
++"   * after the native pass, fog by view depth over the pass's range instead. */\n"
++"  if (ub_fogi.z != 0u) fog = saturate((ub_fogf.w - abs(P.w)) * ub_fogf.z);\n"
  "  float px = P.x;\n"
 -"  if (ub_info.z != 0xFFFFFFFFu) px += asfloat(VB.Load(ub_info.z + vid * 4u));\n"
  /* The NV2A rasterises with 4-bit sub-pixel precision, truncating (xemu
   * roundScreenCoords), so the Xbox D3D screen offset 0.53125 puts a
   * full-target quad's left/top edge exactly on the centre of pixel 0, and the
-@@ -503,8 +988,18 @@ static const char s_hlsl[] =
+@@ -503,8 +998,18 @@ static const char s_hlsl[] =
   * water. A coordinate that truncates to that first centre is placed on the
   * target edge, as the hardware covers it; everything else is unchanged. */
  "  float py = P.y;\n"
@@ -18267,7 +18371,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  "  /* NV2A clamps raster w away from zero and infinity (xemu clampAwayZeroInf),\n"
  "   * keeping its sign so geometry behind the eye still clips. oPos is screen\n"
  "   * space after the D3D epilogue's divide; multiplying back by w gives the\n"
-@@ -540,6 +1035,7 @@ static const char s_hlsl[] =
+@@ -540,6 +1045,7 @@ static const char s_hlsl[] =
  "  float4 fog_color;\n"
  "  float4 bump_mat[4]; float4 bump_lum[4];\n"
  "  float4 zp0; float4 zp1;\n"
@@ -18275,7 +18379,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  "};\n"
  "#ifdef SPEC\n"
  "#undef c_icw\n#undef a_icw\n#undef c_ocw\n#undef a_ocw\n#undef fin0\n#undef fin1\n#undef rc_control\n"
-@@ -549,6 +1045,7 @@ static const char s_hlsl[] =
+@@ -549,6 +1055,7 @@ static const char s_hlsl[] =
  "#endif\n"
  "Texture2D T2D0:register(t0); Texture2D T2D1:register(t1); Texture2D T2D2:register(t2); Texture2D T2D3:register(t3);\n"
  "TextureCube TC0:register(t4); TextureCube TC1:register(t5); TextureCube TC2:register(t6); TextureCube TC3:register(t7);\n"
@@ -18283,7 +18387,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  "SamplerState S0:register(s0); SamplerState S1:register(s1); SamplerState S2:register(s2); SamplerState S3:register(s3);\n"
  "uint U8(uint4 a[2], uint s) { return a[s >> 2][s & 3]; }\n"
  "float map_in(float x, uint b) {\n"
-@@ -578,7 +1075,20 @@ static const char s_hlsl[] =
+@@ -578,7 +1085,20 @@ static const char s_hlsl[] =
  "  if (m == 3) return (x >= 128.0 ? x - 256.0 : x) / 127.0;\n"
  "  return c;\n"
  "}\n"
@@ -18304,7 +18408,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  "  if (n == 0) return T2D0.Sample(S0, uv); if (n == 1) return T2D1.Sample(S1, uv);\n"
  "  if (n == 2) return T2D2.Sample(S2, uv); return T2D3.Sample(S3, uv);\n"
  "}\n"
-@@ -609,7 +1119,18 @@ static const char s_hlsl[] =
+@@ -609,7 +1129,18 @@ static const char s_hlsl[] =
  "  if (n == 0) return TC0.Sample(S0, d); if (n == 1) return TC1.Sample(S1, d);\n"
  "  if (n == 2) return TC2.Sample(S2, d); return TC3.Sample(S3, d);\n"
  "}\n"
@@ -18323,7 +18427,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  "  float4 tc[4] = { i.t0, i.t1, i.t2, i.t3 };\n"
  "  float4 T[4] = { float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1) }; float dots[4] = { 0, 0, 0, 0 };\n"
  "  [unroll] for (uint n = 0; n < 4; n++) {\n"
-@@ -618,11 +1139,12 @@ static const char s_hlsl[] =
+@@ -618,11 +1149,12 @@ static const char s_hlsl[] =
  "    uint dm = n ? (dot_map >> ((n - 1) * 4)) & 7 : 0;\n"
  "    float4 c = tc[n]; float4 t = float4(0, 0, 0, 1);\n"
  "    float q = c.w != 0.0 ? c.w : 1.0;\n"
@@ -18337,7 +18441,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  "    else if (mode == 3) t = sampc(n, c.xyz);\n"
  "    else if (mode == 4) t = saturate(c);\n"
  "    else if (mode == 5) {\n"
-@@ -648,7 +1170,7 @@ static const char s_hlsl[] =
+@@ -648,7 +1180,7 @@ static const char s_hlsl[] =
  "        float3 E = mode == 12 ? float3(tc[1].w, tc[2].w, tc[3].w) : float3(0, 0, 1);\n"
  "        N = 2.0 * N * dot(N, E) / max(dot(N, N), 1e-20) - E;\n"
  "      }\n"
@@ -18346,7 +18450,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  "    } else if (mode == 15) t = samp2(n, T[inp].ar);\n"
  "    else if (mode == 16) t = samp2(n, T[inp].gb);\n"
  "    if (mode != 0 && mode != 4 && mode != 5 && mode != 10 && mode != 17) {\n"
-@@ -657,6 +1179,23 @@ static const char s_hlsl[] =
+@@ -657,6 +1189,23 @@ static const char s_hlsl[] =
  "    }\n"
  "    T[n] = t;\n"
  "  }\n"
@@ -18370,7 +18474,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  "  float4 R[16];\n"
  "  [unroll] for (uint k = 0; k < 16; k++) R[k] = float4(0, 0, 0, 0);\n"
  "  R[3] = float4(fog_color.rgb, i.fog.x); R[4] = i.d0; R[5] = i.d1;\n"
-@@ -751,18 +1290,33 @@ static const char s_hlsl[] =
+@@ -751,18 +1300,33 @@ static const char s_hlsl[] =
   * 24-bit fixed point -- linear precision, unlike z/w, so distant decals and
   * foliage do not fight. Polygon offset is applied here as xemu does: the
   * rasteriser's depth bias never reaches a shader-written depth. zp0 = offset
@@ -18406,7 +18510,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  "Texture2D SrcTex : register(t0); Texture2D OvlTex : register(t1); SamplerState LinS : register(s0);\n"
  "struct PO { float4 pos:SV_Position; float2 uv:TEXCOORD0; };\n"
  "PO present_vs(uint id : SV_VertexID) {\n"
-@@ -780,8 +1334,10 @@ static const char s_hlsl[] =
+@@ -780,8 +1344,10 @@ static const char s_hlsl[] =
  "  float4 c = SrcTex.Sample(LinS, i.uv);\n"
  "  if (ovl_flags.x) {\n"
  "    float2 g = i.uv * src_size.xy;\n"
@@ -18419,7 +18523,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  "    if (all(d >= 0) && all(d < ovl_out.zw)) {\n"
  "      bool show = true;\n"
  "      if (ovl_flags.y) {\n"
-@@ -793,6 +1349,16 @@ static const char s_hlsl[] =
+@@ -793,6 +1359,16 @@ static const char s_hlsl[] =
  "      if (show) c = OvlTex.Sample(LinS, (ovl_walk.xy + d * ovl_walk.zw) / ovl_in.xy);\n"
  "    }\n"
  "  }\n"
@@ -18436,7 +18540,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  "  return force_alpha.x >= 0 ? float4(c.rgb, force_alpha.x) : c;\n"
  "}\n"
  "cbuffer CC : register(b0) { float4 ccol; float4 cz; };\n"
-@@ -822,17 +1388,35 @@ static const char s_hlsl[] =
+@@ -822,17 +1398,35 @@ static const char s_hlsl[] =
   * rounding splits between the two (moire in the fog). Both texels hold
   * z[23:8]. ponytail: the low word (z[7:0]:stencil) is not readable this way;
   * keep it for even texels if a title ever reads stencil through Y16.
@@ -18477,7 +18581,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  "  return float4(y, y, y, 1);\n"
  "}\n";
  
-@@ -847,6 +1431,8 @@ typedef struct {
+@@ -847,6 +1441,8 @@ typedef struct {
      float fog_color[4];
      float bump_mat[4][4], bump_lum[4][4];
      float zp0[4], zp1[4];
@@ -18486,7 +18590,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  } PSConsts;
  
  typedef struct {
-@@ -856,7 +1442,7 @@ typedef struct {
+@@ -856,7 +1452,7 @@ typedef struct {
      float map[4];                /* 2/w, 2/h, 1/zmax, squeeze */
      uint32_t fogi[4];
      float fogf[4];
@@ -18495,7 +18599,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  } UbConsts;
  
  typedef struct {
-@@ -864,16 +1450,18 @@ typedef struct {
+@@ -864,16 +1460,18 @@ typedef struct {
      float ovl_out[4], ovl_walk[4], ovl_in[4];
      uint32_t ovl_flags[4];
      float force_alpha[4];
@@ -18517,7 +18621,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      if (FAILED(hr)) {
          fprintf(stderr, "[D3D11] shader %s: %s\n", entry,
                  err ? (const char *)ID3D10Blob_GetBufferPointer(err) : "?");
-@@ -883,6 +1471,11 @@ static ID3DBlob *compile_def(const char *entry, const char *target, const D3D_SH
+@@ -883,6 +1481,11 @@ static ID3DBlob *compile_def(const char *entry, const char *target, const D3D_SH
      return SUCCEEDED(hr) ? code : NULL;
  }
  
@@ -18529,7 +18633,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  static ID3DBlob *compile(const char *entry, const char *target)
  {
      return compile_def(entry, target, NULL);
-@@ -903,10 +1496,14 @@ typedef struct {
+@@ -903,10 +1506,14 @@ typedef struct {
      uint32_t tex_info[4][3];
  } PsKey;
  
@@ -18545,7 +18649,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  } PsSpec;
  
  #define PS_SPEC_SLOTS 4096          /* power of two */
-@@ -914,9 +1511,162 @@ typedef struct {
+@@ -914,9 +1521,162 @@ typedef struct {
  static PsSpec *s_spec;
  static PsSpec *s_spec_q[PS_SPEC_QUEUE];
  static unsigned s_spec_head, s_spec_tail;  /* guarded by s_spec_cs */
@@ -18708,7 +18812,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  
  static DWORD WINAPI spec_worker(LPVOID arg)
  {
-@@ -926,12 +1676,19 @@ static DWORD WINAPI spec_worker(LPVOID arg)
+@@ -926,12 +1686,19 @@ static DWORD WINAPI spec_worker(LPVOID arg)
          const PsKey *k;
          char decl[2048];
          ID3DBlob *b;
@@ -18732,7 +18836,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          LeaveCriticalSection(&s_spec_cs);
          k = &e->key;
          snprintf(decl, sizeof decl,
-@@ -965,45 +1722,87 @@ static DWORD WINAPI spec_worker(LPVOID arg)
+@@ -965,45 +1732,87 @@ static DWORD WINAPI spec_worker(LPVOID arg)
          m[1].Name = "SPEC_DECL"; m[1].Definition = decl;
          m[2].Name = flat ? "FLATQ" : NULL; m[2].Definition = flat ? "nointerpolation" : NULL;
          m[3].Name = NULL; m[3].Definition = NULL;
@@ -18843,7 +18947,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      memset(&k, 0, sizeof k);
      memcpy(k.c_icw, pc->c_icw, sizeof k.c_icw);
      memcpy(k.a_icw, pc->a_icw, sizeof k.a_icw);
-@@ -1017,23 +1816,7 @@ static ID3D11PixelShader *spec_ps(const PSConsts *pc, uint32_t variant)
+@@ -1017,23 +1826,7 @@ static ID3D11PixelShader *spec_ps(const PSConsts *pc, uint32_t variant)
          k.tex_info[i][0] = pc->tex_info[i][0]; k.tex_info[i][1] = pc->tex_info[i][1];
          k.tex_info[i][2] = pc->tex_info[i][2];
      }
@@ -18868,7 +18972,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  }
  
  static ID3D11Buffer *make_buffer(UINT bytes, UINT bind)
-@@ -1050,14 +1833,100 @@ static ID3D11Buffer *make_buffer(UINT bytes, UINT bind)
+@@ -1050,14 +1843,100 @@ static ID3D11Buffer *make_buffer(UINT bytes, UINT bind)
      return b;
  }
  
@@ -18973,7 +19077,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  }
  
  int nv2a_d3d_init(void)
-@@ -1169,7 +2038,8 @@ int nv2a_d3d_init(void)
+@@ -1169,7 +2048,8 @@ int nv2a_d3d_init(void)
      }
      s_ib = make_buffer(IB_BYTES, D3D11_BIND_INDEX_BUFFER);
      s_cb_ub = make_buffer(sizeof(UbConsts), D3D11_BIND_CONSTANT_BUFFER);
@@ -18983,7 +19087,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      s_cb_vconst = make_buffer(192 * 16, D3D11_BIND_CONSTANT_BUFFER);
      s_cb_ps = make_buffer(sizeof(PSConsts), D3D11_BIND_CONSTANT_BUFFER);
      s_cb_present = make_buffer(sizeof(PresentConsts), D3D11_BIND_CONSTANT_BUFFER);
-@@ -1217,6 +2087,10 @@ int nv2a_d3d_init(void)
+@@ -1217,6 +2097,10 @@ int nv2a_d3d_init(void)
          if (qc && qd) break;
      }
      if (s_msaa < 1) s_msaa = 1;
@@ -18994,7 +19098,48 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      s_init_state = 1;
      fprintf(stderr, "[D3D11] renderer ready: %ux%u internal, display aspect %.3f, %ux MSAA, %ux AF\n",
              (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
-@@ -1255,7 +2129,12 @@ typedef struct {
+@@ -1230,6 +2114,40 @@ int nv2a_d3d_active(void)
+     return s_init_state > 0;
+ }
+ 
++/* ------------------------------------------------------------ write watch */
++/* Shared by textures and render targets (guest_write_watch.h). An entry
++ * found written (or not completely armed) on WATCH_STOP consecutive checks
++ * is hashed at every kick for WATCH_RETRY_KICKS kicks, as without a watch. */
++#define WATCH_STOP 8u
++#define WATCH_RETRY_KICKS 4096u
++static int s_watch_verify = -1;
++static unsigned s_watch_miss_reports;
++
++typedef struct {
++    GwwRange r[2];
++    int n;          /* ranges watched by this check; 0 = not watched */
++    int clean;      /* the stamps vouched for the bytes */
++    int complete;   /* this check's arm covered every page */
++    uint64_t seq;   /* write clock before that arm */
++} WatchCheck;
++
++void nv2a_d3d_set_write_watch(const GwwOps *ops)
++{
++    s_watch = ops;
++}
++
++static int watch_verify(void)
++{
++    if (s_watch_verify < 0) {
++        const char *value = getenv("RECOMP_TEXTURE_WATCH_VERIFY");
++        s_watch_verify = value && *value && *value != '0';
++        if (s_watch_verify && s_watch)
++            fprintf(stderr, "[TEXTURE_WATCH] verify: unchanged textures are still hashed; "
++                            "a change the stamps missed is logged\n");
++    }
++    return s_watch_verify;
++}
++
+ /* --------------------------------------------------------------- surfaces */
+ 
+ typedef struct {
+@@ -1255,9 +2173,21 @@ typedef struct {
      ID3D11RenderTargetView *rtv;
      ID3D11ShaderResourceView *srv;
      uint8_t *shadow;                /* guest bytes as of the last sync */
@@ -19007,8 +19152,17 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 +    int cpu_present_pending;        /* idle CPU update not yet shown successfully */
      uint32_t synced_frame, used_frame;
      uint32_t seq;                   /* bind order; see surface_find */
++    /* Write watch, as for textures: the clock before the last arm, the range
++     * it covers, consecutive dirty checks and the kick a stopped watch
++     * resumes. watch_ok: guest bytes equal the shadow (or raw) unless a page
++     * of the range was stamped after watch_seq. */
++    uint64_t watch_seq;
++    uint32_t watch_va, watch_bytes, watch_retry;
++    uint8_t watch_ok, watch_streak;
  } Surface;
-@@ -1269,10 +2148,16 @@ typedef struct {
+ 
+ typedef struct {
+@@ -1269,10 +2199,16 @@ typedef struct {
      ID3D11ShaderResourceView *y16_srv;
      ID3D11RenderTargetView *y16_rtv;
      uint32_t zf, w, h;                      /* zeta format code, guest size last bound with */
@@ -19026,7 +19180,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  #define MAX_SURFACES 32
  #define MAX_DEPTHS 16
  static Surface s_surf[MAX_SURFACES];
-@@ -1283,6 +2168,7 @@ static Surface *s_cur_rt;
+@@ -1283,6 +2219,7 @@ static Surface *s_cur_rt;
  static uint32_t s_aa_x = 1, s_aa_y = 1;
  static Depth *s_cur_ds;
  
@@ -19034,7 +19188,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  static uint32_t surface_color_bpp(uint32_t fmt)
  {
      switch (fmt & 0xF) {
-@@ -1350,53 +2236,62 @@ static void unbind_targets(void)
+@@ -1350,49 +2287,58 @@ static void unbind_targets(void)
  
  static void unbind_textures(void)
  {
@@ -19100,23 +19254,17 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      unbind_targets();
      unbind_textures();
 +    return 1;
- }
- 
--static void blit(ID3D11ShaderResourceView *srv, ID3D11RenderTargetView *rtv,
--                 UINT dst_w, UINT dst_h, float alpha)
++}
++
 +static int blit_span(ID3D11ShaderResourceView *srv, ID3D11ShaderResourceView *mask,
 +                      ID3D11RenderTargetView *rtv, UINT dst_w, UINT dst_h, float alpha,
 +                      float x0, float x1, float u0, float u1)
 +{
 +    return blit_region(srv, mask, rtv, dst_w, dst_h, alpha, x0, x1, 0, 1, u0, u1, 0, 1);
-+}
-+
-+static void blit(ID3D11ShaderResourceView *srv, ID3D11RenderTargetView *rtv,
-+                 UINT dst_w, UINT dst_h, float alpha)
- {
-     blit_span(srv, NULL, rtv, dst_w, dst_h, alpha, 0, 1, 0, 1);
  }
-@@ -1412,14 +2307,22 @@ static void guest_span(const Surface *s, float *x0, float *x1)
+ 
+ static void blit(ID3D11ShaderResourceView *srv, ID3D11RenderTargetView *rtv,
+@@ -1412,14 +2358,22 @@ static void guest_span(const Surface *s, float *x0, float *x1)
      *x1 = (1.0f + f) * 0.5f;
  }
  
@@ -19142,7 +19290,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          uint32_t *dst = out + (size_t)y * s->w;
          if (s->bpp == 4) {
              memcpy(dst, row, (size_t)s->w * 4);
-@@ -1454,6 +2357,8 @@ static ID3D11ShaderResourceView *s_up_srv[2];
+@@ -1454,6 +2408,8 @@ static ID3D11ShaderResourceView *s_up_srv[2];
  static UINT s_up_w[2], s_up_h[2];
  static uint32_t *s_up_pixels, *s_mask_pixels;
  static size_t s_up_cap, s_mask_cap;
@@ -19151,7 +19299,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  
  /* slot 0: image, slot 1: change mask */
  static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT w, UINT h)
-@@ -1465,10 +2370,12 @@ static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT
+@@ -1465,10 +2421,12 @@ static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT
          s_up_tex[k] = make_texture(w, h, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM,
                                     D3D11_BIND_SHADER_RESOURCE, 0);
          if (!s_up_tex[k]) return NULL;
@@ -19166,7 +19314,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)s_up_tex[k], 0,
                                            NULL, pixels, w * 4, 0);
      return s_up_srv[k];
-@@ -1489,6 +2396,65 @@ static uint32_t *scratch_pixels(size_t count)
+@@ -1489,6 +2447,172 @@ static uint32_t *scratch_pixels(size_t count)
      return s_up_pixels;
  }
  
@@ -19223,6 +19371,113 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 +    s->shadow_hash_ok = 1;
 +}
 +
++/* A render target's guest bytes under the write watch. A sync whose stamps
++ * are clean skips the hash: the bytes are still those the last sync read, or
++ * those write-back stored in both guest memory and the shadow. */
++static uint32_t surface_watch_bytes(const Surface *s)
++{
++    size_t rows = (size_t)s->pitch * s->h, packed = (size_t)s->w * s->bpp * s->h;
++    size_t bytes = rows > packed ? rows : packed;
++    return bytes > 0xFFFFFFFFu ? 0 : (uint32_t)bytes;
++}
++
++static void surface_watch_stop(Surface *s)
++{
++    s->watch_ok = 0;
++    s->watch_streak = 0;
++    s->watch_retry = s_epoch + WATCH_RETRY_KICKS;
++    if (!s->watch_retry) s->watch_retry = 1;
++}
++
++/* Before the content check. 1: unchanged, skip it. Otherwise the pages are
++ * armed before the check reads them. */
++static int surface_watch_begin(Surface *s, WatchCheck *w)
++{
++    memset(w, 0, sizeof *w);
++    if (!s_watch) return 0;
++    w->r[0].va = s->va;
++    w->r[0].bytes = surface_watch_bytes(s);
++    if (!w->r[0].bytes || !s_watch->covers(w->r[0].va, w->r[0].bytes)) return 0;
++    w->n = 1;
++    if (s->watch_ok) {
++        if (s->watch_va == s->va && s->watch_bytes == w->r[0].bytes &&
++            s_watch->clean(w->r, 1, s->watch_seq)) {
++            s->watch_streak = 0;
++            w->clean = 1;
++            if (s_prof_on > 0) s_prof_sync_watch_clean++;
++            return !watch_verify();
++        }
++        s->watch_ok = 0;
++        if (++s->watch_streak >= WATCH_STOP) { surface_watch_stop(s); w->n = 0; return 0; }
++    } else if (s->watch_retry) {
++        if ((int32_t)(s_epoch - s->watch_retry) < 0) { w->n = 0; return 0; }
++        s->watch_retry = 0;
++    }
++    w->seq = s_watch->arm(w->r, 1, &w->complete);
++    if (s_prof_on > 0) s_prof_sync_watch_armed++;
++    return 0;
++}
++
++/* After a check that completed: unchanged, or the shadow now holds what it
++ * read. In verify mode a clean check that found a change is a write the
++ * stamps did not see. */
++static void surface_watch_end(Surface *s, const WatchCheck *w, int unchanged)
++{
++    if (!w->n) return;
++    if (w->clean) {
++        if (unchanged) return;
++        ++s_watch_missed;
++        s->watch_ok = 0;
++        if (s_watch_miss_reports++ < 64) {
++            fprintf(stderr, "[SURFACE_WATCH] missed write frame=%u epoch=%u va=%08X size=%ux%u "
++                            "pitch=%u swizzled=%d\n", s_frame, s_epoch, s->va, s->w, s->h,
++                    s->pitch, s->swizzled);
++            fflush(stderr);
++        }
++        return;
++    }
++    s->watch_ok = (uint8_t)(w->complete != 0);
++    s->watch_seq = w->seq;
++    s->watch_va = s->va;
++    s->watch_bytes = w->r[0].bytes;
++    if (!w->complete && ++s->watch_streak >= WATCH_STOP) surface_watch_stop(s);
++}
++
++/* Where write-back stores: the watch's unprotected view when the surface is
++ * watched, so the guest's views stay armed; otherwise guest memory. */
++static uint8_t *surface_watch_writer(const Surface *s, uint8_t *guest_rows, int *via_writer)
++{
++    uint32_t bytes;
++    uint8_t *view;
++    *via_writer = 0;
++    if (!s_watch || !s_watch->host_writer || !s_watch->host_wrote) return guest_rows;
++    bytes = surface_watch_bytes(s);
++    if (!bytes || !s_watch->covers(s->va, bytes)) return guest_rows;
++    view = s_watch->host_writer(s->va, bytes);
++    if (!view) return guest_rows;
++    *via_writer = 1;
++    return view;
++}
++
++/* After write-back through the writer view: guest bytes equal the shadow
++ * again. Other ranges on these pages re-read; this surface keeps a snapshot
++ * only if no CPU write stamped its pages since its last one. */
++static void surface_watch_wrote(Surface *s)
++{
++    GwwRange r;
++    uint64_t seq;
++    int still = 0;
++    r.va = s->va;
++    r.bytes = surface_watch_bytes(s);
++    seq = s_watch->host_wrote(&r, 1, s->watch_ok ? s->watch_seq : 0, &still);
++    if (s->watch_ok && still && s->watch_va == s->va && s->watch_bytes == r.bytes) {
++        s->watch_seq = seq;
++        if (s_prof_on > 0) s_prof_wb_watch_kept++;
++    } else {
++        s->watch_ok = 0;
++    }
++}
++
 +/* A single reusable pending shadow keeps CPU writes made during submission
 + * visible to the next sync. Only successfully submitted bytes become the
 + * surface shadow; swapping buffers avoids copying them again on commit. */
@@ -19232,7 +19487,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  /* Guest memory is the authority for what the CPU writes. A shadow copy of
   * each surface's guest bytes says which pixels the CPU changed since the last
   * look; only those replace what the GPU drew. A loading screen drawn by the
-@@ -1496,71 +2462,135 @@ static uint32_t *scratch_pixels(size_t count)
+@@ -1496,71 +2620,146 @@ static uint32_t *scratch_pixels(size_t count)
  static void surface_sync_impl(Surface *s, int force)
  {
      uint32_t rowb = s->w * s->bpp, y, x, x0 = 0xFFFFFFFFu, x1 = 0, y0 = 0xFFFFFFFFu, y1 = 0;
@@ -19244,6 +19499,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 +    const uint8_t *g, *src;
 +    ID3D11ShaderResourceView *srv, *msk = NULL;
 +    float span0, span1, row0, row1;
++    WatchCheck watch;
 +    if (!s->bpp || !guest_ok(s->va, (size_t)s->pitch * s->h))
          return;
      if (!force && s->synced_frame == s_epoch)
@@ -19264,20 +19520,15 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 -            guest_span(s, &x0, &x1);
 -            if (srv) blit_span(srv, NULL, s->rtv, s->iw, s->ih, -1.0f, x0, x1, 0, 1);
 -            s->ms_dirty = 1; s->gen++;
+-        }
 +    /* A forced sync can fail after an earlier successful sync in this epoch. */
 +    s->synced_frame = s_epoch - 1;
 +    src = guest(s->va);
-+    if (s_prof_on > 0) { s_prof_sync_checks++; s_prof_sync_bytes += bytes; }
-+    /* Unchanged guest bytes are recognised by one read and a hash of them,
-+     * instead of reading them and their copy side by side. */
-+    if (s->swizzled) {
-+        if (s->shadow && s->raw && hash_mem(src, bytes) == s->raw_hash) {
-+            if (s_prof_on > 0) s_prof_sync_raw_skips++;
-+            s->synced_frame = s_epoch;
-+            return;
-         }
--        return;
--    }
++    if (surface_watch_begin(s, &watch)) {
++        if (s_prof_on > 0) s_prof_sync_checks++;
++        s->synced_frame = s_epoch;
+         return;
+     }
 -    for (y = 0; y < s->h; y++) {
 -        const uint8_t *row = g + (size_t)y * s->pitch;
 -        uint8_t *sh = s->shadow + (size_t)y * rowb;
@@ -19288,6 +19539,16 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 -                s_mask_pixels = (uint32_t *)malloc((size_t)s->w * s->h * 4);
 -                s_mask_cap = s_mask_pixels ? (size_t)s->w * s->h : 0;
 -                if (!s_mask_pixels) return;
++    if (s_prof_on > 0) { s_prof_sync_checks++; s_prof_sync_bytes += bytes; }
++    /* Unchanged guest bytes are recognised by one read and a hash of them,
++     * instead of reading them and their copy side by side. */
++    if (s->swizzled) {
++        if (s->shadow && s->raw && hash_mem(src, bytes) == s->raw_hash) {
++            if (s_prof_on > 0) s_prof_sync_raw_skips++;
++            surface_watch_end(s, &watch, 1);
++            s->synced_frame = s_epoch;
++            return;
++        }
 +        if (bytes > s_raw_snap_cap) {
 +            free(s_raw_snap);
 +            s_raw_snap = (uint8_t *)malloc(bytes);
@@ -19303,7 +19564,8 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 +        /* The common unchanged path allocates and copies nothing. */
 +        if (s->shadow_hash_ok) {
 +            if (hash_rows(g, pitch, rowb, s->h) == s->shadow_hash) {
-+                surface_keep_raw(s, bytes); s->synced_frame = s_epoch; return;
++                surface_keep_raw(s, bytes); surface_watch_end(s, &watch, 1);
++                s->synced_frame = s_epoch; return;
              }
 -            memset(s_mask_pixels, 0, (size_t)s->w * s->h * 4);
 -            y0 = y;
@@ -19321,7 +19583,8 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 +                    break;
 +            if (y == s->h) {
 +                surface_hash_shadow(s);
-+                surface_keep_raw(s, bytes); s->synced_frame = s_epoch; return;
++                surface_keep_raw(s, bytes); surface_watch_end(s, &watch, 1);
++                s->synced_frame = s_epoch; return;
              }
 -        memcpy(sh, row, rowb);
 +        }
@@ -19365,7 +19628,8 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 +        }
 +        if (y0 == 0xFFFFFFFFu) {
 +            surface_hash_shadow(s);
-+            surface_keep_raw(s, bytes); s->synced_frame = s_epoch; return;
++            surface_keep_raw(s, bytes); surface_watch_end(s, &watch, 1);
++            s->synced_frame = s_epoch; return;
 +        }
 +        if (getenv("RECOMP_D3D_TRACE"))
 +            fprintf(stderr, "[D3D11] CPU wrote surface %08X (frame %u) %u,%u-%u,%u\n",
@@ -19403,6 +19667,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 +    }
 +    surface_hash_shadow(s);
 +    surface_keep_raw(s, bytes);
++    surface_watch_end(s, &watch, 0);
 +    if (s_prof_on > 0) {
 +        s_prof_sync_changed++;
 +        s_prof_upload_pixels += changed;
@@ -19423,7 +19688,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  }
  
  static void surface_sync(Surface *s, int force)
-@@ -1572,8 +2602,11 @@ static void surface_sync(Surface *s, int force)
+@@ -1572,8 +2771,11 @@ static void surface_sync(Surface *s, int force)
      if (s_prof_on > 0) s_prof[PROF_SYNC] += qpc() - t0;
  }
  
@@ -19435,7 +19700,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      if (s_cur_rt == s) unbind_targets();
      if (s->srv) ID3D11ShaderResourceView_Release(s->srv);
      if (s->rtv) ID3D11RenderTargetView_Release(s->rtv);
-@@ -1588,6 +2621,7 @@ static void surface_release(Surface *s)
+@@ -1588,6 +2790,7 @@ static void surface_release(Surface *s)
      if (s->chain) ID3D11Texture2D_Release(s->chain);
      if (s->tex) ID3D11Texture2D_Release(s->tex);
      free(s->shadow);
@@ -19443,7 +19708,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      memset(s, 0, sizeof *s);
  }
  
-@@ -1635,11 +2669,20 @@ static Surface *surface_get(uint32_t va, uint32_t pitch, uint32_t fmt,
+@@ -1635,11 +2838,20 @@ static Surface *surface_get(uint32_t va, uint32_t pitch, uint32_t fmt,
      } else {
          for (i = 0; i < MAX_SURFACES && !victim; i++)
              if (!s_surf[i].tex) victim = &s_surf[i];
@@ -19467,7 +19732,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      surface_release(victim);
      s = victim;
      s->phys = p; s->va = va; s->pitch = pitch; s->bpp = bpp;
-@@ -1784,8 +2827,12 @@ static int bind_targets(const NvD3DState *st, int want_depth, Surface **out,
+@@ -1784,8 +2996,12 @@ static int bind_targets(const NvD3DState *st, int want_depth, Surface **out,
          return 0;
      if (s && d && (d->iw != s->iw || d->ih != s->ih))
          d = NULL;
@@ -19482,7 +19747,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      if (s != s_cur_rt || d != s_cur_ds) {
          ID3D11RenderTargetView *rtv = s ? s->rtv : NULL;
          unbind_textures();
-@@ -1901,11 +2948,20 @@ static void yuv_pair(const uint8_t *g, int uyvy, uint32_t out[2])
+@@ -1901,11 +3117,20 @@ static void yuv_pair(const uint8_t *g, int uyvy, uint32_t out[2])
  }
  
  typedef struct TexEntry {
@@ -19505,7 +19770,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      ID3D11ShaderResourceView *srv;
      struct TexEntry *next;
  } TexEntry;
-@@ -1918,48 +2974,270 @@ static size_t s_tex_bytes, s_tex_count;
+@@ -1918,48 +3143,240 @@ static size_t s_tex_bytes, s_tex_count;
  /* Where each level/face lives, and the span to hash. */
  typedef struct {
      int kind, bpp, levels, faces;
@@ -19523,36 +19788,6 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 + * textures and palettes inside the watched window qualify. An entry found
 + * written (or not completely armed) on WATCH_STOP consecutive checks is
 + * hashed at every kick for WATCH_RETRY_KICKS kicks, as without a watch. */
-+#define WATCH_STOP 8u
-+#define WATCH_RETRY_KICKS 4096u
-+static int s_watch_verify = -1;
-+static unsigned s_watch_miss_reports;
-+
-+typedef struct {
-+    GwwRange r[2];
-+    int n;          /* ranges watched by this check; 0 = not watched */
-+    int clean;      /* the stamps vouched for the bytes */
-+    int complete;   /* this check's arm covered every page */
-+    uint64_t seq;   /* write clock before that arm */
-+} WatchCheck;
-+
-+void nv2a_d3d_set_write_watch(const GwwOps *ops)
-+{
-+    s_watch = ops;
-+}
-+
-+static int watch_verify(void)
-+{
-+    if (s_watch_verify < 0) {
-+        const char *value = getenv("RECOMP_TEXTURE_WATCH_VERIFY");
-+        s_watch_verify = value && *value && *value != '0';
-+        if (s_watch_verify && s_watch)
-+            fprintf(stderr, "[TEXTURE_WATCH] verify: unchanged textures are still hashed; "
-+                            "a change the stamps missed is logged\n");
-+    }
-+    return s_watch_verify;
-+}
-+
 +static void watch_stop(TexEntry *e)
 +{
 +    e->watch_ok = 0;
@@ -19783,7 +20018,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          for (by = 0; by < bh; by++)
              for (bx = 0; bx < bw; bx++) {
                  d3d8_dxt_decode_block(src + ((size_t)by * bw + bx) * L->bpp, t->color, px);
-@@ -1969,6 +3247,11 @@ static void decode_level(const NvD3DTexture *t, const TexLayout *L, const uint8_
+@@ -1969,6 +3386,11 @@ static void decode_level(const NvD3DTexture *t, const TexLayout *L, const uint8_
              }
          return;
      }
@@ -19795,7 +20030,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      if (L->kind == K_LIN) {
          for (y = 0; y < h; y++) {
              const uint8_t *row = src + (size_t)y * t->pitch;
-@@ -2004,6 +3287,7 @@ static void tex_free(TexEntry *e)
+@@ -2004,6 +3426,7 @@ static void tex_free(TexEntry *e)
  {
      if (e->srv) ID3D11ShaderResourceView_Release(e->srv);
      if (e->tex) ID3D11Texture2D_Release(e->tex);
@@ -19803,7 +20038,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      s_tex_bytes -= e->bytes;
      s_tex_count--;
      free(e);
-@@ -2023,12 +3307,15 @@ static void tex_evict(void)
+@@ -2023,12 +3446,15 @@ static void tex_evict(void)
          {
              TexEntry *e = *best;
              *best = e->next;
@@ -19820,7 +20055,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  static void halve_bgra(const uint32_t *src, uint32_t w, uint32_t h, uint32_t *dst)
  {
      uint32_t nw = w > 1 ? w / 2 : 1, nh = h > 1 ? h / 2 : 1, x, y, c;
-@@ -2057,46 +3344,229 @@ static int host_levels(const TexLayout *L, const NvD3DTexture *t)
+@@ -2057,46 +3483,229 @@ static int host_levels(const TexLayout *L, const NvD3DTexture *t)
      return n > L->levels ? n : L->levels;
  }
  
@@ -20065,7 +20300,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          if (L.faces == 6) {
              sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
              sd.TextureCube.MipLevels = (UINT)hl;
-@@ -2104,71 +3574,102 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
+@@ -2104,71 +3713,102 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
              sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
              sd.Texture2D.MipLevels = (UINT)hl;
          }
@@ -20200,7 +20435,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  /* -------------------------------------------------------- state objects */
  
  typedef struct { uint64_t key; void *obj; } StateSlot;
-@@ -2231,12 +3732,12 @@ static D3D11_BLEND_OP blend_op(uint32_t e)
+@@ -2231,12 +3871,12 @@ static D3D11_BLEND_OP blend_op(uint32_t e)
      }
  }
  
@@ -20216,7 +20451,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      void **slot = state_slot(s_blend_cache, key);
      if (!*slot) {
          D3D11_BLEND_DESC d;
-@@ -2244,7 +3745,9 @@ static ID3D11BlendState *blend_state(int enable, uint32_t sf, uint32_t df,
+@@ -2244,7 +3884,9 @@ static ID3D11BlendState *blend_state(int enable, uint32_t sf, uint32_t df,
          memset(&d, 0, sizeof d);
          r->BlendEnable = enable ? TRUE : FALSE;
          r->SrcBlend = blend_factor(sf, 0);
@@ -20227,7 +20462,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          r->SrcBlendAlpha = blend_factor(sf, 1);
          r->DestBlendAlpha = blend_factor(df, 1);
          r->BlendOp = r->BlendOpAlpha = blend_op(eq);
-@@ -2254,6 +3757,12 @@ static ID3D11BlendState *blend_state(int enable, uint32_t sf, uint32_t df,
+@@ -2254,6 +3896,12 @@ static ID3D11BlendState *blend_state(int enable, uint32_t sf, uint32_t df,
      return (ID3D11BlendState *)*slot;
  }
  
@@ -20240,7 +20475,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  static D3D11_COMPARISON_FUNC cmp(uint32_t f)
  {
      switch (f) {
-@@ -2282,6 +3791,15 @@ static D3D11_STENCIL_OP sop(uint32_t o)
+@@ -2282,6 +3930,15 @@ static D3D11_STENCIL_OP sop(uint32_t o)
      }
  }
  
@@ -20256,7 +20491,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  static ID3D11DepthStencilState *ds_state(int zt, uint32_t zf, int zw, int st,
                                           uint32_t sf, uint32_t rmask, uint32_t wmask,
                                           uint32_t fail_, uint32_t zfail, uint32_t zpass)
-@@ -2346,12 +3864,29 @@ static D3D11_TEXTURE_ADDRESS_MODE addr_mode(uint32_t m)
+@@ -2346,12 +4003,29 @@ static D3D11_TEXTURE_ADDRESS_MODE addr_mode(uint32_t m)
      }
  }
  
@@ -20287,7 +20522,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      if (bias13 & 0x1000) bias13 -= 0x2000;
      key = (uint64_t)minf | ((uint64_t)magf << 8) | ((uint64_t)(bias13 & 0x1FFF) << 12) |
            ((uint64_t)(levels & 15) << 25) | ((uint64_t)(reduce != 0) << 29) |
-@@ -2393,9 +3928,26 @@ static ID3D11SamplerState *sampler(const NvD3DTexture *t, int levels, int reduce
+@@ -2393,9 +4067,26 @@ static ID3D11SamplerState *sampler(const NvD3DTexture *t, int levels, int reduce
          }
          ID3D11Device_CreateSamplerState(s_dev, &d, (ID3D11SamplerState **)slot);
      }
@@ -20314,7 +20549,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  /* ------------------------------------------------------------------- draw */
  
  static uint32_t mode_needs_texture(uint32_t mode)
-@@ -2436,18 +3988,77 @@ static ID3D11ShaderResourceView *feedback_copy(Surface *s)
+@@ -2436,18 +4127,77 @@ static ID3D11ShaderResourceView *feedback_copy(Surface *s)
      return s_feedback_srv;
  }
  
@@ -20401,7 +20636,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  }
  
  static uint32_t write_mask(const NvD3DState *st, Surface *s)
-@@ -2461,13 +4072,154 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
+@@ -2461,13 +4211,154 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
      return m;
  }
  
@@ -20556,7 +20791,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  
  /* A guest pass that reduces a render target (glare, luminance
   * or reflection downsamples) takes texel-exact taps: at the guest's
-@@ -2580,14 +4332,13 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
+@@ -2580,14 +4471,13 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
          unbind_targets();
          ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &s->y16_rtv, NULL);
          ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
@@ -20578,7 +20813,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, &src);
          ID3D11DeviceContext_Draw(s_ctx, 3, 0);
          unbind_targets();
-@@ -2597,9 +4348,14 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
+@@ -2597,9 +4487,14 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
      return s->y16_srv;
  }
  
@@ -20595,7 +20830,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      if (!d->zsrv) return NULL;
      if (!d->y16) {
          d->y16 = make_texture(2 * d->iw, d->ih, 1, 1, DXGI_FORMAT_R16G16B16A16_UNORM,
-@@ -2609,7 +4365,8 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
+@@ -2609,7 +4504,8 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
          ID3D11Device_CreateRenderTargetView(s_dev, (ID3D11Resource *)d->y16, NULL, &d->y16_rtv);
          d->y16_gen = d->gen - 1;
      }
@@ -20605,7 +20840,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          ID3D11ShaderResourceView *src[1] = { d->zsrv };
          D3D11_VIEWPORT vp = { 0, 0, (float)(2 * d->iw), (float)d->ih, 0, 1 };
          D3D11_RECT sc = { 0, 0, (LONG)(2 * d->iw), (LONG)d->ih };
-@@ -2617,53 +4374,459 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
+@@ -2617,42 +4513,448 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
          unbind_targets();
          ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &d->y16_rtv, NULL);
          ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
@@ -20649,32 +20884,11 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  }
  
 -static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
--                          uint32_t *out_gw, uint32_t *out_gh, uint32_t *out_zmax)
 +static ID3D11ShaderResourceView *depth_y16(Depth *d)
- {
--    Surface *s;
--    Depth *d;
--    uint32_t gw, gh, n, zf;
--    PSConsts pc;
--    ID3D11ShaderResourceView *srv[8] = { 0 };
--    ID3D11SamplerState *smp[4] = { 0 };
--    int cull = 0, bias = 0;
--    float slope = 0, bf[4];
--    s_draw_textured = s_draw_reads_wide = 0;
--    s_draw_tex_addr = 0;
++{
 +    return depth_y16_view(d, 0);
 +}
- 
--    {
--        /* Bring-up switches: RECOMP_D3D_SKIP_CMASK / _SKIP_SFACTOR (hex) drop
--         * draws with that colour mask / source blend factor. */
--        static int init;
--        static long skip_cmask = -1, skip_sf = -1;
--        if (!init) {
--            const char *e;
--            init = 1;
--            if ((e = getenv("RECOMP_D3D_SKIP_CMASK")) != NULL) skip_cmask = strtol(e, NULL, 16);
--            if ((e = getenv("RECOMP_D3D_SKIP_SFACTOR")) != NULL) skip_sf = strtol(e, NULL, 16);
++
 +/* MM3_LIGHT_DUMP=<directory>: while the title's local-light composite draws
 + * (night races), save what it works from a few seconds apart -- the unlit
 + * frame (RGB, and its alpha, which codes the material), the light buffer and
@@ -21015,8 +21229,10 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 + * per-draw fog - its tree shader does - kept the retail range and colour, so
 + * trees went grey where the world around them was still clear. On the target
 + * that pass fogs, a draw before this frame's pass drops its per-draw fog (the
-+ * pass fogs it with the world) and a draw after it uses the pass's range and
-+ * colour. Other targets (reflections) keep the title's fog. */
++ * pass fogs it with the world) and a draw after it is fogged by its view depth
++ * (clip w) over the pass's range, in the pass's colour: the title's vertex
++ * programs write the fog amount itself (fog params 1, 1), so its range cannot
++ * be remapped. Other targets (reflections) keep the title's fog. */
 +static struct {
 +    const Surface *target;
 +    uint32_t frame, argb;
@@ -21040,35 +21256,35 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 +    if (!st->fog_enable || !s || s != s_native_fog_seen.target) return 0;
 +    native_fog_frame();
 +    if (s_native_fog_seen.passes < s_native_fog_seen.last_passes) kind = 1;
-+    else if (s_native_fog_seen.passes && (st->fog_mode == 0x2601u || st->fog_mode == 0x804u)) kind = 2;
++    else if (s_native_fog_seen.passes) kind = 2;
 +    if (kind && !reported[kind]) {
-+        float span = st->fog_param[1] != 0.0f ? -1.0f / st->fog_param[1] : 0.0f;
 +        reported[kind] = 1;
-+        fprintf(stderr, "[FOG] title per-draw fog %s the native pass (mode %04X, retail %.0f-%.0f m, "
-+                "native %.0f-%.0f m)\n", kind == 1 ? "before: left to" : "after: given the range of",
-+                st->fog_mode, (st->fog_param[0] - 1.0f) * span - span, (st->fog_param[0] - 1.0f) * span,
-+                s_native_fog_seen.start, s_native_fog_seen.end);
++        fprintf(stderr, "[FOG] title per-draw fog %s the native pass (mode %04X, params %g %g, "
++                "native %.0f-%.0f m)\n", kind == 1 ? "before: left to" : "after: by view depth over the range of",
++                st->fog_mode, st->fog_param[0], st->fog_param[1], s_native_fog_seen.start, s_native_fog_seen.end);
 +    }
 +    return kind;
 +}
 +
 +static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
-+                          uint32_t *out_gw, uint32_t *out_gh, uint32_t *out_zmax)
-+{
-+    Surface *s;
-+    Depth *d;
-+    uint32_t gw, gh, n, zf;
-+    PSConsts pc;
+                           uint32_t *out_gw, uint32_t *out_gh, uint32_t *out_zmax)
+ {
+     Surface *s;
+     Depth *d;
+     uint32_t gw, gh, n, zf;
+     PSConsts pc;
+-    ID3D11ShaderResourceView *srv[8] = { 0 };
 +    ID3D11ShaderResourceView *srv[12] = { 0 };
-+    ID3D11SamplerState *smp[4] = { 0 };
+     ID3D11SamplerState *smp[4] = { 0 };
+-    int cull = 0, bias = 0;
 +    int cull = 0, bias = 0, flare_depth = flare_needs_depth(st), map_base_draw = 0;
 +    int effective_wbuffer = st->z_perspective != 0;
 +    /* LightDraw reconstructs positions for a 3D attenuation texture. Fog's
 +     * extended-distance depth remap would move those positions out of their
 +     * light volumes. Only that native reconstruction consumes raw depth. */
 +    int raw_depth_view = st->rc_seen && st->rc.stage_program == 0x6C621u;
-+    float slope = 0, bf[4];
-+    s_draw_textured = s_draw_reads_wide = 0;
+     float slope = 0, bf[4];
+     s_draw_textured = s_draw_reads_wide = 0;
 +    s_draw_minimap_improved = nv2a_d3d_hud_active() && !st->depth_test &&
 +        s_minimap_style_query && s_minimap_style_query() &&
 +        !(s_centered_ui_query && s_centered_ui_query());
@@ -21079,24 +21295,13 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 +        st->tex[1].color == 0x0Fu && st->tex[1].width == 128 &&
 +        st->tex[1].height == 128 && st->tex[1].levels == 1 &&
 +        mode_needs_texture((st->rc.stage_program >> 5) & 31);
-+    s_draw_tex_addr = 0;
+     s_draw_tex_addr = 0;
 +    s_draw_bspline = 0;
 +    if (s_prof_on > 0 && raw_depth_view) s_prof_light_source_candidate = NULL;
-+
-+    {
-+        /* Bring-up switches: RECOMP_D3D_SKIP_CMASK / _SKIP_SFACTOR (hex) drop
-+         * draws with that colour mask / source blend factor. */
-+        static int init;
-+        static long skip_cmask = -1, skip_sf = -1;
-+        if (!init) {
-+            const char *e;
-+            init = 1;
-+            if ((e = getenv("RECOMP_D3D_SKIP_CMASK")) != NULL) skip_cmask = strtol(e, NULL, 16);
-+            if ((e = getenv("RECOMP_D3D_SKIP_SFACTOR")) != NULL) skip_sf = strtol(e, NULL, 16);
-         }
-         if ((skip_cmask >= 0 && st->color_mask == (uint32_t)skip_cmask) ||
-             (skip_sf >= 0 && st->blend_enable && st->blend_sfactor == (uint32_t)skip_sf))
-@@ -2673,6 +4836,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+ 
+     {
+         /* Bring-up switches: RECOMP_D3D_SKIP_CMASK / _SKIP_SFACTOR (hex) drop
+@@ -2673,6 +4975,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          cull = st->cull_face == 0x404 ? 1 : st->cull_face == 0x405 ? 2 : 3;
      if (cull == 3 && topology == NV_D3D_TRIANGLES)
          return 0;                                /* front and back culled */
@@ -21107,7 +21312,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      /* Y16 views of 32-bit targets are drawn before this draw's targets go
       * on; see y16_ps. */
      for (n = 0; n < 4; n++) {
-@@ -2682,17 +4849,33 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2682,17 +4988,33 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          if (t->color != 0x35 || t->cube || !t->addr) continue;
          /* A depth buffer wins over a colour surface at the same address:
           * MM3 binds one there for colour-masked stencil passes. */
@@ -21144,7 +21349,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      for (n = 0; n < 4; n++) {
          const NvD3DTexture *t = &st->tex[n];
          uint32_t mode = (st->rc.stage_program >> (n * 5)) & 31;
-@@ -2707,13 +4890,18 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2707,13 +5029,18 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          if (!mode_needs_texture(mode) || !t->addr || !t->width || !t->height)
              continue;
          tex_format(t->color, &kind);
@@ -21165,7 +21370,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
              pc.tex_scale[n][0] = 1.0f / (float)(2 * zt->w);
              pc.tex_scale[n][1] = 1.0f / (float)zt->h;
          } else if (rt) {
-@@ -2742,9 +4930,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2742,9 +5069,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                  }
              }
          } else {
@@ -21177,7 +21382,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
              if (kind == K_LIN) {
                  pc.tex_scale[n][0] = 1.0f / (float)t->width;
                  pc.tex_scale[n][1] = 1.0f / (float)t->height;
-@@ -2757,8 +4944,19 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2757,8 +5083,19 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
              pc.tex_scale[n][2] = pc.tex_scale[n][3] = 1.0f;
          }
          if (!view) continue;
@@ -21199,7 +21404,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          pc.tex_info[n][0] = (t->control0 >> 2) & 1;
          pc.tex_info[n][1] = t->filter >> 28;
          /* Point taps of an upscaled linear target average the guest pixel's
-@@ -2777,7 +4975,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2777,7 +5114,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      /* A sampled surface's CPU upload can blit and unbind this draw's
       * outputs. Restore targets and viewport before binding its textures. */
      if ((s != s_cur_rt || d != s_cur_ds) &&
@@ -21208,7 +21413,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          return 0;
  
      /* Combiners. */
-@@ -2797,7 +4995,22 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2797,7 +5134,22 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      pc.stage_prog = st->rc_seen ? st->rc.stage_program : (st->tex_used & 1);
      pc.alpha_func = st->alpha_func;
      pc.alpha_ref = st->alpha_ref;
@@ -21232,7 +21437,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      pc.other_input = st->other_stage_input;
      pc.dot_map = st->dot_rgb_mapping;
      /* SET_FOG_COLOR keeps red in the low byte. */
-@@ -2805,7 +5018,13 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2805,7 +5157,13 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      pc.fog_color[1] = ((st->fog_color >> 8) & 0xFF) / 255.0f;
      pc.fog_color[2] = ((st->fog_color >> 16) & 0xFF) / 255.0f;
      pc.fog_color[3] = (st->fog_color >> 24) / 255.0f;
@@ -21247,7 +21452,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          uint32_t zm = zf == 1 ? 0xFFFFu : 0xFFFFFFu;
          if (st->poly_offset_fill) {
              pc.zp0[0] = st->poly_offset_factor;
-@@ -2815,29 +5034,32 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2815,29 +5173,32 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          pc.zp0[3] = s_cur_sy;
          pc.zp1[0] = 1.0f / ((float)zm + 1.0f);
          pc.zp1[1] = (float)zm;
@@ -21290,7 +21495,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
                                                     st->front_face == 0x901, bias, slope));
      apply_scissor(st, gw, gh);
      if ((st->blend_sfactor | st->blend_dfactor) & 0x8000) {
-@@ -2851,11 +5073,11 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2851,11 +5212,11 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      } else {
          bf[0] = bf[1] = bf[2] = bf[3] = 0;
      }
@@ -21307,7 +21512,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
                       st->stencil_test, st->stencil_func, st->stencil_func_mask,
                       st->stencil_write_mask, st->stencil_fail,
                       st->stencil_zfail, st->stencil_zpass) : s_ds_off,
-@@ -2871,6 +5093,19 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2871,6 +5232,19 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
   * from a primitive's last vertex on the NV2A (GL's provoking vertex) but its
   * first on D3D11, so flat primitives are rotated to lead with their last
   * vertex; rotating a triangle keeps its winding. */
@@ -21327,7 +21532,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  static void copy_indices(uint32_t *o, const uint32_t *idx, uint32_t ni, uint32_t sub,
                           int topology, int flat)
  {
-@@ -2894,8 +5129,8 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
+@@ -2894,8 +5268,8 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
  {
      if (bytes > cap) return NULL;
      if (*pos + bytes > cap) *pos = 0;
@@ -21338,7 +21543,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          return NULL;
      return (uint8_t *)m->pData + *pos;
  }
-@@ -2908,18 +5143,134 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
+@@ -2908,18 +5282,134 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
   * (index - sub); fills dx with each vertex's x shift in guest pixels and
   * returns 0 when nothing moves, leaving only the shader's 4:3 squeeze. */
  #define HUD_GAP 24.0f
@@ -21476,7 +21681,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          if (r) root = r;
          if (pc) piece = pc;
          if (!b) return 0;
-@@ -2929,13 +5280,16 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2929,13 +5419,16 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
  #define FIND(x) do { while (root[x] != x) x = root[x] = root[root[x]]; } while (0)
      /* pieces: vertices joined by primitives */
      for (i = 0; i < nv; i++) root[i] = i;
@@ -21494,7 +21699,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      for (i = 0; i < nv; i++) {
          uint32_t r = i;
          FIND(r);
-@@ -2943,6 +5297,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2943,6 +5436,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
              piece[i] = np;
              box[np][0] = box[np][2] = 1e30f;
              box[np][1] = box[np][3] = -1e30f;
@@ -21502,7 +21707,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
              np++;
          }
      }
-@@ -2951,6 +5306,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2951,6 +5445,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
          FIND(r);
          n = piece[r];
          piece[i] = n;
@@ -21510,7 +21715,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          if (pos[i][0] < box[n][0]) box[n][0] = pos[i][0];
          if (pos[i][0] > box[n][1]) box[n][1] = pos[i][0];
          if (pos[i][1] < box[n][2]) box[n][2] = pos[i][1];
-@@ -2962,6 +5318,14 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2962,6 +5457,14 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
      for (i = 0; i < np; i++)
          for (k = i + 1; k < np; k++) {
              uint32_t a = i, b = k;
@@ -21525,7 +21730,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
              if (box[i][2] > box[k][3] || box[k][2] > box[i][3] ||
                  box[i][0] > box[k][1] + HUD_GAP || box[k][0] > box[i][1] + HUD_GAP)
                  continue;
-@@ -2976,19 +5340,40 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2976,19 +5479,40 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
      for (i = 0; i < nv; i++) {
          uint32_t c = piece[i];
          FIND(c);
@@ -21567,7 +21772,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  /* ---------------------------------------------- vertex processing on the GPU
   *
   * Every draw runs ub_vs: it pulls the title's raw vertex arrays from a byte
-@@ -2998,7 +5383,6 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2998,7 +5522,6 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
   * its depth the same way (no z-fighting between passes), nothing waits on a
   * shader compile, and no vertex is drawn from a CPU transform. */
  
@@ -21575,7 +21780,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  extern const uint32_t (*nv2a_vsh_program(uint32_t *start, uint32_t *version))[4];
  extern const float (*nv2a_vsh_constants(uint32_t *version))[4];
  
-@@ -3015,9 +5399,68 @@ static uint32_t attr_bytes(uint32_t type, uint32_t size)
+@@ -3015,9 +5538,68 @@ static uint32_t attr_bytes(uint32_t type, uint32_t size)
      }
  }
  
@@ -21645,7 +21850,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  }
  
  void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr[16],
-@@ -3025,6 +5468,7 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3025,6 +5607,7 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
                        uint32_t lo, uint32_t hi, const float (*pos)[4])
  {
      static uint32_t s_prog_version, s_vconst_version;
@@ -21653,7 +21858,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      static float *dx;
      static uint32_t dx_cap;
      struct { const uint8_t *base; uint32_t stride, span; } grp[16];
-@@ -3035,11 +5479,14 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3035,11 +5618,14 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      uint8_t *p;
      UINT total = 0, at = 0, ib_bytes = ni * 4;
      float squeeze = 1.0f, shift = 0.0f, yscale = 1.0f;
@@ -21670,7 +21875,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      memset(&uc, 0, sizeof uc);
      memcpy(uc.def, def, sizeof uc.def);
      /* Arrays: interleaved ones share one copied span. */
-@@ -3067,90 +5514,381 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3067,90 +5653,381 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      }
      for (i = 0; i < ngrp; i++)
          total += (((grp[i].stride ? (count - 1) * grp[i].stride : 0) + grp[i].span) + 15) & ~15u;
@@ -21783,7 +21988,17 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
                  s_frame_bg_tex = s_draw_tex_addr;
 -            if (nv2a_d3d_hud_active() && !(wide_x && (!s_draw_textured || s_draw_reads_wide))) {
 +            if (!nv2a_d3d_hud_active() && !s_draw_reads_wide) {
-+                squeeze = narrow;
+                 squeeze = narrow;
+-                if (nv2a_d3d_hud_active() && world_tag_draw(xlo, xhi, ylo, yhi, s_draw_tex_addr)) {
+-                    /* a name tag over a car: the title projected it
+-                     * through the widened camera, keep that position */
+-                    use_dx = count <= dx_cap &&
+-                             hud_split(pos, count, idx, lo, ni, topology, (float)gw, narrow, 1, dx);
+-                } else if (nv2a_d3d_hud_active()) {
+-                    if (xhi <= (float)gw * 0.5f) shift = narrow - 1.0f;
+-                    else if (xlo >= (float)gw * 0.5f) shift = 1.0f - narrow;
+-                    else use_dx = count <= dx_cap &&
+-                                  hud_split(pos, count, idx, lo, ni, topology, (float)gw, narrow, 0, dx);
 +                yscale = ynarrow;
 +            }
 +            /* Owned map resources also identify zoomed/masked map windows;
@@ -21797,17 +22012,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 +                 fabsf(yhi - s_hud_start[3]) < 2.0f)))
 +                s_hud_seen = 1;
 +            if (nv2a_d3d_hud_active() && (map_part || (widescreen && (name_n || !(wide_x && (!s_draw_textured || s_draw_reads_wide || route_n)))))) {
-                 squeeze = narrow;
--                if (nv2a_d3d_hud_active() && world_tag_draw(xlo, xhi, ylo, yhi, s_draw_tex_addr)) {
--                    /* a name tag over a car: the title projected it
--                     * through the widened camera, keep that position */
--                    use_dx = count <= dx_cap &&
--                             hud_split(pos, count, idx, lo, ni, topology, (float)gw, narrow, 1, dx);
--                } else if (nv2a_d3d_hud_active()) {
--                    if (xhi <= (float)gw * 0.5f) shift = narrow - 1.0f;
--                    else if (xlo >= (float)gw * 0.5f) shift = 1.0f - narrow;
--                    else use_dx = count <= dx_cap &&
--                                  hud_split(pos, count, idx, lo, ni, topology, (float)gw, narrow, 0, dx);
++                squeeze = narrow;
 +                yscale = ynarrow;
 +                /* A cap, its panel and its text may use different
 +                 * draws/textures. A centred overlay keeps their shared
@@ -22016,9 +22221,8 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 +         * one kick. Those bytes are already in the ring, unless this map
 +         * discards it (a wrap) or the route tags below edit the copy. */
 +        int reuse = s_raw_nooverwrite && !route_tag_layout(&attr[2]);
-         for (i = 0; i < ngrp; i++) {
-             UINT bytes = (grp[i].stride ? (count - 1) * grp[i].stride : 0) + grp[i].span;
--            memcpy(p + at, grp[i].base + (size_t)lo * grp[i].stride, bytes);
++        for (i = 0; i < ngrp; i++) {
++            UINT bytes = (grp[i].stride ? (count - 1) * grp[i].stride : 0) + grp[i].span;
 +            hit[i] = reuse && vb_reuse_find(grp[i].base + (size_t)lo * grp[i].stride, bytes, &goff[i]);
 +            if (!hit[i]) fresh += (bytes + 15) & ~15u;
 +        }
@@ -22033,9 +22237,10 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 +            RECOMP_PROFILE_END();
 +            return;
 +        }
-+        for (i = 0; i < ngrp; i++) {
+         for (i = 0; i < ngrp; i++) {
 +            const uint8_t *src = grp[i].base + (size_t)lo * grp[i].stride;
-+            UINT bytes = (grp[i].stride ? (count - 1) * grp[i].stride : 0) + grp[i].span;
+             UINT bytes = (grp[i].stride ? (count - 1) * grp[i].stride : 0) + grp[i].span;
+-            memcpy(p + at, grp[i].base + (size_t)lo * grp[i].stride, bytes);
 +            if (hit[i]) {
 +                if (s_prof_on > 0) s_prof_vb_reused += bytes;
 +                continue;
@@ -22087,7 +22292,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  
      uc.info[1] = program ? 1u : 0u;
      if (program) {
-@@ -3158,39 +5896,111 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3158,39 +6035,110 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
          const uint32_t (*prog)[4] = nv2a_vsh_program(&start, &pver);
          const float (*consts)[4] = nv2a_vsh_constants(&cver);
          uc.info[0] = start;
@@ -22130,12 +22335,11 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      uc.fogi[1] = st->fog_mode;
      uc.fogf[0] = st->fog_param[0];
      uc.fogf[1] = st->fog_param[1];
-+    if (s_draw_native_fog == 2) {
-+        /* Linear: f = px + d * py - 1 = (end - d) / (end - start). */
-+        float span = s_native_fog_seen.end - s_native_fog_seen.start;
-+        uc.fogf[0] = 1.0f + s_native_fog_seen.end / span;
-+        uc.fogf[1] = -1.0f / span;
-+    }
++    /* After the native pass: fog by the vertex's view depth over the pass's
++     * range (the title's fog amount comes from its own vertex program). */
++    uc.fogi[2] = s_draw_native_fog == 2;
++    uc.fogf[2] = s_draw_native_fog == 2 ? 1.0f / (s_native_fog_seen.end - s_native_fog_seen.start) : 0.0f;
++    uc.fogf[3] = s_draw_native_fog == 2 ? s_native_fog_seen.end : 0.0f;
      uc.place[0] = shift;
      uc.place[1] = yscale;
 -    upload_cb(s_cb_ub, &uc, sizeof uc);
@@ -22213,7 +22417,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      RECOMP_PROFILE_END();
  }
  
-@@ -3204,11 +6014,18 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3204,11 +6152,18 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      float cc[8];
      D3D11_RECT r;
      int zclear = (flags & 1) != 0, sclear = (flags & 2) != 0;
@@ -22234,7 +22438,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      if (s) {
          if (flags & 0x10) mask |= D3D11_COLOR_WRITE_ENABLE_RED;
          if (flags & 0x20) mask |= D3D11_COLOR_WRITE_ENABLE_GREEN;
-@@ -3217,9 +6034,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3217,9 +6172,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
              mask |= D3D11_COLOR_WRITE_ENABLE_ALPHA;
      }
      if (!d) { zclear = sclear = 0; }
@@ -22247,7 +22451,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      zf = (st->surface_format >> 4) & 0xF;
      unpack4(color, cc);
      if (s && (s->color_fmt & 0xF) == 0x3) {
-@@ -3231,28 +6049,39 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3231,28 +6187,39 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      memset(cc + 4, 0, 16);
      cc[4] = zf == 1 ? (float)(zstencil & 0xFFFF) / 65535.0f
                      : (float)(zstencil >> 8) / 16777215.0f;
@@ -22299,7 +22503,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  }
  
  /* -------------------------------------------------------------- write-back */
-@@ -3270,6 +6099,282 @@ typedef struct {
+@@ -3270,6 +6237,282 @@ typedef struct {
      ID3D11RenderTargetView *down_rtv;
  } WbSlot;
  static WbSlot s_wb[MAX_SURFACES];
@@ -22582,7 +22786,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  
  static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
  {
-@@ -3289,12 +6394,14 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
+@@ -3289,12 +6532,14 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
              return 0;
          k->w = w; k->h = h;
      }
@@ -22603,7 +22807,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      }
      return 1;
  }
-@@ -3305,21 +6412,128 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
+@@ -3305,62 +6550,181 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
   * (nv2a_d3d_writeback_busy), holding back DMA_GET and fence releases until
   * then -- the title cannot learn the frame is finished before its pixels are
   * in guest memory. */
@@ -22734,9 +22938,12 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      for (i = 0; i < MAX_SURFACES; i++) {
          Surface *s = &s_surf[i];
          WbSlot *k = &s_wb[i];
-@@ -3328,18 +6542,25 @@ static int writeback_finish(int wait)
+         D3D11_MAPPED_SUBRESOURCE m;
+-        uint8_t *dst;
++        uint8_t *dst, *out;
          uint32_t x, y, rowb;
-         int amode, r565;
+-        int amode, r565;
++        int amode, r565, via_writer;
          HRESULT hr;
 -        if (!k->pending)
 +        int64_t part_begin;
@@ -22759,9 +22966,14 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 +        if (trace_begin) ++parts.surfaces;
 +        part_begin = trace_begin ? qpc() : 0;
          dst = (uint8_t *)guest(s->va);
++        out = surface_watch_writer(s, dst, &via_writer);
          rowb = s->w * s->bpp;
          amode = surface_alpha_mode(s->color_fmt);
-@@ -3350,8 +6571,11 @@ static int writeback_finish(int wait)
+         r565 = (s->color_fmt & 0xF) == 0x3;
+         for (y = 0; y < s->h; y++) {
+             const uint32_t *src = (const uint32_t *)((const uint8_t *)m.pData + (size_t)y * m.RowPitch);
+             uint8_t *row = dst + (size_t)y * s->pitch;
++            uint8_t *put = out + (size_t)y * s->pitch;   /* the same bytes */
              /* A row the CPU changed since the executor last looked holds
               * writes made after this frame was submitted (the title runs
               * ahead): they win, and the next sync uploads them. */
@@ -22773,11 +22985,24 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
 +            if (trace_begin) ++parts.copied_rows;
              if (s->bpp == 4) {
                  if (amode < 0) {
-                     memcpy(row, src, rowb);
-@@ -3370,33 +6594,47 @@ static int writeback_finish(int wait)
+-                    memcpy(row, src, rowb);
++                    memcpy(put, src, rowb);
+                 } else {
+-                    uint32_t a = amode ? 0xFF000000u : 0, *o = (uint32_t *)row;
++                    uint32_t a = amode ? 0xFF000000u : 0, *o = (uint32_t *)put;
+                     for (x = 0; x < s->w; x++) o[x] = (src[x] & 0xFFFFFFu) | a;
+                 }
+             } else {
+-                uint16_t *o = (uint16_t *)row;
++                uint16_t *o = (uint16_t *)put;
+                 for (x = 0; x < s->w; x++) {
+                     uint32_t c = src[x];
+                     o[x] = r565 ? (uint16_t)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07E0) | ((c >> 3) & 0x1F))
+@@ -3370,33 +6734,48 @@ static int writeback_finish(int wait)
              }
              memcpy(s->shadow + (size_t)y * rowb, row, rowb);
          }
++        if (via_writer) surface_watch_wrote(s);
 +        surface_hash_shadow(s);
 +        if (trace_begin) parts.copy += qpc() - part_begin;
 +        part_begin = trace_begin ? qpc() : 0;
@@ -22829,7 +23054,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      RECOMP_PROFILE_BEGIN("D3D11 write-back issue");
      for (i = 0; i < MAX_SURFACES; i++) {
          Surface *s = &s_surf[i];
-@@ -3409,9 +6647,10 @@ static void writeback_surfaces(void)
+@@ -3409,9 +6788,10 @@ static void writeback_surfaces(void)
              continue;
          surface_resolve(s);
          if (scaled) {
@@ -22843,7 +23068,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
              ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)k->stage,
                                               (ID3D11Resource *)k->down);
          } else {
-@@ -3420,11 +6659,23 @@ static void writeback_surfaces(void)
+@@ -3420,11 +6800,23 @@ static void writeback_surfaces(void)
          }
          s->gpu_dirty = 0;                        /* later draws dirty it again */
          k->pending = 1;
@@ -22868,7 +23093,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  }
  
  /* ----------------------------------------------------- visibility tests */
-@@ -3439,13 +6690,16 @@ static uint64_t s_zpass;
+@@ -3439,13 +6831,16 @@ static uint64_t s_zpass;
  static void zpass_collect(void)
  {
      UINT64 n = 0;
@@ -22885,7 +23110,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  }
  
  void nv2a_d3d_zpass_enable(int on)
-@@ -3490,10 +6744,43 @@ static ID3D11ShaderResourceView *s_ovl_srv;
+@@ -3490,10 +6885,43 @@ static ID3D11ShaderResourceView *s_ovl_srv;
  static UINT s_ovl_w, s_ovl_h;
  static uint32_t s_ovl_serial = 0xFFFFFFFFu;
  static DWORD s_last_present, s_last_flip;
@@ -22929,7 +23154,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  static int ensure_swapchain(void)
  {
      HWND h = xbox_FramebufferWindowHandle();
-@@ -3505,6 +6792,8 @@ static int ensure_swapchain(void)
+@@ -3505,6 +6933,8 @@ static int ensure_swapchain(void)
      hh = (UINT)(rc.bottom - rc.top);
      if (!w || !hh) return 0;                    /* minimised */
      if (s_swap && s_swap_hwnd != h) {
@@ -22938,7 +23163,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          IDXGISwapChain1_Release(s_swap);
          s_swap = NULL;
      }
-@@ -3522,7 +6811,17 @@ static int ensure_swapchain(void)
+@@ -3522,7 +6952,17 @@ static int ensure_swapchain(void)
          d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
          d.SampleDesc.Count = 1;
          d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -22957,7 +23182,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
          hr = fac ? IDXGIFactory2_CreateSwapChainForHwnd(fac, (IUnknown *)s_dev, h, &d,
                                                          NULL, NULL, &s_swap) : E_FAIL;
-@@ -3534,9 +6833,11 @@ static int ensure_swapchain(void)
+@@ -3534,9 +6974,11 @@ static int ensure_swapchain(void)
          if (dxdev) IDXGIDevice_Release(dxdev);
          if (FAILED(hr)) { fail("CreateSwapChainForHwnd", hr); return 0; }
          s_swap_hwnd = h; s_swap_w = w; s_swap_h = hh;
@@ -22970,7 +23195,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          if (FAILED(IDXGISwapChain1_ResizeBuffers(s_swap, 0, w, hh, DXGI_FORMAT_UNKNOWN, 0)))
              return 0;
          s_swap_w = w; s_swap_h = hh;
-@@ -3556,24 +6857,38 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
+@@ -3556,24 +6998,38 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
      if (!prefix) return;
      if (!remaining) {
          int count = 0;
@@ -23011,7 +23236,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)st, (ID3D11Resource *)bb);
          if (SUCCEEDED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource *)st, 0,
                                               D3D11_MAP_READ, 0, &m))) {
-@@ -3607,6 +6922,8 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
+@@ -3607,6 +7063,8 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
              ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)st, 0);
          }
          ID3D11Texture2D_Release(st);
@@ -23020,7 +23245,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      }
      remaining--;
  }
-@@ -3638,10 +6955,18 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3638,10 +7096,18 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
      pc->src_size[0] = (float)s->w; pc->src_size[1] = (float)s->h;
      pc->src_size[2] = (float)s->iw; pc->src_size[3] = (float)s->ih;
      pc->force_alpha[0] = 1.0f;
@@ -23039,7 +23264,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      upload_cb(s_cb_present, pc, sizeof *pc);
      unbind_textures();
      unbind_targets();
-@@ -3652,22 +6977,21 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3652,22 +7118,21 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
      vp.MinDepth = 0; vp.MaxDepth = 1;
      sc.left = 0; sc.top = 0; sc.right = (LONG)w; sc.bottom = (LONG)h;
      ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
@@ -23071,7 +23296,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      ID3D11DeviceContext_Draw(s_ctx, 4, 0);
      unbind_targets();
      unbind_textures();
-@@ -3718,22 +7042,75 @@ static void prepare_overlay(PresentConsts *pc)
+@@ -3718,22 +7183,75 @@ static void prepare_overlay(PresentConsts *pc)
      pc->ovl_in[2] = 1.0f;
  }
  
@@ -23148,7 +23373,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          if (!s_cap_tex || s_cap_w != s->iw || s_cap_h != s->ih) {
              if (s_cap_rtv) ID3D11RenderTargetView_Release(s_cap_rtv);
              if (s_cap_tex) ID3D11Texture2D_Release(s_cap_tex);
-@@ -3749,25 +7126,104 @@ static void present_surface(Surface *s)
+@@ -3749,25 +7267,104 @@ static void present_surface(Surface *s)
              composite(s_cap_rtv, s->iw, s->ih, s, &pc, 0);
              capture_backbuffer(s_cap_tex);
          }
@@ -23266,7 +23491,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  /* The flip completes at the display's next vertical blank, as it does on the
   * NV2A: FLIP_STALL holds the GPU until then, and the title, waiting on the
   * GPU, is paced by it. Completing it at once let menus run at hundreds of
-@@ -3779,40 +7235,31 @@ static void pace_vblank(void)
+@@ -3779,40 +7376,31 @@ static void pace_vblank(void)
      static LARGE_INTEGER freq;
      static int64_t next;
      static HANDLE timer;
@@ -23323,7 +23548,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      }
  }
  
-@@ -3822,30 +7269,41 @@ static void pace_vblank(void)
+@@ -3822,30 +7410,41 @@ static void pace_vblank(void)
   * the monitor's native resolution and shape). A resize applies once it has
   * settled for RESIZE_SETTLE_MS, by dropping every host surface; they are
   * rebuilt at the new size from guest memory, which the flip just updated.
@@ -23374,7 +23599,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
          scale = (float)atof(e);
      } else {
          /* RECOMP_SUPERSAMPLE=N (1..4) renders N x N host pixels per window
-@@ -3860,7 +7318,9 @@ static void display_config(int now)
+@@ -3860,7 +7459,9 @@ static void display_config(int now)
          if (scale < 1.0f) scale = 1.0f;
          if (scale > 8.0f) scale = 8.0f;
      }
@@ -23385,7 +23610,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      if (!now && fabsf(scale - s_scale) < 1e-3f && fabsf(aspect - s_aspect) < 1e-4f)
          return;
      if (!now) {
-@@ -3874,6 +7334,11 @@ static void display_config(int now)
+@@ -3874,6 +7475,11 @@ static void display_config(int now)
      }
      s_scale = scale;
      s_aspect = aspect;
@@ -23397,7 +23622,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      fprintf(stderr, "[D3D11] rendering %ux%u (window %ux%u, aspect %.3f)\n",
              (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
              w, h, aspect);
-@@ -3897,10 +7362,15 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
+@@ -3897,10 +7503,15 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
  void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
  {
      Surface *s;
@@ -23413,7 +23638,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      s = surface_find(phys(surface_addr));
      if (!s && pitch)
          s = scan_surface(surface_addr, pitch);
-@@ -3908,23 +7378,29 @@ void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
+@@ -3908,23 +7519,29 @@ void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
      s_last_flip = GetTickCount();
      {
          int64_t t0 = s_prof_on > 0 ? qpc() : 0, t1;
@@ -23450,7 +23675,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
      s_frame++;
  }
  
-@@ -3932,33 +7408,64 @@ void nv2a_d3d_tick(void)
+@@ -3932,33 +7549,64 @@ void nv2a_d3d_tick(void)
  {
      DWORD now;
      uint32_t va, pitch;
@@ -23521,7 +23746,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..21dd318f6737878c8c29bcc9a7d7e654
  int nv2a_d3d_prof_enabled(void) { return 0; }
  void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
  { (void)slot; (void)ticks; (void)verts; }
-@@ -3977,7 +7484,25 @@ void nv2a_d3d_zpass_enable(int on) { (void)on; }
+@@ -3977,7 +7625,25 @@ void nv2a_d3d_zpass_enable(int on) { (void)on; }
  void nv2a_d3d_zpass_clear(void) {}
  uint32_t nv2a_d3d_zpass_read(void) { return 0; }
  float nv2a_d3d_display_aspect(void) { return 4.0f / 3.0f; }
@@ -29148,11 +29373,11 @@ index 0000000000000000000000000000000000000000..4f951c807ad43fd8f5da58ac5bf1a66c
 +set_tests_properties(guest_write_watch_off PROPERTIES ENVIRONMENT "RECOMP_TEXTURE_WATCH=0")
 diff --git a/tests/guest_write_watch/test_main.c b/tests/guest_write_watch/test_main.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..1d62ba3f13cd8661f2e4ee96092f84ad48d00da7
+index 0000000000000000000000000000000000000000..a3a70f7a357a86ef9f23677247fa34b4a8f41075
 --- /dev/null
 +++ b/tests/guest_write_watch/test_main.c
-@@ -0,0 +1,293 @@
-+﻿/* Write stamps on a page-file section mapped twice, like the contiguous
+@@ -0,0 +1,327 @@
++/* Write stamps on a page-file section mapped twice, like the contiguous
 + * window and its tiled alias: writes through either view, kernel-mode
 + * ReadFile into an armed buffer, protection requests, and a writer thread
 + * racing the arm/read/check protocol. */
@@ -29173,6 +29398,7 @@ index 0000000000000000000000000000000000000000..1d62ba3f13cd8661f2e4ee96092f84ad
 +#define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 +
 +static uint8_t *contig, *tiled;
++static HANDLE section;
 +
 +static GwwRange range(uint32_t offset, uint32_t bytes)
 +{
@@ -29197,7 +29423,7 @@ index 0000000000000000000000000000000000000000..1d62ba3f13cd8661f2e4ee96092f84ad
 +
 +static void map_views(void)
 +{
-+    HANDLE section = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0,
++    section = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0,
 +                                        PAGES * PAGE, NULL);
 +    CHECK(section);
 +    contig = (uint8_t *)MapViewOfFile(section, FILE_MAP_ALL_ACCESS, 0, 0, PAGES * PAGE);
@@ -29356,6 +29582,37 @@ index 0000000000000000000000000000000000000000..1d62ba3f13cd8661f2e4ee96092f84ad
 +    puts("PASS: guest protection requests disarm, report read-write and keep non-plain pages unarmed");
 +}
 +
++/* The renderer's writer view: no faults, the guest's views stay armed, and
++ * host_wrote keeps the writer's snapshot only when no CPU write came first. */
++static void test_writer(void)
++{
++    GwwRange r = range(24 * PAGE, 2 * PAGE), other = range(25 * PAGE + 64, 32);
++    uint64_t seq, so, f0, next;
++    uint8_t *w;
++    int complete, still;
++    seq = gww_arm(&r, 1, &complete); CHECK(complete);
++    so = gww_arm(&other, 1, &complete); CHECK(complete);
++    f0 = faults();
++    w = gww_host_writer(r.va, r.bytes);
++    CHECK(w && w != contig + 24 * PAGE && w != tiled + 24 * PAGE);
++    memset(w, 0x3C, 2 * PAGE);
++    CHECK(faults() == f0 && contig[24 * PAGE + 100] == 0x3C && tiled[25 * PAGE + 7] == 0x3C);
++    CHECK(protection(contig + 24 * PAGE) == PAGE_READONLY && protection(tiled + 25 * PAGE) == PAGE_READONLY);
++    CHECK(gww_clean(&r, 1, seq));                          /* unstamped until host_wrote */
++    next = gww_host_wrote(&r, 1, seq, &still);
++    CHECK(still && next > seq && gww_clean(&r, 1, next));  /* the writer keeps a snapshot */
++    CHECK(!gww_clean(&r, 1, seq) && !gww_clean(&other, 1, so));   /* everyone else re-reads */
++    /* A CPU write before host_wrote: the writer must re-read too. */
++    *(volatile uint8_t *)(tiled + 24 * PAGE + 9) = 1;
++    memset(w, 0x5A, 16);
++    seq = gww_host_wrote(&r, 1, next, &still);
++    CHECK(!still && !gww_clean(&r, 1, seq));               /* page 24 is open now */
++    /* Excluded pages are written through the guest's own view instead. */
++    CHECK(gww_host_writer(GUEST + 21 * PAGE, 16) == NULL);
++    CHECK(gww_host_writer(GUEST + PAGES * PAGE - 8, 16) == NULL);
++    puts("PASS: writer-view stores neither fault nor unprotect; host_wrote stamps and judges");
++}
++
 +/* A writer thread stores through both views while the checker arms, reads
 + * and later checks. Whenever the stamps say clean, the bytes read after the
 + * arm must equal the bytes now. */
@@ -29431,17 +29688,19 @@ index 0000000000000000000000000000000000000000..1d62ba3f13cd8661f2e4ee96092f84ad
 +    map_views();
 +    test_inactive();
 +    if (!strcmp(argv[1], "off")) {
-+        CHECK(!gww_init(GUEST, contig, PAGES * PAGE, tiled, PAGES * PAGE));
++        CHECK(!gww_init(GUEST, contig, PAGES * PAGE, tiled, PAGES * PAGE, section));
 +        test_inactive();
 +        puts("PASS: RECOMP_TEXTURE_WATCH=0 leaves the watch off");
 +        return 0;
 +    }
 +    if (strcmp(argv[1], "views")) return 2;
-+    CHECK(gww_init(GUEST, contig, PAGES * PAGE, tiled, PAGES * PAGE));
++    CHECK(!gww_init(GUEST, contig, PAGES * PAGE, tiled, PAGES * PAGE, NULL));
++    CHECK(gww_init(GUEST, contig, PAGES * PAGE, tiled, PAGES * PAGE, section));
 +    test_alias();
 +    test_shared_page();
 +    test_readfile();
 +    test_protect();
++    test_writer();
 +    test_stress();
 +    return 0;
 +}
@@ -36169,7 +36428,7 @@ index da463248602e49a9505823958d12bd8ac902811a..6c26cb6bac603efbd895fffaec156a62
 +both allocation orders, exact alignment gaps, arithmetic overflow, and eight
 +simultaneous reservation/heap allocation threads.
 diff --git a/tests/memory_regressions/test_main.c b/tests/memory_regressions/test_main.c
-index 35659cc82638caaf3f4119ab0aee4647890c5759..ca6898b222b81e370395f112769194bcd820852c 100644
+index 35659cc82638caaf3f4119ab0aee4647890c5759..315085fc7db98d2a7bf73f4d7bea7fdda43d55dc 100644
 --- a/tests/memory_regressions/test_main.c
 +++ b/tests/memory_regressions/test_main.c
 @@ -10,7 +10,10 @@
@@ -36194,7 +36453,7 @@ index 35659cc82638caaf3f4119ab0aee4647890c5759..ca6898b222b81e370395f112769194bc
   */
  #include "kernel.h"
  #include "xbox_memory_layout.h"
-@@ -169,33 +175,120 @@ static void set_env(const char *name, const char *value)
+@@ -169,33 +175,135 @@ static void set_env(const char *name, const char *value)
  #ifdef _WIN32
      _putenv_s(name, value);
  #else
@@ -36276,7 +36535,22 @@ index 35659cc82638caaf3f4119ab0aee4647890c5759..ca6898b222b81e370395f112769194bc
 +    again = xbox_ContiguousAlloc(0x3000, 4096);
 +    gww_stats(&f1, NULL);
 +    WW_CHECK(again == va && f1 == f0 && contig[0x1004] == 0 && !gww_clean(&r, 1, seq));
-+    puts("PASS: write watch on the real layout (tiled alias, NtReadFile, protect, reuse)");
++
++    /* The renderer's writer view of the same section: no faults, both guest
++     * views see the bytes, and host_wrote renews an untouched snapshot. */
++    {
++        uint8_t *writer = gww_host_writer(va, 0x3000);
++        int still = 0;
++        seq = gww_arm(&r, 1, &complete);
++        WW_CHECK(writer && complete);
++        gww_stats(&f0, NULL);
++        memset(writer, 0x6B, 0x3000);
++        gww_stats(&f1, NULL);
++        WW_CHECK(f1 == f0 && contig[0x2FFF] == 0x6B && tiled[0x10] == 0x6B);
++        seq = gww_host_wrote(&r, 1, seq, &still);
++        WW_CHECK(still && gww_clean(&r, 1, seq));
++    }
++    puts("PASS: write watch on the real layout (tiled alias, NtReadFile, protect, reuse, writer view)");
 +    return 0;
 +}
 +#endif
@@ -36319,7 +36593,7 @@ index 35659cc82638caaf3f4119ab0aee4647890c5759..ca6898b222b81e370395f112769194bc
  
      xbe = load_file(path, &xbe_len);
      if (!xbe) {
-@@ -206,6 +299,10 @@ int main(int argc, char **argv)
+@@ -206,6 +314,10 @@ int main(int argc, char **argv)
          puts("xbox_MemoryLayoutInit failed");
          return 2;
      }
@@ -36330,7 +36604,7 @@ index 35659cc82638caaf3f4119ab0aee4647890c5759..ca6898b222b81e370395f112769194bc
  
      scratch = xbox_HeapAlloc(0x10000, 4096);
      for (i = 0; i < N_SLOTS; i++)
-@@ -220,6 +317,148 @@ int main(int argc, char **argv)
+@@ -220,6 +332,148 @@ int main(int argc, char **argv)
          }
      }
      printf("mode: %s\n", mode);
@@ -36479,7 +36753,7 @@ index 35659cc82638caaf3f4119ab0aee4647890c5759..ca6898b222b81e370395f112769194bc
      *G(0x00070000u) = 0x12345678u;
      *G(0x80070000u) = 0x87654321u;
      check(*G(0x00070000u) == 0x12345678u &&
-@@ -238,18 +477,10 @@ int main(int argc, char **argv)
+@@ -238,18 +492,10 @@ int main(int argc, char **argv)
          s1 = xbox_HeapAlloc(16, 16);
          s2 = xbox_HeapAlloc(16, 16);
  
@@ -36502,7 +36776,7 @@ index 35659cc82638caaf3f4119ab0aee4647890c5759..ca6898b222b81e370395f112769194bc
      }
  
      /* 2. Three neighbours freed so that the third meets an empty slot. */
-@@ -391,6 +622,7 @@ int main(int argc, char **argv)
+@@ -391,6 +637,7 @@ int main(int argc, char **argv)
          }
      }
  
@@ -41966,10 +42240,10 @@ index 0000000000000000000000000000000000000000..203713218b67aba42f3ad98ed967a6ea
 +decoder independently of D3D11.
 diff --git a/tests/nv2a_native_fog/test_native_fog.c b/tests/nv2a_native_fog/test_native_fog.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..b4dda5f2089b10addcf6c9da4e5b02df2ea7052c
+index 0000000000000000000000000000000000000000..57374238fe57cc835f151abc99d8728d5a558003
 --- /dev/null
 +++ b/tests/nv2a_native_fog/test_native_fog.c
-@@ -0,0 +1,344 @@
+@@ -0,0 +1,337 @@
 +/* Actual fog/depth/compositor GPU results. Only framebuffer inputs and
 + * deliberate resource/compiler failures are fixture boundaries. */
 +#define COBJMACROS
@@ -42256,9 +42530,8 @@ index 0000000000000000000000000000000000000000..b4dda5f2089b10addcf6c9da4e5b02df
 +    NvD3DState st = scene(.5f), other = st;
 +    Surface *s = surface_find(st.color_addr);
 +    uint32_t frame = s_frame;
-+    float f_start, f_end, span;
 +    memset(&s_native_fog_seen,0,sizeof s_native_fog_seen);
-+    st.fog_enable = 1; st.fog_mode = 0x2601u; st.fog_param[0] = 1.5f; st.fog_param[1] = -.01f;
++    st.fog_enable = 1; st.fog_mode = 0x2601u; st.fog_param[0] = 1; st.fog_param[1] = 1;
 +    CHECK(native_fog_draw(&st,s) == 0);                 /* no native fog seen yet */
 +    fog(&st,0,NULL);
 +    CHECK(s_native_fog_seen.target == s && s_native_fog_seen.passes == 1);
@@ -42272,15 +42545,9 @@ index 0000000000000000000000000000000000000000..b4dda5f2089b10addcf6c9da4e5b02df
 +    CHECK(native_fog_draw(&other,NULL) == 0);           /* another target keeps its fog */
 +    fog(&st,0,NULL);
 +    CHECK(native_fog_draw(&st,s) == 2);
-+    st.fog_mode = 0x800u; CHECK(native_fog_draw(&st,s) == 0); st.fog_mode = 0x804u;
-+    CHECK(native_fog_draw(&st,s) == 2);
++    st.fog_mode = 0x800u; CHECK(native_fog_draw(&st,s) == 2);   /* any mode: fogged by view depth */
 +    s_frame = frame + 3;                                /* a frame without a pass in between */
 +    CHECK(native_fog_draw(&st,s) == 0);
-+    /* The range the draw is given: f = px + d*py - 1, 1 at start, 0 at end. */
-+    span = s_native_fog_seen.end - s_native_fog_seen.start;
-+    f_start = 1.0f + s_native_fog_seen.end / span + s_native_fog_seen.start * (-1.0f / span) - 1.0f;
-+    f_end = 1.0f + s_native_fog_seen.end / span + s_native_fog_seen.end * (-1.0f / span) - 1.0f;
-+    CHECK(fabsf(f_start - 1.0f) < 1e-5f && fabsf(f_end) < 1e-5f);
 +    s_frame = frame + 4;
 +}
 +
@@ -46169,15 +46436,15 @@ index 0000000000000000000000000000000000000000..45e8786f3ca0caf8967fd3d4d213a18d
 +}
 diff --git a/tests/nv2a_surface_sync/CMakeLists.txt b/tests/nv2a_surface_sync/CMakeLists.txt
 new file mode 100644
-index 0000000000000000000000000000000000000000..d0e48ae80390f197047cce2c0953093a53575cde
+index 0000000000000000000000000000000000000000..038565897b71143d53c4d10d9be0cad4d368e387
 --- /dev/null
 +++ b/tests/nv2a_surface_sync/CMakeLists.txt
-@@ -0,0 +1,14 @@
+@@ -0,0 +1,18 @@
 +cmake_minimum_required(VERSION 3.20)
 +project(nv2a_surface_sync C)
 +enable_testing()
-+add_executable(nv2a_surface_sync test_surface_sync.c)
-+target_include_directories(nv2a_surface_sync PRIVATE ../../src ../../src/video)
++add_executable(nv2a_surface_sync test_surface_sync.c ../../src/kernel/guest_write_watch.c)
++target_include_directories(nv2a_surface_sync PRIVATE ../../src ../../src/video ../../src/kernel)
 +target_link_libraries(nv2a_surface_sync PRIVATE d3d11 dxgi dxguid d3dcompiler)
 +foreach(samples 1 4)
 +    foreach(case initial_snapshot initial_pixels initial_texture initial_srv initial_constants
@@ -46187,6 +46454,10 @@ index 0000000000000000000000000000000000000000..d0e48ae80390f197047cce2c0953093a
 +    endforeach()
 +endforeach()
 +add_test(NAME nv2a_surface_rows_exact COMMAND nv2a_surface_sync rows_exact 1)
++foreach(samples 1 4)
++    add_test(NAME nv2a_surface_watch_fake_${samples}x COMMAND nv2a_surface_sync watch_fake ${samples})
++endforeach()
++add_test(NAME nv2a_surface_watch_real COMMAND nv2a_surface_sync watch_real 1)
 diff --git a/tests/nv2a_surface_sync/README.md b/tests/nv2a_surface_sync/README.md
 new file mode 100644
 index 0000000000000000000000000000000000000000..ad2a4e46a167f120967fb67133fe8fd077d748b0
@@ -46240,10 +46511,10 @@ index 0000000000000000000000000000000000000000..ad2a4e46a167f120967fb67133fe8fd0
 +all byte validation, check frequency and shadow commit rules are unchanged.
 diff --git a/tests/nv2a_surface_sync/test_surface_sync.c b/tests/nv2a_surface_sync/test_surface_sync.c
 new file mode 100644
-index 0000000..4c4f06c
+index 0000000000000000000000000000000000000000..145ef6ddffec2e15238fc521b3ef5bd6784ad4cc
 --- /dev/null
 +++ b/tests/nv2a_surface_sync/test_surface_sync.c
-@@ -0,0 +1,462 @@
+@@ -0,0 +1,467 @@
 +/* Failed surface uploads must retain pending CPU writes and retry in the
 + * same epoch. Exercise real D3D11 resources, masked draws and GPU pixels. */
 +#define COBJMACROS
@@ -46328,7 +46599,8 @@ index 0000000..4c4f06c
 +#undef realloc
 +
 +static uint8_t ram[0x500000];
-+ptrdiff_t xbox_GetMemoryOffset(void) { return (ptrdiff_t)ram; }
++static ptrdiff_t s_test_offset;    /* watch_real: guest memory in a section */
++ptrdiff_t xbox_GetMemoryOffset(void) { return s_test_offset ? s_test_offset : (ptrdiff_t)ram; }
 +HWND xbox_FramebufferWindowHandle(void) { return NULL; }
 +int xbox_FramebufferScanSource(uint32_t *va, uint32_t *pitch) { return 0; }
 +int xbox_FramebufferOverlay(XboxOverlay *ovl) { return 0; }
@@ -46545,6 +46817,8 @@ index 0000000..4c4f06c
 +    }
 +    printf("PASS: %u production surface row snapshots match generic Morton bytes, including alpha, alignments, rectangular/POT/non-POT, small, narrow-format and padded fallbacks with output guards\n",cases);
 +}
++#include "watch_tests.h"
++
 +static void test_swizzled_retry(void)
 +{
 +    Surface *s=surface_get(0x20000,32*4,8,32,16,1); uint32_t generation;
@@ -46650,6 +46924,8 @@ index 0000000..4c4f06c
 +    if (!strcmp(test, "multiple_surfaces")) { test_multiple_surfaces(); return 0; }
 +    if (!strcmp(test, "idle_scanout")) { test_idle_scanout(); return 0; }
 +    if (!strcmp(test, "swizzled_retry")) { test_swizzled_retry(); return 0; }
++    if (!strcmp(test, "watch_fake")) { test_watch_fake(); return 0; }
++    if (!strcmp(test, "watch_real")) { test_watch_real(); return 0; }
 +    s = surface_get(0x20000, bpp16 ? 80 : 128, bpp16 ? 3 : 8, 32, 32, swizzled);
 +    CHECK(s && s->shadow); present_buffer = (ID3D11Resource *)s_cb_present;
 +    clear_gpu(s); generation = s->gen;
@@ -46705,6 +46981,241 @@ index 0000000..4c4f06c
 +    }
 +    printf("PASS: %s, %ux MSAA; exact GPU pixels, successful shadow commit and retry\n", test, s_msaa);
 +    return 0;
++}
+diff --git a/tests/nv2a_surface_sync/watch_tests.h b/tests/nv2a_surface_sync/watch_tests.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..c141858c1e44af47cbd7cc3048ef74ea391cd7d9
+--- /dev/null
++++ b/tests/nv2a_surface_sync/watch_tests.h
+@@ -0,0 +1,229 @@
++/* Render-target syncs and write-back under the write watch: a software watch
++ * over guest 0x100000..0x140000 (watch_fake), and the real module on a
++ * section mapped twice plus its writer view (watch_real). In the software
++ * watch, watch_write does what the fault handler does; a plain store into
++ * ram is a writer the stamps cannot see. */
++#include "../../src/kernel/guest_write_watch.h"
++
++#define FW_BASE 0x100000u
++#define FW_PAGES 64u
++#define FW_ARMED 1u
++
++static uint64_t fw_clock, fw_stamp[FW_PAGES], fw_faults, fw_pages;
++static uint8_t fw_flag[FW_PAGES];
++
++static int fw_span(uint32_t va, uint32_t bytes, unsigned *first, unsigned *last)
++{
++    if (!bytes || va < FW_BASE || (uint64_t)va - FW_BASE + bytes > (uint64_t)FW_PAGES * 4096u)
++        return 0;
++    *first = (va - FW_BASE) / 4096u;
++    *last = (va - FW_BASE + bytes - 1) / 4096u;
++    return 1;
++}
++static int fw_covers(uint32_t va, uint32_t bytes) { unsigned a, b; return fw_span(va, bytes, &a, &b); }
++static uint64_t fw_arm(const GwwRange *r, int n, int *complete)
++{
++    int i; unsigned p, a, b;
++    *complete = 1;
++    for (i = 0; i < n; ++i) {
++        if (!fw_span(r[i].va, r[i].bytes, &a, &b)) { *complete = 0; continue; }
++        for (p = a; p <= b; ++p)
++            if (!(fw_flag[p] & FW_ARMED)) { fw_flag[p] |= FW_ARMED; ++fw_pages; }
++    }
++    return fw_clock;
++}
++static int fw_clean(const GwwRange *r, int n, uint64_t since)
++{
++    int i; unsigned p, a, b;
++    for (i = 0; i < n; ++i) {
++        if (!fw_span(r[i].va, r[i].bytes, &a, &b)) return 0;
++        for (p = a; p <= b; ++p)
++            if (!(fw_flag[p] & FW_ARMED) || fw_stamp[p] > since) return 0;
++    }
++    return 1;
++}
++static void fw_stats(uint64_t *faults, uint64_t *pages) { *faults = fw_faults; *pages = fw_pages; }
++/* The software watch has no protection, so its writer view is guest memory. */
++static uint8_t *fw_writer(uint32_t va, uint32_t bytes)
++{
++    return fw_covers(va, bytes) ? ram + va : NULL;
++}
++static uint64_t fw_wrote(const GwwRange *r, int n, uint64_t prior, int *still)
++{
++    int i; unsigned p, a, b;
++    *still = 1;
++    for (i = 0; i < n; ++i) {
++        if (!fw_span(r[i].va, r[i].bytes, &a, &b)) { *still = 0; continue; }
++        for (p = a; p <= b; ++p)
++            if (!(fw_flag[p] & FW_ARMED) || fw_stamp[p] > prior) *still = 0;
++        for (p = a; p <= b; ++p) fw_stamp[p] = ++fw_clock;
++    }
++    return fw_clock;
++}
++static const GwwOps fw_ops = { fw_covers, fw_arm, fw_clean, fw_stats, fw_writer, fw_wrote };
++
++static void watch_write(uint32_t va, uint32_t value)
++{
++    unsigned p, a, b;
++    if (fw_span(va, 4, &a, &b))
++        for (p = a; p <= b; ++p) {
++            if (fw_flag[p] & FW_ARMED) { fw_flag[p] &= ~FW_ARMED; ++fw_faults; }
++            fw_stamp[p] = ++fw_clock;
++        }
++    memcpy(ram + va, &value, 4);
++}
++
++static uint32_t guest_word(uint32_t va)
++{
++    uint32_t v;
++    memcpy(&v, (const uint8_t *)xbox_GetMemoryOffset() + va, 4);
++    return v;
++}
++
++/* One kick's sync of s. Returns whether the guest bytes were hashed. */
++static int synced_with_hash(Surface *s)
++{
++    uint64_t before = s_prof_sync_bytes;
++    nv2a_d3d_kick();
++    surface_sync(s, 0);
++    return s_prof_sync_bytes != before;
++}
++
++static void write_back_all(void)
++{
++    writeback_surfaces();
++    CHECK(writeback_finish(1));
++}
++
++static void test_watch_fake(void)
++{
++    Surface *a, *c, *p, *q, *z;
++    uint32_t gen, i;
++    uint64_t kept;
++    s_prof_on = 1;
++    nv2a_d3d_set_write_watch(&fw_ops);
++
++    a = surface_get(FW_BASE, 32 * 4, 8, 32, 16, 0);
++    CHECK(a && a->watch_ok);
++    gen = a->gen;
++    CHECK(!synced_with_hash(a) && a->gen == gen && s_prof_sync_watch_clean == 1);
++    /* Write-back stores through the writer view and keeps the snapshot. */
++    clear_gpu(a);
++    kept = s_prof_wb_watch_kept;
++    write_back_all();
++    CHECK(s_prof_wb_watch_kept == kept + 1 && (guest_word(a->va) & 0xFFFFFFu) == 0xFF0000u);
++    CHECK(!synced_with_hash(a) && a->gen == gen);
++    /* A CPU write after write-back is caught and uploaded. */
++    watch_write(a->va + 5 * a->pitch + 3 * 4, 0xFF00FF00u);
++    CHECK(synced_with_hash(a) && a->gen == gen + 1 && pixel(a, 3, 5) == 0xFF00FF00u);
++    CHECK(!synced_with_hash(a) && a->gen == gen + 1);
++    /* Before the next write-back the CPU writes again: write-back skips that
++     * row (the title's write wins) and the surface must re-read. */
++    clear_gpu(a);
++    watch_write(a->va + 2 * a->pitch, 0xFF0000FFu);
++    write_back_all();
++    CHECK(guest_word(a->va + 2 * a->pitch) == 0xFF0000FFu);
++    CHECK(synced_with_hash(a) && pixel(a, 0, 2) == 0xFF0000FFu);
++    puts("PASS: unwritten targets skip the sync hash; write-back keeps that; CPU writes are caught");
++
++    /* Swizzled targets: the raw check is skipped the same way. */
++    c = surface_get(FW_BASE + 0x8000, 32 * 4, 8, 32, 16, 1);
++    CHECK(c && c->watch_ok);
++    gen = c->gen;
++    CHECK(!synced_with_hash(c) && c->gen == gen);
++    watch_write(c->va + 4 * (3 + 8 + 48), 0xFF0000FFu);       /* Morton (5,7) */
++    CHECK(synced_with_hash(c) && c->gen == gen + 1 && pixel(c, 5, 7) == 0xFF0000FFu);
++    CHECK(!synced_with_hash(c));
++    puts("PASS: swizzled targets skip unwritten syncs and catch CPU writes");
++
++    /* Two targets on one page: one's write-back re-reads the other, which
++     * finds its own bytes unchanged. */
++    p = surface_get(FW_BASE + 0x10000, 8 * 4, 8, 8, 4, 0);
++    q = surface_get(FW_BASE + 0x10200, 8 * 4, 8, 8, 4, 0);
++    CHECK(p && q && p->watch_ok && q->watch_ok);
++    CHECK(!synced_with_hash(p) && !synced_with_hash(q));
++    clear_gpu(p);
++    write_back_all();
++    gen = q->gen;
++    CHECK(!synced_with_hash(p));
++    CHECK(synced_with_hash(q) && q->gen == gen);
++    CHECK(!synced_with_hash(q));
++    watch_write(q->va + 4, 0xFF123456u);
++    CHECK(synced_with_hash(p) && synced_with_hash(q) && q->gen == gen + 1);
++    puts("PASS: targets sharing a page re-read after each other's write-back and CPU writes");
++
++    /* A writer the stamps cannot see: verify mode hashes, uploads like no
++     * watch and reports it. */
++    {
++        uint32_t v = 0xFF445566u;
++        memcpy(ram + a->va + 9 * a->pitch, &v, 4);
++        gen = a->gen;
++        CHECK(!synced_with_hash(a) && a->gen == gen);          /* normal mode keeps it */
++        s_watch_verify = 1;
++        CHECK(synced_with_hash(a) && a->gen == gen + 1 && s_watch_missed == 1);
++        CHECK(pixel(a, 0, 9) == v);
++        CHECK(synced_with_hash(a) && s_watch_missed == 1);     /* re-armed, consistent */
++        s_watch_verify = 0;
++    }
++    puts("PASS: verify mode hashes clean targets and reports a write the stamps missed");
++
++    /* Written on WATCH_STOP consecutive syncs: hashed for a while. */
++    for (i = 0; i < WATCH_STOP; ++i) {
++        watch_write(a->va + 4 * i, 0xFF000000u + i);
++        CHECK(synced_with_hash(a));
++    }
++    CHECK(!a->watch_ok && a->watch_retry);
++    CHECK(synced_with_hash(a) && synced_with_hash(a));
++    s_epoch += WATCH_RETRY_KICKS;
++    surface_sync(a, 0);
++    CHECK(a->watch_ok && !synced_with_hash(a));
++    puts("PASS: a target written on 8 syncs in a row is hashed until its retry kick");
++
++    /* Outside the watched window: every kick hashes, as without a watch. */
++    z = surface_get(0x20000, 32 * 4, 8, 32, 16, 0);
++    CHECK(z && !z->watch_ok && synced_with_hash(z) && synced_with_hash(z));
++    nv2a_d3d_set_write_watch(NULL);
++    CHECK(synced_with_hash(a) && synced_with_hash(a));
++    puts("PASS: low-RAM targets and a missing watch hash at every kick");
++}
++
++static void test_watch_real(void)
++{
++    const uint32_t base = 0x100000u;
++    HANDLE section = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 64 * 4096, NULL);
++    uint8_t *view, *alias;
++    Surface *a, *c;
++    uint64_t f0, f1;
++    uint32_t gen;
++    CHECK(section);
++    view = (uint8_t *)MapViewOfFile(section, FILE_MAP_ALL_ACCESS, 0, 0, 64 * 4096);
++    alias = (uint8_t *)MapViewOfFile(section, FILE_MAP_ALL_ACCESS, 0, 0, 64 * 4096);
++    CHECK(view && alias);
++    s_test_offset = (ptrdiff_t)view - (ptrdiff_t)base;
++    CHECK(gww_init(base, view, 64 * 4096, alias, 64 * 4096, section));
++    nv2a_d3d_set_write_watch(gww_ops());
++    s_prof_on = 1;
++
++    a = surface_get(base, 32 * 4, 8, 32, 16, 0);
++    CHECK(a && a->watch_ok && !synced_with_hash(a));
++    clear_gpu(a);
++    writeback_surfaces();
++    gww_stats(&f0, NULL);
++    CHECK(writeback_finish(1));
++    gww_stats(&f1, NULL);
++    CHECK(f1 == f0 && (guest_word(base) & 0xFFFFFFu) == 0xFF0000u);   /* no faults */
++    CHECK(!synced_with_hash(a));                                      /* no re-hash */
++    gen = a->gen;
++    *(volatile uint32_t *)(alias + 5 * a->pitch + 12) = 0xFF00FF00u;  /* CPU, via the alias */
++    gww_stats(&f1, NULL);
++    CHECK(f1 == f0 + 1);
++    CHECK(synced_with_hash(a) && a->gen == gen + 1 && pixel(a, 3, 5) == 0xFF00FF00u);
++    CHECK(!synced_with_hash(a));
++
++    c = surface_get(base + 0x8000, 32 * 4, 8, 32, 16, 1);
++    CHECK(c && c->watch_ok && !synced_with_hash(c));
++    gen = c->gen;
++    *(volatile uint32_t *)(view + 0x8000 + 4 * (3 + 8 + 48)) = 0xFF0000FFu;
++    CHECK(synced_with_hash(c) && c->gen == gen + 1 && pixel(c, 5, 7) == 0xFF0000FFu);
++    puts("PASS: real watch: write-back through the writer view neither faults nor re-hashes; CPU writes are caught");
 +}
 diff --git a/tests/nv2a_targets/test_targets.c b/tests/nv2a_targets/test_targets.c
 index 9ba2f392667b566216df2fdad94f21405047a786..9c5a4d3115fee7167ef50927c53501572e81dc6a 100644
