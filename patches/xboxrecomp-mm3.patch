@@ -4549,7 +4549,7 @@ index 62c36eed48afe18be19fc317e745e1cac0387070..b28bc91c3a03c00a94f725cbf92d6ebe
      /* Transfers above have completed; polling never manufactures completion. */
      if (s->next_block & NODE_POINTER_EOL) {
 diff --git a/src/apu/dsp/interp/dsp_cpu.c b/src/apu/dsp/interp/dsp_cpu.c
-index 012a67b869c756061090a3e4c196d9a42c869c27..536ee772ab6983dcbc33cb7b8160151cd8ba8090 100644
+index 012a67b869c756061090a3e4c196d9a42c869c27..cc9fdab1197012b4f525bb42eeaeab4263cf2b87 100644
 --- a/src/apu/dsp/interp/dsp_cpu.c
 +++ b/src/apu/dsp/interp/dsp_cpu.c
 @@ -45,6 +45,15 @@
@@ -4896,11 +4896,18 @@ index 012a67b869c756061090a3e4c196d9a42c869c27..536ee772ab6983dcbc33cb7b8160151c
      if (source1 & (1<<23)) {
          signe ^= 1;
          source1 = (1<<24) - source1;
-@@ -1418,56 +1527,15 @@ static void dsp_mul56(uint32_t source1, uint32_t source2, uint32_t *dest, uint8_
+@@ -1418,66 +1527,32 @@ static void dsp_mul56(uint32_t source1, uint32_t source2, uint32_t *dest, uint8_
          signe ^= 1;
          source2 = (1<<24) - source2;
      }
--
++    uint64_t product = ((uint64_t)(source1 & BITMASK(24)) * (source2 & BITMASK(24))) << 1;
++    if (signe)
++        product = (0 - product) & ((UINT64_C(1) << 56) - 1);
++    dest[0] = (uint32_t)(product >> 48) & BITMASK(8);
++    dest[1] = (uint32_t)(product >> 24) & BITMASK(24);
++    dest[2] = (uint32_t)product & BITMASK(24);
++}
+ 
 -    /* bits 0-11 * bits 0-11 */
 -    part[0]=(source1 & BITMASK(12))*(source2 & BITMASK(12));
 -    /* bits 12-23 * bits 0-11 */
@@ -4947,23 +4954,186 @@ index 012a67b869c756061090a3e4c196d9a42c869c27..536ee772ab6983dcbc33cb7b8160151c
 -        dest[1] = zerodest[1];
 -        dest[2] = zerodest[2];
 -    }
-+    uint64_t product = ((uint64_t)(source1 & BITMASK(24)) * (source2 & BITMASK(24))) << 1;
-+    if (signe)
-+        product = (0 - product) & ((UINT64_C(1) << 56) - 1);
-+    dest[0] = (uint32_t)(product >> 48) & BITMASK(8);
-+    dest[1] = (uint32_t)(product >> 24) & BITMASK(24);
-+    dest[2] = (uint32_t)product & BITMASK(24);
++static DSP_PREAD_INLINE void dsp_rnd56_sr(uint32_t sr, uint32_t *dest);
++static DSP_PREAD_INLINE void dsp_rnd56(dsp_core_t* dsp, uint32_t *dest)
++{
++    dsp_rnd56_sr(dsp->registers[DSP_REG_SR], dest);
  }
  
 -static void dsp_rnd56(dsp_core_t* dsp, uint32_t *dest)
-+static DSP_PREAD_INLINE void dsp_rnd56(dsp_core_t* dsp, uint32_t *dest)
++/* Rounding under the mode bits of sr (shared with the compiled programs). */
++static DSP_PREAD_INLINE void dsp_rnd56_sr(uint32_t sr, uint32_t *dest)
  {
-     unsigned width = (dsp->registers[DSP_REG_SR] & (1u << DSP_SR_SA)) ? 16 : 24;
+-    unsigned width = (dsp->registers[DSP_REG_SR] & (1u << DSP_SR_SA)) ? 16 : 24;
++    unsigned width = (sr & (1u << DSP_SR_SA)) ? 16 : 24;
      unsigned padding = 24 - width;
-@@ -1490,3 +1558,166 @@ static uint32_t dsp_signextend(int bits, uint32_t v) {
+-    unsigned position = (dsp->registers[DSP_REG_SR] & (1u << DSP_SR_S0)) ? width :
+-                        (dsp->registers[DSP_REG_SR] & (1u << DSP_SR_S1)) ? width - 2 : width - 1;
++    unsigned position = (sr & (1u << DSP_SR_S0)) ? width :
++                        (sr & (1u << DSP_SR_S1)) ? width - 2 : width - 1;
+     uint64_t value = ((uint64_t)dest[0] << (2*width)) |
+                      ((uint64_t)(dest[1] >> padding) << width) | (dest[2] >> padding);
+     uint64_t low_mask = (1ULL << (position + 1)) - 1;
+     value += 1ULL << position;
+-    if (!(dsp->registers[DSP_REG_SR] & (1u << 21)) && !(value & low_mask))
++    if (!(sr & (1u << 21)) && !(value & low_mask))
+         value &= ~(1ULL << (position + 1));
+     value &= ~low_mask;
+     dest[0] = (uint32_t)(value >> (2*width)) & 0xff;
+@@ -1490,3 +1565,354 @@ static uint32_t dsp_signextend(int bits, uint32_t v) {
      assert(shift > 0);
      return (uint32_t)(((int32_t)v << shift) >> shift);
  }
++
++/**********************************
++ *  Compiled-program register operations
++ **********************************/
++
++/* tools/dsp_recomp's specialised blocks keep registers in C locals and run
++ * only while SA, SC and bit 21 are clear (DSP_RB_MODE_MASK); the scaling
++ * mode S1:S0 is read as the interpreter reads it. These are the
++ * interpreter's accumulator read and ALU operations for that mode, built
++ * from the same primitives (dsp_add56, dsp_sub56, dsp_mul56, dsp_rnd56_sr,
++ * dsp_ccr_e_u_n_z, dsp_calc_cc); dsp_recomp_gen compares each with the
++ * interpreter's own function on random states before it uses it. */
++#define DSP_RB_MODE_MASK ((1u << DSP_SR_SA) | (1u << DSP_SR_SC) | (1u << 21))
++#define DSP_RB_SCALING(sr) (((sr) >> DSP_SR_S0) & 3)
++
++/* dsp_ccr_e_u_n_z for that mode, without its data-dependent branches
++ * (audio data makes them unpredictable) when nothing is scaled: the same
++ * expressions as flags. Scaled modes take dsp_ccr_e_u_n_z itself. */
++static DSP_PREAD_INLINE uint32_t dsp_rb_ccr(uint32_t sr, uint32_t reg0, uint32_t reg1, uint32_t reg2)
++{
++    if (DSP_RB_SCALING(sr)) return dsp_ccr_e_u_n_z(sr, reg0, reg1, reg2);
++    uint32_t value_e = (reg0 << 1) + (reg1 >> 23);
++    uint32_t top = reg1 & 0xc00000;
++    sr &= ~(((1u << DSP_SR_E) | (1u << DSP_SR_U) | (1u << DSP_SR_N) | (1u << DSP_SR_Z)));
++    sr |= (uint32_t)((value_e != 0) & (value_e != BITMASK(9))) << DSP_SR_E;
++    sr |= (uint32_t)((top == 0) | (top == 0xc00000)) << DSP_SR_U;
++    sr |= (uint32_t)((reg1 == 0) & (reg2 == 0) & (reg0 == 0)) << DSP_SR_Z;
++    sr |= (reg0 >> 4) & 0x8;
++    return sr;
++}
++
++/* dsp_rnd56_sr for that mode: without scaling (24-bit words, convergent)
++ * branch-free, otherwise dsp_rnd56_sr itself. */
++static DSP_PREAD_INLINE void dsp_rb_rnd(uint32_t sr, uint32_t *dest)
++{
++    if (DSP_RB_SCALING(sr)) { dsp_rnd56_sr(sr, dest); return; }
++    const uint64_t low_mask = (1ULL << 24) - 1;
++    uint64_t value = ((uint64_t)dest[0] << 48) | ((uint64_t)dest[1] << 24) | dest[2];
++    value += 1ULL << 23;
++    value &= ~((uint64_t)((value & low_mask) == 0) << 24);
++    value &= ~low_mask;
++    dest[0] = (uint32_t)(value >> 48) & 0xff;
++    dest[1] = (uint32_t)(value >> 24) & BITMASK(24);
++    dest[2] = (uint32_t)value & BITMASK(24);
++}
++
++/* dsp_mul56 for 24-bit operands as one signed multiply; anything wider
++ * takes dsp_mul56 itself. */
++static DSP_PREAD_INLINE void dsp_rb_mul56(uint32_t s1, uint32_t s2, uint32_t *dest, unsigned negative)
++{
++    if ((s1 | s2) & 0xff000000) {
++        dsp_mul56(s1, s2, dest, (uint8_t)negative);
++        return;
++    }
++    int64_t product = (int64_t)((int32_t)(s1 << 8) >> 8) * ((int32_t)(s2 << 8) >> 8);
++    if (negative) product = -product;
++    uint64_t value = ((uint64_t)product << 1) & ((UINT64_C(1) << 56) - 1);
++    dest[0] = (uint32_t)(value >> 48) & BITMASK(8);
++    dest[1] = (uint32_t)(value >> 24) & BITMASK(24);
++    dest[2] = (uint32_t)value & BITMASK(24);
++}
++
++/* emu_pm_read_accu24 outside SA: the scaled, limited 24-bit value. */
++static DSP_PREAD_INLINE uint32_t dsp_rb_accu24(uint32_t a2, uint32_t a1, uint32_t a0, uint32_t *sr)
++{
++    uint32_t value = (a2 << 24) + a1;
++    switch (DSP_RB_SCALING(*sr)) {
++    case 1: value >>= 1; break;
++    case 2: value <<= 1; value |= (a0 >> 23) & 1; break;
++    }
++    value &= BITMASK(24);
++    if (a2 == 0 && value <= 0x007fffff) return value;
++    if (a2 == 0xff && value >= 0x00800000) return value;
++    *sr |= 1u << DSP_SR_L;
++    return (a2 & (1 << 7)) ? 0x00800000 : 0x007fffff;
++}
++
++/* ADD/SUB/CMP of a 24-bit register to an accumulator. */
++static DSP_PREAD_INLINE void dsp_rb_add(uint32_t *a2, uint32_t *a1, uint32_t *a0, uint32_t s,
++                                        int subtract, int store, uint32_t *sr)
++{
++    uint32_t source[3], dest[3];
++    source[2] = 0;
++    source[1] = s;
++    source[0] = s & (1<<23) ? 0xff : 0x0;
++    dest[0] = *a2; dest[1] = *a1; dest[2] = *a0;
++    uint16_t newsr = subtract ? dsp_sub56(source, dest) : dsp_add56(source, dest);
++    if (store) { *a2 = dest[0]; *a1 = dest[1]; *a0 = dest[2]; }
++    *sr = dsp_rb_ccr(*sr, dest[0], dest[1], dest[2]);
++    *sr &= ~((1u << DSP_SR_V) | (1u << DSP_SR_C));
++    *sr |= newsr;
++}
++
++/* MPY/MPYR/MAC/MACR of two 24-bit registers. */
++static DSP_PREAD_INLINE void dsp_rb_mul(uint32_t *a2, uint32_t *a1, uint32_t *a0, uint32_t s1, uint32_t s2,
++                                        unsigned negative, int accumulate, int round, uint32_t *sr)
++{
++    uint32_t source[3], dest[3];
++    dsp_rb_mul56(s1, s2, source, negative);
++    if (!accumulate) {
++        if (round) dsp_rb_rnd(*sr, source);
++        *a2 = source[0]; *a1 = source[1]; *a0 = source[2];
++        *sr = dsp_rb_ccr(*sr, source[0], source[1], source[2]);
++        *sr &= ~(1u << DSP_SR_V);
++        return;
++    }
++    dest[0] = *a2; dest[1] = *a1; dest[2] = *a0;
++    uint16_t newsr = dsp_add56(source, dest);
++    if (round) dsp_rb_rnd(*sr, dest);
++    *a2 = dest[0]; *a1 = dest[1]; *a0 = dest[2];
++    *sr = dsp_rb_ccr(*sr, dest[0], dest[1], dest[2]);
++    *sr &= ~(1u << DSP_SR_V);
++    *sr |= newsr & 0xfe;
++}
++
++static DSP_PREAD_INLINE void dsp_rb_clr(uint32_t *a2, uint32_t *a1, uint32_t *a0, uint32_t *sr)
++{
++    *a2 = *a1 = *a0 = 0;
++    *sr &= ~((1u << DSP_SR_E) | (1u << DSP_SR_N) | (1u << DSP_SR_V));
++    *sr |= (1u << DSP_SR_U) | (1u << DSP_SR_Z);
++}
++
++static DSP_PREAD_INLINE void dsp_rb_tst(uint32_t a2, uint32_t a1, uint32_t a0, uint32_t *sr)
++{
++    *sr = dsp_rb_ccr(*sr, a2, a1, a0);
++    *sr &= ~(1u << DSP_SR_V);
++}
++
++static DSP_PREAD_INLINE void dsp_rb_tfr(uint32_t *a2, uint32_t *a1, uint32_t *a0, uint32_t s)
++{
++    *a0 = 0;
++    *a1 = s;
++    *a2 = (s & (1<<23)) ? 0xff : 0x0;
++}
++
++/* CMPM: magnitudes compared. */
++static DSP_PREAD_INLINE void dsp_rb_cmpm(uint32_t a2, uint32_t a1, uint32_t a0, uint32_t s, uint32_t *sr)
++{
++    uint32_t source[3], dest[3];
++    dest[0] = a2; dest[1] = a1; dest[2] = a0;
++    dsp_abs56(dest);
++    source[2] = 0;
++    source[1] = s;
++    source[0] = s & (1<<23) ? 0xff : 0x0;
++    dsp_abs56(source);
++    uint16_t newsr = dsp_sub56(source, dest);
++    *sr = dsp_rb_ccr(*sr, dest[0], dest[1], dest[2]);
++    *sr &= ~((1u << DSP_SR_V) | (1u << DSP_SR_C));
++    *sr |= newsr;
++}
 +
 +/**********************************
 + *  Recompiled programs
@@ -5017,7 +5187,10 @@ index 012a67b869c756061090a3e4c196d9a42c869c27..536ee772ab6983dcbc33cb7b8160151c
 + * Inside a block only the PC-independent state is written; DSP_RB_SAVE
 + * stores the rest -- PC, the last instruction's words and fixed cycles, the
 + * accumulated cycle count -- where the block is left. Instructions that may
-+ * write X memory are followed by the idle/DMA stop test (a peripheral). */
++ * write X memory are followed by the idle/DMA stop test (a peripheral).
++ * Blocks with specialised instructions also hold X0..M7 and SR in locals
++ * from their entry (after a check of the mode the code assumes) and store
++ * them back wherever the block is left or a handler runs. */
 +#if defined(_MSC_VER)
 +__declspec(noinline)
 +#elif defined(__GNUC__) || defined(__clang__)
@@ -5073,6 +5246,41 @@ index 012a67b869c756061090a3e4c196d9a42c869c27..536ee772ab6983dcbc33cb7b8160151c
 +#define DSP_RB_LOOP_AGAIN(H, PRE) dsp_rb_loop_again(dsp, H, used + cyc + (PRE) < budget)
 +#define DSP_RB_LOOP_AGAIN_X(H, PRE) \
 +    dsp_rb_loop_again(dsp, H, used + cyc + (PRE) < budget && !DSP_RB_PERIPHERAL_STOP)
++/* DSP_RECOMP_STEP for a REP: the same, but it does not stop for the REP
++ * itself (loop_rep), so the block code may repeat the next word natively. */
++#define DSP_RB_REP_STEP(W, CALL) do { \
++        dsp->disasm_memory_ptr = 0; \
++        dsp->cur_inst = (W); \
++        dsp->cur_inst_len = 1; \
++        dsp->instr_cycle = 2; \
++        CALL; \
++        if (dsp->loop_rep) { \
++            dsp_postexecute_update_pc(dsp); \
++        } else { \
++            dsp->pc += dsp->cur_inst_len; \
++            if ((dsp->registers[DSP_REG_SR] & (1u << DSP_SR_LF)) && \
++                dsp->pc == dsp->registers[DSP_REG_LA] + 1) \
++                dsp_do_loop_end(dsp); \
++        } \
++        if (dsp->interrupt_counter || dsp->interrupt_state == DSP_INTERRUPT_DISABLED) \
++            dsp_postexecute_interrupts(dsp); \
++        dsp->num_inst += dsp->instr_cycle; \
++        dsp->cycle_count += dsp->instr_cycle; \
++        used += dsp->instr_cycle; \
++    } while (0)
++/* The repeated instruction X (at X, first of its block, CYC fixed cycles,
++ * PRE its block's DSP_RB_ENTER budget) runs natively when nothing else
++ * would happen between its repetitions: no stop, no pending interrupt (REP
++ * holds them), no DO loop ending at X, and every repetition and the block's
++ * remainder within the budget. The count is LC as REP left it. */
++#define DSP_RB_REP_READY(X, H, E, PROG, MARK, CYC, PRE) \
++    (dsp->loop_rep == 1 && dsp->pc == (X) && !dsp->is_waiting && !dsp->is_stopped && \
++     !dsp->is_debugging && !dsp->is_idle && !(*dma_control & dma_running) && \
++     !dsp->interrupt_counter && dsp->interrupt_state != DSP_INTERRUPT_DISABLED && \
++     (uint64_t)used + (uint64_t)(dsp->registers[DSP_REG_LC] - 1) * (CYC) + (PRE) < (uint64_t)budget && \
++     (dsp->pram_opcache[H] == &dsp_recomp_marks[PROG][MARK] || \
++      dsp_rb_verify(dsp, (PROG) ? dsp_rb_ep_image : dsp_rb_gp_image, H, E, &dsp_recomp_marks[PROG][MARK])) && \
++     (!(dsp->registers[DSP_REG_SR] & (1u << DSP_SR_LF)) || dsp->registers[DSP_REG_LA] + 1 != (X)))
 +#define DSP_RB_LOOP_END() do { \
 +        dsp_do_loop_end(dsp); \
 +        if (dsp->interrupt_counter || dsp->interrupt_state == DSP_INTERRUPT_DISABLED) \
@@ -5141,7 +5349,7 @@ index 923c204b95b147ec9afc741069856232f95a7d6a..d7482ea546209337595c3ca79187b2e7
  uint32_t dsp56k_read_memory(dsp_core_t* dsp, int space, uint32_t address);
  void dsp56k_write_memory(dsp_core_t* dsp, int space, uint32_t address, uint32_t value);
 diff --git a/src/apu/dsp/interp/dsp_emu.c.inc b/src/apu/dsp/interp/dsp_emu.c.inc
-index cc45f27..fda540f 100644
+index cc45f279c0ea5d0e2d207360bddf5f965b0a585c..331c24b9206ab691ef6d16df66ef38a55f45e820 100644
 --- a/src/apu/dsp/interp/dsp_emu.c.inc
 +++ b/src/apu/dsp/interp/dsp_emu.c.inc
 @@ -87,7 +87,7 @@ static void emu_update_rn_modulo(dsp_core_t* dsp, uint32_t numreg, int32_t modif
@@ -5173,16 +5381,197 @@ index cc45f27..fda540f 100644
  {
      uint32_t value, numreg, curreg;
  
-@@ -255,7 +266,7 @@ static int emu_calc_cc(dsp_core_t* dsp, uint32_t cc_code)
+@@ -180,73 +191,79 @@ static int emu_calc_ea(dsp_core_t* dsp, uint32_t ea_mode, uint32_t *dst_addr)
+  *  Condition code test
+  **********************************/
+ 
+-static int emu_calc_cc(dsp_core_t* dsp, uint32_t cc_code)
++/* Condition codes of an SR value (shared with the compiled programs). */
++static DSP_PREAD_INLINE int dsp_calc_cc(uint32_t sr, uint32_t cc_code)
+ {
+     uint16_t value1, value2, value3;
+ 
+     switch (cc_code) {
+         case 0:  /* CC (HS) */
+-            value1 = dsp->registers[DSP_REG_SR] & (1<<DSP_SR_C);
++            value1 = sr & (1<<DSP_SR_C);
+             return (value1==0);
+         case 1: /* GE */
+-            value1 = (dsp->registers[DSP_REG_SR] >> DSP_SR_N) & 1;
+-            value2 = (dsp->registers[DSP_REG_SR] >> DSP_SR_V) & 1;
++            value1 = (sr >> DSP_SR_N) & 1;
++            value2 = (sr >> DSP_SR_V) & 1;
+             return ((value1 ^ value2) == 0);
+         case 2: /* NE */
+-            value1 = dsp->registers[DSP_REG_SR] & (1<<DSP_SR_Z);
++            value1 = sr & (1<<DSP_SR_Z);
+             return (value1==0);
+         case 3: /* PL */
+-            value1 = dsp->registers[DSP_REG_SR] & (1<<DSP_SR_N);
++            value1 = sr & (1<<DSP_SR_N);
+             return (value1==0);
+         case 4: /* NN */
+-            value1 = (dsp->registers[DSP_REG_SR] >> DSP_SR_Z) & 1;
+-            value2 = (~(dsp->registers[DSP_REG_SR] >> DSP_SR_U)) & 1;
+-            value3 = (~(dsp->registers[DSP_REG_SR] >> DSP_SR_E)) & 1;
++            value1 = (sr >> DSP_SR_Z) & 1;
++            value2 = (~(sr >> DSP_SR_U)) & 1;
++            value3 = (~(sr >> DSP_SR_E)) & 1;
+             return ((value1 | (value2 & value3)) == 0);
+         case 5: /* EC */
+-            value1 = dsp->registers[DSP_REG_SR] & (1<<DSP_SR_E);
++            value1 = sr & (1<<DSP_SR_E);
+             return (value1==0);
+         case 6: /* LC */
+-            value1 = dsp->registers[DSP_REG_SR] & (1<<DSP_SR_L);
++            value1 = sr & (1<<DSP_SR_L);
+             return (value1==0);
+         case 7: /* GT */
+-            value1 = (dsp->registers[DSP_REG_SR] >> DSP_SR_N) & 1;
+-            value2 = (dsp->registers[DSP_REG_SR] >> DSP_SR_V) & 1;
+-            value3 = (dsp->registers[DSP_REG_SR] >> DSP_SR_Z) & 1;
++            value1 = (sr >> DSP_SR_N) & 1;
++            value2 = (sr >> DSP_SR_V) & 1;
++            value3 = (sr >> DSP_SR_Z) & 1;
+             return ((value3 | (value1 ^ value2)) == 0);
+         case 8: /* CS (LO) */
+-            value1 = dsp->registers[DSP_REG_SR] & (1<<DSP_SR_C);
++            value1 = sr & (1<<DSP_SR_C);
+             return (value1==1);
+         case 9: /* LT */
+-            value1 = (dsp->registers[DSP_REG_SR] >> DSP_SR_N) & 1;
+-            value2 = (dsp->registers[DSP_REG_SR] >> DSP_SR_V) & 1;
++            value1 = (sr >> DSP_SR_N) & 1;
++            value2 = (sr >> DSP_SR_V) & 1;
+             return ((value1 ^ value2) == 1);
+         case 10: /* EQ */
+-            value1 = (dsp->registers[DSP_REG_SR] >> DSP_SR_Z) & 1;
++            value1 = (sr >> DSP_SR_Z) & 1;
+             return (value1==1);
+         case 11: /* MI */
+-            value1 = (dsp->registers[DSP_REG_SR] >> DSP_SR_N) & 1;
++            value1 = (sr >> DSP_SR_N) & 1;
+             return (value1==1);
+         case 12: /* NR */
+-            value1 = (dsp->registers[DSP_REG_SR] >> DSP_SR_Z) & 1;
+-            value2 = (~(dsp->registers[DSP_REG_SR] >> DSP_SR_U)) & 1;
+-            value3 = (~(dsp->registers[DSP_REG_SR] >> DSP_SR_E)) & 1;
++            value1 = (sr >> DSP_SR_Z) & 1;
++            value2 = (~(sr >> DSP_SR_U)) & 1;
++            value3 = (~(sr >> DSP_SR_E)) & 1;
+             return ((value1 | (value2 & value3)) == 1);
+         case 13: /* ES */
+-            value1 = (dsp->registers[DSP_REG_SR] >> DSP_SR_E) & 1;
++            value1 = (sr >> DSP_SR_E) & 1;
+             return (value1==1);
+         case 14: /* LS */
+-            value1 = (dsp->registers[DSP_REG_SR] >> DSP_SR_L) & 1;
++            value1 = (sr >> DSP_SR_L) & 1;
+             return (value1==1);
+         case 15: /* LE */
+-            value1 = (dsp->registers[DSP_REG_SR] >> DSP_SR_N) & 1;
+-            value2 = (dsp->registers[DSP_REG_SR] >> DSP_SR_V) & 1;
+-            value3 = (dsp->registers[DSP_REG_SR] >> DSP_SR_Z) & 1;
++            value1 = (sr >> DSP_SR_N) & 1;
++            value2 = (sr >> DSP_SR_V) & 1;
++            value3 = (sr >> DSP_SR_Z) & 1;
+             return ((value3 | (value1 ^ value2)) == 1);
+     }
+     return 0;
+ }
+ 
++static int emu_calc_cc(dsp_core_t* dsp, uint32_t cc_code)
++{
++    return dsp_calc_cc(dsp->registers[DSP_REG_SR], cc_code);
++}
++
+ /**********************************
+  *  Set/clear ccr bits
+  **********************************/
+@@ -255,69 +272,76 @@ static int emu_calc_cc(dsp_core_t* dsp, uint32_t cc_code)
  /* reg1 has bits 47..24 */
  /* reg2 has bits 23..0 */
  
 -static void emu_ccr_update_e_u_n_z(dsp_core_t* dsp, uint32_t reg0, uint32_t reg1, uint32_t reg2)
-+static DSP_PREAD_INLINE void emu_ccr_update_e_u_n_z(dsp_core_t* dsp, uint32_t reg0, uint32_t reg1, uint32_t reg2)
++/* The E, U, N and Z bits of SR for an accumulator value: the interpreter's
++ * ALU operations and the compiled programs (dsp_recomp) share this. */
++static DSP_PREAD_INLINE uint32_t dsp_ccr_e_u_n_z(uint32_t sr, uint32_t reg0, uint32_t reg1, uint32_t reg2)
  {
      uint32_t scaling, value_e, value_u;
  
-@@ -317,7 +328,7 @@ static void emu_ccr_update_e_u_n_z(dsp_core_t* dsp, uint32_t reg0, uint32_t reg1
+     /* SA arithmetic ignores the low byte of each data word. */
+-    if (dsp->registers[DSP_REG_SR] & (1u << DSP_SR_SA)) {
++    if (sr & (1u << DSP_SR_SA)) {
+         reg1 &= 0xffff00;
+         reg2 &= 0xffff00;
+     }
+ 
+     /* Initialize SR register */
+-    dsp->registers[DSP_REG_SR] &= ~(((1<<DSP_SR_E) | (1<<DSP_SR_U) | (1<<DSP_SR_N) | (1<<DSP_SR_Z)));
++    sr &= ~(((1<<DSP_SR_E) | (1<<DSP_SR_U) | (1<<DSP_SR_N) | (1<<DSP_SR_Z)));
+ 
+-    scaling = (dsp->registers[DSP_REG_SR]>>DSP_SR_S0) & BITMASK(2);
++    scaling = (sr>>DSP_SR_S0) & BITMASK(2);
+     switch(scaling) {
+         case 0:
+             /* Extension Bit (E) */
+             value_e = (reg0<<1) + (reg1>>23);
+             if ((value_e != 0) && (value_e != BITMASK(9)))
+-                dsp->registers[DSP_REG_SR] |= 1 << DSP_SR_E;
++                sr |= 1 << DSP_SR_E;
+ 
+             /* Unnormalized bit (U) */
+             if ((reg1 & 0xc00000) == 0 || (reg1 & 0xc00000) == 0xc00000)
+-                dsp->registers[DSP_REG_SR] |= 1 << DSP_SR_U;
++                sr |= 1 << DSP_SR_U;
+             break;
+         case 1:
+             /* Extension Bit (E) */
+             if ((reg0 != 0) && (reg0 != BITMASK(8)))
+-                dsp->registers[DSP_REG_SR] |= 1 << DSP_SR_E;
++                sr |= 1 << DSP_SR_E;
+ 
+             /* Unnormalized bit (U) */
+             value_u = ((reg0<<1) + (reg1>>23)) & 3;
+             if (value_u == 0 || value_u == 3)
+-                dsp->registers[DSP_REG_SR] |= 1 << DSP_SR_U;
++                sr |= 1 << DSP_SR_U;
+             break;
+         case 2:
+             /* Extension Bit (E) */
+             value_e = (reg0<<2) + (reg1>>22);
+             if ((value_e != 0) && (value_e != BITMASK(10)))
+-                dsp->registers[DSP_REG_SR] |= 1 << DSP_SR_E;
++                sr |= 1 << DSP_SR_E;
+ 
+             /* Unnormalized bit (U) */
+             if ((reg1 & 0x600000) == 0 || (reg1 & 0x600000) == 0x600000)
+-                dsp->registers[DSP_REG_SR] |= 1 << DSP_SR_U;
++                sr |= 1 << DSP_SR_U;
+             break;
+         default:
+-            return;
+-            break;
++            return sr;
+     }
+ 
+     /* Zero Flag (Z) */
+     if ((reg1 == 0) && (reg2 == 0) && (reg0 == 0))
+-        dsp->registers[DSP_REG_SR] |= 1 << DSP_SR_Z;
++        sr |= 1 << DSP_SR_Z;
+ 
+     /* Negative Flag (N) */
+-    dsp->registers[DSP_REG_SR] |= (reg0>>4) & 0x8;
++    sr |= (reg0>>4) & 0x8;
++    return sr;
++}
++
++static DSP_PREAD_INLINE void emu_ccr_update_e_u_n_z(dsp_core_t* dsp, uint32_t reg0, uint32_t reg1, uint32_t reg2)
++{
++    dsp->registers[DSP_REG_SR] = dsp_ccr_e_u_n_z(dsp->registers[DSP_REG_SR], reg0, reg1, reg2);
+ }
+ 
+ /**********************************
   *  ALU instructions
   **********************************/
  
@@ -5191,7 +5580,7 @@ index cc45f27..fda540f 100644
                                       uint32_t *dest, bool subtract, unsigned incoming)
  {
      if (!(dsp->registers[DSP_REG_SR] & (1u << DSP_SR_SA)))
-@@ -342,23 +353,23 @@ static uint16_t emu_arithmetic_shift(dsp_core_t* dsp, uint32_t *dest, bool left,
+@@ -342,23 +366,23 @@ static uint16_t emu_arithmetic_shift(dsp_core_t* dsp, uint32_t *dest, bool left,
  
  /* Width-aware wrappers: SA mode operates on the continuous 40-bit value
   * (DSP56300FM Rev. 5 section 3.4.2); normal mode keeps the 56-bit helpers. */
@@ -5219,7 +5608,7 @@ index cc45f27..fda540f 100644
  {
      return emu_add_sub_arithmetic(dsp, source, dest, true, 0);
  }
-@@ -5347,6 +5358,15 @@ static const emu_func_t opcodes_alu[256] = {
+@@ -5347,6 +5371,15 @@ static const emu_func_t opcodes_alu[256] = {
   *  ALU instructions
   **********************************/
  
@@ -5235,7 +5624,7 @@ index cc45f27..fda540f 100644
  static void emu_pm_0(dsp_core_t* dsp);
  static void emu_pm_1(dsp_core_t* dsp);
  static void emu_pm_2(dsp_core_t* dsp);
-@@ -5357,7 +5377,7 @@ static void emu_pm_4x(dsp_core_t* dsp);
+@@ -5357,7 +5390,7 @@ static void emu_pm_4x(dsp_core_t* dsp);
  static void emu_pm_5(dsp_core_t* dsp);
  static void emu_pm_8(dsp_core_t* dsp);
  
@@ -5244,7 +5633,7 @@ index cc45f27..fda540f 100644
  {
      uint32_t scaling, value, reg;
      int got_limited = 0;
-@@ -5438,16 +5458,16 @@ static int emu_pm_read_accu24(dsp_core_t* dsp, int numreg, uint32_t *dest)
+@@ -5438,16 +5471,16 @@ static int emu_pm_read_accu24(dsp_core_t* dsp, int numreg, uint32_t *dest)
      return got_limited;
  }
  
@@ -5265,7 +5654,7 @@ index cc45f27..fda540f 100644
  
      /* Save A or B */
      emu_pm_read_accu24(dsp, numreg, &save_accu);
-@@ -5456,10 +5476,10 @@ static void emu_pm_0(dsp_core_t* dsp)
+@@ -5456,10 +5489,10 @@ static void emu_pm_0(dsp_core_t* dsp)
      save_xy0 = dsp->registers[DSP_REG_X0+(memspace<<1)];
  
      /* Execute parallel instruction */
@@ -5278,7 +5667,7 @@ index cc45f27..fda540f 100644
  
      /* Move [x|y]0 to [A|B] */
      dsp->registers[DSP_REG_A0+numreg] = 0;
-@@ -5467,7 +5487,7 @@ static void emu_pm_0(dsp_core_t* dsp)
+@@ -5467,7 +5500,7 @@ static void emu_pm_0(dsp_core_t* dsp)
      dsp->registers[DSP_REG_A2+numreg] = save_xy0 & (1<<23) ? 0xff : 0x0;
  }
  
@@ -5287,7 +5676,7 @@ index cc45f27..fda540f 100644
  {
      uint32_t memspace, numreg1, numreg2, value, xy_addr, retour, save_1, save_2;
  /*
-@@ -5478,14 +5498,14 @@ static void emu_pm_1(dsp_core_t* dsp)
+@@ -5478,14 +5511,14 @@ static void emu_pm_1(dsp_core_t* dsp)
                          S1,D1       S2,y:ea
                          S1,D1       #xxxxxx,D2
  */
@@ -5305,7 +5694,7 @@ index cc45f27..fda540f 100644
              case 0: numreg1 = DSP_REG_Y0;   break;
              case 1: numreg1 = DSP_REG_Y1;   break;
              case 2: numreg1 = DSP_REG_A;    break;
-@@ -5493,7 +5513,7 @@ static void emu_pm_1(dsp_core_t* dsp)
+@@ -5493,7 +5526,7 @@ static void emu_pm_1(dsp_core_t* dsp)
          }
      } else {
          /* X: */
@@ -5314,7 +5703,7 @@ index cc45f27..fda540f 100644
              case 0: numreg1 = DSP_REG_X0;   break;
              case 1: numreg1 = DSP_REG_X1;   break;
              case 2: numreg1 = DSP_REG_A;    break;
-@@ -5501,12 +5521,12 @@ static void emu_pm_1(dsp_core_t* dsp)
+@@ -5501,12 +5534,12 @@ static void emu_pm_1(dsp_core_t* dsp)
          }
      }
  
@@ -5329,7 +5718,7 @@ index cc45f27..fda540f 100644
      } else {
          /* Read S1 */
          if ((numreg1==DSP_REG_A) || (numreg1==DSP_REG_B))
-@@ -5518,20 +5538,20 @@ static void emu_pm_1(dsp_core_t* dsp)
+@@ -5518,20 +5551,20 @@ static void emu_pm_1(dsp_core_t* dsp)
      /* S2 */
      if (memspace) {
          /* Y: */
@@ -5354,7 +5743,7 @@ index cc45f27..fda540f 100644
          /* Write D1 */
          if (numreg1 == DSP_REG_A) {
              dsp->registers[DSP_REG_A0] = 0x0;
-@@ -5547,21 +5567,21 @@ static void emu_pm_1(dsp_core_t* dsp)
+@@ -5547,21 +5580,21 @@ static void emu_pm_1(dsp_core_t* dsp)
      }       dsp->registers[numreg1] = save_1;
      } else {
          /* Read S1 */
@@ -5380,7 +5769,7 @@ index cc45f27..fda540f 100644
  {
      uint32_t dummy;
  /*
-@@ -5570,36 +5590,36 @@ static void emu_pm_2(dsp_core_t* dsp)
+@@ -5570,36 +5603,36 @@ static void emu_pm_2(dsp_core_t* dsp)
      0010 00ee eeed dddd S,D
      001d dddd iiii iiii #xx,D
  */
@@ -5428,7 +5817,7 @@ index cc45f27..fda540f 100644
  
      if ((srcreg == DSP_REG_A) || (srcreg == DSP_REG_B))
          /* Accu to register: limited 24 bits */
-@@ -5608,13 +5628,13 @@ static void emu_pm_2_2(dsp_core_t* dsp)
+@@ -5608,13 +5641,13 @@ static void emu_pm_2_2(dsp_core_t* dsp)
          save_reg = dsp_move_source(dsp, srcreg);
  
      /* Execute parallel instruction */
@@ -5444,7 +5833,7 @@ index cc45f27..fda540f 100644
  {
      uint32_t dstreg, srcvalue;
  /*
-@@ -5622,11 +5642,11 @@ static void emu_pm_3(dsp_core_t* dsp)
+@@ -5622,11 +5655,11 @@ static void emu_pm_3(dsp_core_t* dsp)
  */
  
      /* Execute parallel instruction */
@@ -5459,7 +5848,7 @@ index cc45f27..fda540f 100644
  
      switch(dstreg) {
          case DSP_REG_A0:
-@@ -5660,7 +5680,7 @@ static void emu_pm_3(dsp_core_t* dsp)
+@@ -5660,7 +5693,7 @@ static void emu_pm_3(dsp_core_t* dsp)
      }
  }
  
@@ -5468,7 +5857,7 @@ index cc45f27..fda540f 100644
  {
  /*
      0100 l0ll w0aa aaaa             l:aa,D
-@@ -5678,15 +5698,15 @@ static void emu_pm_4(dsp_core_t* dsp)
+@@ -5678,15 +5711,15 @@ static void emu_pm_4(dsp_core_t* dsp)
                          S,y:ea
                          #xxxxxx,D
  */
@@ -5488,7 +5877,7 @@ index cc45f27..fda540f 100644
  {
      uint32_t value, numreg, l_addr, save_lx, save_ly;
  /*
-@@ -5695,20 +5715,20 @@ static void emu_pm_4x(dsp_core_t* dsp)
+@@ -5695,20 +5728,20 @@ static void emu_pm_4x(dsp_core_t* dsp)
      0100 l0ll w1mm mrrr         l:ea,D
                      S,l:ea
  */
@@ -5516,7 +5905,7 @@ index cc45f27..fda540f 100644
      }
      else {
          /* Read S */
-@@ -5766,7 +5786,7 @@ static void emu_pm_4x(dsp_core_t* dsp)
+@@ -5766,7 +5799,7 @@ static void emu_pm_4x(dsp_core_t* dsp)
          }
      }
  
@@ -5525,7 +5914,7 @@ index cc45f27..fda540f 100644
          (dsp->registers[DSP_REG_SR] & (1u << DSP_SR_SA))) {
          unsigned reg = numreg & 1;
          uint64_t packed = ((uint64_t)(dsp->registers[DSP_REG_A2+reg] & 0xff) << 32) |
-@@ -5784,10 +5804,10 @@ static void emu_pm_4x(dsp_core_t* dsp)
+@@ -5784,10 +5817,10 @@ static void emu_pm_4x(dsp_core_t* dsp)
      }
  
      /* Execute parallel instruction */
@@ -5538,7 +5927,7 @@ index cc45f27..fda540f 100644
          /* Write D */
          switch(numreg) {
              case 0: /* A10 */
-@@ -5820,12 +5840,12 @@ static void emu_pm_4x(dsp_core_t* dsp)
+@@ -5820,12 +5853,12 @@ static void emu_pm_4x(dsp_core_t* dsp)
      }
      else {
          /* Read S */
@@ -5554,7 +5943,7 @@ index cc45f27..fda540f 100644
  {
      uint32_t memspace, numreg, value, xy_addr, retour;
  /*
-@@ -5841,25 +5861,25 @@ static void emu_pm_5(dsp_core_t* dsp)
+@@ -5841,25 +5874,25 @@ static void emu_pm_5(dsp_core_t* dsp)
                          #xxxxxx,D
  */
  
@@ -5587,7 +5976,7 @@ index cc45f27..fda540f 100644
      }
      else {
          /* Read S */
-@@ -5871,19 +5891,19 @@ static void emu_pm_5(dsp_core_t* dsp)
+@@ -5871,19 +5904,19 @@ static void emu_pm_5(dsp_core_t* dsp)
  
  
      /* Execute parallel instruction */
@@ -5611,7 +6000,7 @@ index cc45f27..fda540f 100644
  {
      uint32_t ea1, ea2;
      uint32_t numreg1, numreg2;
-@@ -5896,12 +5916,12 @@ static void emu_pm_8(dsp_core_t* dsp)
+@@ -5896,12 +5929,12 @@ static void emu_pm_8(dsp_core_t* dsp)
  */
      numreg1 = numreg2 = DSP_REG_NULL;
  
@@ -5627,7 +6016,7 @@ index cc45f27..fda540f 100644
      if ((ea1 & (1<<2))==0) {
          ea2 |= 1<<2;
      }
-@@ -5912,22 +5932,22 @@ static void emu_pm_8(dsp_core_t* dsp)
+@@ -5912,22 +5945,22 @@ static void emu_pm_8(dsp_core_t* dsp)
      emu_calc_ea(dsp, ea1, &x_addr);
      emu_calc_ea(dsp, ea2, &y_addr);
  
@@ -5654,7 +6043,7 @@ index cc45f27..fda540f 100644
      } else {
          /* Read S1 */
          if ((numreg1==DSP_REG_A) || (numreg1==DSP_REG_B))
-@@ -5936,9 +5956,9 @@ static void emu_pm_8(dsp_core_t* dsp)
+@@ -5936,9 +5969,9 @@ static void emu_pm_8(dsp_core_t* dsp)
              save_reg1 = dsp->registers[numreg1];
      }
  
@@ -5666,7 +6055,7 @@ index cc45f27..fda540f 100644
      } else {
          /* Read S2 */
          if ((numreg2==DSP_REG_A) || (numreg2==DSP_REG_B))
-@@ -5949,10 +5969,10 @@ static void emu_pm_8(dsp_core_t* dsp)
+@@ -5949,10 +5982,10 @@ static void emu_pm_8(dsp_core_t* dsp)
  
  
      /* Execute parallel instruction */
@@ -5679,7 +6068,7 @@ index cc45f27..fda540f 100644
          /* Write D1 */
          if (numreg1 == DSP_REG_A) {
              dsp->registers[DSP_REG_A0] = 0x0;
-@@ -5969,11 +5989,11 @@ static void emu_pm_8(dsp_core_t* dsp)
+@@ -5969,11 +6002,11 @@ static void emu_pm_8(dsp_core_t* dsp)
          }
      } else {
          /* Read S1 */
@@ -5693,7 +6082,7 @@ index cc45f27..fda540f 100644
          /* Write D2 */
          if (numreg2 == DSP_REG_A) {
              dsp->registers[DSP_REG_A0] = 0x0;
-@@ -5990,10 +6010,23 @@ static void emu_pm_8(dsp_core_t* dsp)
+@@ -5990,10 +6023,23 @@ static void emu_pm_8(dsp_core_t* dsp)
          }
      } else {
          /* Read S2 */
@@ -5718,7 +6107,7 @@ index cc45f27..fda540f 100644
  static const emu_func_t opcodes_parmove[16] = {
      emu_pm_0, emu_pm_1, emu_pm_2, emu_pm_3, emu_pm_4, emu_pm_5, emu_pm_5, emu_pm_5,
      emu_pm_8, emu_pm_8, emu_pm_8, emu_pm_8, emu_pm_8, emu_pm_8, emu_pm_8, emu_pm_8
-@@ -6239,14 +6272,14 @@ static void emu_bchg_aa(dsp_core_t* dsp)
+@@ -6239,14 +6285,14 @@ static void emu_bchg_aa(dsp_core_t* dsp)
      numbit = dsp->cur_inst & BITMASK(5);
  
      addr = value;
@@ -5735,7 +6124,7 @@ index cc45f27..fda540f 100644
  
      /* Set carry */
      dsp->registers[DSP_REG_SR] &= ~((1<<DSP_SR_C));
-@@ -6264,14 +6297,14 @@ static void emu_bchg_ea(dsp_core_t* dsp)
+@@ -6264,14 +6310,14 @@ static void emu_bchg_ea(dsp_core_t* dsp)
      numbit = dsp->cur_inst & BITMASK(5);
  
      emu_calc_ea(dsp, value, &addr);
@@ -5752,7 +6141,7 @@ index cc45f27..fda540f 100644
  
      /* Set carry */
      dsp->registers[DSP_REG_SR] &= ~((1<<DSP_SR_C));
-@@ -6290,14 +6323,14 @@ static void emu_bchg_pp(dsp_core_t* dsp)
+@@ -6290,14 +6336,14 @@ static void emu_bchg_pp(dsp_core_t* dsp)
  
      /* pp and qq differ only in the short I/O address bank. */
      addr = ((dsp->cur_inst & 0x080000) ? 0xffffc0 : 0xffff80) + value;
@@ -5769,7 +6158,7 @@ index cc45f27..fda540f 100644
  
      /* Set carry */
      dsp->registers[DSP_REG_SR] &= ~((1<<DSP_SR_C));
-@@ -6343,10 +6376,10 @@ static void emu_bclr_aa(dsp_core_t* dsp)
+@@ -6343,10 +6389,10 @@ static void emu_bclr_aa(dsp_core_t* dsp)
      addr = (dsp->cur_inst>>8) & BITMASK(6);
      numbit = dsp->cur_inst & BITMASK(5);
  
@@ -5782,7 +6171,7 @@ index cc45f27..fda540f 100644
  
      /* Set carry */
      dsp->registers[DSP_REG_SR] &= ~((1<<DSP_SR_C));
-@@ -6364,10 +6397,10 @@ static void emu_bclr_ea(dsp_core_t* dsp)
+@@ -6364,10 +6410,10 @@ static void emu_bclr_ea(dsp_core_t* dsp)
      numbit = dsp->cur_inst & BITMASK(5);
  
      emu_calc_ea(dsp, value, &addr);
@@ -5795,7 +6184,7 @@ index cc45f27..fda540f 100644
  
      /* Set carry */
      dsp->registers[DSP_REG_SR] &= ~((1<<DSP_SR_C));
-@@ -6386,10 +6419,10 @@ static void emu_bclr_pp(dsp_core_t* dsp)
+@@ -6386,10 +6432,10 @@ static void emu_bclr_pp(dsp_core_t* dsp)
  
      /* pp and qq differ only in the short I/O address bank. */
      addr = ((dsp->cur_inst & 0x080000) ? 0xffffc0 : 0xffff80) + value;
@@ -5808,7 +6197,7 @@ index cc45f27..fda540f 100644
  
      /* Set carry */
      dsp->registers[DSP_REG_SR] &= ~((1<<DSP_SR_C));
-@@ -6464,7 +6497,7 @@ static void emu_brclr_pp(dsp_core_t* dsp)
+@@ -6464,7 +6510,7 @@ static void emu_brclr_pp(dsp_core_t* dsp)
      uint32_t value = (dsp->cur_inst>>8) & BITMASK(6);
      uint32_t numbit = dsp->cur_inst & BITMASK(5);
      uint32_t addr = emu_bit_branch_address(dsp, value);
@@ -5817,7 +6206,7 @@ index cc45f27..fda540f 100644
  
      dsp->instr_cycle += 4;
  
-@@ -6513,7 +6546,7 @@ static void emu_brset_pp(dsp_core_t* dsp)
+@@ -6513,7 +6559,7 @@ static void emu_brset_pp(dsp_core_t* dsp)
      uint32_t value = (dsp->cur_inst>>8) & BITMASK(6);
      uint32_t numbit = dsp->cur_inst & BITMASK(5);
      uint32_t addr = emu_bit_branch_address(dsp, value);
@@ -5826,7 +6215,7 @@ index cc45f27..fda540f 100644
  
      dsp->instr_cycle += 4;
  
-@@ -6562,10 +6595,10 @@ static void emu_bset_aa(dsp_core_t* dsp)
+@@ -6562,10 +6608,10 @@ static void emu_bset_aa(dsp_core_t* dsp)
      numbit = dsp->cur_inst & BITMASK(5);
  
      addr = value;
@@ -5839,7 +6228,7 @@ index cc45f27..fda540f 100644
  
      /* Set carry */
      dsp->registers[DSP_REG_SR] &= ~((1<<DSP_SR_C));
-@@ -6634,10 +6667,10 @@ static void emu_bset_ea(dsp_core_t* dsp)
+@@ -6634,10 +6680,10 @@ static void emu_bset_ea(dsp_core_t* dsp)
      numbit = dsp->cur_inst & BITMASK(5);
  
      emu_calc_ea(dsp, value, &addr);
@@ -5852,7 +6241,7 @@ index cc45f27..fda540f 100644
  
      /* Set carry */
      dsp->registers[DSP_REG_SR] &= ~((1<<DSP_SR_C));
-@@ -6655,10 +6688,10 @@ static void emu_bset_pp(dsp_core_t* dsp)
+@@ -6655,10 +6701,10 @@ static void emu_bset_pp(dsp_core_t* dsp)
      numbit = dsp->cur_inst & BITMASK(5);
      /* pp and qq differ only in the short I/O address bank. */
      addr = ((dsp->cur_inst & 0x080000) ? 0xffffc0 : 0xffff80) + value;
@@ -5865,7 +6254,7 @@ index cc45f27..fda540f 100644
  
      /* Set carry */
      dsp->registers[DSP_REG_SR] &= ~((1<<DSP_SR_C));
-@@ -6701,7 +6734,7 @@ static void emu_btst_aa(dsp_core_t* dsp)
+@@ -6701,7 +6747,7 @@ static void emu_btst_aa(dsp_core_t* dsp)
      numbit = dsp->cur_inst & BITMASK(5);
  
      addr = value;
@@ -5874,7 +6263,7 @@ index cc45f27..fda540f 100644
      newcarry = (value>>numbit) & 1;
  
      /* Set carry */
-@@ -6720,7 +6753,7 @@ static void emu_btst_ea(dsp_core_t* dsp)
+@@ -6720,7 +6766,7 @@ static void emu_btst_ea(dsp_core_t* dsp)
      numbit = dsp->cur_inst & BITMASK(5);
  
      emu_calc_ea(dsp, value, &addr);
@@ -5883,7 +6272,7 @@ index cc45f27..fda540f 100644
      newcarry = (value>>numbit) & 1;
  
      /* Set carry */
-@@ -6740,7 +6773,7 @@ static void emu_btst_pp(dsp_core_t* dsp)
+@@ -6740,7 +6786,7 @@ static void emu_btst_pp(dsp_core_t* dsp)
  
      /* pp and qq differ only in the short I/O address bank. */
      addr = ((dsp->cur_inst & 0x080000) ? 0xffffc0 : 0xffff80) + value;
@@ -5892,7 +6281,7 @@ index cc45f27..fda540f 100644
      newcarry = (value>>numbit) & 1;
  
      /* Set carry */
-@@ -7010,7 +7043,7 @@ static void emu_do_aa(dsp_core_t* dsp)
+@@ -7010,7 +7056,7 @@ static void emu_do_aa(dsp_core_t* dsp)
  
      memspace = (dsp->cur_inst>>6) & 1;
      addr = (dsp->cur_inst>>8) & BITMASK(6);
@@ -5901,7 +6290,7 @@ index cc45f27..fda540f 100644
  
      emu_do_skip_empty(dsp);
      dsp->instr_cycle += 4;
-@@ -7051,7 +7084,7 @@ static void emu_do_ea(dsp_core_t* dsp)
+@@ -7051,7 +7097,7 @@ static void emu_do_ea(dsp_core_t* dsp)
      memspace = (dsp->cur_inst>>6) & 1;
      ea_mode = (dsp->cur_inst>>8) & BITMASK(6);
      emu_calc_ea(dsp, ea_mode, &addr);
@@ -5910,7 +6299,7 @@ index cc45f27..fda540f 100644
  
      emu_do_skip_empty(dsp);
      dsp->instr_cycle += 4;
-@@ -7280,8 +7313,8 @@ static void emu_vsl(dsp_core_t* dsp)
+@@ -7280,8 +7326,8 @@ static void emu_vsl(dsp_core_t* dsp)
      uint32_t address;
      int immediate = emu_calc_ea(dsp, (dsp->cur_inst >> 8) & 63, &address);
      assert(!immediate);
@@ -5921,7 +6310,7 @@ index cc45f27..fda540f 100644
                          ((low << 1) | ((dsp->cur_inst >> 4) & 1)) & 0xffffff);
  }
  
-@@ -7382,7 +7415,7 @@ static void emu_jclr_aa(dsp_core_t* dsp)
+@@ -7382,7 +7428,7 @@ static void emu_jclr_aa(dsp_core_t* dsp)
      memspace = (dsp->cur_inst>>6) & 1;
      addr = (dsp->cur_inst>>8) & BITMASK(6);
      numbit = dsp->cur_inst & BITMASK(5);
@@ -5930,7 +6319,7 @@ index cc45f27..fda540f 100644
      newaddr = read_memory_p(dsp, dsp->pc+1);
  
      dsp->instr_cycle += 4;
-@@ -7405,7 +7438,7 @@ static void emu_jclr_ea(dsp_core_t* dsp)
+@@ -7405,7 +7451,7 @@ static void emu_jclr_ea(dsp_core_t* dsp)
      newaddr = read_memory_p(dsp, dsp->pc+1);
  
      emu_calc_ea(dsp, value, &addr);
@@ -5939,7 +6328,7 @@ index cc45f27..fda540f 100644
  
      dsp->instr_cycle += 4;
  
-@@ -7425,7 +7458,7 @@ static void emu_jclr_pp(dsp_core_t* dsp)
+@@ -7425,7 +7471,7 @@ static void emu_jclr_pp(dsp_core_t* dsp)
      value = (dsp->cur_inst>>8) & BITMASK(6);
      numbit = dsp->cur_inst & BITMASK(5);
      addr = ((dsp->cur_inst & 0x080000) ? 0xffffc0 : 0xffff80) + value;
@@ -5948,7 +6337,7 @@ index cc45f27..fda540f 100644
      newaddr = read_memory_p(dsp, dsp->pc+1);
  
      dsp->instr_cycle += 4;
-@@ -7522,7 +7555,7 @@ static void emu_jsclr_aa(dsp_core_t* dsp)
+@@ -7522,7 +7568,7 @@ static void emu_jsclr_aa(dsp_core_t* dsp)
      memspace = (dsp->cur_inst>>6) & 1;
      addr = (dsp->cur_inst>>8) & BITMASK(6);
      numbit = dsp->cur_inst & BITMASK(5);
@@ -5957,7 +6346,7 @@ index cc45f27..fda540f 100644
      newaddr = read_memory_p(dsp, dsp->pc+1);
  
      dsp->instr_cycle += 4;
-@@ -7545,7 +7578,7 @@ static void emu_jsclr_ea(dsp_core_t* dsp)
+@@ -7545,7 +7591,7 @@ static void emu_jsclr_ea(dsp_core_t* dsp)
      value = (dsp->cur_inst>>8) & BITMASK(6);
      numbit = dsp->cur_inst & BITMASK(5);
      emu_calc_ea(dsp, value, &addr);
@@ -5966,7 +6355,7 @@ index cc45f27..fda540f 100644
      newaddr = read_memory_p(dsp, dsp->pc+1);
  
      dsp->instr_cycle += 4;
-@@ -7568,7 +7601,7 @@ static void emu_jsclr_pp(dsp_core_t* dsp)
+@@ -7568,7 +7614,7 @@ static void emu_jsclr_pp(dsp_core_t* dsp)
      value = (dsp->cur_inst>>8) & BITMASK(6);
      numbit = dsp->cur_inst & BITMASK(5);
      addr = ((dsp->cur_inst & 0x080000) ? 0xffffc0 : 0xffff80) + value;
@@ -5975,7 +6364,7 @@ index cc45f27..fda540f 100644
      newaddr = read_memory_p(dsp, dsp->pc+1);
  
      dsp->instr_cycle += 4;
-@@ -7616,7 +7649,7 @@ static void emu_jset_aa(dsp_core_t* dsp)
+@@ -7616,7 +7662,7 @@ static void emu_jset_aa(dsp_core_t* dsp)
      memspace = (dsp->cur_inst>>6) & 1;
      addr = (dsp->cur_inst>>8) & BITMASK(6);
      numbit = dsp->cur_inst & BITMASK(5);
@@ -5984,7 +6373,7 @@ index cc45f27..fda540f 100644
      newaddr = read_memory_p(dsp, dsp->pc+1);
  
      dsp->instr_cycle += 4;
-@@ -7638,7 +7671,7 @@ static void emu_jset_ea(dsp_core_t* dsp)
+@@ -7638,7 +7684,7 @@ static void emu_jset_ea(dsp_core_t* dsp)
      value = (dsp->cur_inst>>8) & BITMASK(6);
      numbit = dsp->cur_inst & BITMASK(5);
      emu_calc_ea(dsp, value, &addr);
@@ -5993,7 +6382,7 @@ index cc45f27..fda540f 100644
      newaddr = read_memory_p(dsp, dsp->pc+1);
  
      dsp->instr_cycle += 4;
-@@ -7660,7 +7693,7 @@ static void emu_jset_pp(dsp_core_t* dsp)
+@@ -7660,7 +7706,7 @@ static void emu_jset_pp(dsp_core_t* dsp)
      value = (dsp->cur_inst>>8) & BITMASK(6);
      numbit = dsp->cur_inst & BITMASK(5);
      addr = ((dsp->cur_inst & 0x080000) ? 0xffffc0 : 0xffff80) + value;
@@ -6002,7 +6391,7 @@ index cc45f27..fda540f 100644
      newaddr = read_memory_p(dsp, dsp->pc+1);
  
      dsp->instr_cycle += 4;
-@@ -7744,7 +7777,7 @@ static void emu_jsset_aa(dsp_core_t* dsp)
+@@ -7744,7 +7790,7 @@ static void emu_jsset_aa(dsp_core_t* dsp)
      memspace = (dsp->cur_inst>>6) & 1;
      addr = (dsp->cur_inst>>8) & BITMASK(6);
      numbit = dsp->cur_inst & BITMASK(5);
@@ -6011,7 +6400,7 @@ index cc45f27..fda540f 100644
      newaddr = read_memory_p(dsp, dsp->pc+1);
  
      dsp->instr_cycle += 4;
-@@ -7767,7 +7800,7 @@ static void emu_jsset_ea(dsp_core_t* dsp)
+@@ -7767,7 +7813,7 @@ static void emu_jsset_ea(dsp_core_t* dsp)
      value = (dsp->cur_inst>>8) & BITMASK(6);
      numbit = dsp->cur_inst & BITMASK(5);
      emu_calc_ea(dsp, value, &addr);
@@ -6020,7 +6409,7 @@ index cc45f27..fda540f 100644
      newaddr = read_memory_p(dsp, dsp->pc+1);
  
      dsp->instr_cycle += 4;
-@@ -7790,7 +7823,7 @@ static void emu_jsset_pp(dsp_core_t* dsp)
+@@ -7790,7 +7836,7 @@ static void emu_jsset_pp(dsp_core_t* dsp)
      value = (dsp->cur_inst>>8) & BITMASK(6);
      numbit = dsp->cur_inst & BITMASK(5);
      addr = ((dsp->cur_inst & 0x080000) ? 0xffffc0 : 0xffff80) + value;
@@ -6029,7 +6418,7 @@ index cc45f27..fda540f 100644
      newaddr = read_memory_p(dsp, dsp->pc+1);
  
      dsp->instr_cycle += 4;
-@@ -7942,7 +7975,7 @@ static void emu_movec_aa(dsp_core_t* dsp)
+@@ -7942,7 +7988,7 @@ static void emu_movec_aa(dsp_core_t* dsp)
  
      if (dsp->cur_inst & (1<<15)) {
          /* Write D1 */
@@ -6038,7 +6427,7 @@ index cc45f27..fda540f 100644
          value &= dsp_register_mask(dsp, numreg);
          dsp_write_reg(dsp, numreg, value);
      } else {
-@@ -7954,7 +7987,7 @@ static void emu_movec_aa(dsp_core_t* dsp)
+@@ -7954,7 +8000,7 @@ static void emu_movec_aa(dsp_core_t* dsp)
          else {
              value = dsp_move_source(dsp, numreg);
          }
@@ -6047,7 +6436,7 @@ index cc45f27..fda540f 100644
      }
  }
  
-@@ -7990,7 +8023,7 @@ static void emu_movec_ea(dsp_core_t* dsp)
+@@ -7990,7 +8036,7 @@ static void emu_movec_ea(dsp_core_t* dsp)
          if (retour) {
              value = addr;
          } else {
@@ -6056,7 +6445,7 @@ index cc45f27..fda540f 100644
          }
          value &= dsp_register_mask(dsp, numreg);
          dsp_write_reg(dsp, numreg, value);
-@@ -8004,7 +8037,7 @@ static void emu_movec_ea(dsp_core_t* dsp)
+@@ -8004,7 +8050,7 @@ static void emu_movec_ea(dsp_core_t* dsp)
          else {
              value = dsp_move_source(dsp, numreg);
          }
@@ -6065,7 +6454,7 @@ index cc45f27..fda540f 100644
      }
  }
  
-@@ -8032,7 +8065,7 @@ static void emu_movem_aa(dsp_core_t* dsp)
+@@ -8032,7 +8078,7 @@ static void emu_movem_aa(dsp_core_t* dsp)
          else {
              value = dsp_move_source(dsp, numreg);
          }
@@ -6074,7 +6463,7 @@ index cc45f27..fda540f 100644
      }
  
      dsp->instr_cycle += 4;
-@@ -8063,7 +8096,7 @@ static void emu_movem_ea(dsp_core_t* dsp)
+@@ -8063,7 +8109,7 @@ static void emu_movem_ea(dsp_core_t* dsp)
          else {
              value = dsp_move_source(dsp, numreg);
          }
@@ -6083,7 +6472,7 @@ index cc45f27..fda540f 100644
      }
  
      dsp->instr_cycle += 4;
-@@ -8099,10 +8132,10 @@ static void emu_movep_0(dsp_core_t* dsp)
+@@ -8099,10 +8145,10 @@ static void emu_movep_0(dsp_core_t* dsp)
          else {
              value = dsp_move_source(dsp, numreg);
          }
@@ -6096,7 +6485,7 @@ index cc45f27..fda540f 100644
          value &= dsp_register_mask(dsp, numreg);
          dsp_write_reg(dsp, numreg, value);
      }
-@@ -8126,10 +8159,10 @@ static void emu_movep_1(dsp_core_t* dsp)
+@@ -8126,10 +8172,10 @@ static void emu_movep_1(dsp_core_t* dsp)
  
      if (dsp->cur_inst & (1u << (lower ? 14 : 15))) {
          /* Write pp */
@@ -6109,7 +6498,7 @@ index cc45f27..fda540f 100644
      }
  
      /* Movep is 4 cycles, but according to the motorola doc, */
-@@ -8165,13 +8198,13 @@ static void emu_movep_23(dsp_core_t* dsp)
+@@ -8165,13 +8211,13 @@ static void emu_movep_23(dsp_core_t* dsp)
          /* Write pp */
  
          if (retour) {
@@ -6126,7 +6515,7 @@ index cc45f27..fda540f 100644
      }
  
      dsp->instr_cycle += 2;
-@@ -8192,15 +8225,15 @@ static void emu_movep_qq(dsp_core_t* dsp)
+@@ -8192,15 +8238,15 @@ static void emu_movep_qq(dsp_core_t* dsp)
          /* Write qq */
  
          if (retour) {
@@ -6147,7 +6536,7 @@ index cc45f27..fda540f 100644
      }
  
      dsp->instr_cycle += 2;
-@@ -8224,9 +8257,9 @@ static void emu_move_x_long(dsp_core_t* dsp)
+@@ -8224,9 +8270,9 @@ static void emu_move_x_long(dsp_core_t* dsp)
          } else {
              value = dsp_move_source(dsp, numreg);
          }
@@ -6159,7 +6548,7 @@ index cc45f27..fda540f 100644
      }
  
      // TODO: cycles
-@@ -8248,9 +8281,9 @@ static void emu_move_xy_imm(dsp_core_t* dsp, int space)
+@@ -8248,9 +8294,9 @@ static void emu_move_xy_imm(dsp_core_t* dsp, int space)
          } else {
              value = dsp_move_source(dsp, numreg);
          }
@@ -6171,7 +6560,7 @@ index cc45f27..fda540f 100644
      }
  
      // TODO: cycles
-@@ -8428,7 +8461,7 @@ static void emu_rep_aa(dsp_core_t* dsp)
+@@ -8428,7 +8474,7 @@ static void emu_rep_aa(dsp_core_t* dsp)
      dsp->pc_on_rep = 1; /* Not decrement LC at first time */
      dsp->loop_rep = 1;  /* We are now running rep */
  
@@ -6180,7 +6569,7 @@ index cc45f27..fda540f 100644
  
      dsp->instr_cycle += 2;
  }
-@@ -8459,7 +8492,7 @@ static void emu_rep_ea(dsp_core_t* dsp)
+@@ -8459,7 +8505,7 @@ static void emu_rep_ea(dsp_core_t* dsp)
      dsp->loop_rep = 1;  /* We are now running rep */
  
      emu_calc_ea(dsp, (dsp->cur_inst>>8) & BITMASK(6),&value);
@@ -25777,7 +26166,7 @@ index 0000000..9dc9c00
 +}
 +#endif
 diff --git a/tests/dsp/CMakeLists.txt b/tests/dsp/CMakeLists.txt
-index 1e4ebc07943573bc6f859daa06dedd9ef4c6e609..ae00b8f9f91856e65f27491ebb04748b974113bd 100644
+index 1e4ebc07943573bc6f859daa06dedd9ef4c6e609..6f4e3af65ff9fa526fdf9ed4ae49cf235714e36e 100644
 --- a/tests/dsp/CMakeLists.txt
 +++ b/tests/dsp/CMakeLists.txt
 @@ -19,6 +19,10 @@ add_executable(dsp_disasm_test dsp_disasm_test.c)
@@ -25949,7 +26338,7 @@ index 1e4ebc07943573bc6f859daa06dedd9ef4c6e609..ae00b8f9f91856e65f27491ebb04748b
    add_test(NAME dsp_frame_capture COMMAND "${CMAKE_COMMAND}" -E env
      "RECOMP_DSP_FRAME_DUMP=${CMAKE_CURRENT_BINARY_DIR}/test-frame" "$<TARGET_FILE:dsp_apu_test>")
    add_test(NAME dsp_capture_reset COMMAND "${CMAKE_COMMAND}" -E env
-@@ -97,3 +238,104 @@ add_test(NAME dsp_clipped_capture COMMAND "${CMAKE_COMMAND}" -E env
+@@ -97,3 +238,121 @@ add_test(NAME dsp_clipped_capture COMMAND "${CMAKE_COMMAND}" -E env
  set_tests_properties(dsp_clipped_capture PROPERTIES FIXTURES_SETUP clipped_frame)
  add_test(NAME dsp_clipped_replay COMMAND dsp_frame_replay "${CMAKE_CURRENT_BINARY_DIR}/clipped-frame.ep.frame.bin")
  set_tests_properties(dsp_clipped_replay PROPERTIES FIXTURES_REQUIRED clipped_frame)
@@ -26049,6 +26438,23 @@ index 1e4ebc07943573bc6f859daa06dedd9ef4c6e609..ae00b8f9f91856e65f27491ebb04748b
 +    set_tests_properties(dsp_live_${name} dsp_live_${name}_threaded dsp_live_${name}_interpreter
 +      PROPERTIES TIMEOUT 20)
 +  endforeach()
++  # Every entry point of the title's programs on random states, compiled
++  # code against the interpreter at each return (assertions on: random
++  # pointers can leave the RAM arrays, and such trials are skipped).
++  add_executable(dsp_recomp_fuzz dsp_recomp_fuzz.c ${dsp_interp}/dsp_cpu.c ${dsp_interp}/dsp_recomp_threaded.c
++    ../../src/apu/dsp/dsp_dma.c ../../src/apu/dsp/dsp.c ${live_inc})
++  target_include_directories(dsp_recomp_fuzz PRIVATE ../../src/apu/dsp)
++  target_compile_features(dsp_recomp_fuzz PRIVATE c_std_11)
++  target_compile_definitions(dsp_recomp_fuzz PRIVATE _CRT_SECURE_NO_WARNINGS DSP_RECOMP_INC="${live_inc}" DSP_RECOMP_SPLIT)
++  if(MSVC)
++    target_compile_options(dsp_recomp_fuzz PRIVATE /UNDEBUG)
++  else()
++    target_compile_options(dsp_recomp_fuzz PRIVATE -UNDEBUG)
++  endif()
++  add_test(NAME dsp_recomp_fuzz COMMAND dsp_recomp_fuzz "${DSP_LIVE_PROGRAM_DIR}" 12)
++  set_tests_properties(dsp_recomp_fuzz PROPERTIES TIMEOUT 120)
++  add_test(NAME dsp_recomp_fuzz_threaded COMMAND dsp_recomp_fuzz "${DSP_LIVE_PROGRAM_DIR}" 6)
++  set_tests_properties(dsp_recomp_fuzz_threaded PROPERTIES TIMEOUT 120 ENVIRONMENT "RECOMP_DSP_TRANSLATOR=threaded")
 +  add_test(NAME dsp_live_bench COMMAND "${CMAKE_COMMAND}" "-Dreplay=$<TARGET_FILE:dsp_live_frame_replay>"
 +    "-Ddir=${DSP_LIVE_FRAME_DIR}" "-Dframes=${live_frames}" "-Drepeat=${DSP_LIVE_BENCH_REPEAT}"
 +    -P "${CMAKE_CURRENT_SOURCE_DIR}/live_bench.cmake")
@@ -27187,6 +27593,171 @@ index 0000000000000000000000000000000000000000..4d933e9220d72f372d0ee3dbf5ee5c19
 +        FILE *file = fopen(path, "wb");
 +        if (!file || fwrite(program, sizeof(program), 1, file) != 1 || fclose(file)) return 1;
 +    }
++    return 0;
++}
+diff --git a/tests/dsp/dsp_recomp_fuzz.c b/tests/dsp/dsp_recomp_fuzz.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..da8987197f75ceefa94c47ed9a63e412367302a6
+--- /dev/null
++++ b/tests/dsp/dsp_recomp_fuzz.c
+@@ -0,0 +1,159 @@
++/* dsp_recomp_fuzz <program dir> [states]: every word of the compiled GP and
++ * EP programs as an entry point, on random register states, through the
++ * compiled code (as dsp_run calls it, with several budgets) and through the
++ * interpreter alone; the full processor state must match at every return.
++ * Extension words the capture does not hold get small random values; a
++ * trial ends where execution leaves the compiled words. */
++#include "dsp.h"
++#include "dsp_port.h"
++#include "dsp_dma_regs.h"
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <setjmp.h>
++#include <signal.h>
++#ifdef _WIN32
++#include <crtdbg.h>
++#endif
++
++#define CHECK(c) do { if (!(c)) { fprintf(stderr, "DSP fuzz %d: %s\n", __LINE__, #c); exit(1); } } while (0)
++
++static uint32_t seed = 0x1234567u;
++static uint32_t rnd(void) { seed = seed * 1103515245u + 12345u; return seed >> 8; }
++static void no_scratch(void *o, uint8_t *p, uint32_t a, size_t l, bool d) { (void)o; (void)a; (void)d; if (!d) memset(p, 0, l); }
++static void no_fifo(void *o, uint8_t *p, unsigned a, size_t l, bool d) { (void)o; (void)a; (void)d; if (!d) memset(p, 0, l); }
++
++static DSPState *reference, *actual;
++static DSPState scratch_a, scratch_b;
++static unsigned long compared, native_calls, skipped;
++/* Random pointers can leave the RAM arrays: the interpreter only asserts
++ * there, so this test builds with assertions and skips such a trial. */
++static jmp_buf trial_exit;
++static void assertion(int signal_number) { (void)signal_number; longjmp(trial_exit, 1); }
++
++static void compare(uint32_t start, int budget)
++{
++    scratch_a = *reference; scratch_b = *actual;
++    DSPState *s[2] = {&scratch_a, &scratch_b};
++    for (int i = 0; i < 2; i++) {
++        memset((void *)s[i]->core.pram_opcache, 0, sizeof(s[i]->core.pram_opcache));
++        s[i]->core.opaque = NULL; s[i]->core.read_peripheral = NULL; s[i]->core.write_peripheral = NULL;
++        s[i]->dma.mem_opaque = s[i]->dma.rw_opaque = NULL;
++        s[i]->dma.mem_read = NULL; s[i]->dma.mem_write = NULL;
++        s[i]->dma.scratch_rw = NULL; s[i]->dma.fifo_rw = NULL;
++    }
++    if (memcmp(&scratch_a, &scratch_b, sizeof(scratch_a))) {
++        fprintf(stderr, "%s start %03X budget %d: PC actual=%X expected=%X cycles %u/%u\n",
++                reference->is_gp ? "GP" : "EP", start, budget, actual->core.pc, reference->core.pc,
++                actual->core.cycle_count, reference->core.cycle_count);
++        for (unsigned r = 0; r < DSP_REG_MAX; r++)
++            if (scratch_a.core.registers[r] != scratch_b.core.registers[r])
++                fprintf(stderr, "  register %02X actual=%06X expected=%06X\n", r,
++                        scratch_b.core.registers[r], scratch_a.core.registers[r]);
++        for (size_t i = 0; i < sizeof(scratch_a); i++)
++            if (((uint8_t *)&scratch_a)[i] != ((uint8_t *)&scratch_b)[i]) {
++                fprintf(stderr, "  first differing byte %zu\n", i);
++                break;
++            }
++        exit(1);
++    }
++    compared++;
++}
++
++static void randomise(DSPState *d, const uint32_t *image, int mode)
++{
++    dsp_reset(d);
++    dsp_core_t *c = &d->core;
++    for (unsigned a = 0; a < DSP_PRAM_SIZE; a++) c->pram[a] = image[a] ? image[a] : rnd() & 0x3ff;
++    /* Memory holds pointers the programs load: keep every value an address
++     * inside the RAM arrays; registers start with full-range data. */
++    for (unsigned a = 0; a < DSP_XRAM_SIZE; a++) c->xram[a] = rnd() & 0x3ff;
++    for (unsigned a = 0; a < DSP_YRAM_SIZE; a++) c->yram[a] = rnd() & 0x3ff;
++    for (unsigned a = 0; a < DSP_MIXBUFFER_SIZE; a++) c->mixbuffer[a] = rnd() & 0x3ff;
++    static const uint32_t edge[] = {0, 0x7fffff, 0x800000, 0xffffff, 1, 0x400000};
++    for (unsigned r = DSP_REG_X0; r <= DSP_REG_B1; r++)
++        c->registers[r] = rnd() % 4 ? rnd() & 0xffffff : edge[rnd() % 6];
++    c->registers[DSP_REG_A2] = rnd() % 3 ? (c->registers[DSP_REG_A1] & 0x800000 ? 0xff : 0) : rnd() & 0xff;
++    c->registers[DSP_REG_B2] = rnd() % 3 ? (c->registers[DSP_REG_B1] & 0x800000 ? 0xff : 0) : rnd() & 0xff;
++    for (unsigned r = 0; r < 8; r++) {
++        c->registers[DSP_REG_R0 + r] = rnd() & 0x3ff;
++        c->registers[DSP_REG_N0 + r] = rnd() & 7;
++        c->registers[DSP_REG_M0 + r] = mode == 1 && r == (rnd() & 7) ? 0x00f : 0xffffff;
++    }
++    uint32_t sr = rnd() & 0xff;
++    if (mode == 2) sr |= (rnd() & 3) << DSP_SR_S0;
++    if (mode == 3) sr |= 1u << DSP_SR_SA;
++    c->registers[DSP_REG_SR] = sr;
++    c->registers[DSP_REG_LC] = rnd() & 7;
++    c->registers[DSP_REG_LA] = rnd() & 0xfff;
++    c->registers[DSP_REG_SP] = rnd() & 3;
++    c->registers[DSP_REG_SSH] = rnd() & 0xfff;
++    c->registers[DSP_REG_SSL] = rnd() & 0xff;
++    for (unsigned i = 0; i < 16; i++) { c->stack[0][i] = rnd() & 0xfff; c->stack[1][i] = rnd() & 0xff; }
++    memset((void *)c->pram_opcache, 0, sizeof(c->pram_opcache));
++    c->is_idle = c->is_waiting = c->is_stopped = false;
++    c->loop_rep = 0;
++    c->cycle_count = 0;
++}
++
++static void trial(const uint32_t *image, uint32_t start, int mode, int budget)
++{
++    randomise(reference, image, mode);
++    reference->core.pc = start;
++    /* Same state in both, each with its own peripheral wiring. */
++    dsp_core_t keep = actual->core;
++    actual->core = reference->core;
++    actual->core.opaque = keep.opaque;
++    actual->core.read_peripheral = keep.read_peripheral;
++    actual->core.write_peripheral = keep.write_peripheral;
++    actual->dma = reference->dma;
++    actual->dma.mem_opaque = &actual->core;
++    actual->dma.rw_opaque = NULL;
++    for (int call = 0; call < 40; call++) {
++        uint32_t pc = actual->core.pc;
++        if (pc >= DSP_PRAM_SIZE || !image[pc] || actual->core.is_idle || actual->core.is_waiting ||
++            actual->core.is_stopped || actual->core.loop_rep || (actual->dma.control & DMA_CONTROL_RUNNING)) return;
++        int used = dsp56k_execute_recompiled(&actual->core, budget, &actual->dma.control, DMA_CONTROL_RUNNING);
++        if (!used) return;
++        native_calls++;
++        while (reference->core.cycle_count < actual->core.cycle_count) {
++            dsp56k_execute_instruction(&reference->core);
++            reference->core.cycle_count += reference->core.instr_cycle;
++        }
++        compare(start, budget);
++    }
++}
++
++int main(int argc, char **argv)
++{
++    CHECK(argc == 2 || argc == 3);
++#ifdef _WIN32
++    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
++    _set_error_mode(_OUT_TO_STDERR);
++#endif
++    unsigned states = argc == 3 ? (unsigned)strtoul(argv[2], NULL, 10) : 3;
++    for (int gp = 1; gp >= 0; gp--) {
++        static uint32_t image[DSP_PRAM_SIZE];
++        char path[1024];
++        snprintf(path, sizeof(path), "%s/%s.p.bin", argv[1], gp ? "gp" : "ep");
++        FILE *f = fopen(path, "rb");
++        CHECK(f && fread(image, 4, DSP_PRAM_SIZE, f) == DSP_PRAM_SIZE && !fclose(f));
++        reference = dsp_init(NULL, no_scratch, no_fifo, gp);
++        actual = dsp_init(NULL, no_scratch, no_fifo, gp);
++        CHECK(reference && actual);
++        static const int budgets[] = {1000, 7, 40};
++        for (uint32_t start = 0; start < DSP_PRAM_SIZE; start++) {
++            if (!image[start]) continue;
++            for (unsigned s = 0; s < states; s++) {
++                signal(SIGABRT, assertion);
++                if (setjmp(trial_exit)) { skipped++; continue; }
++                trial(image, start, s % 4, budgets[s % 3]);
++            }
++        }
++        free(reference); free(actual);
++    }
++    printf("DSP fuzz: %lu block returns matched the interpreter's full state "
++           "(%lu trials left the RAM arrays and were skipped)\n", compared, skipped);
++    CHECK(compared > 1000);
 +    return 0;
 +}
 diff --git a/tests/dsp/dsp_reference_fallback.c b/tests/dsp/dsp_reference_fallback.c
@@ -53845,19 +54416,26 @@ index 0000000000000000000000000000000000000000..dd5dbfd73b84a0c9b89d52985257f949
 +}
 diff --git a/tools/dsp_recomp/dsp_recomp_gen.c b/tools/dsp_recomp/dsp_recomp_gen.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c6a4e7bc1dcc0ff55fbcf9ec817c074e743c11d4
+index 0000000000000000000000000000000000000000..5f4f27ccfa3e4c25162281d2fe0adb6d5bc49742
 --- /dev/null
 +++ b/tools/dsp_recomp/dsp_recomp_gen.c
-@@ -0,0 +1,515 @@
+@@ -0,0 +1,1131 @@
 +/* dsp_recomp_gen <dsp_cpu.c> <dsp_emu.c.inc> <out.inc> <program dir>
 + *
 + * Recompiles the DSP56300 programs a title loaded -- <dir>/gp.p.bin and
 + * <dir>/ep.p.bin, saved by the runtime (dsp.c, RECOMP_DSP_PROGRAM_DIR) -- into
-+ * C that dsp_cpu.c includes. Each program word becomes a label running exactly
-+ * what dsp56k_execute_instruction would for it (DSP_RECOMP_STEP), with the
-+ * fetch, opcode lookup and dispatch resolved here. The code checks every word
-+ * against program memory before running it and hands anything else back to
-+ * the interpreter, so a missing, stale or different program only costs speed.
++ * C that dsp_cpu.c includes, twice:
++ * - per-word code (dsp_recomp_*, RECOMP_DSP_TRANSLATOR=threaded): each word
++ *   a label running exactly what dsp56k_execute_instruction would for it
++ *   (DSP_RECOMP_STEP), with the fetch, opcode lookup and dispatch resolved
++ *   here; each word is checked against program memory before it runs;
++ * - block code (dsp_rb_*, the default): runs of plain instructions as one
++ *   block, specialised C on registers held in locals where the form allows
++ *   (see "Specialised code"), DO loops and REP repeated in place, one
++ *   validity mark per block (dsp_cpu.c, DSP_RB_ENTER); where it cannot run
++ *   a word exactly it steps through the per-word code.
++ * Anything else goes back to the interpreter, so a missing, stale or
++ * different program only costs speed.
 + *
 + * Handler names come from the interpreter's own tables, read from its source;
 + * the opcode lookup and instruction lengths come from the interpreter itself.
@@ -54077,6 +54655,7 @@ index 0000000000000000000000000000000000000000..c6a4e7bc1dcc0ff55fbcf9ec817c074e
 +            if (w & (1u << 15)) return false;                /* memory to register */
 +            if ((w & 0xf40000) != 0x400000 && ((w >> 19) & 1)) return false; /* Y: store */
 +        }
++        if (form >= 8) return !(w & (1u << 15));             /* X:Y: stores X when W1 clear */
 +        return true;
 +    }
 +    const char *name = names_np[entry - nonparallel_opcodes];
@@ -54128,6 +54707,456 @@ index 0000000000000000000000000000000000000000..c6a4e7bc1dcc0ff55fbcf9ec817c074e
 +    return true;
 +}
 +
++/**********************************
++ *  Specialised code
++ **********************************/
++
++/* Plain instructions of the forms below become C on locals g00..g27 and g39
++ * (SR) -- X0..M7 and SR held off the core while a block runs -- for the mode
++ * DSP_RB_MODE_MASK clear and linear modifiers on the address registers they
++ * update, which the block's entry checks (the scaling mode is read at run
++ * time, as the interpreter reads it). Memory goes through dsp_read_xy /
++ * dsp_write_xy as in the interpreter, extension words are read from P
++ * memory, and the ALU operations are dsp_cpu.c's dsp_rb_* helpers, compared
++ * here with the interpreter's functions before use (check_alu). */
++typedef struct { uint64_t rd, wr; unsigned mguard; } RegUse;
++#define SR_LOCAL 0x39
++static void use_r(RegUse *u, unsigned r) { u->rd |= 1ull << r; }
++static void use_w(RegUse *u, unsigned r) { u->wr |= 1ull << r; }
++static const unsigned acc_regs[2][3] = {
++    {DSP_REG_A2, DSP_REG_A1, DSP_REG_A0}, {DSP_REG_B2, DSP_REG_B1, DSP_REG_B0}};
++
++typedef struct {
++    int kind;                    /* 0 move, 1 add/sub/cmp, 2 mpy/mac, 3 clr, 4 tst, 5 tfr, 6 cmpm */
++    unsigned s1, s2, acc;
++    int subtract, store, negative, accumulate, round;
++} AluOp;
++
++static int data_source(const char *s)
++{
++    if (!strcmp(s, "x0")) return DSP_REG_X0;
++    if (!strcmp(s, "x1")) return DSP_REG_X1;
++    if (!strcmp(s, "y0")) return DSP_REG_Y0;
++    if (!strcmp(s, "y1")) return DSP_REG_Y1;
++    return -1;
++}
++
++static bool parse_alu(const char *name, AluOp *op)
++{
++    char buf[64], *tok[8];
++    int n = 0;
++    memset(op, 0, sizeof(*op));
++    if (strncmp(name, "emu_", 4) || strlen(name) >= sizeof(buf)) return false;
++    strcpy(buf, name + 4);
++    for (char *p = strtok(buf, "_"); p && n < 8; p = strtok(NULL, "_")) tok[n++] = p;
++    if (n == 1 && !strcmp(tok[0], "move")) { op->kind = 0; return true; }
++    int last_acc = n >= 2 && (!strcmp(tok[n - 1], "a") || !strcmp(tok[n - 1], "b"));
++    if (!last_acc) return false;
++    op->acc = tok[n - 1][0] == 'b';
++    if (n == 2 && !strcmp(tok[0], "clr")) { op->kind = 3; return true; }
++    if (n == 2 && !strcmp(tok[0], "tst")) { op->kind = 4; return true; }
++    if (n == 3 && data_source(tok[1]) >= 0) {
++        op->s1 = data_source(tok[1]);
++        if (!strcmp(tok[0], "add")) { op->kind = 1; op->store = 1; return true; }
++        if (!strcmp(tok[0], "sub")) { op->kind = 1; op->store = 1; op->subtract = 1; return true; }
++        if (!strcmp(tok[0], "cmp")) { op->kind = 1; op->subtract = 1; return true; }
++        if (!strcmp(tok[0], "tfr")) { op->kind = 5; return true; }
++        if (!strcmp(tok[0], "cmpm")) { op->kind = 6; return true; }
++        return false;
++    }
++    if (n == 5 && data_source(tok[2]) >= 0 && data_source(tok[3]) >= 0 &&
++        (!strcmp(tok[1], "p") || !strcmp(tok[1], "m"))) {
++        op->kind = 2;
++        op->s1 = data_source(tok[2]);
++        op->s2 = data_source(tok[3]);
++        op->negative = tok[1][0] == 'm';
++        if (!strcmp(tok[0], "mpy")) return true;
++        if (!strcmp(tok[0], "mpyr")) { op->round = 1; return true; }
++        if (!strcmp(tok[0], "mac")) { op->accumulate = 1; return true; }
++        if (!strcmp(tok[0], "macr")) { op->accumulate = 1; op->round = 1; return true; }
++    }
++    return false;
++}
++
++static void alu_text(Out *o, const AluOp *op, RegUse *u)
++{
++    const unsigned *r = acc_regs[op->acc];
++    switch (op->kind) {
++    case 0: return;
++    case 1:
++        out(o, "        dsp_rb_add(&g%02X, &g%02X, &g%02X, g%02X, %d, %d, &g39);\n", r[0], r[1], r[2], op->s1, op->subtract, op->store);
++        use_r(u, op->s1);
++        for (int i = 0; i < 3; i++) { use_r(u, r[i]); if (op->store) use_w(u, r[i]); }
++        break;
++    case 2:
++        out(o, "        dsp_rb_mul(&g%02X, &g%02X, &g%02X, g%02X, g%02X, %d, %d, %d, &g39);\n", r[0], r[1], r[2], op->s1, op->s2,
++            op->negative, op->accumulate, op->round);
++        use_r(u, op->s1); use_r(u, op->s2);
++        for (int i = 0; i < 3; i++) { use_w(u, r[i]); if (op->accumulate) use_r(u, r[i]); }
++        break;
++    case 3:
++        out(o, "        dsp_rb_clr(&g%02X, &g%02X, &g%02X, &g39);\n", r[0], r[1], r[2]);
++        for (int i = 0; i < 3; i++) use_w(u, r[i]);
++        break;
++    case 4:
++        out(o, "        dsp_rb_tst(g%02X, g%02X, g%02X, &g39);\n", r[0], r[1], r[2]);
++        for (int i = 0; i < 3; i++) use_r(u, r[i]);
++        break;
++    case 6:
++        out(o, "        dsp_rb_cmpm(g%02X, g%02X, g%02X, g%02X, &g39);\n", r[0], r[1], r[2], op->s1);
++        use_r(u, op->s1);
++        for (int i = 0; i < 3; i++) use_r(u, r[i]);
++        break;
++    case 5:
++        out(o, "        dsp_rb_tfr(&g%02X, &g%02X, &g%02X, g%02X);\n", r[0], r[1], r[2], op->s1);
++        use_r(u, op->s1);
++        for (int i = 0; i < 3; i++) use_w(u, r[i]);
++        return;
++    }
++    use_r(u, SR_LOCAL); use_w(u, SR_LOCAL);
++}
++
++/* Move source (dsp_move_source, emu_pm_read_accu24) into t. */
++static bool source_text(Out *o, unsigned reg, RegUse *u)
++{
++    if (reg == DSP_REG_A || reg == DSP_REG_B) {
++        const unsigned *r = acc_regs[reg - DSP_REG_A];
++        out(o, "        t = dsp_rb_accu24(g%02X, g%02X, g%02X, &g39);\n", r[0], r[1], r[2]);
++        use_r(u, r[2]);
++        use_r(u, r[0]); use_r(u, r[1]); use_r(u, SR_LOCAL); use_w(u, SR_LOCAL);
++        return true;
++    }
++    if (reg > DSP_REG_M7) return false;
++    use_r(u, reg);
++    if (reg >= DSP_REG_R0) out(o, "        t = g%02X & 0xffffffu;\n", reg);
++    else out(o, "        t = g%02X;\n", reg);
++    return true;
++}
++
++/* Register write of t (dsp_write_reg); M registers and above are not. */
++static bool write_text(Out *o, unsigned reg, RegUse *u)
++{
++    if (reg == DSP_REG_A || reg == DSP_REG_B) {
++        const unsigned *r = acc_regs[reg - DSP_REG_A];
++        out(o, "        g%02X = 0; g%02X = t; g%02X = t & (1u << 23) ? 0xff : 0x0;\n", r[2], r[1], r[0]);
++        for (int i = 0; i < 3; i++) use_w(u, r[i]);
++        return true;
++    }
++    if (reg >= DSP_REG_M0) return false;
++    uint32_t mask = (reg >= DSP_REG_X0 && reg <= DSP_REG_Y1) || reg >= DSP_REG_R0 ? 0xffffff : BITMASK(registers_mask[reg]);
++    out(o, "        g%02X = t & 0x%Xu;\n", reg, mask);
++    use_w(u, reg);
++    return true;
++}
++
++/* emu_calc_ea with linear modifiers: the address in ad; 1 for an immediate
++ * (the extension word itself). */
++static int ea_to(Out *o, const char *ad, uint32_t a, unsigned ea, RegUse *u)
++{
++    unsigned mode = (ea >> 3) & 7, n = ea & 7, R = DSP_REG_R0 + n, N = DSP_REG_N0 + n;
++    switch (mode) {
++    case 0: out(o, "        %s = g%02X; g%02X = (g%02X + (uint32_t)-(int32_t)g%02X) & 0xffffffu;\n", ad, R, R, R, N); break;
++    case 1: out(o, "        %s = g%02X; g%02X = (g%02X + g%02X) & 0xffffffu;\n", ad, R, R, R, N); break;
++    case 2: out(o, "        %s = g%02X; g%02X = (g%02X + 0xffffffffu) & 0xffffffu;\n", ad, R, R, R); break;
++    case 3: out(o, "        %s = g%02X; g%02X = (g%02X + 1u) & 0xffffffu;\n", ad, R, R, R); break;
++    case 4: out(o, "        %s = g%02X;\n", ad, R); use_r(u, R); return 0;
++    case 5: out(o, "        %s = (g%02X + g%02X) & 0xffffffu;\n", ad, R, N); use_r(u, R); use_r(u, N); u->mguard |= 1u << n; return 0;
++    case 6: out(o, "        %s = dsp->pram[0x%03X];\n", ad, a + 1); return n != 0;
++    case 7: out(o, "        g%02X = (g%02X + 0xffffffffu) & 0xffffffu; %s = g%02X;\n", R, R, ad, R); break;
++    }
++    use_r(u, R); use_w(u, R);
++    if (mode <= 1) use_r(u, N);
++    u->mguard |= 1u << n;
++    return 0;
++}
++static int ea_text(Out *o, uint32_t a, unsigned ea, RegUse *u) { return ea_to(o, "ad", a, ea, u); }
++
++/* emu_pm_8_x: X:ea and Y:ea moves together; registers raw, as there. */
++static bool pm8_text(Out *o, uint32_t a, uint32_t w, const AluOp *op, RegUse *u)
++{
++    static const unsigned d1[4] = {DSP_REG_X0, DSP_REG_X1, DSP_REG_A, DSP_REG_B};
++    static const unsigned d2[4] = {DSP_REG_Y0, DSP_REG_Y1, DSP_REG_A, DSP_REG_B};
++    unsigned ea1 = (w >> 8) & 0x1f;
++    if ((ea1 >> 3) == 0) ea1 |= 1 << 5;
++    unsigned ea2 = (w >> 13) & 3;
++    ea2 |= (w >> 17) & (3 << 3);
++    if ((ea1 & (1 << 2)) == 0) ea2 |= 1 << 2;
++    if ((ea2 >> 3) == 0) ea2 |= 1 << 5;
++    if (((ea1 >> 3) & 7) == 6 || ((ea2 >> 3) & 7) == 6) return false;
++    out(o, "        uint32_t xa = 0, ya = 0, t1 = 0, t2 = 0;\n");
++    ea_to(o, "xa", a, ea1, u);
++    ea_to(o, "ya", a, ea2, u);
++    unsigned r1 = d1[(w >> 18) & 3], r2 = d2[(w >> 16) & 3];
++    unsigned regs[2] = {r1, r2};
++    const char *vars[2] = {"t1", "t2"}, *addrs[2] = {"xa", "ya"};
++    bool load[2] = {(w & (1u << 15)) != 0, (w & (1u << 22)) != 0};
++    for (int i = 0; i < 2; i++) {
++        if (load[i]) {
++            out(o, "        %s = dsp_read_xy(dsp, %d, %s);\n", vars[i], i, addrs[i]);
++        } else if (regs[i] == DSP_REG_A || regs[i] == DSP_REG_B) {
++            const unsigned *r = acc_regs[regs[i] - DSP_REG_A];
++            out(o, "        %s = dsp_rb_accu24(g%02X, g%02X, g%02X, &g39);\n", vars[i], r[0], r[1], r[2]);
++            use_r(u, r[2]);
++            use_r(u, r[0]); use_r(u, r[1]); use_r(u, SR_LOCAL); use_w(u, SR_LOCAL);
++        } else {
++            out(o, "        %s = g%02X;\n", vars[i], regs[i]);
++            use_r(u, regs[i]);
++        }
++    }
++    alu_text(o, op, u);
++    for (int i = 0; i < 2; i++) {
++        if (!load[i]) {
++            out(o, "        dsp_write_xy(dsp, %d, %s, %s);\n", i, addrs[i], vars[i]);
++        } else if (regs[i] == DSP_REG_A || regs[i] == DSP_REG_B) {
++            const unsigned *r = acc_regs[regs[i] - DSP_REG_A];
++            out(o, "        g%02X = 0; g%02X = %s; g%02X = %s & (1u << 23) ? 0xff : 0x0;\n", r[2], r[1], vars[i], r[0], vars[i]);
++            for (int k = 0; k < 3; k++) use_w(u, r[k]);
++        } else {
++            out(o, "        g%02X = %s;\n", regs[i], vars[i]);
++            use_w(u, regs[i]);
++        }
++    }
++    return true;
++}
++
++/* The specialised C for one plain instruction, or false. */
++static bool special_text(Out *o, uint32_t a, uint32_t w, const OpcodeEntry *entry, RegUse *u)
++{
++    out(o, "    {\n        uint32_t ad = 0, t = 0;\n        (void)ad; (void)t;\n");
++    if (w >= 0x100000) {
++        AluOp op;
++        if (!parse_alu(names_alu[w & 0xff], &op)) return false;
++        unsigned form = (w >> 20) & 0xf;
++        if (form == 2 || form == 3) {
++            if (form == 2 && (w & 0xffff00) == 0x200000) {
++                alu_text(o, &op, u);
++            } else if (form == 2 && (w & 0xffe000) == 0x204000) {
++                ea_text(o, a, (w >> 8) & 0x1f, u);
++                alu_text(o, &op, u);
++            } else if (form == 2 && (w & 0xfc0000) == 0x200000) {
++                if (!source_text(o, (w >> 13) & 0x1f, u)) return false;
++                alu_text(o, &op, u);
++                if (!write_text(o, (w >> 8) & 0x1f, u)) return false;
++            } else {
++                unsigned reg = (w >> 16) & 0x1f;
++                uint32_t value = (w >> 8) & 0xff;
++                alu_text(o, &op, u);
++                if ((reg >= DSP_REG_X0 && reg <= DSP_REG_Y1) || reg == DSP_REG_A || reg == DSP_REG_B) value <<= 16;
++                if (reg == DSP_REG_A || reg == DSP_REG_B) {
++                    const unsigned *r = acc_regs[reg - DSP_REG_A];
++                    out(o, "        g%02X = 0; g%02X = 0x%06Xu; g%02X = 0x%02Xu;\n", r[2], r[1], value, r[0], value & (1u << 23) ? 0xff : 0);
++                    for (int i = 0; i < 3; i++) use_w(u, r[i]);
++                } else {
++                    uint32_t mask = reg >= DSP_REG_R0 ? 0xffffff : BITMASK(registers_mask[reg]);
++                    out(o, "        g%02X = 0x%06Xu;\n", reg, value & mask);
++                    use_w(u, reg);
++                }
++            }
++        } else if (form >= 4 && form <= 7 && (w & 0xf40000) != 0x400000) {
++            unsigned value = (w >> 8) & 0x3f, space = (w >> 19) & 1;
++            unsigned reg = ((w >> 16) & 7) | ((w >> 17) & 0x18);
++            int immediate = 0;
++            if (w & (1u << 14)) immediate = ea_text(o, a, value, u);
++            else out(o, "        ad = 0x%02X;\n", value);
++            if (w & (1u << 15)) {
++                if (immediate) out(o, "        t = ad;\n");
++                else out(o, "        t = dsp_read_xy(dsp, %u, ad);\n", space);
++                alu_text(o, &op, u);
++                if (!write_text(o, reg, u)) return false;
++            } else {
++                if (!source_text(o, reg, u)) return false;
++                alu_text(o, &op, u);
++                out(o, "        dsp_write_xy(dsp, %u, ad, t);\n", space);
++            }
++        } else if (form >= 8) {
++            if (!pm8_text(o, a, w, &op, u)) return false;
++        } else {
++            return false;
++        }
++    } else {
++        const char *name = names_np[entry - nonparallel_opcodes];
++        if (!strcmp(name, "emu_move_x_imm") || !strcmp(name, "emu_move_y_imm")) {
++            uint32_t xxx = (((w >> 11) & 0x3f) << 1) + ((w >> 6) & 1);
++            unsigned space = !strcmp(name, "emu_move_y_imm"), reg = w & 0xf, R = DSP_REG_R0 + ((w >> 8) & 7);
++            out(o, "        ad = (g%02X + 0x%Xu) & 0xffffffu;\n", R, dsp_signextend(7, xxx));
++            use_r(u, R);
++            if (!((w >> 4) & 1)) {
++                if (!source_text(o, reg, u)) return false;
++                out(o, "        dsp_write_xy(dsp, %u, ad, t);\n", space);
++            } else {
++                out(o, "        t = dsp_read_xy(dsp, %u, ad);\n", space);
++                if (!write_text(o, reg, u)) return false;
++            }
++        } else if (!strcmp(name, "emu_move_x_long")) {
++            unsigned space = (w >> 16) & 1, reg = w & 0x3f, R = DSP_REG_R0 + ((w >> 8) & 7);
++            out(o, "        ad = (g%02X + dsp->pram[0x%03X]) & 0xffffffu;\n", R, a + 1);
++            use_r(u, R);
++            if (!((w >> 6) & 1)) {
++                if (!source_text(o, reg, u)) return false;
++                out(o, "        dsp_write_xy(dsp, %u, ad, t);\n", space);
++            } else {
++                out(o, "        t = dsp_read_xy(dsp, %u, ad);\n", space);
++                if (!write_text(o, reg, u)) return false;
++            }
++        } else {
++            return false;
++        }
++    }
++    out(o, "    }\n");
++    return true;
++}
++
++
++/* Conditional branches that stay in their block when not taken: BCC and the
++ * non-subroutine BRCLR/BRSET forms on a register or a fixed address. The
++ * text sets br_taken and br_target; the block code leaves when taken. Their
++ * cycles do not depend on the outcome (emu_bcc_*, emu_brclr_*). */
++static bool branch_text(Out *o, uint32_t a, uint32_t w, const OpcodeEntry *entry, RegUse *u,
++                        uint16_t *cycles, uint32_t *len, int64_t *target)
++{
++    if (w >= 0x100000) return false;
++    const char *name = names_np[entry - nonparallel_opcodes];
++    *target = -1;
++    if (!strcmp(name, "emu_bcc_imm")) {
++        uint32_t xxx = (w & 0x1f) + ((w & (0xfu << 6)) >> 1);
++        *target = (a + dsp_signextend(9, xxx)) & 0xffffff;
++        out(o, "    br_taken = dsp_calc_cc(g39, %u);\n    br_target = 0x%06Xu;\n", (w >> 12) & 15, (uint32_t)*target);
++        *cycles = 2; *len = 1;
++    } else if (!strcmp(name, "emu_bcc_long")) {
++        out(o, "    br_taken = dsp_calc_cc(g39, %u);\n", w & 15);
++        if (w & 0x800) {
++            unsigned R = DSP_REG_R0 + ((w >> 8) & 7);
++            out(o, "    br_target = (0x%03Xu + g%02X) & 0xffffffu;\n", a, R);
++            use_r(u, R);
++            *len = 1;
++        } else {
++            out(o, "    br_target = (0x%03Xu + dsp->pram[0x%03X]) & 0xffffffu;\n", a, a + 1);
++            *len = 2;
++        }
++        *cycles = 2;
++    } else if (!strcmp(name, "emu_brclr_reg") || !strcmp(name, "emu_brset_reg")) {
++        unsigned reg = (w >> 8) & 0x3f, bit = w & 0x1f;
++        if (w & 0x010000) return false;                 /* BSCLR/BSSET */
++        if (reg == DSP_REG_A || reg == DSP_REG_B) {
++            const unsigned *r = acc_regs[reg - DSP_REG_A];
++            out(o, "    br_taken = dsp_rb_accu24(g%02X, g%02X, g%02X, &g39);\n", r[0], r[1], r[2]);
++            for (int i = 0; i < 3; i++) use_r(u, r[i]);
++            use_w(u, SR_LOCAL);
++        } else if (reg >= DSP_REG_X0 && reg <= DSP_REG_N7) {
++            out(o, "    br_taken = g%02X;\n", reg);
++            use_r(u, reg);
++        } else {
++            return false;
++        }
++        out(o, "    br_taken = %s(br_taken & (1u << %u));\n", name[6] == 'c' ? "!" : "!!", bit);
++        out(o, "    br_target = (0x%03Xu + dsp->pram[0x%03X]) & 0xffffffu;\n", a, a + 1);
++        *cycles = 6; *len = 2;
++    } else if (!strcmp(name, "emu_brclr_pp") || !strcmp(name, "emu_brset_pp")) {
++        if ((w & 0x0f0000) == 0x0d0000 || (w & 0x0fc080) == 0x048080) return false;   /* BSCLR/BSSET */
++        if ((w & 0x0ec080) == 0x0c8000) return false;                                   /* EA form */
++        unsigned field = (w >> 8) & 0x3f, bit = w & 0x1f, space = (w >> 6) & 1;
++        uint32_t address = !(w & 0x080000) ? 0xffff80 + field : (w & 0x80) ? field : 0xffffc0 + field;
++        out(o, "    br_taken = %s(dsp_read_xy(dsp, %u, 0x%06Xu) & (1u << %u));\n", name[6] == 'c' ? "!" : "!!",
++            space, address, bit);
++        out(o, "    br_target = (0x%03Xu + dsp->pram[0x%03X]) & 0xffffffu;\n", a, a + 1);
++        *cycles = 6; *len = 2;
++    } else {
++        return false;
++    }
++    use_r(u, SR_LOCAL);
++    return true;
++}
++
++/* An unconditional jump's target where the word fixes it (no extension). */
++static int64_t fixed_target(uint32_t a, uint32_t w, const OpcodeEntry *entry)
++{
++    if (w >= 0x100000 || !entry) return -1;
++    const char *name = names_np[entry - nonparallel_opcodes];
++    if (!strcmp(name, "emu_bra_imm") || !strcmp(name, "emu_bsr_imm") || !strcmp(name, "emu_bcc_imm") ||
++        !strcmp(name, "emu_bscc_imm")) {
++        uint32_t xxx = (w & 0x1f) + ((w & (0xfu << 6)) >> 1);
++        return (a + dsp_signextend(9, xxx)) & 0xffffff;
++    }
++    if (!strcmp(name, "emu_jmp_imm") || !strcmp(name, "emu_jsr_imm") || !strcmp(name, "emu_jcc_imm") ||
++        !strcmp(name, "emu_jscc_imm"))
++        return w & 0xfff;
++    return -1;
++}
++
++/* A plain instruction left to its interpreter handler inside a block with
++ * locals must not change the modifier registers the block's entry checked. */
++static bool writes_modifier(uint32_t w, const OpcodeEntry *entry)
++{
++    if (w >= 0x100000) return false;
++    const char *name = names_np[entry - nonparallel_opcodes];
++    if (!strcmp(name, "emu_move_x_long")) return ((w >> 6) & 1) && (w & 0x3f) >= DSP_REG_M0;
++    if (!strcmp(name, "emu_bset_reg") || !strcmp(name, "emu_bclr_reg") || !strcmp(name, "emu_bchg_reg"))
++        return ((w >> 8) & 0x3f) >= DSP_REG_M0;
++    return false;
++}
++
++/* Every ALU operation the specialised code uses against the interpreter's
++ * own function, on random register states in the guarded mode. */
++static void check_alu(void)
++{
++    static dsp_core_t ref;
++    uint32_t seed = 12345;
++    unsigned checked = 0;
++    for (unsigned i = 0; i < 256; i++) {
++        AluOp op;
++        if (!parse_alu(names_alu[i], &op) || op.kind == 0) continue;
++        for (int trial = 0; trial < 20000; trial++) {
++            memset(ref.registers, 0, sizeof(ref.registers));
++            for (unsigned r = DSP_REG_X0; r <= DSP_REG_B1; r++) {
++                seed = seed * 1103515245u + 12345u;
++                uint32_t v = (seed >> 3) & 0xffffff;
++                static const uint32_t edge[] = {0, 1, 0x7fffff, 0x800000, 0xffffff, 0x400000, 0xc00000, 0x3fffff, 0x800001, 0x7ffffe, 0x000080, 0xffff80};
++                if (trial % 3 == 1) v = (seed & 0x10000) ? 0x7fffff ^ (v & 0xff) : 0x800000 | (v & 0x3);
++                else if (trial % 3 == 2) v = edge[(seed >> 20) % 12];
++                ref.registers[r] = v;
++            }
++            seed = seed * 1103515245u + 12345u;
++            ref.registers[DSP_REG_A2] = (seed >> 7) & 1 ? 0xff : (seed >> 9) & 0xff;
++            ref.registers[DSP_REG_B2] = (seed >> 8) & 1 ? 0 : (seed >> 17) & 0xff;
++            ref.registers[DSP_REG_SR] = ((seed >> 5) & 0xffffff) & ~DSP_RB_MODE_MASK;
++            uint32_t g[DSP_REG_MAX];
++            memcpy(g, ref.registers, sizeof(g));
++            const unsigned *r = acc_regs[op.acc];
++            switch (op.kind) {
++            case 1: dsp_rb_add(&g[r[0]], &g[r[1]], &g[r[2]], g[op.s1], op.subtract, op.store, &g[SR_LOCAL]); break;
++            case 2: dsp_rb_mul(&g[r[0]], &g[r[1]], &g[r[2]], g[op.s1], g[op.s2], op.negative, op.accumulate, op.round, &g[SR_LOCAL]); break;
++            case 3: dsp_rb_clr(&g[r[0]], &g[r[1]], &g[r[2]], &g[SR_LOCAL]); break;
++            case 4: dsp_rb_tst(g[r[0]], g[r[1]], g[r[2]], &g[SR_LOCAL]); break;
++            case 5: dsp_rb_tfr(&g[r[0]], &g[r[1]], &g[r[2]], g[op.s1]); break;
++            case 6: dsp_rb_cmpm(g[r[0]], g[r[1]], g[r[2]], g[op.s1], &g[SR_LOCAL]); break;
++            }
++            opcodes_alu[i](&ref);
++            if (memcmp(g, ref.registers, sizeof(g))) {
++                fprintf(stderr, "dsp_recomp_gen: %s differs from its specialised form\n", names_alu[i]);
++                exit(1);
++            }
++        }
++        checked++;
++    }
++    /* The accumulator read of the moves, against emu_pm_read_accu24. */
++    for (int trial = 0; trial < 200000; trial++) {
++        seed = seed * 1103515245u + 12345u;
++        memset(ref.registers, 0, sizeof(ref.registers));
++        ref.registers[DSP_REG_A2] = trial & 1 ? (seed >> 24) : (seed & 2 ? 0xff : 0);
++        ref.registers[DSP_REG_A1] = (seed >> 1) & 0xffffff;
++        ref.registers[DSP_REG_A0] = (seed * 13) & 0xffffff;
++        ref.registers[DSP_REG_SR] = (seed * 7) & 0xffffff & ~DSP_RB_MODE_MASK;
++        uint32_t sr = ref.registers[DSP_REG_SR], value, expected;
++        value = dsp_rb_accu24(ref.registers[DSP_REG_A2], ref.registers[DSP_REG_A1], ref.registers[DSP_REG_A0], &sr);
++        emu_pm_read_accu24(&ref, DSP_REG_A, &expected);
++        if (value != expected || sr != ref.registers[DSP_REG_SR]) {
++            fprintf(stderr, "dsp_recomp_gen: accumulator read differs from emu_pm_read_accu24\n");
++            exit(1);
++        }
++    }
++    fprintf(stderr, "dsp_recomp_gen: %u specialised ALU operations match the interpreter\n", checked);
++}
++
 +typedef struct {
 +    bool compiled, plain, xwrite;
 +    uint32_t len;
@@ -54136,6 +55165,12 @@ index 0000000000000000000000000000000000000000..c6a4e7bc1dcc0ff55fbcf9ec817c074e
 +    bool last;                   /* last instruction of its block */
 +    unsigned pre;                /* fixed cycles from here up to the block's last instruction */
 +    const OpcodeEntry *entry;
++    char *special;               /* specialised C, or NULL for the handler call */
++    RegUse use;                  /* its registers */
++    RegUse block;                /* the block's locals (at its head word) */
++    bool locals;                 /* the block keeps registers in locals */
++    bool branch;                 /* conditional exit (branch_text) */
++    int64_t target;              /* its or an ender's fixed target, or -1 */
 +} WordInfo;
 +static WordInfo infos[2][DSP_PRAM_SIZE];
 +
@@ -54153,9 +55188,42 @@ index 0000000000000000000000000000000000000000..c6a4e7bc1dcc0ff55fbcf9ec817c074e
 +        core.disasm_prev_inst_pc = 0xFFFFFFFF;
 +        uint32_t len = disasm_instruction(&core, DSP_DISASM_MODE);
 +        info[a].len = len ? len : 1;
++        free(info[a].special);
++        info[a].special = NULL;
++        info[a].branch = false;
++        info[a].target = fixed_target(a, pram[a], info[a].entry);
++        {
++            Out text = {0};
++            RegUse use = {0};
++            uint16_t cycles;
++            uint32_t blen;
++            int64_t target;
++            if (branch_text(&text, a, pram[a], info[a].entry, &use, &cycles, &blen, &target) && blen == info[a].len) {
++                info[a].plain = info[a].branch = true;
++                info[a].xwrite = false;
++                info[a].cycles = cycles;
++                info[a].special = text.buf;
++                info[a].use = use;
++                info[a].target = target;
++                stats[2]++;
++                continue;
++            }
++            free(text.buf);
++        }
 +        info[a].plain = plain_instruction(pram[a], info[a].entry) &&
 +                        fixed_timing(a, pram[a], prog == 0, info[a].len, &info[a].cycles);
 +        info[a].xwrite = info[a].plain && may_write_x(pram[a], info[a].entry);
++        if (info[a].plain) {
++            Out text = {0};
++            RegUse use = {0};
++            if (special_text(&text, a, pram[a], info[a].entry, &use)) {
++                info[a].special = text.buf;
++                info[a].use = use;
++                stats[2]++;
++            } else {
++                free(text.buf);
++            }
++        }
 +    }
 +    /* Blocks: plain instructions in address order within a chunk, ending at
 +     * the first other one, a word that is not compiled, the chunk's end, or
@@ -54175,6 +55243,25 @@ index 0000000000000000000000000000000000000000..c6a4e7bc1dcc0ff55fbcf9ec817c074e
 +            if (!info[cur].plain || hidden || next >= chunk_end || !info[next].compiled) break;
 +            cur = next;
 +        }
++        RegUse block = {0};
++        bool locals = false, blocked = false;
++        for (uint32_t i = 0; i < n; i++) {
++            const WordInfo *w = &info[list[i]];
++            if (w->special) {
++                locals = true;
++                block.rd |= w->use.rd | w->use.wr;
++                block.wr |= w->use.wr;
++                block.mguard |= w->use.mguard;
++            } else if (w->plain && writes_modifier(pram[list[i]], w->entry)) {
++                blocked = true;
++            }
++        }
++        if (blocked) {
++            for (uint32_t i = 0; i < n; i++) { free(info[list[i]].special); info[list[i]].special = NULL; }
++            locals = false;
++            memset(&block, 0, sizeof(block));
++        }
++        if (locals) stats[3]++;
 +        unsigned pre = 0;
 +        for (uint32_t i = n; i-- > 0;) {
 +            WordInfo *w = &info[list[i]];
@@ -54183,6 +55270,8 @@ index 0000000000000000000000000000000000000000..c6a4e7bc1dcc0ff55fbcf9ec817c074e
 +            w->end = list[n - 1] + 1;
 +            w->last = i == n - 1;
 +            w->pre = pre;
++            w->block = block;
++            w->locals = locals;
 +        }
 +        stats[0]++;
 +        stats[1] += n;
@@ -54203,6 +55292,42 @@ index 0000000000000000000000000000000000000000..c6a4e7bc1dcc0ff55fbcf9ec817c074e
 +    out(o, "\n};\n\n");
 +}
 +
++/* The entry test of a block with locals: the mode its code assumes. */
++static void guard_text(Out *o, const RegUse *block)
++{
++    out(o, "(dsp->registers[DSP_REG_SR] & DSP_RB_MODE_MASK)");
++    for (unsigned r = 0; r < 8; r++)
++        if (block->mguard & (1u << r))
++            out(o, " ||\n        (uint16_t)dsp->registers[DSP_REG_M0 + %u] != 0xffff", r);
++}
++
++static unsigned block_mark(const WordInfo *info, const uint32_t *pram, uint32_t h)
++{
++    return pram[h] >= 0x100000 ? (unsigned)ARRAY_SIZE(nonparallel_opcodes)
++                               : (unsigned)(info[h].entry - nonparallel_opcodes);
++}
++
++/* A REP whose repeated word the block code can run natively (DSP_RB_REP_READY):
++ * the next word, first of its own block in this chunk, specialised, with
++ * no peripheral store or branch. */
++static bool native_rep(const WordInfo *info, const uint32_t *pram, uint32_t a, uint32_t hi)
++{
++    if (pram[a] >= 0x100000 || !info[a].entry) return false;
++    if (strncmp(names_np[info[a].entry - nonparallel_opcodes], "emu_rep_", 8)) return false;
++    uint32_t x = a + 1;
++    return x < hi && info[x].compiled && info[x].plain && info[x].special && !info[x].xwrite &&
++           !info[x].branch && info[x].head == x && info[x].locals;
++}
++
++static void emit_registers(Out *o, uint64_t set, bool store)
++{
++    for (unsigned r = 0; r < DSP_REG_MAX; r++)
++        if (set & (1ull << r)) {
++            if (store) out(o, "    dsp->registers[0x%02X] = g%02X;\n", r, r);
++            else out(o, "    g%02X = dsp->registers[0x%02X];\n", r, r);
++        }
++}
++
 +static void emit_blocks(Out *o, const char *name, const char *threaded, int prog, const uint32_t *pram)
 +{
 +    const WordInfo *info = infos[prog];
@@ -54213,7 +55338,12 @@ index 0000000000000000000000000000000000000000..c6a4e7bc1dcc0ff55fbcf9ec817c074e
 +        if (!chunk_used[c]) continue;
 +        uint32_t lo = c * CHUNK, hi = lo + CHUNK;
 +        out(o, "static DSP_RECOMP_NOINLINE int %s_%X(dsp_core_t* dsp, int budget, const uint32_t* dma_control, uint32_t dma_running, int used)\n{\n", name, c);
-+        out(o, "    uint32_t la1 = 0xffffffffu;\n    int cyc = 0;\n");
++        out(o, "    uint32_t la1 = 0xffffffffu, br_taken, br_target;\n    int cyc = 0;\n    (void)br_taken; (void)br_target;\n");
++        uint64_t chunk_regs = 0;
++        for (uint32_t a = lo; a < hi; a++)
++            if (info[a].compiled && info[a].locals) chunk_regs |= info[a].block.rd | info[a].block.wr;
++        for (unsigned r = 0; r < DSP_REG_MAX; r++)
++            if (chunk_regs & (1ull << r)) out(o, "    uint32_t g%02X;\n", r);
 +        out(o, "dispatch:\n    switch (dsp->pc) {\n");
 +        for (uint32_t a = lo; a < hi; a++)
 +            if (info[a].compiled) out(o, "    case 0x%03X: goto E_%03X;\n", a, a);
@@ -54225,8 +55355,29 @@ index 0000000000000000000000000000000000000000..c6a4e7bc1dcc0ff55fbcf9ec817c074e
 +            uint32_t h = w->head;
 +            unsigned mark = pram[h] >= 0x100000 ? (unsigned)ARRAY_SIZE(nonparallel_opcodes)
 +                                                : (unsigned)(info[h].entry - nonparallel_opcodes);
-+            out(o, "E_%03X:\n    DSP_RB_ENTER(0x%03X, 0x%03X, %d, %u, %u, %s_%X);\n    goto L_%03X;\n",
-+                a, h, w->end, prog, mark, w->pre, threaded, c, a);
++            out(o, "E_%03X:\n    DSP_RB_ENTER(0x%03X, 0x%03X, %d, %u, %u, %s_%X);\n",
++                a, h, w->end, prog, mark, w->pre, threaded, c);
++            if (w->locals) {
++                out(o, "    if ((dsp->registers[DSP_REG_SR] & DSP_RB_MODE_MASK)");
++                for (unsigned r = 0; r < 8; r++)
++                    if (w->block.mguard & (1u << r))
++                        out(o, " ||\n        (uint16_t)dsp->registers[DSP_REG_M0 + %u] != 0xffff", r);
++                out(o, ")\n        return %s_%X(dsp, budget, dma_control, dma_running, used);\n", threaded, c);
++                emit_registers(o, w->block.rd | w->block.wr, false);
++            }
++            out(o, "    goto L_%03X;\n", a);
++        }
++        for (uint32_t a = lo; a < hi; a++) {
++            if (!info[a].compiled || !native_rep(info, pram, a, hi)) continue;
++            uint32_t x = a + 1;
++            const WordInfo *xi = &info[x];
++            out(o, "P_%03X:\n", x);
++            emit_registers(o, xi->block.rd | xi->block.wr, false);
++            out(o, "    la1 = (dsp->registers[DSP_REG_SR] & (1u << DSP_SR_LF)) ? dsp->registers[DSP_REG_LA] + 1 : 0xffffffffu;\n"
++                   "    cyc = 0;\n    {\n        uint32_t rep_left = dsp->registers[DSP_REG_LC] - 1;\n"
++                   "        while (rep_left--) {\n%s        cyc += %u;\n        }\n    }\n"
++                   "    dsp->registers[DSP_REG_LC] = dsp->registers[DSP_REG_LCSAVE];\n    dsp->loop_rep = 0;\n"
++                   "    goto L_%03X;\n", xi->special, xi->cycles, x);
 +        }
 +        for (uint32_t a = lo; a < hi; a++) {
 +            if (!info[a].compiled) continue;
@@ -54240,16 +55391,48 @@ index 0000000000000000000000000000000000000000..c6a4e7bc1dcc0ff55fbcf9ec817c074e
 +            out(o, "L_%03X:\n", a);
 +            bool next_entry = next < hi && info[next].compiled;
 +            if (!w->plain) {
-+                out(o, "    DSP_RB_FLUSH();\n    dsp->pc = 0x%03X;\n    DSP_RECOMP_STEP(0x%06X, %s);\n", a, word, call);
++                if (w->locals) emit_registers(o, w->block.wr, true);
++                if (native_rep(info, pram, a, hi)) {
++                    uint32_t x = a + 1;
++                    const WordInfo *xi = &info[x];
++                    out(o, "    DSP_RB_FLUSH();\n    dsp->pc = 0x%03X;\n    DSP_RB_REP_STEP(0x%06X, %s);\n", a, word, call);
++                    out(o, "    if (DSP_RB_REP_READY(0x%03X, 0x%03X, 0x%03X, %d, %u, %u, %u) && !(", x, xi->head, xi->end, prog,
++                        block_mark(info, pram, x), xi->cycles, xi->pre);
++                    guard_text(o, &xi->block);
++                    out(o, "))\n        goto P_%03X;\n    if (DSP_RECOMP_STOPPED) return used;\n", x);
++                } else {
++                    out(o, "    DSP_RB_FLUSH();\n    dsp->pc = 0x%03X;\n    DSP_RECOMP_STEP(0x%06X, %s);\n", a, word, call);
++                }
 +                if (next_entry) out(o, "    if (dsp->pc == 0x%03X) goto E_%03X;\n", next, next);
++                if (w->target >= lo && w->target < hi && info[w->target].compiled && (uint32_t)w->target != next)
++                    out(o, "    if (dsp->pc == 0x%03X) goto E_%03X;\n", (uint32_t)w->target, (uint32_t)w->target);
 +                out(o, "    goto dispatch;\n");
 +                continue;
 +            }
-+            if (word < 0x100000)
-+                out(o, "    dsp->cur_inst = 0x%06X;\n    dsp->cur_inst_len = 1;\n    dsp->pc = 0x%03X;\n", word, a);
-+            else if (w->len > 1)
-+                out(o, "    dsp->cur_inst_len = 1;\n    dsp->pc = 0x%03X;\n", a);
-+            out(o, "    %s;\n    cyc += %u;\n", call, w->cycles);
++            if (w->special) {
++                out(o, "%s", w->special);
++            } else {
++                if (w->locals) emit_registers(o, w->block.wr, true);
++                if (word < 0x100000)
++                    out(o, "    dsp->cur_inst = 0x%06X;\n    dsp->cur_inst_len = 1;\n    dsp->pc = 0x%03X;\n", word, a);
++                else if (w->len > 1)
++                    out(o, "    dsp->cur_inst_len = 1;\n    dsp->pc = 0x%03X;\n", a);
++                out(o, "    %s;\n", call);
++                if (w->locals) emit_registers(o, w->block.rd | w->block.wr, false);
++            }
++            out(o, "    cyc += %u;\n", w->cycles);
++            Out store = {0};
++            if (w->locals) emit_registers(&store, w->block.wr, true);
++            const char *flush = store.buf ? store.buf : "";
++            if (w->branch) {
++                out(o, "    if (br_taken) {\n%s        DSP_RB_SAVE(br_target, 0x%06X, 0, %u);\n"
++                       "        if (la1 == br_target) goto loop_end;\n", flush, word, w->cycles);
++                if (w->target >= lo && w->target < hi && info[w->target].compiled)
++                    out(o, "        goto E_%03X;\n", (uint32_t)w->target);
++                else
++                    out(o, "        goto dispatch;\n");
++                out(o, "    }\n");
++            }
 +            /* A DO loop ending here and starting at this block's head goes
 +             * round without leaving the block (DSP_RB_LOOP_AGAIN). */
 +            char again[128];
@@ -54257,18 +55440,20 @@ index 0000000000000000000000000000000000000000..c6a4e7bc1dcc0ff55fbcf9ec817c074e
 +                     h, info[h].pre);
 +            if (w->last) {
 +                out(o, "    if (la1 == 0x%03X && %s) goto L_%03X;\n", next, again, h);
-+                out(o, "    DSP_RB_SAVE(0x%03X, 0x%06X, %u, %u);\n    if (la1 == 0x%03X) goto loop_end;\n",
-+                    next, word, w->len, w->cycles, next);
++                out(o, "%s    DSP_RB_SAVE(0x%03X, 0x%06X, %u, %u);\n    if (la1 == 0x%03X) goto loop_end;\n",
++                    flush, next, word, w->len, w->cycles, next);
++                free(store.buf);
 +                if (next_entry) out(o, "    goto E_%03X;\n", next);
 +                else out(o, "    goto dispatch;\n");
 +                continue;
 +            }
 +            out(o, "    if (la1 == 0x%03X) {\n        if (%s) goto L_%03X;\n"
-+                   "        DSP_RB_SAVE(0x%03X, 0x%06X, %u, %u);\n        goto loop_end;\n    }\n",
-+                next, again, h, next, word, w->len, w->cycles);
++                   "%s        DSP_RB_SAVE(0x%03X, 0x%06X, %u, %u);\n        goto loop_end;\n    }\n",
++                next, again, h, flush, next, word, w->len, w->cycles);
 +            if (w->xwrite)
-+                out(o, "    if (DSP_RB_PERIPHERAL_STOP) { DSP_RB_SAVE(0x%03X, 0x%06X, %u, %u); goto dispatch; }\n",
-+                    next, word, w->len, w->cycles);
++                out(o, "    if (DSP_RB_PERIPHERAL_STOP) {\n%s        DSP_RB_SAVE(0x%03X, 0x%06X, %u, %u);\n        goto dispatch;\n    }\n",
++                    flush, next, word, w->len, w->cycles);
++            free(store.buf);
 +        }
 +        out(o, "}\n\n");
 +    }
@@ -54329,7 +55514,8 @@ index 0000000000000000000000000000000000000000..c6a4e7bc1dcc0ff55fbcf9ec817c074e
 +     * (dsp_recomp_threaded.c, DSP_RECOMP_THREADED_UNIT), the block code with
 +     * dsp_cpu.c; without it both are static parts of dsp_cpu.c. */
 +    out(&o, "#ifdef DSP_RECOMP_SPLIT\n#define DSP_RECOMP_LINKAGE\n#else\n#define DSP_RECOMP_LINKAGE static\n#endif\n\n");
-+    unsigned stats[2][2] = {{0}};
++    check_alu();
++    unsigned stats[2][4] = {{0}};
 +    plan_blocks(0, gp, have_gp, stats[0]);
 +    plan_blocks(1, ep, have_ep, stats[1]);
 +    out(&o, "#if !defined(DSP_RECOMP_SPLIT) || defined(DSP_RECOMP_THREADED_UNIT)\n");
@@ -54344,8 +55530,9 @@ index 0000000000000000000000000000000000000000..c6a4e7bc1dcc0ff55fbcf9ec817c074e
 +    emit_blocks(&o, "dsp_rb_gp", "dsp_recomp_gp", 0, gp);
 +    emit_blocks(&o, "dsp_rb_ep", "dsp_recomp_ep", 1, ep);
 +    out(&o, "#endif /* !DSP_RECOMP_THREADED_UNIT */\n");
-+    fprintf(stderr, "dsp_recomp_gen: blocks gp %u (%u words), ep %u (%u words)\n",
-+            stats[0][0], stats[0][1], stats[1][0], stats[1][1]);
++    fprintf(stderr, "dsp_recomp_gen: blocks gp %u (%u words, %u specialised, %u with locals), "
++            "ep %u (%u words, %u specialised, %u with locals)\n",
++            stats[0][0], stats[0][1], stats[0][2], stats[0][3], stats[1][0], stats[1][1], stats[1][2], stats[1][3]);
 +
 +    FILE *f = fopen(argv[3], "rb");
 +    if (f) {
