@@ -68,6 +68,7 @@ static unsigned s_profile;
 #define TOUCHED 65536
 static uint32_t touched[TOUCHED];
 static volatile LONG touched_count;
+static volatile LONG s_overflow;
 
 static uint32_t mix(uint32_t v)
 {
@@ -100,7 +101,17 @@ static LONG CALLBACK on_fault(PEXCEPTION_POINTERS ep)
     if (a < (uintptr_t)base || a - (uintptr_t)base >= 0x100000000ull) return EXCEPTION_CONTINUE_SEARCH;
     page = (uint32_t)((a - (uintptr_t)base) / 4096);
     n = InterlockedIncrement(&touched_count);
-    if (n > TOUCHED) return EXCEPTION_CONTINUE_SEARCH;
+    if (n > TOUCHED) {
+        /* Inputs that run through more than 256 MB: the fault ends the case
+         * (run_one's __except), which is then not compared. The count stays
+         * the number of recorded pages; it used to run past touched[], and
+         * hashing the guest memory afterwards read uncommitted pages outside
+         * __try and crashed the harness (C0000005 on the original version
+         * too, counted as a failure). */
+        InterlockedDecrement(&touched_count);
+        s_overflow = 1;
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     if (!VirtualAlloc(base + (size_t)page * 4096, 4096, MEM_COMMIT, PAGE_READWRITE)) {
         /* The machine is out of commit (other work beside the test): no
          * difference between the versions, so say so rather than crash. */
@@ -155,7 +166,7 @@ static uint64_t memory_hash_canonical(void)
 
 typedef struct {
     uint32_t r[10]; double fp[8]; int top, cmp, df; uint16_t cc, cw; uint64_t memory, canonical;
-    int done, stubs; DWORD code;
+    int done, stubs, overflow; DWORD code;
 } Result;
 static DWORD s_code;
 static RECOMP_TLS int s_stub_calls;
@@ -195,6 +206,7 @@ static int run_one(fn_t fn, uint32_t seed, Result *out)
     s_seed = seed;
     setup(seed);
     s_code = 0;
+    s_overflow = 0;
     __try {
         fn();
     } __except (s_code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
@@ -205,6 +217,7 @@ static int run_one(fn_t fn, uint32_t seed, Result *out)
     memcpy(out->fp, g_fp_stack, sizeof out->fp);
     out->top = g_fp_top; out->cmp = g_fp_cmp; out->df = g_df; out->cc = g_fp_cc; out->cw = g_fp_control_word;
     out->stubs = s_stub_calls;
+    out->overflow = s_overflow;
     out->done = 1;
     out->memory = memory_hash();
     out->canonical = memory_hash_canonical();
@@ -276,6 +289,8 @@ static int produced_nan(const Result *r)
  *                    as one value (payloads follow the compiler's operand order)
  *   SKIP nan-derived the original made a NaN and differs in values worked out
  *                    from NaN bits
+ *   SKIP memory      both versions ran through more guest memory than the
+ *                    harness keeps (the inputs, not the code)
  *   FAIL ...         a real difference */
 static void fail(const char *name, unsigned c, const char *what, const Result *a, const Result *b)
 {
@@ -293,7 +308,13 @@ int main(int argc, char **argv)
     LARGE_INTEGER frequency, start, end;
     if (argc < 2) { printf("%u\n", PAIR_COUNT); return 0; }
     if (argc < 3) { for (f = 0; f < PAIR_COUNT; ++f) puts(pairs[f].name); return 0; }
+    /* The function by index, or by name: a name passed to atoi used to
+     * select function 0 without a word. */
     f = (unsigned)atoi(argv[1]); c = (unsigned)atoi(argv[2]);
+    if (!strncmp(argv[1], "sub_", 4)) {
+        for (f = 0; f < PAIR_COUNT && strcmp(pairs[f].name, argv[1]); ++f) {}
+        if (f >= PAIR_COUNT) { printf("FAIL no function %s\n", argv[1]); return 2; }
+    }
     s_profile = argc > 3 ? (unsigned)atoi(argv[3]) : 0;
     if (f >= PAIR_COUNT) return 2;
     base = (unsigned char *)VirtualAlloc(NULL, 0x100000000ull, MEM_RESERVE, PAGE_NOACCESS);
@@ -310,6 +331,13 @@ int main(int argc, char **argv)
     printf("A %.0f\n", (double)(end.QuadPart - start.QuadPart) * 1000.0 / (double)frequency.QuadPart);
     fflush(stdout);
     rb = run_one(getenv("X87_SELF") ? pairs[f].original : pairs[f].locals, seed, &b);
+    if (a.overflow || b.overflow) {
+        /* Not comparable: the inputs sent it through more memory than the
+         * harness keeps. Only both versions overflowing is an input problem. */
+        if (a.overflow != b.overflow) { fail(pairs[f].name, c, "only one version ran through all memory", &a, &b); return 1; }
+        puts("SKIP memory");
+        return 0;
+    }
     if (ra < 0 || rb < 0) {
         if (ra >= 0 || rb >= 0 || a.code != b.code) {
             fail(pairs[f].name, c, "faulted differently", &a, &b);
@@ -346,7 +374,8 @@ int main(int argc, char **argv)
 CASE_SECONDS = 4.0
 
 
-OUTCOMES = ("SAME", "SAME fault", "SAME nan", "SAME fault nan", "SKIP nan-derived", "SLOW", "STARVED", "FAIL")
+OUTCOMES = ("SAME", "SAME fault", "SAME nan", "SAME fault nan", "SKIP nan-derived", "SKIP memory", "SLOW",
+            "STARVED", "FAIL")
 
 
 def run_case(harness, folder, function, case, profile):
@@ -414,7 +443,7 @@ def drive(harness, folder, cases, jobs, report=None):
     if uncovered:
         reasons = {}
         for name in uncovered:
-            key = "+".join(k for k in ("SKIP nan-derived", "SLOW") if per[name][k]) or "none"
+            key = "+".join(k for k in ("SKIP nan-derived", "SKIP memory", "SLOW") if per[name][k]) or "none"
             reasons[key] = reasons.get(key, 0) + 1
         print(f"  never compared: {len(uncovered)} ({', '.join(f'{n} {k}' for k, n in reasons.items())})")
     if report:
