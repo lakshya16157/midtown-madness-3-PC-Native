@@ -6,6 +6,7 @@ Scripts/logic_circuit.lua logs through src/mm3_lua_errors.c:
     [MM3_CIRCUIT] <seconds> pos <tick> <x y z of VH-0> ... at <each opponent's next target>   (once a second)
     [MM3_CIRCUIT] <seconds> gate <player> <gate> lap <lap>
     [MM3_CIRCUIT] <seconds> stuck|reset <player> <x> <z> ...
+    [MM3_CIRCUIT] <seconds> away <player> <x> <z> from WP-<k> <metres> m   (heading away from its target)
 
     python tools/races/trace.py logs/direct-<time>.log [race number]
 
@@ -112,7 +113,7 @@ def report(path, only=None):
                         (seconds, values[width * car], values[width * car + width - 1]))
                 for car, target in enumerate(words[cut + 1:], 1):
                     targets.setdefault(car, []).append((seconds, int(target)))
-            elif words[0] in ("stuck", "reset", "missed", "lost"):
+            elif words[0] in ("stuck", "reset", "missed", "lost", "away"):
                 print("  ", words[0], " ".join(words[1:]))
         gates = {}
         for seconds, words in lines:

@@ -21,9 +21,15 @@ static DWORD WINAPI fixture_get_state(DWORD port, XINPUT_STATE *state)
     return ERROR_SUCCESS;
 }
 
+static unsigned vibration_calls;
+static DWORD vibration_port;
+static XINPUT_VIBRATION vibration_last;
+
 static DWORD WINAPI fixture_set_state(DWORD port, XINPUT_VIBRATION *vibration)
 {
-    (void)port; (void)vibration;
+    ++vibration_calls;
+    vibration_port = port;
+    vibration_last = *vibration;
     return ERROR_SUCCESS;
 }
 
@@ -47,6 +53,10 @@ ptrdiff_t xbox_GetMemoryOffset(void) { return 0; }
 bool nv2a_hook_pvideo_snapshot(uint32_t regs[0x1000 / 4])
 {
     (void)regs; return false;
+}
+bool nv2a_hook_pvideo_scanout_snapshot(Nv2aPvideoSnapshot *snapshot)
+{
+    (void)snapshot; return false;
 }
 void nv2a_hook_pvideo_consume(unsigned bank) { (void)bank; }
 float nv2a_d3d_display_aspect(void) { return 4.0f / 3.0f; }
@@ -457,6 +467,29 @@ static void check_escape(HWND window, BOOL mm3)
     }
 }
 
+/* The title's rumble report (id 0, length 6, left and right motor speeds,
+ * little endian) reaches host pad n's XInput motors unchanged, once per
+ * change; anything else is not a rumble report. */
+static void check_rumble(void)
+{
+    static const uint8_t strong[6] = {0x00, 0x06, 0x00, 0xC0, 0x00, 0x40};
+    static const uint8_t stop[6] = {0x00, 0x06, 0x00, 0x00, 0x00, 0x00};
+    static const uint8_t not_rumble[6] = {0x01, 0x06, 0x00, 0xC0, 0x00, 0x40};
+    unsigned before = vibration_calls;
+    CHECK(usb_gamepad_output(1, strong, 6) == 1);
+    CHECK(vibration_calls == before + 1 && vibration_port == 1);
+    CHECK(vibration_last.wLeftMotorSpeed == 0xC000 && vibration_last.wRightMotorSpeed == 0x4000);
+    CHECK(usb_gamepad_output(1, strong, 6) == 1);                 /* unchanged: not resent */
+    CHECK(vibration_calls == before + 1);
+    CHECK(usb_gamepad_output(1, stop, 6) == 1);
+    CHECK(vibration_calls == before + 2 && vibration_last.wLeftMotorSpeed == 0 &&
+          vibration_last.wRightMotorSpeed == 0);
+    CHECK(usb_gamepad_output(1, not_rumble, 6) == 0);
+    CHECK(usb_gamepad_output(1, strong, 5) == 0);                 /* short */
+    CHECK(usb_gamepad_output(4, strong, 6) == 0);                 /* no such pad */
+    CHECK(vibration_calls == before + 2);
+}
+
 int main(int argc, char **argv)
 {
     WNDCLASSA wc = {0};
@@ -484,6 +517,7 @@ int main(int argc, char **argv)
     check_camera(window, mm3);
     check_handbrake(window, mm3);
     check_escape(window, mm3);
+    check_rumble();
     DestroyWindow(window);
     UnregisterClassA(wc.lpszClassName, wc.hInstance);
     printf("%s input contract: %u checks, %u failures\n", argv[1], checks, failures);

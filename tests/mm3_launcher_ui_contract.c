@@ -607,11 +607,24 @@ static void capture_page(HWND window, const char *name)
     CHECK(!fclose(file));
     SelectObject(memory, previous); DeleteObject(bitmap); DeleteDC(memory); ReleaseDC(NULL, screen);
 }
+/* The desktop's real pointer, wherever it rests over the window, makes Windows
+ * send WM_MOUSEMOVE as controls show and hide, and the launcher then shows the
+ * help of the control under it: the help panel changed between a check's
+ * delivered message and its read, at a different check each run. Let the
+ * pointer pass through the window; hover checks deliver their own moves. */
+static void ignore_pointer(HWND window)
+{
+    LONG_PTR style = GetWindowLongPtrA(window, GWL_EXSTYLE);
+    SetWindowLongPtrA(window, GWL_EXSTYLE, style | WS_EX_LAYERED | WS_EX_TRANSPARENT);
+    CHECK(SetLayeredWindowAttributes(window, 0, 255, LWA_ALPHA));
+}
+
 static DWORD WINAPI exercise(void *unused)
 {
     (void)unused;
     HWND window = wait_launcher();
     RECT bounds, work;
+    ignore_pointer(window);
     GetWindowRect(window, &bounds); SystemParametersInfoA(SPI_GETWORKAREA, 0, &work, 0);
     CHECK(bounds.left >= work.left && bounds.top >= work.top && bounds.right <= work.right && bounds.bottom <= work.bottom);
     HWND play = GetDlgItem(window, IDOK); RECT footer;
@@ -689,7 +702,7 @@ static void smaller_layout(void)
     HWND window = CreateWindowExA(WS_EX_CONTROLPARENT, "MM3NativeLauncher", "Midtown Madness 3 - 720p layout check",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, 0, 0,
         bounds.right - bounds.left, bounds.bottom - bounds.top, NULL, NULL, GetModuleHandleA(NULL), &ui);
-    CHECK(window); ShowWindow(window, SW_SHOWNORMAL); UpdateWindow(window);
+    CHECK(window); ignore_pointer(window); ShowWindow(window, SW_SHOWNORMAL); UpdateWindow(window);
     /* No messages have been pumped: connection discovery must happen during
      * creation instead of waiting for the first 70 ms timer. */
     expect_ports(window, 8);

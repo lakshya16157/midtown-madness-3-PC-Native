@@ -40,6 +40,16 @@ OVERHEAD_CLEARANCE = 4.0   # ... and this much higher covers it
 STACK_REACH = 7.0          # a road this close and OVERHEAD_CLEARANCE higher or lower is right over or under
 GATE_SLIDE = 80.0          # a gate in a stacked stretch moves at most this far to clear it ...
 GATE_CLEAR = 20.0          # ... to where the course is clear this far either side
+# Past a stacked stretch longer than STACK_STRETCH the game's opponents can
+# take the road over or under it for the one they are on. In Paris 29 they did
+# under the Peripherique's covered section: the start/finish 90 m past its end
+# was nearer, by that road, turning back round onto the ring, so every
+# opponent turned round in the trench and circled the streets above. No target
+# (gate, start/finish or path point) stands for STACK_SHADOW metres of course
+# after such a stretch, past where the road above rejoins the course, so any
+# way the game finds leads on.
+STACK_STRETCH = 60.0
+STACK_SHADOW = 600.0
 # Shipping containers: model, spacing along their long (facing) axis and width,
 # from the models' bounds in <City>.xbc ("container" 2.5 x 4.6 m, "Container2"
 # 3.3 x 6.0 m) with a small gap so neighbours never start overlapping.
@@ -304,8 +314,24 @@ def layout(graph, city, corners, start_road=None, laps=1):
     overhead = Overhead(graph, {road for road, _ in path})
     stacked = Stacked(graph)
 
+    # Stacked stretches of the course (start, end), metres from the polyline start.
+    shadows, run = [], None
+    for k in range(int(lap // 5.0) + 1):
+        s = k * 5.0
+        if stacked.at(*at_distance(points, dist, s)[0]):
+            if run and s - run[1] <= 20.0:
+                run[1] = s
+            else:
+                run = [s, s]
+                shadows.append(run)
+    shadows = [(a, b) for a, b in shadows if b - a >= STACK_STRETCH]
+    c.stack_shadows = [(round(a), round(b)) for a, b in shadows]
+
+    def shadowed(s):
+        return any((s - a) % lap <= (b - a) + STACK_SHADOW for a, b in shadows)
+
     def clear(s):
-        return not stacked.at(*at_distance(points, dist, s)[0])
+        return not stacked.at(*at_distance(points, dist, s)[0]) and not shadowed(s)
 
     def grid_clear(s):
         return clear(s) and not any(overhead.above(*at_distance(points, dist, s - back)[0])
@@ -506,7 +532,8 @@ def layout(graph, city, corners, start_road=None, laps=1):
     kept = []
     for m in filled:
         if m[1] is None and (m[0] < PATH_MIN_GAP or any(abs(m[0] - g) < PATH_MIN_GAP for g in gates) or
-                             (kept and m[0] - kept[-1][0] < PATH_MIN_GAP) or stacked.at(*where(m))):
+                             (kept and m[0] - kept[-1][0] < PATH_MIN_GAP) or stacked.at(*where(m)) or
+                             shadowed(sf + m[0])):
             continue
         kept.append(m)
     route = CourseRoutes(graph, path, meetings, dist, starts, lap)
@@ -528,6 +555,7 @@ def layout(graph, city, corners, start_road=None, laps=1):
     # targets that could leave the course.
     c.unresolved = sum(not route.follows(a, b) for a, b in zip([sf] + targets, targets))
     c.target_gaps = [b - a for a, b in zip([sf] + targets, targets)]
+    c.targets, c.shadowed = targets, shadowed
     # Grid: place 1 (the player) at the back, then forward, in two columns on
     # the right-hand half of the road (a divided highway's other half is the
     # other carriageway, behind its middle barrier).
@@ -597,6 +625,7 @@ def summary(name, c):
             f"{len(c.props)} containers, {len(c.gates) + path_points * c.laps + len(c.props) + 1} objects"
             f", opponent targets {min(c.target_gaps):.0f}-{max(c.target_gaps):.0f} m apart"
             + (f", {c.overhead_points} covered course points" if c.overhead_points else "")
+            + (f", no targets past stacked stretches {c.stack_shadows}" if c.stack_shadows else "")
             + (f", {c.unresolved} opponent routes off the course" if c.unresolved else ""))
 
 

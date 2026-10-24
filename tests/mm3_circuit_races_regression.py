@@ -190,11 +190,18 @@ function gameIsOnline() return 0 end
 function lobbyGetNumberOfPlayers() return 1 end
 function lobbyGetModel() return "lotus" end
 function getVehicleGroup() return 2 end
+-- The catalog has performance groups 1-4 (none above, as the game returns
+-- nothing for an empty group); each call hands out a new car of the group.
 car_counter = 0
-function getRandomVehicleFromGroup()
+car_group = {}
+function getRandomVehicleFromGroup(group, pick)
+	if group == nil or group > 4 then return nil end
 	car_counter = car_counter + 1
+	car_group["car" .. car_counter] = group
 	return "car" .. car_counter
 end
+ai_variables = {}
+function aiSetVariable(name, value) ai_variables[name] = value end
 function soundLength() return 1 end
 function rand(n) return 0 end
 function playerGetScore() return 0 end
@@ -316,17 +323,19 @@ for i = 2, getn(models), 1 do
 	assert(circuitOriginalCar(models[i]) == 1 or models[i] == "koenigsegg", "an opponent drives " .. models[i])
 end
 assert(getRandomVehicleFromGroup ~= circuitVehicle and randomCarInGroup ~= circuitPick)
--- The rival races the player's car (the mock lobby's "lotus"): loaded twice.
-player_cars = 0
-for i = 1, getn(models), 1 do
-	if models[i] == "lotus" then player_cars = player_cars + 1 end
-end
-assert(player_cars == 2, "the player's car loaded " .. player_cars .. " times")
--- In another car the player races a rival in an original car of the group.
-retail_lobby = lobbyGetModel
-lobbyGetModel = function() return "Car3.2" end
-assert(circuitPick(1, 2) ~= "car3")
-lobbyGetModel = retail_lobby
+-- The rival (VH-1) races an original car two groups faster than the
+-- player's (group 2).
+assert(car_group[models[2]] == 4, "the rival's car " .. models[2] .. " is not from group 4")
+assert(circuitOriginalCar(models[2]) == 1)
+-- Already in the top group: the best car of the player's own group.
+assert(car_group[circuitPick(1, 4)] == 4)
+-- With the DLC and extra cars allowed the rival takes the faster group's best,
+-- whatever car it is.
+circuit_all_cars = 1
+assert(car_group[circuitPick(1, 2)] == 4 and car_group[circuitPick(1, 3)] == 4)
+circuit_all_cars = 0
+-- Opponents keep clear of the blocks with a 4 m margin, not retail's 10 m.
+assert(ai_variables["rc::m_avoidRadiusAdd"] == circuit_avoid_radius)
 -- Catch-up: out of sight behind only, no launch boost, and the speed moves
 -- smoothly towards what the gap asks for (no steps that brake a car), once a
 -- second at most.
@@ -348,8 +357,10 @@ checkAISpeed()
 for i = 1, 40, 1 do
 	last = speeds["Comp--0"]
 	timers["circuit_trace"]()
-	assert(last - speeds["Comp--0"] <= circuit_pace_step + 0.0001, "the speed dropped at once")
+	assert(last - speeds["Comp--0"] <= circuit_pace_ease + 0.0001, "the speed dropped at once")
 end
+-- It eases off slower than it rises (a fast drop braked on straights).
+assert(circuit_pace_ease < circuit_pace_step)
 assert(speeds["Comp--0"] == 1.0 and speeds["Comp--1"] == 1.0 and speeds["Comp--2"] == 1.0)
 -- An opponent that stops (the cars stay on the grid) gives up the target it
 -- heads for after three checks; no car is ever moved.
@@ -395,11 +406,25 @@ for step = 1, total, 1 do
 	last = gate
 end
 assert(current_target[1] == total)
+-- Over the line the race is over for the script: the retail avoid margin is
+-- back and the opponents' timers stop giving them anything.
+assert(circuit_over == 1 and ai_variables["rc::m_avoidRadiusAdd"] == circuit_retail_avoid_radius)
+armed_before = getn(arm_order["Comp--0"] or {})
+timers["circuit_follow"]()
+timers["circuit_trace"]()
+checkAISpeed()
+assert(getn(arm_order["Comp--0"] or {}) == armed_before, "an opponent was armed after the finish")
 finals = 0
 lap_messages = 0
+missed_messages = 0
 for i = 1, getn(messages), 1 do
 	if messages[i] == "SID_MM3_LAP_FINAL" then finals = finals + 1 end
 	if std_strsub(messages[i], 1, 12) == "SID_MM3_LAP_" then lap_messages = lap_messages + 1 end
+	if std_strsub(messages[i], 1, 15) == "SID_MM3_MISSED_" then missed_messages = missed_messages + 1 end
+end
+-- A gate passed out of turn says which one was missed.
+if total > 1 then
+	assert(missed_messages >= 1, "no missed-checkpoint message")
 end
 if laps > 1 then
 	assert(finals == 1, "final lap shown " .. finals .. " times")
@@ -429,6 +454,7 @@ VERIFIED_NATIVES = {
     "playerDisableWayPoint",   # registered at 0x00206A8C, handler 0x001FE208
     "playerDisableCheckPoint",  # registered at 0x002069C1, handler 0x001FE7D7
     "_ERRORMESSAGE",           # Lua 4.0's error handler (sub_0020F684, src/mm3_lua_errors.c)
+    "mm3AiAllCars",            # added after sub_0020646F's list by src/mm3_lua_natives.c
 }
 # Lua 4.0 standard functions the game's own Lua does not have: retail scripts
 # never call them, and the game has no format (or floor) in its registrations.
@@ -487,6 +513,28 @@ def check_stacked(design, circuits, circuit, stacks):
     for _, _, x, y, z, gate in route:
         assert not stacks[city].at(x, y, z), (circuit["name"], gate, x, y, z)
     return len(route)
+
+
+def check_stack_shadow(design, circuits, circuit, graphs):
+    """Past a long stacked stretch (Paris 29's covered Peripherique) the game's
+    opponents can take the road above for the one they are on; with a target
+    just past the stretch they turned round for it and circled the streets
+    above. The layout keeps every target design.STACK_SHADOW metres clear of
+    such a stretch, and circuits.json is that layout."""
+    city = circuit["city"]
+    if city not in graphs:
+        known = (ROOT / "tools" / "races" / "data" / f"{city}.json").is_file()
+        graphs[city] = design.roadgraph.load(city) if known else None
+    if graphs[city] is None:
+        return 0
+    spec = next(s for s in circuits.DESIGNS if s["city"] == city and s["race"] == circuit["race"])
+    c = design.layout(graphs[city], city, spec["corners"], spec.get("start_road"), spec["laps"])
+    assert len(c.gates) == len(circuit["gates"]) and all(
+        abs(a - b) < 0.01 for g, h in zip(c.gates, circuit["gates"]) for a, b in zip(g, h)), \
+        (circuit["name"], "circuits.json is not the current layout: run tools/races/design.py write")
+    for s in c.targets:
+        assert not c.shadowed(s), (circuit["name"], "target past a stacked stretch", s)
+    return len(c.stack_shadows)
 
 
 def pristine(name):
@@ -596,10 +644,12 @@ def main():
         retail = {name: hd.read(f"Scripts/{name}") for name in ("logic_general.lua", "logic_checkpoint.lua")}
         natives = real_natives(hd)
     check_mocks(natives)
-    stacks, targets = {}, 0
+    stacks, graphs, targets, shadows = {}, {}, 0, 0
     for circuit in circuits.circuits():
         targets += check_stacked(design, circuits, circuit, stacks)
-    print(f"PASS: {targets} opponent targets a lap, none right over or under another road")
+        shadows += check_stack_shadow(design, circuits, circuit, graphs)
+    print(f"PASS: {targets} opponent targets a lap, none right over or under another road, "
+          f"none just past {shadows} long stacked stretch(es)")
     files = entries["Data_hd.zip"]
     for name, data in files.items():
         # The game skips a script of 32 KB or more (sub_00214FC5).

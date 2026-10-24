@@ -17,6 +17,7 @@
 extern void sub_002203E5_original(void);
 extern void sub_0021ADF3(void);
 extern void mm3_debug_features_tick(void);
+extern void mm3_vehicle_dynamics_player(uint32_t player);
 
 static int enabled;
 static volatile LONG keyboard_sampled, keyboard_active;
@@ -200,6 +201,7 @@ void sub_002203E5(void)
         ReleaseSRWLockExclusive(&lock);
         if (body) mm3_stress_tick(player, body);
     }
+    mm3_vehicle_dynamics_player(g_ecx);
     sub_002203E5_original();
     mm3_debug_features_tick();
 }

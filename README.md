@@ -280,6 +280,13 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
 
 ## Improvements in this fork
 
+- **New in Setup 1.7:**
+  - **Post-race menu fixed:** after some circuit and checkpoint races (for example losing to an opponent in the second race of a session) the results and the post-race menu never appeared, or the game crashed. A piece of the original game's text-drawing code had never been translated, so it returned with scrambled registers and wrecked the results screen. It is translated now, with guards that log `[MM3_UI_GUARD]` instead of crashing if anything similar happens.
+  - **Controller vibration:** the game's own rumble now reaches the controller (XInput, and PlayStation pads through Steam Input). The game's vibration option turns it off.
+  - **Circuit opponents:** one rival drives a car from a much faster class, opponents may use the DLC and extra cars (Mods tab), keep a 4 m margin to the container rows instead of braking at blocked junctions, and ease off their catch-up speed instead of braking on straights. A skipped gate now says "CHECKPOINT n MISSED - GO BACK".
+  - **Driving:** slipstream behind other cars and a rollover assist for cars that flipped in hard corners (both on the Mods tab).
+  - **Faster x87 maths:** about 2,000 maths-heavy game functions keep their floating-point state in locals, 1.4-1.8x faster, checked function by function against the original translation.
+  - **Diagnostics:** `[MM3_UNRESOLVED]` names any untranslated game code the moment it runs; two such pieces found by playing (menu and race camera) are translated.
 - **New in Setup 1.6:**
   - **Circuit races:** ten lapped circuit races in each city, with their own Circuit button. The last ones run around the city on the highways. Opponents follow Midtown Madness 1-style paths, and side roads are closed with single rows of containers.
   - **Faster game code:** every recompiled game function keeps its register addresses and the memory base in locals instead of re-reading them after each memory access. That is about a quarter fewer instructions in the game's own code, with identical results.
@@ -1210,6 +1217,10 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `MM3_NATIVE_FOG` | saved setting or `1` | Enable native depth fog, skyline masking and camera-aware sky blending. |
 | `MM3_HUD_NORTH_MARKER` | saved setting or `0` | `1` shows the game's north letter on the minimap (Mods tab). |
 | `MM3_HUD_RACE_ARROW` | saved setting or `0` | `1` shows the game's top-screen arrow toward the next race checkpoint (Mods tab). |
+| `MM3_DRAFTING` | saved setting or `1` | Slipstream: a car close behind another pulls a little harder, for players and opponents alike (Mods tab). `0` drives as the original game. |
+| `MM3_ROLL_GUARD` | saved setting or `1` | Rollover assist: damps a car's roll once it leans past 20 degrees in a hard corner; crashes and jumps are left alone (Mods tab). |
+| `MM3_AI_ALL_CARS` | saved setting or `1` | Circuit-race opponents may drive DLC and extra cars; the rival takes the best car of a faster class (Mods tab). `0` keeps them to the original cars. |
+| `RECOMP_RUMBLE` | `1` | Controller vibration: the game's own rumble goes to the XInput pad (Steam Input passes it on to PlayStation pads). The game's vibration option turns it off in play; `0` keeps the controller still. |
 | `RECOMP_NET` | saved setting or `0` | `nat` or `1` enables the System Link adapter and UDP peer transport. |
 | `RECOMP_NET_PORT` / `RECOMP_NET_PEERS` | `3075` / empty | Local UDP tunnel port and up to eight comma-separated peer `host:port` entries. |
 | `RECOMP_DSP_PROGRAM_DIR` | `game_files/dsp` | Runtime DSP capture cache. Native compilation uses CMake's `XBOXRECOMP_DSP_PROGRAM_DIR`, with the same default. |

@@ -112,7 +112,7 @@ index f7b9f8fcb1e916fcc3686f4e207578a93a4d382a..93811ebc8d9b0e1b42cf3f9bf8071035
  uint64_t mcpx_apu_mmio_read(MCPXAPUState *d, uint64_t addr, unsigned int size);
  
 diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
-index 70ac34c..4fa3b5e 100644
+index 70ac34c2b274c09c25d28ce129cc16aa82e9c9ef..4fa3b5e60a21468d7142f9a63a580bf4e5eb8e4a 100644
 --- a/src/apu/apu_core.c
 +++ b/src/apu/apu_core.c
 @@ -23,6 +23,8 @@
@@ -1041,7 +1041,7 @@ index 70ac34c..4fa3b5e 100644
      }
  }
 diff --git a/src/apu/apu_dsp.c b/src/apu/apu_dsp.c
-index 37401ab..690c625 100644
+index 37401abfc056902fbd1cab1d91e5682c9550b3c8..690c625a3acd164ad76e9cc460cb8fe3db62f6ed 100644
 --- a/src/apu/apu_dsp.c
 +++ b/src/apu/apu_dsp.c
 @@ -23,6 +23,14 @@
@@ -1636,7 +1636,7 @@ index 0000000000000000000000000000000000000000..675fbe695e3e765c8aea9f44f7b35c97
 +#endif
 diff --git a/src/apu/apu_dsp_worker.c b/src/apu/apu_dsp_worker.c
 new file mode 100644
-index 0000000..bfbf509
+index 0000000000000000000000000000000000000000..bfbf50949fea585e30d3720db73a2c4eea484210
 --- /dev/null
 +++ b/src/apu/apu_dsp_worker.c
 @@ -0,0 +1,174 @@
@@ -2142,7 +2142,7 @@ index e18baa567c4a1319c7659859945c98bc48c5eb0a..6c4d4354304f0ded024a7caee90b1258
  #endif
  
 diff --git a/src/apu/apu_state.h b/src/apu/apu_state.h
-index 3493ba5..8813e3b 100644
+index 3493ba5000e5e878dd3a29c697398081efa90bb8..8813e3b943cff5d85214c646ff1800351b753b3f 100644
 --- a/src/apu/apu_state.h
 +++ b/src/apu/apu_state.h
 @@ -26,6 +26,11 @@
@@ -2601,7 +2601,7 @@ index 3493ba5..8813e3b 100644
  void mcpx_apu_dsp_write(MCPXAPUState *d, bool gp, uint32_t addr, uint64_t value, unsigned size);
  
 diff --git a/src/apu/apu_vp.c b/src/apu/apu_vp.c
-index 755c02e..3dd2a3a 100644
+index 755c02e978ac39c761ab411988b3004e5cb5fc09..3dd2a3a3c08ecc4a8f0a48d6be77ee21862018e9 100644
 --- a/src/apu/apu_vp.c
 +++ b/src/apu/apu_vp.c
 @@ -21,6 +21,7 @@
@@ -3993,7 +3993,7 @@ index 755c02e..3dd2a3a 100644
  }
 diff --git a/src/apu/apu_wait.h b/src/apu/apu_wait.h
 new file mode 100644
-index 0000000..26fc01a
+index 0000000000000000000000000000000000000000..26fc01a2167f415566ef302ecb471c9a61e0a0e6
 --- /dev/null
 +++ b/src/apu/apu_wait.h
 @@ -0,0 +1,121 @@
@@ -4119,7 +4119,7 @@ index 0000000..26fc01a
 +
 +#endif
 diff --git a/src/apu/apu_xaudio2.c b/src/apu/apu_xaudio2.c
-index 44c6cd9..4bc15f9 100644
+index 44c6cd95f4a5190e4316a07112b76c578e0eb118..4bc15f94e40d3c329e001de3e12418a46e9d69ef 100644
 --- a/src/apu/apu_xaudio2.c
 +++ b/src/apu/apu_xaudio2.c
 @@ -32,6 +32,8 @@
@@ -4348,7 +4348,7 @@ index 44c6cd9..4bc15f9 100644
  
  #endif /* _WIN32 */
 diff --git a/src/apu/apu_xaudio2.h b/src/apu/apu_xaudio2.h
-index 47a7d47..05be029 100644
+index 47a7d47b5961ff8530ed4cd3f713f94ab286a1b3..05be02982d17c915730f776f2ef9016cb3b8136e 100644
 --- a/src/apu/apu_xaudio2.h
 +++ b/src/apu/apu_xaudio2.h
 @@ -22,4 +22,29 @@ int xa2_submit_samples(const int16_t *samples, int num_samples);
@@ -7850,7 +7850,7 @@ index 0000000000000000000000000000000000000000..bb8e703869adeca64e9f6cad5486c53f
 +
 +#endif
 diff --git a/src/kernel/kernel.h b/src/kernel/kernel.h
-index b9a02bc..52a87dc 100644
+index b9a02bc41c7b5e30287d72d479e408fe270eeae3..52a87dcccefc8ac3082fdb4f4d1178f87000df30 100644
 --- a/src/kernel/kernel.h
 +++ b/src/kernel/kernel.h
 @@ -124,6 +124,9 @@ enum {
@@ -9949,7 +9949,7 @@ index f8a502c6e76cbd7da7cfe1d23086791043c658de..d6ff6f05199798bab35e46f6d8cdbf91
  VOID __stdcall xbox_XcCryptService(ULONG Operation, PVOID Param)
 diff --git a/src/kernel/kernel_delay.h b/src/kernel/kernel_delay.h
 new file mode 100644
-index 0000000..86541e7
+index 0000000000000000000000000000000000000000..86541e7c6ee42837f1e1632f728344eb5e8951e2
 --- /dev/null
 +++ b/src/kernel/kernel_delay.h
 @@ -0,0 +1,136 @@
@@ -10932,7 +10932,7 @@ index 0000000000000000000000000000000000000000..28e63027a859d73db1351c07e5b3ff53
 +}
 +#endif
 diff --git a/src/kernel/kernel_hal.c b/src/kernel/kernel_hal.c
-index 966bab8..6f4f1f3 100644
+index 966bab801ff9eecc5c6ee83d1a45e5256983d296..6f4f1f3f9eb6ac58121bc450ccba97c7a7217ebb 100644
 --- a/src/kernel/kernel_hal.c
 +++ b/src/kernel/kernel_hal.c
 @@ -40,6 +40,11 @@
@@ -11568,7 +11568,7 @@ index 97607350b22259203046c24eb6166ea06c80a0e3..f9e4df4b6d9a9a21eb26448fbef30aab
          case STATUS_END_OF_FILE:                return ERROR_HANDLE_EOF;
          case STATUS_INVALID_HANDLE:             return ERROR_INVALID_HANDLE;
 diff --git a/src/kernel/kernel_thread.c b/src/kernel/kernel_thread.c
-index 17cb31f..f5eb30e 100644
+index 17cb31f6c83dea4eb7b3fa6035d9d87aa98754a2..f5eb30e25a8c9af60714f85a7056ca7c855ab9cc 100644
 --- a/src/kernel/kernel_thread.c
 +++ b/src/kernel/kernel_thread.c
 @@ -12,6 +12,7 @@
@@ -11864,7 +11864,7 @@ index 0000000000000000000000000000000000000000..b853df4634248bc02a66779f924d5cd0
 +
 +#endif
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index 5275e59..700b267 100644
+index 5275e593e6ac6e10dcc10985dd82ea8b52f92c15..700b267fda5cb23002dd3d8a942ad19db54befc3 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
 @@ -172,6 +172,9 @@ static int surface_write_refused(uint32_t base, uint32_t bytes, const char *what
@@ -12072,7 +12072,7 @@ index 5275e59..700b267 100644
   *
   * The GPU is pointed at a buffer that stays zero, which says the data went
 diff --git a/src/kernel/nv2a_pb_scan.c b/src/kernel/nv2a_pb_scan.c
-index b9de8d0..a31cb62 100644
+index b9de8d0b3a0f84f6579d5bf9a00db42e125de3e4..a31cb622131002d1befefe54a64611c5eaa45e1b 100644
 --- a/src/kernel/nv2a_pb_scan.c
 +++ b/src/kernel/nv2a_pb_scan.c
 @@ -27,6 +27,7 @@
@@ -12710,7 +12710,7 @@ index b9de8d0..a31cb62 100644
 +    return completed;
  }
 diff --git a/src/kernel/nv2a_vsh_interp.c b/src/kernel/nv2a_vsh_interp.c
-index 162ec6c..40d6217 100644
+index 162ec6c0f5efc259f059a0a20dd1ba8257804aad..40d62177fa07b5eb92835d81611b214338bb3e42 100644
 --- a/src/kernel/nv2a_vsh_interp.c
 +++ b/src/kernel/nv2a_vsh_interp.c
 @@ -76,11 +76,16 @@ void nv2a_vsh_set_constant_load(uint32_t index)
@@ -13128,7 +13128,7 @@ index 162ec6c..40d6217 100644
              memcpy(out->d0, outregs[3], sizeof out->d0);
              memcpy(out->d1, outregs[4], sizeof out->d1);
 diff --git a/src/kernel/nv2a_vsh_interp.h b/src/kernel/nv2a_vsh_interp.h
-index b0c315e..d451c58 100644
+index b0c315e45df002ad5b50b9265674caa9b5570026..d451c583e39de5cb3c3fdc219f64db69e84472ec 100644
 --- a/src/kernel/nv2a_vsh_interp.h
 +++ b/src/kernel/nv2a_vsh_interp.h
 @@ -50,6 +50,12 @@ void nv2a_vsh_set_cxt_write(uint32_t enable);         /* _CXT_WRITE_EN      */
@@ -16148,8 +16148,44 @@ index 0000000000000000000000000000000000000000..e20e4d225d1d32509133515b4722b1de
 +}
 +
 +#endif
+diff --git a/src/usb/ohci.c b/src/usb/ohci.c
+index 3cbd42e1fe0bba2e44206c532b9bdeaee62a2ee9..7234be229e9cee0b9abda714bab01d67a8f2aac0 100644
+--- a/src/usb/ohci.c
++++ b/src/usb/ohci.c
+@@ -638,17 +638,26 @@ static uint32_t ohci_do_td(OhciController *hc, uint32_t ed0, uint32_t td)
+         }
+     } else {
+         /* OUT: the status stage of an IN control transfer, or rumble. Both
+-         * are accepted and discarded -- but only the control pipe's ends a
+-         * control transfer. A rumble packet on endpoint 2 used to clear the
+-         * pending setup too, so a force-feedback write landing between a
+-         * control request's stages broke that request; Burnout 3 starts its
++         * are accepted -- but only the control pipe's ends a control
++         * transfer. A rumble packet on endpoint 2 used to clear the pending
++         * setup too, so a force-feedback write landing between a control
++         * request's stages broke that request; Burnout 3 starts its
+          * engine-rev rumble on the Crash countdown and then paused with the
+-         * pad unresponsive. */
++         * pad unresponsive.
++         *
++         * A rumble report (interrupt OUT, or the data stage of a class
++         * SET_REPORT, 21 09) is handed to the pad, which drives the host
++         * pad's motors. Everything else is still discarded. */
++        const uint8_t *data = len > 0 ? guest_ptr(cbp, (uint32_t)len) : NULL;
+         moved = len;
+         if (endpoint == 0) {
++            if (data && g_setup_pending && g_setup.bmRequestType == 0x21 && g_setup.bRequest == 0x09)
++                usb_gamepad_output(pad, data, len);
+             g_setup_pending = 0;
+             s_n_out_ep0++;
+         } else {
++            if (data)
++                usb_gamepad_output(pad, data, len);
+             s_n_out_other++;
+         }
+     }
 diff --git a/src/usb/usb_gamepad.c b/src/usb/usb_gamepad.c
-index bd00f3fc02f3bac594c79acae4f0bbd61bcc2b5d..789b98349803523702f480fe23ddfd2d713dc37a 100644
+index bd00f3fc02f3bac594c79acae4f0bbd61bcc2b5d..8a37c644e71c20479a3169ba743fd41582c9f6d7 100644
 --- a/src/usb/usb_gamepad.c
 +++ b/src/usb/usb_gamepad.c
 @@ -560,7 +560,7 @@ int usb_gamepad_report(int pad, uint8_t *out, int max)
@@ -16203,6 +16239,80 @@ index bd00f3fc02f3bac594c79acae4f0bbd61bcc2b5d..789b98349803523702f480fe23ddfd2d
                  fflush(stderr);
              }
          }
+@@ -630,3 +646,57 @@ int usb_gamepad_report(int pad, uint8_t *out, int max)
+     pad_script_apply(pad, out);
+     return 20;
+ }
++
++/* ---- the output report: rumble ----------------------------------------- */
++
++/* The title drives the pad's two motors with a 6-byte output report: id 0,
++ * length 6, then the left (heavy, low-frequency) and right (light,
++ * high-frequency) motor speeds as little-endian 16-bit values -- XAPI's
++ * XINPUT_FEEDBACK.Rumble. It arrives on the interrupt OUT endpoint, or as a
++ * SET_REPORT on the control pipe; ohci.c hands both here. The speeds go to
++ * host pad n as they are -- XInput's two motors are the same pair on the same
++ * scale, and Steam Input passes them on to a PlayStation pad -- and only when
++ * they change. Whatever is still running is stopped when the process exits.
++ * RECOMP_RUMBLE=0 keeps the host pads still; the title's own vibration option
++ * decides the rest. */
++static uint32_t s_rumble[USB_GAMEPAD_MAX];   /* left << 16 | right, as last sent */
++static int s_rumble_reports;
++
++static void rumble_stop_all(void)
++{
++    int pad;
++    for (pad = 0; pad < USB_GAMEPAD_MAX; pad++)
++        if (s_rumble[pad]) {
++            XBOX_VIBRATION still = {0, 0};
++            s_rumble[pad] = 0;
++            xbox_InputSetState((DWORD)pad, &still);
++        }
++}
++
++int usb_gamepad_output(int pad, const uint8_t *data, int len)
++{
++    static int enabled = -1;
++    XBOX_VIBRATION v;
++    uint32_t value;
++    if (pad < 0 || pad >= USB_GAMEPAD_MAX || !data || len < 6 || data[0] != 0 || data[1] < 6)
++        return 0;
++    if (enabled < 0) {
++        const char *e = getenv("RECOMP_RUMBLE");
++        enabled = !(e && !strcmp(e, "0"));
++        if (enabled) atexit(rumble_stop_all);
++    }
++    v.wLeftMotorSpeed  = (WORD)(data[2] | (data[3] << 8));
++    v.wRightMotorSpeed = (WORD)(data[4] | (data[5] << 8));
++    value = ((uint32_t)v.wLeftMotorSpeed << 16) | v.wRightMotorSpeed;
++    if (!enabled || value == s_rumble[pad])
++        return 1;
++    s_rumble[pad] = value;
++    xbox_InputSetState((DWORD)pad, &v);
++    if (s_rumble_reports < 8) {
++        s_rumble_reports++;
++        fprintf(stderr, "  PAD: rumble pad %d left %u right %u\n", pad + 1,
++                (unsigned)v.wLeftMotorSpeed, (unsigned)v.wRightMotorSpeed);
++        fflush(stderr);
++    }
++    return 1;
++}
+diff --git a/src/usb/usb_gamepad.h b/src/usb/usb_gamepad.h
+index 18291d77f757098a24357381dd8cab34b8b3979a..6a4ba83e146bf63e8375c89fa7d1ee0a34d8e06f 100644
+--- a/src/usb/usb_gamepad.h
++++ b/src/usb/usb_gamepad.h
+@@ -36,6 +36,11 @@ int usb_gamepad_control(int pad, const UsbSetup *setup, uint8_t *out, int max);
+ /* Fill in pad `pad`'s 20-byte input report. Returns the byte count written. */
+ int usb_gamepad_report(int pad, uint8_t *out, int max);
+ 
++/* An output report the title sent pad `pad` (interrupt OUT, or the data stage
++ * of a SET_REPORT): a rumble report drives host pad `pad`'s motors. Returns 1
++ * if it was a rumble report, else 0. */
++int usb_gamepad_output(int pad, const uint8_t *data, int len);
++
+ /* The address the host assigned pad `pad` with SET_ADDRESS, 0 until it does,
+  * and whether it has been configured. */
+ uint8_t usb_gamepad_address(int pad);
 diff --git a/src/video/fb_present.c b/src/video/fb_present.c
 index b80ba0cb2358965b6e5ac32c6ea7e42878d83422..fcd20cdb23552e58bd3457ffdc8722b19b7ff8a2 100644
 --- a/src/video/fb_present.c
@@ -16765,7 +16875,7 @@ index b80ba0cb2358965b6e5ac32c6ea7e42878d83422..fcd20cdb23552e58bd3457ffdc8722b1
  void xbox_FramebufferWindowPresent(uint32_t fb_va, uint32_t pitch) { (void)fb_va; (void)pitch; }
  void xbox_FramebufferWindowScanout(uint32_t fb_va, uint32_t pitch) { (void)fb_va; (void)pitch; }
 diff --git a/src/video/fb_present.h b/src/video/fb_present.h
-index 9676e02..3d7a0b0 100644
+index 9676e027f86cad11724b9fffa6be7d9837e460d4..3d7a0b012c5dc7014144ec68c4e78ac4f202bbe1 100644
 --- a/src/video/fb_present.h
 +++ b/src/video/fb_present.h
 @@ -12,8 +12,58 @@
@@ -16829,7 +16939,7 @@ index 9676e02..3d7a0b0 100644
   * before any flip). Returns 0 while flips are in charge. */
 diff --git a/src/video/nv2a_black_frame.h b/src/video/nv2a_black_frame.h
 new file mode 100644
-index 0000000..ba782e5
+index 0000000000000000000000000000000000000000..ba782e5c1c06e5ae49484d48932877ed69b7b749
 --- /dev/null
 +++ b/src/video/nv2a_black_frame.h
 @@ -0,0 +1,1167 @@
@@ -18001,7 +18111,7 @@ index 0000000..ba782e5
 +#endif /* NV2A_BLACK_FRAME_LOGIC_ONLY */
 +#endif /* NV2A_BLACK_FRAME_H */
 diff --git a/src/video/nv2a_d3d11.c b/src/video/nv2a_d3d11.c
-index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec241624baca 100644
+index b9f3fa263362c0ba5732c514ed6b2592f3459dea..bac8366e8bae6710ff54a04f32ae7e2c60fa14cc 100644
 --- a/src/video/nv2a_d3d11.c
 +++ b/src/video/nv2a_d3d11.c
 @@ -19,9 +19,10 @@
@@ -21270,7 +21380,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
          ID3D11ShaderResourceView *src[1] = { d->zsrv };
          D3D11_VIEWPORT vp = { 0, 0, (float)(2 * d->iw), (float)d->ih, 0, 1 };
          D3D11_RECT sc = { 0, 0, (LONG)(2 * d->iw), (LONG)d->ih };
-@@ -2617,42 +4513,448 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
+@@ -2617,42 +4513,471 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
          unbind_targets();
          ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &d->y16_rtv, NULL);
          ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
@@ -21679,19 +21789,42 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
 +    s_native_fog_seen.frame = s_frame;
 +}
 +
++/* Distance fog blends the fog colour in: some final-combiner input is the fog
++ * register's RGB (register 3 without the alpha bit). Draws that only take its
++ * alpha use the title's vertex-program value as a blend weight instead - the
++ * car paint's reflection strength - and must keep it. */
++static int fog_colour_blended(const NvD3DState *st)
++{
++    uint32_t inputs[6] = {st->rc.final0 >> 24, st->rc.final0 >> 16, st->rc.final0 >> 8, st->rc.final0,
++                          st->rc.final1 >> 24, st->rc.final1 >> 16};
++    unsigned i;
++    for (i = 0; i < 6; ++i)
++        if ((inputs[i] & 0x0Fu) == 3u && !(inputs[i] & 0x10u)) return 1;
++    return 0;
++}
++
 +static int native_fog_draw(const NvD3DState *st, const Surface *s)
 +{
-+    static int reported[3];
++    static int reported[3], reported_weight;
 +    int kind = 0;
 +    if (!st->fog_enable || !s || s != s_native_fog_seen.target) return 0;
++    if (!fog_colour_blended(st)) {
++        if (!reported_weight && s_native_fog_seen.passes) {
++            reported_weight = 1;
++            fprintf(stderr, "[FOG] title fog used as a blend weight left as is (final %08X %08X)\n",
++                    st->rc.final0, st->rc.final1);
++        }
++        return 0;
++    }
 +    native_fog_frame();
 +    if (s_native_fog_seen.passes < s_native_fog_seen.last_passes) kind = 1;
 +    else if (s_native_fog_seen.passes) kind = 2;
 +    if (kind && !reported[kind]) {
 +        reported[kind] = 1;
 +        fprintf(stderr, "[FOG] title per-draw fog %s the native pass (mode %04X, params %g %g, "
-+                "native %.0f-%.0f m)\n", kind == 1 ? "before: left to" : "after: by view depth over the range of",
-+                st->fog_mode, st->fog_param[0], st->fog_param[1], s_native_fog_seen.start, s_native_fog_seen.end);
++                "native %.0f-%.0f m, final %08X %08X)\n", kind == 1 ? "before: left to" : "after: by view depth over the range of",
++                st->fog_mode, st->fog_param[0], st->fog_param[1], s_native_fog_seen.start, s_native_fog_seen.end,
++                st->rc.final0, st->rc.final1);
 +    }
 +    return kind;
 +}
@@ -21731,7 +21864,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
  
      {
          /* Bring-up switches: RECOMP_D3D_SKIP_CMASK / _SKIP_SFACTOR (hex) drop
-@@ -2673,6 +4975,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2673,6 +4998,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          cull = st->cull_face == 0x404 ? 1 : st->cull_face == 0x405 ? 2 : 3;
      if (cull == 3 && topology == NV_D3D_TRIANGLES)
          return 0;                                /* front and back culled */
@@ -21742,7 +21875,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      /* Y16 views of 32-bit targets are drawn before this draw's targets go
       * on; see y16_ps. */
      for (n = 0; n < 4; n++) {
-@@ -2682,17 +4988,33 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2682,17 +5011,33 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          if (t->color != 0x35 || t->cube || !t->addr) continue;
          /* A depth buffer wins over a colour surface at the same address:
           * MM3 binds one there for colour-masked stencil passes. */
@@ -21779,7 +21912,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      for (n = 0; n < 4; n++) {
          const NvD3DTexture *t = &st->tex[n];
          uint32_t mode = (st->rc.stage_program >> (n * 5)) & 31;
-@@ -2707,13 +5029,18 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2707,13 +5052,18 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          if (!mode_needs_texture(mode) || !t->addr || !t->width || !t->height)
              continue;
          tex_format(t->color, &kind);
@@ -21800,7 +21933,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
              pc.tex_scale[n][0] = 1.0f / (float)(2 * zt->w);
              pc.tex_scale[n][1] = 1.0f / (float)zt->h;
          } else if (rt) {
-@@ -2742,9 +5069,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2742,9 +5092,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                  }
              }
          } else {
@@ -21812,7 +21945,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
              if (kind == K_LIN) {
                  pc.tex_scale[n][0] = 1.0f / (float)t->width;
                  pc.tex_scale[n][1] = 1.0f / (float)t->height;
-@@ -2757,8 +5083,19 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2757,8 +5106,19 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
              pc.tex_scale[n][2] = pc.tex_scale[n][3] = 1.0f;
          }
          if (!view) continue;
@@ -21834,7 +21967,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
          pc.tex_info[n][0] = (t->control0 >> 2) & 1;
          pc.tex_info[n][1] = t->filter >> 28;
          /* Point taps of an upscaled linear target average the guest pixel's
-@@ -2777,7 +5114,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2777,7 +5137,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      /* A sampled surface's CPU upload can blit and unbind this draw's
       * outputs. Restore targets and viewport before binding its textures. */
      if ((s != s_cur_rt || d != s_cur_ds) &&
@@ -21843,7 +21976,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
          return 0;
  
      /* Combiners. */
-@@ -2797,7 +5134,22 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2797,7 +5157,22 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      pc.stage_prog = st->rc_seen ? st->rc.stage_program : (st->tex_used & 1);
      pc.alpha_func = st->alpha_func;
      pc.alpha_ref = st->alpha_ref;
@@ -21867,7 +22000,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      pc.other_input = st->other_stage_input;
      pc.dot_map = st->dot_rgb_mapping;
      /* SET_FOG_COLOR keeps red in the low byte. */
-@@ -2805,7 +5157,13 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2805,7 +5180,13 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      pc.fog_color[1] = ((st->fog_color >> 8) & 0xFF) / 255.0f;
      pc.fog_color[2] = ((st->fog_color >> 16) & 0xFF) / 255.0f;
      pc.fog_color[3] = (st->fog_color >> 24) / 255.0f;
@@ -21882,7 +22015,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
          uint32_t zm = zf == 1 ? 0xFFFFu : 0xFFFFFFu;
          if (st->poly_offset_fill) {
              pc.zp0[0] = st->poly_offset_factor;
-@@ -2815,29 +5173,32 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2815,29 +5196,32 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          pc.zp0[3] = s_cur_sy;
          pc.zp1[0] = 1.0f / ((float)zm + 1.0f);
          pc.zp1[1] = (float)zm;
@@ -21925,7 +22058,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
                                                     st->front_face == 0x901, bias, slope));
      apply_scissor(st, gw, gh);
      if ((st->blend_sfactor | st->blend_dfactor) & 0x8000) {
-@@ -2851,11 +5212,11 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2851,11 +5235,11 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      } else {
          bf[0] = bf[1] = bf[2] = bf[3] = 0;
      }
@@ -21942,7 +22075,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
                       st->stencil_test, st->stencil_func, st->stencil_func_mask,
                       st->stencil_write_mask, st->stencil_fail,
                       st->stencil_zfail, st->stencil_zpass) : s_ds_off,
-@@ -2871,6 +5232,19 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2871,6 +5255,19 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
   * from a primitive's last vertex on the NV2A (GL's provoking vertex) but its
   * first on D3D11, so flat primitives are rotated to lead with their last
   * vertex; rotating a triangle keeps its winding. */
@@ -21962,7 +22095,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
  static void copy_indices(uint32_t *o, const uint32_t *idx, uint32_t ni, uint32_t sub,
                           int topology, int flat)
  {
-@@ -2894,8 +5268,8 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
+@@ -2894,8 +5291,8 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
  {
      if (bytes > cap) return NULL;
      if (*pos + bytes > cap) *pos = 0;
@@ -21973,7 +22106,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
          return NULL;
      return (uint8_t *)m->pData + *pos;
  }
-@@ -2908,18 +5282,134 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
+@@ -2908,18 +5305,134 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
   * (index - sub); fills dx with each vertex's x shift in guest pixels and
   * returns 0 when nothing moves, leaving only the shader's 4:3 squeeze. */
  #define HUD_GAP 24.0f
@@ -22111,7 +22244,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
          if (r) root = r;
          if (pc) piece = pc;
          if (!b) return 0;
-@@ -2929,13 +5419,16 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2929,13 +5442,16 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
  #define FIND(x) do { while (root[x] != x) x = root[x] = root[root[x]]; } while (0)
      /* pieces: vertices joined by primitives */
      for (i = 0; i < nv; i++) root[i] = i;
@@ -22129,7 +22262,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      for (i = 0; i < nv; i++) {
          uint32_t r = i;
          FIND(r);
-@@ -2943,6 +5436,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2943,6 +5459,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
              piece[i] = np;
              box[np][0] = box[np][2] = 1e30f;
              box[np][1] = box[np][3] = -1e30f;
@@ -22137,7 +22270,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
              np++;
          }
      }
-@@ -2951,6 +5445,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2951,6 +5468,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
          FIND(r);
          n = piece[r];
          piece[i] = n;
@@ -22145,7 +22278,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
          if (pos[i][0] < box[n][0]) box[n][0] = pos[i][0];
          if (pos[i][0] > box[n][1]) box[n][1] = pos[i][0];
          if (pos[i][1] < box[n][2]) box[n][2] = pos[i][1];
-@@ -2962,6 +5457,14 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2962,6 +5480,14 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
      for (i = 0; i < np; i++)
          for (k = i + 1; k < np; k++) {
              uint32_t a = i, b = k;
@@ -22160,7 +22293,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
              if (box[i][2] > box[k][3] || box[k][2] > box[i][3] ||
                  box[i][0] > box[k][1] + HUD_GAP || box[k][0] > box[i][1] + HUD_GAP)
                  continue;
-@@ -2976,19 +5479,40 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2976,19 +5502,40 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
      for (i = 0; i < nv; i++) {
          uint32_t c = piece[i];
          FIND(c);
@@ -22202,7 +22335,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
  /* ---------------------------------------------- vertex processing on the GPU
   *
   * Every draw runs ub_vs: it pulls the title's raw vertex arrays from a byte
-@@ -2998,7 +5522,6 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2998,7 +5545,6 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
   * its depth the same way (no z-fighting between passes), nothing waits on a
   * shader compile, and no vertex is drawn from a CPU transform. */
  
@@ -22210,7 +22343,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
  extern const uint32_t (*nv2a_vsh_program(uint32_t *start, uint32_t *version))[4];
  extern const float (*nv2a_vsh_constants(uint32_t *version))[4];
  
-@@ -3015,9 +5538,68 @@ static uint32_t attr_bytes(uint32_t type, uint32_t size)
+@@ -3015,9 +5561,68 @@ static uint32_t attr_bytes(uint32_t type, uint32_t size)
      }
  }
  
@@ -22280,7 +22413,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
  }
  
  void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr[16],
-@@ -3025,6 +5607,7 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3025,6 +5630,7 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
                        uint32_t lo, uint32_t hi, const float (*pos)[4])
  {
      static uint32_t s_prog_version, s_vconst_version;
@@ -22288,7 +22421,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      static float *dx;
      static uint32_t dx_cap;
      struct { const uint8_t *base; uint32_t stride, span; } grp[16];
-@@ -3035,11 +5618,14 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3035,11 +5641,14 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      uint8_t *p;
      UINT total = 0, at = 0, ib_bytes = ni * 4;
      float squeeze = 1.0f, shift = 0.0f, yscale = 1.0f;
@@ -22305,7 +22438,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      memset(&uc, 0, sizeof uc);
      memcpy(uc.def, def, sizeof uc.def);
      /* Arrays: interleaved ones share one copied span. */
-@@ -3067,90 +5653,381 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3067,90 +5676,381 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      }
      for (i = 0; i < ngrp; i++)
          total += (((grp[i].stride ? (count - 1) * grp[i].stride : 0) + grp[i].span) + 15) & ~15u;
@@ -22418,17 +22551,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
                  s_frame_bg_tex = s_draw_tex_addr;
 -            if (nv2a_d3d_hud_active() && !(wide_x && (!s_draw_textured || s_draw_reads_wide))) {
 +            if (!nv2a_d3d_hud_active() && !s_draw_reads_wide) {
-                 squeeze = narrow;
--                if (nv2a_d3d_hud_active() && world_tag_draw(xlo, xhi, ylo, yhi, s_draw_tex_addr)) {
--                    /* a name tag over a car: the title projected it
--                     * through the widened camera, keep that position */
--                    use_dx = count <= dx_cap &&
--                             hud_split(pos, count, idx, lo, ni, topology, (float)gw, narrow, 1, dx);
--                } else if (nv2a_d3d_hud_active()) {
--                    if (xhi <= (float)gw * 0.5f) shift = narrow - 1.0f;
--                    else if (xlo >= (float)gw * 0.5f) shift = 1.0f - narrow;
--                    else use_dx = count <= dx_cap &&
--                                  hud_split(pos, count, idx, lo, ni, topology, (float)gw, narrow, 0, dx);
++                squeeze = narrow;
 +                yscale = ynarrow;
 +            }
 +            /* Owned map resources also identify zoomed/masked map windows;
@@ -22442,7 +22565,17 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
 +                 fabsf(yhi - s_hud_start[3]) < 2.0f)))
 +                s_hud_seen = 1;
 +            if (nv2a_d3d_hud_active() && (map_part || (widescreen && (name_n || !(wide_x && (!s_draw_textured || s_draw_reads_wide || route_n)))))) {
-+                squeeze = narrow;
+                 squeeze = narrow;
+-                if (nv2a_d3d_hud_active() && world_tag_draw(xlo, xhi, ylo, yhi, s_draw_tex_addr)) {
+-                    /* a name tag over a car: the title projected it
+-                     * through the widened camera, keep that position */
+-                    use_dx = count <= dx_cap &&
+-                             hud_split(pos, count, idx, lo, ni, topology, (float)gw, narrow, 1, dx);
+-                } else if (nv2a_d3d_hud_active()) {
+-                    if (xhi <= (float)gw * 0.5f) shift = narrow - 1.0f;
+-                    else if (xlo >= (float)gw * 0.5f) shift = 1.0f - narrow;
+-                    else use_dx = count <= dx_cap &&
+-                                  hud_split(pos, count, idx, lo, ni, topology, (float)gw, narrow, 0, dx);
 +                yscale = ynarrow;
 +                /* A cap, its panel and its text may use different
 +                 * draws/textures. A centred overlay keeps their shared
@@ -22651,8 +22784,9 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
 +         * one kick. Those bytes are already in the ring, unless this map
 +         * discards it (a wrap) or the route tags below edit the copy. */
 +        int reuse = s_raw_nooverwrite && !route_tag_layout(&attr[2]);
-+        for (i = 0; i < ngrp; i++) {
-+            UINT bytes = (grp[i].stride ? (count - 1) * grp[i].stride : 0) + grp[i].span;
+         for (i = 0; i < ngrp; i++) {
+             UINT bytes = (grp[i].stride ? (count - 1) * grp[i].stride : 0) + grp[i].span;
+-            memcpy(p + at, grp[i].base + (size_t)lo * grp[i].stride, bytes);
 +            hit[i] = reuse && vb_reuse_find(grp[i].base + (size_t)lo * grp[i].stride, bytes, &goff[i]);
 +            if (!hit[i]) fresh += (bytes + 15) & ~15u;
 +        }
@@ -22667,10 +22801,9 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
 +            RECOMP_PROFILE_END();
 +            return;
 +        }
-         for (i = 0; i < ngrp; i++) {
++        for (i = 0; i < ngrp; i++) {
 +            const uint8_t *src = grp[i].base + (size_t)lo * grp[i].stride;
-             UINT bytes = (grp[i].stride ? (count - 1) * grp[i].stride : 0) + grp[i].span;
--            memcpy(p + at, grp[i].base + (size_t)lo * grp[i].stride, bytes);
++            UINT bytes = (grp[i].stride ? (count - 1) * grp[i].stride : 0) + grp[i].span;
 +            if (hit[i]) {
 +                if (s_prof_on > 0) s_prof_vb_reused += bytes;
 +                continue;
@@ -22722,7 +22855,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
  
      uc.info[1] = program ? 1u : 0u;
      if (program) {
-@@ -3158,39 +6035,110 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3158,39 +6058,110 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
          const uint32_t (*prog)[4] = nv2a_vsh_program(&start, &pver);
          const float (*consts)[4] = nv2a_vsh_constants(&cver);
          uc.info[0] = start;
@@ -22847,7 +22980,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      RECOMP_PROFILE_END();
  }
  
-@@ -3204,11 +6152,18 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3204,11 +6175,18 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      float cc[8];
      D3D11_RECT r;
      int zclear = (flags & 1) != 0, sclear = (flags & 2) != 0;
@@ -22868,7 +23001,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      if (s) {
          if (flags & 0x10) mask |= D3D11_COLOR_WRITE_ENABLE_RED;
          if (flags & 0x20) mask |= D3D11_COLOR_WRITE_ENABLE_GREEN;
-@@ -3217,9 +6172,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3217,9 +6195,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
              mask |= D3D11_COLOR_WRITE_ENABLE_ALPHA;
      }
      if (!d) { zclear = sclear = 0; }
@@ -22881,7 +23014,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      zf = (st->surface_format >> 4) & 0xF;
      unpack4(color, cc);
      if (s && (s->color_fmt & 0xF) == 0x3) {
-@@ -3231,28 +6187,39 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3231,28 +6210,39 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      memset(cc + 4, 0, 16);
      cc[4] = zf == 1 ? (float)(zstencil & 0xFFFF) / 65535.0f
                      : (float)(zstencil >> 8) / 16777215.0f;
@@ -22933,7 +23066,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
  }
  
  /* -------------------------------------------------------------- write-back */
-@@ -3270,6 +6237,282 @@ typedef struct {
+@@ -3270,6 +6260,282 @@ typedef struct {
      ID3D11RenderTargetView *down_rtv;
  } WbSlot;
  static WbSlot s_wb[MAX_SURFACES];
@@ -23216,7 +23349,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
  
  static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
  {
-@@ -3289,12 +6532,14 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
+@@ -3289,12 +6555,14 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
              return 0;
          k->w = w; k->h = h;
      }
@@ -23237,7 +23370,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      }
      return 1;
  }
-@@ -3305,62 +6550,181 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
+@@ -3305,62 +6573,181 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
   * (nv2a_d3d_writeback_busy), holding back DMA_GET and fence releases until
   * then -- the title cannot learn the frame is finished before its pixels are
   * in guest memory. */
@@ -23428,7 +23561,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
                  for (x = 0; x < s->w; x++) {
                      uint32_t c = src[x];
                      o[x] = r565 ? (uint16_t)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07E0) | ((c >> 3) & 0x1F))
-@@ -3370,33 +6734,48 @@ static int writeback_finish(int wait)
+@@ -3370,33 +6757,48 @@ static int writeback_finish(int wait)
              }
              memcpy(s->shadow + (size_t)y * rowb, row, rowb);
          }
@@ -23484,7 +23617,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      RECOMP_PROFILE_BEGIN("D3D11 write-back issue");
      for (i = 0; i < MAX_SURFACES; i++) {
          Surface *s = &s_surf[i];
-@@ -3409,9 +6788,10 @@ static void writeback_surfaces(void)
+@@ -3409,9 +6811,10 @@ static void writeback_surfaces(void)
              continue;
          surface_resolve(s);
          if (scaled) {
@@ -23498,7 +23631,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
              ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)k->stage,
                                               (ID3D11Resource *)k->down);
          } else {
-@@ -3420,11 +6800,23 @@ static void writeback_surfaces(void)
+@@ -3420,11 +6823,23 @@ static void writeback_surfaces(void)
          }
          s->gpu_dirty = 0;                        /* later draws dirty it again */
          k->pending = 1;
@@ -23523,7 +23656,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
  }
  
  /* ----------------------------------------------------- visibility tests */
-@@ -3439,13 +6831,16 @@ static uint64_t s_zpass;
+@@ -3439,13 +6854,16 @@ static uint64_t s_zpass;
  static void zpass_collect(void)
  {
      UINT64 n = 0;
@@ -23540,7 +23673,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
  }
  
  void nv2a_d3d_zpass_enable(int on)
-@@ -3490,10 +6885,43 @@ static ID3D11ShaderResourceView *s_ovl_srv;
+@@ -3490,10 +6908,43 @@ static ID3D11ShaderResourceView *s_ovl_srv;
  static UINT s_ovl_w, s_ovl_h;
  static uint32_t s_ovl_serial = 0xFFFFFFFFu;
  static DWORD s_last_present, s_last_flip;
@@ -23584,7 +23717,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
  static int ensure_swapchain(void)
  {
      HWND h = xbox_FramebufferWindowHandle();
-@@ -3505,6 +6933,8 @@ static int ensure_swapchain(void)
+@@ -3505,6 +6956,8 @@ static int ensure_swapchain(void)
      hh = (UINT)(rc.bottom - rc.top);
      if (!w || !hh) return 0;                    /* minimised */
      if (s_swap && s_swap_hwnd != h) {
@@ -23593,7 +23726,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
          IDXGISwapChain1_Release(s_swap);
          s_swap = NULL;
      }
-@@ -3522,7 +6952,17 @@ static int ensure_swapchain(void)
+@@ -3522,7 +6975,17 @@ static int ensure_swapchain(void)
          d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
          d.SampleDesc.Count = 1;
          d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -23612,7 +23745,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
          d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
          hr = fac ? IDXGIFactory2_CreateSwapChainForHwnd(fac, (IUnknown *)s_dev, h, &d,
                                                          NULL, NULL, &s_swap) : E_FAIL;
-@@ -3534,9 +6974,11 @@ static int ensure_swapchain(void)
+@@ -3534,9 +6997,11 @@ static int ensure_swapchain(void)
          if (dxdev) IDXGIDevice_Release(dxdev);
          if (FAILED(hr)) { fail("CreateSwapChainForHwnd", hr); return 0; }
          s_swap_hwnd = h; s_swap_w = w; s_swap_h = hh;
@@ -23625,7 +23758,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
          if (FAILED(IDXGISwapChain1_ResizeBuffers(s_swap, 0, w, hh, DXGI_FORMAT_UNKNOWN, 0)))
              return 0;
          s_swap_w = w; s_swap_h = hh;
-@@ -3556,24 +6998,38 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
+@@ -3556,24 +7021,38 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
      if (!prefix) return;
      if (!remaining) {
          int count = 0;
@@ -23666,7 +23799,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
          ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)st, (ID3D11Resource *)bb);
          if (SUCCEEDED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource *)st, 0,
                                               D3D11_MAP_READ, 0, &m))) {
-@@ -3607,6 +7063,8 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
+@@ -3607,6 +7086,8 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
              ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)st, 0);
          }
          ID3D11Texture2D_Release(st);
@@ -23675,7 +23808,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      }
      remaining--;
  }
-@@ -3638,10 +7096,18 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3638,10 +7119,18 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
      pc->src_size[0] = (float)s->w; pc->src_size[1] = (float)s->h;
      pc->src_size[2] = (float)s->iw; pc->src_size[3] = (float)s->ih;
      pc->force_alpha[0] = 1.0f;
@@ -23694,7 +23827,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      upload_cb(s_cb_present, pc, sizeof *pc);
      unbind_textures();
      unbind_targets();
-@@ -3652,22 +7118,21 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3652,22 +7141,21 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
      vp.MinDepth = 0; vp.MaxDepth = 1;
      sc.left = 0; sc.top = 0; sc.right = (LONG)w; sc.bottom = (LONG)h;
      ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
@@ -23726,7 +23859,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      ID3D11DeviceContext_Draw(s_ctx, 4, 0);
      unbind_targets();
      unbind_textures();
-@@ -3718,22 +7183,75 @@ static void prepare_overlay(PresentConsts *pc)
+@@ -3718,22 +7206,75 @@ static void prepare_overlay(PresentConsts *pc)
      pc->ovl_in[2] = 1.0f;
  }
  
@@ -23803,7 +23936,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
          if (!s_cap_tex || s_cap_w != s->iw || s_cap_h != s->ih) {
              if (s_cap_rtv) ID3D11RenderTargetView_Release(s_cap_rtv);
              if (s_cap_tex) ID3D11Texture2D_Release(s_cap_tex);
-@@ -3749,25 +7267,104 @@ static void present_surface(Surface *s)
+@@ -3749,25 +7290,104 @@ static void present_surface(Surface *s)
              composite(s_cap_rtv, s->iw, s->ih, s, &pc, 0);
              capture_backbuffer(s_cap_tex);
          }
@@ -23921,7 +24054,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
  /* The flip completes at the display's next vertical blank, as it does on the
   * NV2A: FLIP_STALL holds the GPU until then, and the title, waiting on the
   * GPU, is paced by it. Completing it at once let menus run at hundreds of
-@@ -3779,40 +7376,31 @@ static void pace_vblank(void)
+@@ -3779,40 +7399,31 @@ static void pace_vblank(void)
      static LARGE_INTEGER freq;
      static int64_t next;
      static HANDLE timer;
@@ -23978,7 +24111,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      }
  }
  
-@@ -3822,30 +7410,41 @@ static void pace_vblank(void)
+@@ -3822,30 +7433,41 @@ static void pace_vblank(void)
   * the monitor's native resolution and shape). A resize applies once it has
   * settled for RESIZE_SETTLE_MS, by dropping every host surface; they are
   * rebuilt at the new size from guest memory, which the flip just updated.
@@ -24029,7 +24162,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
          scale = (float)atof(e);
      } else {
          /* RECOMP_SUPERSAMPLE=N (1..4) renders N x N host pixels per window
-@@ -3860,7 +7459,9 @@ static void display_config(int now)
+@@ -3860,7 +7482,9 @@ static void display_config(int now)
          if (scale < 1.0f) scale = 1.0f;
          if (scale > 8.0f) scale = 8.0f;
      }
@@ -24040,7 +24173,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      if (!now && fabsf(scale - s_scale) < 1e-3f && fabsf(aspect - s_aspect) < 1e-4f)
          return;
      if (!now) {
-@@ -3874,6 +7475,11 @@ static void display_config(int now)
+@@ -3874,6 +7498,11 @@ static void display_config(int now)
      }
      s_scale = scale;
      s_aspect = aspect;
@@ -24052,7 +24185,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      fprintf(stderr, "[D3D11] rendering %ux%u (window %ux%u, aspect %.3f)\n",
              (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
              w, h, aspect);
-@@ -3897,10 +7503,15 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
+@@ -3897,10 +7526,15 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
  void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
  {
      Surface *s;
@@ -24068,7 +24201,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      s = surface_find(phys(surface_addr));
      if (!s && pitch)
          s = scan_surface(surface_addr, pitch);
-@@ -3908,23 +7519,29 @@ void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
+@@ -3908,23 +7542,29 @@ void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
      s_last_flip = GetTickCount();
      {
          int64_t t0 = s_prof_on > 0 ? qpc() : 0, t1;
@@ -24105,7 +24238,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
      s_frame++;
  }
  
-@@ -3932,33 +7549,64 @@ void nv2a_d3d_tick(void)
+@@ -3932,33 +7572,64 @@ void nv2a_d3d_tick(void)
  {
      DWORD now;
      uint32_t va, pitch;
@@ -24176,7 +24309,7 @@ index b9f3fa263362c0ba5732c514ed6b2592f3459dea..b0cb39c1d2c93c730166bef07e33ec24
  int nv2a_d3d_prof_enabled(void) { return 0; }
  void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
  { (void)slot; (void)ticks; (void)verts; }
-@@ -3977,7 +7625,25 @@ void nv2a_d3d_zpass_enable(int on) { (void)on; }
+@@ -3977,7 +7648,25 @@ void nv2a_d3d_zpass_enable(int on) { (void)on; }
  void nv2a_d3d_zpass_clear(void) {}
  uint32_t nv2a_d3d_zpass_read(void) { return 0; }
  float nv2a_d3d_display_aspect(void) { return 4.0f / 3.0f; }
@@ -24380,7 +24513,7 @@ index 082f091526eb340785051b45434bef5897de2e78..721f27a760d9e0c6c68fa4938ef194fb
  /* Called continuously by the pushbuffer thread. Presents what the display is
 diff --git a/src/video/nv2a_display_stats.h b/src/video/nv2a_display_stats.h
 new file mode 100644
-index 0000000..82cdf89
+index 0000000000000000000000000000000000000000..82cdf898ba62c4a8a0f975df7fbcee911401575f
 --- /dev/null
 +++ b/src/video/nv2a_display_stats.h
 @@ -0,0 +1,466 @@
@@ -25236,7 +25369,7 @@ index 0000000000000000000000000000000000000000..9c1099f2449410398be54576d8f3f24e
 +#endif
 diff --git a/src/video/nv2a_pacing.h b/src/video/nv2a_pacing.h
 new file mode 100644
-index 0000000..eed15f8
+index 0000000000000000000000000000000000000000..eed15f823554c6bb34a126af9777d037e0214a56
 --- /dev/null
 +++ b/src/video/nv2a_pacing.h
 @@ -0,0 +1,167 @@
@@ -26050,7 +26183,7 @@ index 0000000000000000000000000000000000000000..58b97cc055759ce86b72fbe059d3f0f7
 +#endif
 diff --git a/src/video/nv2a_texture_hash.h b/src/video/nv2a_texture_hash.h
 new file mode 100644
-index 0000000..9dc9c00
+index 0000000000000000000000000000000000000000..9dc9c00dca66b4f79c45810e79169e988abcd753
 --- /dev/null
 +++ b/src/video/nv2a_texture_hash.h
 @@ -0,0 +1,152 @@
@@ -28094,7 +28227,7 @@ index 0000000000000000000000000000000000000000..e7c190edf8303dbc2618197a335968de
 +}
 diff --git a/tests/dsp/hrtf_filter_test.c b/tests/dsp/hrtf_filter_test.c
 new file mode 100644
-index 0000000..9e30bb2
+index 0000000000000000000000000000000000000000..9e30bb2752e0810011fe71acd29d7b653132a52f
 --- /dev/null
 +++ b/tests/dsp/hrtf_filter_test.c
 @@ -0,0 +1,151 @@
@@ -28849,7 +28982,7 @@ index 0000000000000000000000000000000000000000..74ae996370fd67b5061ec043be66c1ec
 +}
 diff --git a/tests/dsp/vp_frame_bench.c b/tests/dsp/vp_frame_bench.c
 new file mode 100644
-index 0000000..c370c49
+index 0000000000000000000000000000000000000000..c370c49aa2b772e645e1d9161eba6e6908b64bc1
 --- /dev/null
 +++ b/tests/dsp/vp_frame_bench.c
 @@ -0,0 +1,345 @@
@@ -29200,7 +29333,7 @@ index 0000000..c370c49
 +}
 diff --git a/tests/dsp/vp_idle_report_test.c b/tests/dsp/vp_idle_report_test.c
 new file mode 100644
-index 0000000..f4ee01c
+index 0000000000000000000000000000000000000000..f4ee01c12c7a223af199e5fd8db451dfc4694975
 --- /dev/null
 +++ b/tests/dsp/vp_idle_report_test.c
 @@ -0,0 +1,202 @@
@@ -29408,7 +29541,7 @@ index 0000000..f4ee01c
 +}
 diff --git a/tests/dsp/vp_monitor_mix_test.c b/tests/dsp/vp_monitor_mix_test.c
 new file mode 100644
-index 0000000..a03126f
+index 0000000000000000000000000000000000000000..a03126fe6f5aff068641db79c4e670f0100f5331
 --- /dev/null
 +++ b/tests/dsp/vp_monitor_mix_test.c
 @@ -0,0 +1,199 @@
@@ -30672,7 +30805,7 @@ index 0000000000000000000000000000000000000000..d0c6d7db5a35820ac832fcdd829373f9
 +    return 0;
 +}
 diff --git a/tests/kernel_dispatch/CMakeLists.txt b/tests/kernel_dispatch/CMakeLists.txt
-index a8e9688..e7cb402 100644
+index a8e9688c5161e277ae01aa7c37ac26b1705f053c..e7cb4021a648195ac8042d392f5b5f350862f9f4 100644
 --- a/tests/kernel_dispatch/CMakeLists.txt
 +++ b/tests/kernel_dispatch/CMakeLists.txt
 @@ -7,5 +7,169 @@ add_subdirectory(../.. xboxrecomp)
@@ -32317,7 +32450,7 @@ index 0000000000000000000000000000000000000000..3376b373d95425b233616ae3fa56a9a8
 +}
 diff --git a/tests/kernel_dispatch/kernel_dpc_queue_test.c b/tests/kernel_dispatch/kernel_dpc_queue_test.c
 new file mode 100644
-index 0000000..88773c4
+index 0000000000000000000000000000000000000000..88773c4f0c2413add102fa229c33791e061c3082
 --- /dev/null
 +++ b/tests/kernel_dispatch/kernel_dpc_queue_test.c
 @@ -0,0 +1,73 @@
@@ -34386,7 +34519,7 @@ index 0000000000000000000000000000000000000000..9dc93531041899a2e383739e02028247
 +}
 diff --git a/tests/kernel_dispatch/kernel_isr_gate_test.c b/tests/kernel_dispatch/kernel_isr_gate_test.c
 new file mode 100644
-index 0000000..896270e
+index 0000000000000000000000000000000000000000..896270e12cab4df6e08b755f8e562b8a7f61a5dc
 --- /dev/null
 +++ b/tests/kernel_dispatch/kernel_isr_gate_test.c
 @@ -0,0 +1,174 @@
@@ -35843,7 +35976,7 @@ index 0000000000000000000000000000000000000000..2f5a9a81246dfba0d6df944a204d0bdc
 +}
 diff --git a/tests/kernel_dispatch/nv2a_pb_hitch_test.c b/tests/kernel_dispatch/nv2a_pb_hitch_test.c
 new file mode 100644
-index 0000000..4389e62
+index 0000000000000000000000000000000000000000..4389e62f3755941f1e8df1abae829a53a7868c97
 --- /dev/null
 +++ b/tests/kernel_dispatch/nv2a_pb_hitch_test.c
 @@ -0,0 +1,555 @@
@@ -39642,7 +39775,7 @@ index 0000000000000000000000000000000000000000..2432c01ca82ee94fc5ea899ebef4a835
 +}
 diff --git a/tests/nv2a_black_frame/CMakeLists.txt b/tests/nv2a_black_frame/CMakeLists.txt
 new file mode 100644
-index 0000000..a51400a
+index 0000000000000000000000000000000000000000..a51400ac906959f2369055a4fba60d7b58e45024
 --- /dev/null
 +++ b/tests/nv2a_black_frame/CMakeLists.txt
 @@ -0,0 +1,7 @@
@@ -39655,7 +39788,7 @@ index 0000000..a51400a
 +add_test(NAME nv2a_black_frame COMMAND nv2a_black_frame)
 diff --git a/tests/nv2a_black_frame/test_black_frame.c b/tests/nv2a_black_frame/test_black_frame.c
 new file mode 100644
-index 0000000..ad56362
+index 0000000000000000000000000000000000000000..ad563620832a09b8cec285f36b0484c971a11a5e
 --- /dev/null
 +++ b/tests/nv2a_black_frame/test_black_frame.c
 @@ -0,0 +1,523 @@
@@ -40341,7 +40474,7 @@ index 0000000000000000000000000000000000000000..2667224a801744671c411a64401d97da
 +}
 diff --git a/tests/nv2a_display_stats/CMakeLists.txt b/tests/nv2a_display_stats/CMakeLists.txt
 new file mode 100644
-index 0000000..b4ef71a
+index 0000000000000000000000000000000000000000..b4ef71a2887d020f286d05929dab893d4221ecd4
 --- /dev/null
 +++ b/tests/nv2a_display_stats/CMakeLists.txt
 @@ -0,0 +1,7 @@
@@ -40354,7 +40487,7 @@ index 0000000..b4ef71a
 +add_test(NAME nv2a_display_stats COMMAND nv2a_display_stats)
 diff --git a/tests/nv2a_display_stats/test_display_stats.c b/tests/nv2a_display_stats/test_display_stats.c
 new file mode 100644
-index 0000000..a62d9b5
+index 0000000000000000000000000000000000000000..a62d9b5ef62f65a8c9df053f92e019848302f25c
 --- /dev/null
 +++ b/tests/nv2a_display_stats/test_display_stats.c
 @@ -0,0 +1,191 @@
@@ -41068,7 +41201,7 @@ index 0000000000000000000000000000000000000000..6aa13a105e306ed1f43ffb2fba1190a6
 +or frame-rate improvements.
 diff --git a/tests/nv2a_graphics_quality/test_graphics_quality.c b/tests/nv2a_graphics_quality/test_graphics_quality.c
 new file mode 100644
-index 0000000..243d737
+index 0000000000000000000000000000000000000000..243d7370d66dc10cbf978c2419a253c72a83de76
 --- /dev/null
 +++ b/tests/nv2a_graphics_quality/test_graphics_quality.c
 @@ -0,0 +1,921 @@
@@ -41995,7 +42128,7 @@ index 0000000..243d737
 +}
 diff --git a/tests/nv2a_graphics_quality/test_haze.inc b/tests/nv2a_graphics_quality/test_haze.inc
 new file mode 100644
-index 0000000..612e624
+index 0000000000000000000000000000000000000000..612e62444839d05296b6b6dc8e56abdd523b4bbd
 --- /dev/null
 +++ b/tests/nv2a_graphics_quality/test_haze.inc
 @@ -0,0 +1,217 @@
@@ -42218,7 +42351,7 @@ index 0000000..612e624
 +}
 diff --git a/tests/nv2a_hash/CMakeLists.txt b/tests/nv2a_hash/CMakeLists.txt
 new file mode 100644
-index 0000000..6d6193f
+index 0000000000000000000000000000000000000000..6d6193fae1b999e9e3e44805b487f0d9e02fd83b
 --- /dev/null
 +++ b/tests/nv2a_hash/CMakeLists.txt
 @@ -0,0 +1,17 @@
@@ -42318,7 +42451,7 @@ index 0000000000000000000000000000000000000000..16348c198cd36459de77971ab9b0a49b
 +}
 diff --git a/tests/nv2a_hash/test_hash.c b/tests/nv2a_hash/test_hash.c
 new file mode 100644
-index 0000000..d5b71c9
+index 0000000000000000000000000000000000000000..d5b71c92c286d7d078cc373b2a87774ca3bb9562
 --- /dev/null
 +++ b/tests/nv2a_hash/test_hash.c
 @@ -0,0 +1,200 @@
@@ -42852,10 +42985,10 @@ index 0000000000000000000000000000000000000000..203713218b67aba42f3ad98ed967a6ea
 +decoder independently of D3D11.
 diff --git a/tests/nv2a_native_fog/test_native_fog.c b/tests/nv2a_native_fog/test_native_fog.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..57374238fe57cc835f151abc99d8728d5a558003
+index 0000000000000000000000000000000000000000..e61216ef490755dca9924379fe27b9011d38446f
 --- /dev/null
 +++ b/tests/nv2a_native_fog/test_native_fog.c
-@@ -0,0 +1,337 @@
+@@ -0,0 +1,341 @@
 +/* Actual fog/depth/compositor GPU results. Only framebuffer inputs and
 + * deliberate resource/compiler failures are fixture boundaries. */
 +#define COBJMACROS
@@ -43144,6 +43277,7 @@ index 0000000000000000000000000000000000000000..57374238fe57cc835f151abc99d8728d
 +    uint32_t frame = s_frame;
 +    memset(&s_native_fog_seen,0,sizeof s_native_fog_seen);
 +    st.fog_enable = 1; st.fog_mode = 0x2601u; st.fog_param[0] = 1; st.fog_param[1] = 1;
++    st.rc.final0 = 0x130C0300u; st.rc.final1 = 0;        /* lerp(fog colour, r0, fog alpha): distance fog */
 +    CHECK(native_fog_draw(&st,s) == 0);                 /* no native fog seen yet */
 +    fog(&st,0,NULL);
 +    CHECK(s_native_fog_seen.target == s && s_native_fog_seen.passes == 1);
@@ -43158,6 +43292,9 @@ index 0000000000000000000000000000000000000000..57374238fe57cc835f151abc99d8728d
 +    fog(&st,0,NULL);
 +    CHECK(native_fog_draw(&st,s) == 2);
 +    st.fog_mode = 0x800u; CHECK(native_fog_draw(&st,s) == 2);   /* any mode: fogged by view depth */
++    st.rc.final0 = 0x13080C00u;                          /* fog alpha only, a blend weight (car paint) */
++    CHECK(native_fog_draw(&st,s) == 0);
++    st.rc.final0 = 0x130C0300u;
 +    s_frame = frame + 3;                                /* a frame without a pass in between */
 +    CHECK(native_fog_draw(&st,s) == 0);
 +    s_frame = frame + 4;
@@ -43195,7 +43332,7 @@ index 0000000000000000000000000000000000000000..57374238fe57cc835f151abc99d8728d
 +}
 diff --git a/tests/nv2a_pacing/CMakeLists.txt b/tests/nv2a_pacing/CMakeLists.txt
 new file mode 100644
-index 0000000..fef0298
+index 0000000000000000000000000000000000000000..fef029813b431fe3030fa42d3780eb1d2fc45b83
 --- /dev/null
 +++ b/tests/nv2a_pacing/CMakeLists.txt
 @@ -0,0 +1,8 @@
@@ -43250,7 +43387,7 @@ index 0000000000000000000000000000000000000000..3efe3430c1414ea6cc28fabceb25dd8b
 +- [QueryThreadCycleTime](https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-querythreadcycletime): thread cycles include user/kernel execution and must not be converted directly to elapsed time.
 diff --git a/tests/nv2a_pacing/test_pacing.c b/tests/nv2a_pacing/test_pacing.c
 new file mode 100644
-index 0000000..6f27884
+index 0000000000000000000000000000000000000000..6f27884f01aae8daba4d459ff8fcef7afd8448f6
 --- /dev/null
 +++ b/tests/nv2a_pacing/test_pacing.c
 @@ -0,0 +1,307 @@
@@ -44580,7 +44717,7 @@ index 0000000000000000000000000000000000000000..6df23d151ba5f63e927308698bfee1fd
 +}
 diff --git a/tests/nv2a_readback/CMakeLists.txt b/tests/nv2a_readback/CMakeLists.txt
 new file mode 100644
-index 0000000..fe758ef
+index 0000000000000000000000000000000000000000..fe758efd257706f2248167d4fa225a1bf1aad561
 --- /dev/null
 +++ b/tests/nv2a_readback/CMakeLists.txt
 @@ -0,0 +1,17 @@
@@ -44717,7 +44854,7 @@ index 0000000000000000000000000000000000000000..19b12135e8458275351496f689254679
 +claim needs a clean gameplay comparison without concurrent tests or builds.
 diff --git a/tests/nv2a_readback/test_main.c b/tests/nv2a_readback/test_main.c
 new file mode 100644
-index 0000000..d7fec98
+index 0000000000000000000000000000000000000000..d7fec98efd5bdbea897ec6cc027cb78a5e3e092f
 --- /dev/null
 +++ b/tests/nv2a_readback/test_main.c
 @@ -0,0 +1,1017 @@
@@ -49803,7 +49940,7 @@ index 0000000000000000000000000000000000000000..65c2c4aad28de91ff7ebcd2898bdb68f
 +}
 diff --git a/tests/nv2a_vertex_reuse/CMakeLists.txt b/tests/nv2a_vertex_reuse/CMakeLists.txt
 new file mode 100644
-index 0000000..6b69437
+index 0000000000000000000000000000000000000000..6b6943762ff7c269ec9528125b8ab1a60c36f7e6
 --- /dev/null
 +++ b/tests/nv2a_vertex_reuse/CMakeLists.txt
 @@ -0,0 +1,8 @@
@@ -49817,7 +49954,7 @@ index 0000000..6b69437
 +add_test(NAME nv2a_vertex_reuse COMMAND nv2a_vertex_reuse)
 diff --git a/tests/nv2a_vertex_reuse/test_vertex_reuse.c b/tests/nv2a_vertex_reuse/test_vertex_reuse.c
 new file mode 100644
-index 0000000..35cb3d9
+index 0000000000000000000000000000000000000000..35cb3d9136602adf54a774a01e539f7c350a2d3d
 --- /dev/null
 +++ b/tests/nv2a_vertex_reuse/test_vertex_reuse.c
 @@ -0,0 +1,132 @@
@@ -49954,7 +50091,7 @@ index 0000000..35cb3d9
 +    return 0;
 +}
 diff --git a/tests/nv2a_vsh/CMakeLists.txt b/tests/nv2a_vsh/CMakeLists.txt
-index b016103..8f05dd3 100644
+index b016103e4bebb8c1dee6ecf500257c1fc71b51da..8f05dd31c7958aeed7af2efa814ea1e1f6aaab96 100644
 --- a/tests/nv2a_vsh/CMakeLists.txt
 +++ b/tests/nv2a_vsh/CMakeLists.txt
 @@ -7,3 +7,15 @@ if(NOT WIN32)
@@ -50029,7 +50166,7 @@ index 0000000000000000000000000000000000000000..187933aa5017831a361b0c832dd9a684
 +#endif
 diff --git a/tests/nv2a_vsh/nv2a_vsh_decode_test.c b/tests/nv2a_vsh/nv2a_vsh_decode_test.c
 new file mode 100644
-index 0000000..344d09a
+index 0000000000000000000000000000000000000000..344d09a39c7f717f505c62be1d39c5597fd13605
 --- /dev/null
 +++ b/tests/nv2a_vsh/nv2a_vsh_decode_test.c
 @@ -0,0 +1,63 @@
@@ -50098,7 +50235,7 @@ index 0000000..344d09a
 +}
 diff --git a/tests/nv2a_vsh/nv2a_vsh_position_test.c b/tests/nv2a_vsh/nv2a_vsh_position_test.c
 new file mode 100644
-index 0000000..c70b6dc
+index 0000000000000000000000000000000000000000..c70b6dc8b3491f1a6d2d7fc49fce3426b4558c46
 --- /dev/null
 +++ b/tests/nv2a_vsh/nv2a_vsh_position_test.c
 @@ -0,0 +1,84 @@
@@ -50187,7 +50324,7 @@ index 0000000..c70b6dc
 +    return 0;
 +}
 diff --git a/tests/nv2a_vsh/nv2a_vsh_test.c b/tests/nv2a_vsh/nv2a_vsh_test.c
-index b229880..6957afd 100644
+index b229880c01d910eb88fa91c49fbf2876f1111a8b..6957afde57ba627921845495170e1faf8a1bf65b 100644
 --- a/tests/nv2a_vsh/nv2a_vsh_test.c
 +++ b/tests/nv2a_vsh/nv2a_vsh_test.c
 @@ -10,6 +10,8 @@
@@ -51660,7 +51797,7 @@ index 0000000000000000000000000000000000000000..21ac01a8999c7a6def5d482b8c800c2a
 +}
 diff --git a/tests/nv2a_world_lighting/test_world_lighting.c b/tests/nv2a_world_lighting/test_world_lighting.c
 new file mode 100644
-index 0000000..8d3da10
+index 0000000000000000000000000000000000000000..8d3da102b471b54e6524234d178e0b4bf96e9f38
 --- /dev/null
 +++ b/tests/nv2a_world_lighting/test_world_lighting.c
 @@ -0,0 +1,250 @@
@@ -51915,7 +52052,7 @@ index 0000000..8d3da10
 +    return 0;
 +}
 diff --git a/tests/test_menu_placement.py b/tests/test_menu_placement.py
-index a6b4477..108ef56 100644
+index a6b4477a3ab2ff2ba38fc52a8beee53f0d63bf90..108ef56e78c11a9357186c190c1390b0db8670ed 100644
 --- a/tests/test_menu_placement.py
 +++ b/tests/test_menu_placement.py
 @@ -1,41 +1,1022 @@
@@ -53493,7 +53630,7 @@ index 0000000000000000000000000000000000000000..1c54ce928f5ffa75797217501e16a921
 +}
 diff --git a/tests/xaudio2/hires_wait_test.c b/tests/xaudio2/hires_wait_test.c
 new file mode 100644
-index 0000000..03bc17a
+index 0000000000000000000000000000000000000000..03bc17a454a46d9860f1f277337e21e8247a175c
 --- /dev/null
 +++ b/tests/xaudio2/hires_wait_test.c
 @@ -0,0 +1,348 @@
@@ -54234,7 +54371,7 @@ index f3499fa12fad08475e00cf92eaacf20a5657e4ee..92372cc8441ce6088a479fa62d5b453d
  }
 diff --git a/tests/xaudio2/throttle_test.c b/tests/xaudio2/throttle_test.c
 new file mode 100644
-index 0000000..19ca399
+index 0000000000000000000000000000000000000000..19ca399d698e7d02027277ef4fc735ec89b54bd0
 --- /dev/null
 +++ b/tests/xaudio2/throttle_test.c
 @@ -0,0 +1,155 @@

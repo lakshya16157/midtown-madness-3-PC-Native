@@ -227,5 +227,20 @@
     "start": "0x001D6327",
     "end": "0x001D6434",
     "note": "Network car state snapshot (ret 4), called every frame through vtables from 0x0021902D and 0x0021A8D8 once a System Link race has a remote player."
+  },
+  {
+    "start": "0x00241E85",
+    "end": "0x00241E8F",
+    "note": "Shared epilogue (pop edi/esi/ebx, add ebp 60h, leave, ret 18h) of the text widget class 37D388's +0xC4 method 0x00241C62, which the translator split at 0x00241E40; three of its exits jump here. The unresolved stub only popped the return address and arguments, so those exits returned without restoring EDI/ESI/EBX/EBP and with ESP inside the frame. Its caller, the widget draw 0x00241A8E, then returned ESI=0, EDI=-240.0f, and the leaf widget draw 0x001C3C2D read its next sibling through that ESI: a menu screen's vtable was zeroed, and after a lost second circuit race in a session neither the results nor the post-race menu appeared (or the game crashed). Reproduced and traced 2026-10-23."
+  },
+  {
+    "start": "0x002534FF",
+    "end": "0x00253512",
+    "note": "Method reached through six this-adjusting thunks (0x0006EC0C-0x0006EC40: ecx -= [ecx-4], jmp) from menu code; the translator never lifted it, so its unresolved stub returned at once and every call through those thunks did nothing. Seen at runtime by the [MM3_UNRESOLVED] observer in Washington Cruise/Blitz/Checkpoint, 2026-10-24."
+  },
+  {
+    "start": "0x00154018",
+    "end": "0x0015407E",
+    "note": "Function reached only through the vtable method 0x0015407E (a bare jmp here, called from camera code near 0x001EBC50); the translator never lifted it, so its unresolved stub returned at once and that virtual call did nothing. Seen at runtime by the [MM3_UNRESOLVED] observer during a circuit race, 2026-10-24."
   }
 ]

@@ -35,7 +35,10 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"RECOMP_NET", "System Link networking", 0},
     {"MM3_HUD_NORTH_MARKER", "Show the north marker on the minimap", 0},
     {"MM3_HUD_RACE_ARROW", "Show the race direction arrow", 0},
-    {"MM3_ROUTE_NAVIGATION", "Route navigation line on the map", 1}
+    {"MM3_ROUTE_NAVIGATION", "Route navigation line on the map", 1},
+    {"MM3_DRAFTING", "Slipstream drafting behind other cars", 1},
+    {"MM3_ROLL_GUARD", "Rollover assist in hard corners", 1},
+    {"MM3_AI_ALL_CARS", "Circuit opponents drive DLC and extra cars", 1}
 };
 const char *const mm3_launcher_key_names[MM3_LAUNCHER_KEYS] = {
     "A", "B", "X", "Y", "WHITE", "BLACK", "LT", "RT", "START", "BACK",

@@ -116,6 +116,14 @@ const char *mm3_circuit_label(const char *key)
         snprintf(text, sizeof text, "LAP %lu OF %lu", lap, laps);
         return text;
     }
+    /* A gate passed out of turn (logic_circuit.lua circuitMissed): the
+     * checkpoint the course still wants, counted from 1. */
+    if (!strncmp(key, "SID_MM3_MISSED_", 15)) {
+        lap = strtoul(key + 15, &end, 10);
+        if (end == key + 15 || *end || lap < 1 || lap > 99) return NULL;
+        snprintf(text, sizeof text, "CHECKPOINT %lu MISSED - GO BACK", lap);
+        return text;
+    }
     return NULL;
 }
 

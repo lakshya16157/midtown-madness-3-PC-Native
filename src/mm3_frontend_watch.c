@@ -184,11 +184,19 @@ static void heap_link_transition(uint32_t heap, uint32_t caller, uint32_t argume
     }
 }
 
+int mm3_heap_double_free(uint32_t heap, uint32_t caller, uint32_t pointer);   /* mm3_heap_guard.c */
+
 void sub_000860AA(void)
 {
     uint32_t heap = MEM32(g_esp+4u), caller = MEM32(g_esp), pointer = MEM32(g_esp+12u);
     int trace = env_flag(&heap_link_trace, "MM3_HEAP_LINK_TRACE");
-    uint32_t before = trace ? heap_bad_free_link(heap) : 0;
+    uint32_t before;
+    if (mm3_heap_double_free(heap, caller, pointer)) {
+        g_eax = (g_eax & ~0xFFu) | 1u;   /* TRUE: as if freed */
+        g_esp += 16u;                     /* ret 12 */
+        return;
+    }
+    before = trace ? heap_bad_free_link(heap) : 0;
     if (trace && pointer && pointer < 0x00500000u) {
         fprintf(stderr, "[HEAP_FREE_INVALID_ARGUMENT] heap=%08X caller=%08X pointer=%08X esp=%08X ebp=%08X stack=%08X,%08X,%08X,%08X,%08X,%08X,%08X,%08X\n",
             heap, caller, pointer, g_esp, g_ebp,

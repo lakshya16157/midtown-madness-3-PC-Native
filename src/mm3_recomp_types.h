@@ -959,15 +959,18 @@ recomp_func_t recomp_lookup_manual(uint32_t xbox_va);
 #ifdef RECOMP_ABI_CHECK
 void recomp_abi_violation_log(uint32_t va, uint32_t ebx0, uint32_t esi0,
                               uint32_t edi0, uint32_t esp0);
-#define RECOMP_ABI_CALL(va, fn) do { \
+#define RECOMP_ABI_CALL_BASE(va, fn) do { \
     uint32_t _ab = g_ebx, _as = g_esi, _ad = g_edi, _ap = g_esp; \
     (fn)(); \
     if (g_ebx != _ab || g_esi != _as || g_edi != _ad || g_esp < _ap + 4) \
         recomp_abi_violation_log((va), _ab, _as, _ad, _ap); \
 } while(0)
 #else
-#define RECOMP_ABI_CALL(va, fn) (fn)()
+#define RECOMP_ABI_CALL_BASE(va, fn) (fn)()
 #endif
+/* A function keeping its x87 state in locals redefines this to write the
+ * state back around the call (scripts/mm3_gen_x87_locals.py). */
+#define RECOMP_ABI_CALL(va, fn) RECOMP_ABI_CALL_BASE(va, fn)
 
 /**
  * RECOMP_ICALL - Indirect call through the dispatch table.
@@ -1465,6 +1468,35 @@ RECOMP_ALWAYS_INLINE double *recomp_addr_g_fp_stack(void) { return g_fp_stack; }
     (void)recomp_p_g_xmm7; (void)recomp_p_g_mm0; (void)recomp_p_g_mm1; (void)recomp_p_g_mm2; \
     (void)recomp_p_g_mm3; (void)recomp_p_g_mm4; (void)recomp_p_g_mm5; (void)recomp_p_g_mm6; \
     (void)recomp_p_g_mm7; (void)recomp_p_g_fp_stack;
+
+/* x87 state in locals for functions doing a lot of x87 work
+ * (scripts/mm3_gen_x87_locals.py, MM3_GEN_X87_LOCALS). The slots are held
+ * relative to the top on entry, so in straight-line code their indices are
+ * constants. Written back before every call and return, read again after
+ * every call; nothing else on this thread sees the state in between. */
+#define RECOMP_X87_LOAD_SLOTS() do { \
+    x87_slot[0] = recomp_p_g_fp_stack[(x87_base + 0) & 7]; x87_slot[1] = recomp_p_g_fp_stack[(x87_base + 1) & 7]; \
+    x87_slot[2] = recomp_p_g_fp_stack[(x87_base + 2) & 7]; x87_slot[3] = recomp_p_g_fp_stack[(x87_base + 3) & 7]; \
+    x87_slot[4] = recomp_p_g_fp_stack[(x87_base + 4) & 7]; x87_slot[5] = recomp_p_g_fp_stack[(x87_base + 5) & 7]; \
+    x87_slot[6] = recomp_p_g_fp_stack[(x87_base + 6) & 7]; x87_slot[7] = recomp_p_g_fp_stack[(x87_base + 7) & 7]; \
+} while (0)
+#define RECOMP_X87_ENTER \
+    int x87_base = *recomp_p_g_fp_top, x87_rel = 0, x87_cmp = *recomp_p_g_fp_cmp; \
+    uint16_t x87_cw = *recomp_p_g_fp_control_word, x87_cc = *recomp_p_g_fp_cc; \
+    double x87_slot[8]; \
+    RECOMP_X87_LOAD_SLOTS();
+#define RECOMP_X87_FLUSH() do { \
+    recomp_p_g_fp_stack[(x87_base + 0) & 7] = x87_slot[0]; recomp_p_g_fp_stack[(x87_base + 1) & 7] = x87_slot[1]; \
+    recomp_p_g_fp_stack[(x87_base + 2) & 7] = x87_slot[2]; recomp_p_g_fp_stack[(x87_base + 3) & 7] = x87_slot[3]; \
+    recomp_p_g_fp_stack[(x87_base + 4) & 7] = x87_slot[4]; recomp_p_g_fp_stack[(x87_base + 5) & 7] = x87_slot[5]; \
+    recomp_p_g_fp_stack[(x87_base + 6) & 7] = x87_slot[6]; recomp_p_g_fp_stack[(x87_base + 7) & 7] = x87_slot[7]; \
+    *recomp_p_g_fp_top = (x87_base + x87_rel) & 7; *recomp_p_g_fp_control_word = x87_cw; \
+    *recomp_p_g_fp_cmp = x87_cmp; *recomp_p_g_fp_cc = x87_cc; \
+} while (0)
+#define RECOMP_X87_RELOAD() do { \
+    x87_base = (*recomp_p_g_fp_top - x87_rel) & 7; RECOMP_X87_LOAD_SLOTS(); \
+    x87_cw = *recomp_p_g_fp_control_word; x87_cmp = *recomp_p_g_fp_cmp; x87_cc = *recomp_p_g_fp_cc; \
+} while (0)
 
 #include "mm3_gen_cache_on.h"
 #endif

@@ -246,7 +246,7 @@ static void help_show(Launcher *ui, int id)
             "Adjust world and local-light composition. Daylight keeps its authored colors; default night fill is darker so lamps stand out. Softens overlapping light fields. Off uses retail composition.",
             "Use scene depth to hide lamp flares behind cars and buildings. Off can leave bright flares visible through solid objects.",
             "Make all installed vehicles, including hidden bonus cars, selectable. This adds no downloads and does not complete career missions.",
-            "Allow the game's developer scripts and commands. The developer HUD, menu, camera modes and E3 preset below depend on this switch and prepared scripts.",
+            "Allow the game's developer scripts and commands. The developer HUD, menu, camera modes and E3 preset below depend on this switch and on the scripts prepared by tools\\debug-features\\prepare.py; they invoke the game's own developer commands.",
             "Show the game's diagnostic HUD at race start, including position and vehicle data. Requires developer tools and prepared scripts.",
             "Open the game's developer menu at race start. Its experimental commands can change the current scene and do not pause the mission timer. Requires developer tools and prepared scripts.",
             "Enable additional camera modes through the game's developer commands. Requires developer tools and prepared scripts.",
@@ -257,7 +257,10 @@ static void help_show(Launcher *ui, int id)
             "Enable System Link networking for local multiplayer and configured UDP peers. This does not provide Xbox Live sign-in. Leave off for ordinary offline play.",
             "Show the game's N letter, which marks north on the edge of the minimap as the map turns. Off keeps the minimap free of it.",
             "Show the game's yellow arrow at the top of the screen, which points toward the next checkpoint in races. Off hides it; with Route navigation on, the minimap still shows the route.",
-            "Draw the route to the next checkpoint or job target on the race map, like a navigation system, along the roads the course takes. Off shows the map without a drawn route, as in the original game."
+            "Draw the route to the next checkpoint or job target on the race map, like a navigation system, along the roads the course takes. Off shows the map without a drawn route, as in the original game.",
+            "A car close behind another, in its wake, pulls a little harder: up to about 6 km/h more each second at high speed, fading over 30 m. Works for you and the AI opponents alike. Off: no slipstream, as in the original game.",
+            "Some original cars could roll over in hard corners. Once a car on its wheels leans past 20 degrees, its roll is damped and eased back; crashes, jumps and upside-down cars are left alone. Off: original handling.",
+            "In circuit races the opponents may drive any installed car, DLC and extra cars included, and the rival takes the best car of a faster group than yours. Off keeps the opponents to the original cars."
         };
         int option = id - ID_OPTION, on = checked(ui, id);
         title = mm3_launcher_options[option].label;
@@ -785,11 +788,13 @@ static void mods_controls(Launcher *ui)
     label(ui, 2, "Horizontal field of view", 42, 435, 260);
     add(ui, 2, "EDIT", "0", ES_NUMBER | WS_TABSTOP, ID_FOV, 310, 431, 77, 26);
     label(ui, 2, "0 = retail, or 60-110 degrees", 42, 466, 345);
-    add(ui, 2, "STATIC", "Developer tools need the prepared scripts from tools\\debug-features\\prepare.py. These options invoke the game's own developer commands.",
-        0, -1, 445, 370, 371, 60);
+    /* Driving assists, below the developer options. */
+    check(ui, 2, ID_OPTION + MM3_LAUNCH_DRAFTING, mm3_launcher_options[MM3_LAUNCH_DRAFTING].label, 445, 370, 371);
+    check(ui, 2, ID_OPTION + MM3_LAUNCH_ROLL_GUARD, mm3_launcher_options[MM3_LAUNCH_ROLL_GUARD].label, 445, 404, 371);
     HWND fixed = check(ui, 2, ID_REQUIRED, "Collision-cell safety repair (required)", 42, 516, 371);
     SendMessageA(fixed, BM_SETCHECK, BST_CHECKED, 0); EnableWindow(fixed, FALSE);
-    label(ui, 2, "Preferences apply when Play starts the game. Graphics Settings remain available in game with F10.", 42, 560, 774);
+    check(ui, 2, ID_OPTION + MM3_LAUNCH_AI_ALL_CARS, mm3_launcher_options[MM3_LAUNCH_AI_ALL_CARS].label, 445, 554, 371);
+    label(ui, 2, "Preferences apply when Play starts the game. Graphics Settings remain available in game with F10.", 42, 600, 774);
 }
 
 static int pad_source(const XINPUT_GAMEPAD *pad)

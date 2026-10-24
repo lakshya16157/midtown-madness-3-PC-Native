@@ -22,13 +22,17 @@ circuit_watch = {}					-- Each opponent's {x, z, checks without moving}
 circuit_trace_tick = 0				-- Seconds of position lines (circuitTrace)
 
 -- Opponents race like the retail race 09: the top personality tier
--- (04_aggressive_*) and the best car of the player's group - an original car
--- only: retail driving does not handle the DLC or extra cars. The rival (the
--- first opponent) races the player's own car when that is an original one.
+-- (04_aggressive_*) and the best cars of the player's performance group. The
+-- rival (the first opponent) gets the best car of a faster group when there
+-- is one, so at least one opponent is much faster than the player's car.
+-- Opponents drive the DLC and extra cars too unless the launcher's Mods tab
+-- keeps them to the original cars (mm3AiAllCars, src/mm3_lua_natives.c; an
+-- older exe without it keeps the original cars).
 circuit_retail_place = placePlayerVehicle
 circuit_retail_race = raceGetRace
 circuit_retail_vehicle = getRandomVehicleFromGroup
 circuit_retail_pick = randomCarInGroup
+circuit_all_cars = 0				-- 1: opponents may drive any installed car (set in placePlayerVehicle)
 
 function circuitRaceCode()
 	return "09"
@@ -36,6 +40,9 @@ end
 
 function circuitOriginalCar(car)
 	local i = 1
+	if car == nil or car == "" then
+		return 0
+	end
 	car = strlower(car)
 	if strsub(car, strlen(car) - 2, 1) == "." then
 		car = strsub(car, 0, strlen(car) - 2)
@@ -49,7 +56,9 @@ function circuitOriginalCar(car)
 	return 0
 end
 
-function circuitVehicle(group, pick)
+-- A car of the group (the best when pick is 1), or nil when the group has no
+-- car (getRandomVehicleFromGroup returns nothing then).
+function circuitGroupCar(group, pick)
 	local car
 	local tries = 0
 	if pick == nil then
@@ -57,12 +66,38 @@ function circuitVehicle(group, pick)
 	else
 		car = circuit_retail_vehicle(group, pick)
 	end
+	if circuit_all_cars == 1 or car == nil or car == "" then
+		return car
+	end
 	while circuitOriginalCar(car) == 0 and tries < 32 do
 		car = circuit_retail_vehicle(group)
 		tries = tries + 1
 	end
 	if circuitOriginalCar(car) == 0 then
+		return nil
+	end
+	return car
+end
+
+-- getRandomVehicleFromGroup during placement: retail lower-cases the result,
+-- so it is never nil.
+function circuitVehicle(group, pick)
+	local car = circuitGroupCar(group, pick)
+	if car == nil or car == "" then
 		car = "koenigsegg"				-- The fastest original car
+	end
+	return car
+end
+
+-- The rival: the best car two groups faster, else one group faster, else the
+-- best car of the player's own group.
+function circuitRivalCar(player_group)
+	local car = circuitGroupCar(player_group + 2, 1)
+	if car == nil or car == "" then
+		car = circuitGroupCar(player_group + 1, 1)
+	end
+	if car == nil or car == "" then
+		car = circuitVehicle(player_group, 1)
 	end
 	return car
 end
@@ -70,18 +105,19 @@ end
 function circuitPick(player_id, player_group)
 	local car
 	if player_id == 1 then
-		car = strlower(lobbyGetModel(1))
-		if strsub(car, strlen(car) - 2, 1) == "." then
-			car = strsub(car, 0, strlen(car) - 2)
-		end
-		if circuitOriginalCar(car) == 1 then
-			return car
-		end
+		return strlower(circuitRivalCar(player_group))
 	end
-	return circuit_retail_pick(player_id, player_group)
+	car = circuit_retail_pick(player_id, player_group)
+	if car == nil or car == "" then
+		car = "koenigsegg"
+	end
+	return car
 end
 
 function placePlayerVehicle()
+	if mm3AiAllCars ~= nil then
+		circuit_all_cars = mm3AiAllCars()
+	end
 	raceGetRace = circuitRaceCode
 	getRandomVehicleFromGroup = circuitVehicle
 	randomCarInGroup = circuitPick
@@ -96,12 +132,16 @@ end
 -- planned for. Retail races switch the speed in steps every few seconds (1.0,
 -- 1.25, 1.5), so an opponent coming into the near band brakes on a straight;
 -- here the speed follows the gap smoothly and changes slowly (circuitPace).
+-- It falls slower than it rises: a boosted opponent passing the player or
+-- reaching the near band at 0.08 a second shed its extra speed with the brakes
+-- on a straight; at 0.03 it eases off over about 10 s.
 -- Race by race the catch-up starts closer behind. No launch boost: it sent
 -- opponents into the first corner too fast.
 ai_speed_from_race = 99				-- The retail schedule (by race digit) stays off
 ai_speed_delay = 3
 circuit_pace_top = 1.3				-- The most an opponent's speed is raised
-circuit_pace_step = 0.08			-- The most it changes, once a second
+circuit_pace_step = 0.08			-- The most it rises, once a second
+circuit_pace_ease = 0.03			-- The most it falls, once a second
 circuit_pace = {}					-- Each opponent's speed factor now
 
 function circuitDifficulty()
@@ -209,8 +249,9 @@ end
 circuit_follow_delay = 0.25
 
 -- An opponent's speed factor moves towards the one its gap behind the player
--- asks for, by at most circuit_pace_step (circuitTrace, once a second: the
--- game's speed setting is not changed more often).
+-- asks for, up by at most circuit_pace_step and down by circuit_pace_ease
+-- (circuitTrace, once a second: the game's speed setting is not changed more
+-- often).
 function circuitPace(player, ply_id, vehicle)
 	local want = 1.0
 	local gap, now
@@ -228,8 +269,8 @@ function circuitPace(player, ply_id, vehicle)
 	end
 	if want > now + circuit_pace_step then
 		want = now + circuit_pace_step
-	elseif want < now - circuit_pace_step then
-		want = now - circuit_pace_step
+	elseif want < now - circuit_pace_ease then
+		want = now - circuit_pace_ease
 	end
 	if want ~= now then
 		circuit_pace[ply_id] = want
@@ -237,10 +278,98 @@ function circuitPace(player, ply_id, vehicle)
 	end
 end
 
-function circuitFollowAll()
+-- Horn: playerToggleHorn switches a car's horn on or off (retail races sound
+-- it from the start to the finish), so an opponent's honk is its horn on and,
+-- half a second later, off again. An opponent alongside or right behind the
+-- player honks now and then; the second one, the brawler, more often.
+circuit_horn_on = {}				-- circuit_horn_on[ply_id] == 1: the horn is sounding
+circuit_horn_at = {}				-- Second of each opponent's last honk
+circuit_horn_near = 9				-- Metres from the player
+circuit_horn_wait = {9, 5;}			-- Seconds between honks: any opponent, the brawler
+
+function circuitHornOff()
 	local i
+	for i = 2, players, 1 do
+		if circuit_horn_on[i] == 1 then
+			circuit_horn_on[i] = 0
+			playerToggleHorn(ply_AI_subname .. (i - 2))
+		end
+	end
+end
+
+function circuitHorn(player, ply_id, x, z)
+	local px = objectGetCurrentPos("VH-0", 1)
+	local pz = objectGetCurrentPos("VH-0", 3)
+	local last = circuit_horn_at[ply_id]
+	local wait = circuit_horn_wait[1]
+	if x == nil or z == nil or px == nil or pz == nil or circuit_horn_on[ply_id] == 1 or
+			current_target[ply_id] >= total_targets then
+		return
+	end
+	if ply_id == 3 then
+		wait = circuit_horn_wait[2]
+	end
+	if last ~= nil and circuit_trace_tick - last < wait then
+		return
+	end
+	if (x - px) * (x - px) + (z - pz) * (z - pz) < circuit_horn_near * circuit_horn_near then
+		circuit_horn_on[ply_id] = 1
+		circuit_horn_at[ply_id] = circuit_trace_tick
+		playerToggleHorn(player)
+		timerCreate("circuit_horn", 0.5, circuitHornOff)
+	end
+end
+
+-- Once the player is over the line the race is over for this script: no more
+-- waypoints, speeds or horns for the opponents (their timers stop), while the
+-- game plays the finish and builds the results screen. A circuit race was
+-- seen crashing in that results screen (log direct-20261023-141159) with
+-- opponents still being given new waypoints.
+circuit_over = 0
+-- Race opponents steer clear of every obstacle by its radius plus
+-- rc::m_avoidRadiusAdd, which retail race setup makes 10 m: the container rows
+-- blocking side roads then reached 7 m into the course, and opponents braked
+-- and swerved at every blocked junction on a straight. Retail race setup sets
+-- it again for the next race; the end of a circuit puts it back as well.
+circuit_avoid_radius = 4.0
+circuit_retail_avoid_radius = 10.0
+
+function circuitRaceOver()
+	circuit_over = 1
+	circuitHornOff()
+	aiSetVariable("rc::m_avoidRadiusAdd", circuit_retail_avoid_radius)
+	circuitLog("over at " .. circuit_trace_tick)
+end
+
+-- A gate passed out of turn: the course still wants the gate the arrow points
+-- at, so say so (once every few seconds; re-crossing the gate just passed is
+-- no miss).
+circuit_missed_at = -10
+
+function circuitMissed(gate)
+	local behind = circuit_next[1] - 1
+	if behind < 0 then
+		behind = total_gates - 1
+	end
+	if gate == behind or circuit_trace_tick - circuit_missed_at < 3 then
+		return
+	end
+	circuit_missed_at = circuit_trace_tick
+	sidShow("SID_MM3_MISSED_" .. (circuit_next[1] + 1), -1, sid_default_time, -1, sid_default_size_big)
+	arrowBindToObject("Human-0", nextCheckPoint(), futureCheckPoint())
+	circuitLog("player passed CP-" .. gate .. " before CP-" .. circuit_next[1])
+end
+
+function circuitFollowAll()
+	local i, x, z
+	if circuit_over == 1 then
+		return
+	end
 	for i = 1, players - 1, 1 do
-		circuitFollow(ply_AI_subname .. (i - 1), i + 1, objectGetCurrentPos("VH-" .. i, 1), objectGetCurrentPos("VH-" .. i, 3))
+		x = objectGetCurrentPos("VH-" .. i, 1)
+		z = objectGetCurrentPos("VH-" .. i, 3)
+		circuitFollow(ply_AI_subname .. (i - 1), i + 1, x, z)
+		circuitHorn(ply_AI_subname .. (i - 1), i + 1, x, z)
 	end
 	timerCreate("circuit_follow", circuit_follow_delay, circuitFollowAll)
 end
@@ -266,6 +395,37 @@ function circuitGap(a, p)
 		r = (r + v / r) / 2
 	end
 	return r
+end
+
+-- An opponent whose next target keeps getting further away while it drives
+-- (circuit_away_after seconds in a row) is heading the wrong way: logged as
+-- "away" for tools/races/trace.py. (Paris 29's opponents once turned round in
+-- the Peripherique's covered section and circled the streets above it.)
+circuit_away_after = 6
+circuit_away = {}					-- Each opponent's {target, distance to it, seconds getting further}
+
+function circuitAwayWatch(player, ply_id, x, z)
+	local k = circuit_at[ply_id]
+	local w = circuit_away[ply_id]
+	local p, d
+	if x == nil or z == nil or k >= circuit_route_count * laps then
+		return
+	end
+	p = circuitTargetPos(k)
+	d = circuitGap({x, z;}, p)
+	if w == nil or w[1] ~= k then
+		circuit_away[ply_id] = {k, d, 0;}
+		return
+	end
+	if d > w[2] + 5 then
+		w[3] = w[3] + 1
+		if w[3] == circuit_away_after then
+			circuitLog("away " .. player .. " " .. circuitRound(x) .. " " .. circuitRound(z) .. " from WP-" .. k .. " " .. circuitRound(d) .. " m")
+		end
+	elseif d < w[2] - 5 then
+		w[3] = 0
+	end
+	w[2] = d
 end
 
 -- An opponent that keeps the same next target far longer than the drive
@@ -298,6 +458,9 @@ function circuitTrace()
 	local i, x, z
 	local line = "pos " .. circuit_trace_tick
 	local targets = " at"
+	if circuit_over == 1 then
+		return
+	end
 	for i = 0, players - 1, 1 do
 		x = objectGetCurrentPos("VH-" .. i, 1)
 		z = objectGetCurrentPos("VH-" .. i, 3)
@@ -305,6 +468,7 @@ function circuitTrace()
 		if i > 0 then
 			circuitFollow(ply_AI_subname .. (i - 1), i + 1, x, z)
 			circuitLostWatch(ply_AI_subname .. (i - 1), i + 1)
+			circuitAwayWatch(ply_AI_subname .. (i - 1), i + 1, x, z)
 			circuitPace(ply_AI_subname .. (i - 1), i + 1, "VH-" .. i)
 			targets = targets .. " " .. circuit_at[i + 1]
 		end
@@ -348,6 +512,9 @@ end
 
 function checkAISpeed()
 	local i
+	if circuit_over == 1 then
+		return
+	end
 	for i = 0, players - 2, 1 do
 		circuitWatch(ply_AI_subname .. i, i + 2, "VH-" .. i + 1)
 	end
@@ -409,6 +576,7 @@ function initAI()
 		circuitFill(ply_AI_subname .. i, i + 2)
 	end
 	circuitDifficulty()
+	aiSetVariable("rc::m_avoidRadiusAdd", circuit_avoid_radius)
 	timerCreate("check_ai_speed", ai_speed_delay, checkAISpeed)
 	circuitLog("start " .. gameGetCity() .. " " .. (20 + circuit_tier) .. " gates " .. total_gates .. " laps " .. laps .. " players " .. players .. " path " .. circuit_route_count)
 	circuitTrace()
@@ -473,7 +641,11 @@ function checkPoint(id, player)
 		return				-- Opponents' gates count along their path (circuitAdvance)
 	end
 	circuitShowGates(gate)
+	if circuit_over == 1 then
+		return
+	end
 	if gate ~= circuit_next[ply_id] then
+		circuitMissed(gate)
 		return
 	end
 	current_target[ply_id] = current_target[ply_id] + 1
@@ -486,6 +658,7 @@ function checkPoint(id, player)
 	end
 	circuit_next[ply_id] = next_gate
 	if current_target[1] == total_targets then
+		circuitRaceOver()
 		finish(id)
 	else
 		if next_gate == 0 then

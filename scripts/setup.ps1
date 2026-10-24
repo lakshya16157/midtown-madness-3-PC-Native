@@ -86,11 +86,14 @@ if ($Force -or -not (Test-Path 'src\recomp\gen\recomp_dispatch.c')) {
 } else {
     Write-Host 'src\recomp\gen present (use -Force to regenerate)'
 }
-# Existing generated trees need the newly recovered network entries too.
-# Incremental repair preserves every prior body and is a no-op when current.
+# Existing generated trees need the newly recovered entries too: System Link,
+# then the results-screen epilogue (post-race menu), a menu thunk target and a
+# race camera method. Incremental repair preserves every prior body and is a
+# no-op when current.
 & $python scripts\Generate-MM3RuntimeEntries.py src\recomp\gen --incremental --entries `
-    0x00043A00 0x0010EF0D 0x00189153 0x0018B42B 0x001CDAD3 0x001D6327
-Check 'System Link runtime entries'
+    0x00043A00 0x0010EF0D 0x00189153 0x0018B42B 0x001CDAD3 0x001D6327 `
+    0x00241E85 0x002534FF 0x00154018
+Check 'Recovered runtime entries'
 & $python scripts\generate_mm3.py --fix-flag-joins src\recomp\gen --quiet-flag-joins
 Check 'guest flag joins'
 

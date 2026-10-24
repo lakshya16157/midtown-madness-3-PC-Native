@@ -369,7 +369,17 @@ void sub_000858F3(void)
 #ifdef MM3_HEAP_WATCH_WRAPPER
 void sub_000860AA_original(void) { call_alternate_seh_preserving(sub_000860AA_gen); }
 #else
-void sub_000860AA(void) { call_alternate_seh_preserving(sub_000860AA_gen); }
+int mm3_heap_double_free(uint32_t heap, uint32_t caller, uint32_t pointer);   /* mm3_heap_guard.c */
+void sub_000860AA(void)
+{
+    /* RtlFreeHeap: a second free of a block is skipped (and logged). */
+    if (mm3_heap_double_free(MEM32(g_esp + 4), MEM32(g_esp), MEM32(g_esp + 12))) {
+        g_eax = (g_eax & ~0xFFu) | 1u;   /* TRUE, as if freed */
+        g_esp += 16;                      /* ret 12 */
+        return;
+    }
+    call_alternate_seh_preserving(sub_000860AA_gen);
+}
 #endif
 void sub_0008629E(void) { call_alternate_seh_preserving(sub_0008629E_gen); }
 void sub_00096738(void) { sub_00096738_gen(); }

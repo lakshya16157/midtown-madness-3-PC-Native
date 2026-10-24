@@ -40,7 +40,7 @@ from pathlib import Path
 # PyInstaller see and include them (it only analyses this file's own imports).
 _PAYLOAD_STDLIB = (argparse, collections, copy, hashlib, math, re, struct, tempfile, zipfile, zlib)
 
-VERSION = "1.6"
+VERSION = "1.7"
 TITLE = "Midtown Madness 3 - Setup"
 # The car toolkit is in the project repository (it needs Python), not in the install.
 CAR_WORKSHOP_URL = "https://github.com/lakshya16157/midtown-madness-3-PC-Native/tree/main/tools/car-mods"

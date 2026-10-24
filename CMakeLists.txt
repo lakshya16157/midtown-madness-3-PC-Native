@@ -109,8 +109,19 @@ set(MM3_DEFINITION_ONLY_FUNCTIONS ${MM3_DISTANCE_FUNCTIONS})
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0015A929)
 # Ordered host depth fog and its optional horizon replacement.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000F8DCE sub_000F8750)
-# Car-to-car damage scaling: src/mm3_damage_diagnostics.c logs each scaled hit.
-list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00021DCF)
+# Car damage: src/mm3_damage_diagnostics.c logs each scaled hit and gathers
+# the wreck jobs' impulses into 30 fps frames for the damage step.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00021DCF sub_001CDB6C)
+# The language chosen in Game Setup survives a restart (src/mm3_language.c).
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001193A6 sub_00124822)
+# Slipstream drafting and the roll guard on every car's integrate step
+# (src/mm3_vehicle_dynamics.c).
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001D7441)
+# Lua natives this port adds to sub_0020646F's list (src/mm3_lua_natives.c).
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0020646F)
+# Screen-widget draws skip links to destroyed widgets, and a destroyed menu
+# screen is let go by the menu still holding it (src/mm3_ui_guard.c).
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000C2BFB sub_001C3C2D sub_0011965D)
 # Building diagnostics keep same-chunk calls routed through opt-in wrappers.
 set(MM3_BUILDING_FUNCTIONS sub_00168A77 sub_001C7B15 sub_001A67BA sub_00166E01
     sub_001681FB sub_00167DA5 sub_00166B3E sub_00162F75)
@@ -257,6 +268,16 @@ endif()
 set(RECOMP_UNRESOLVED_STUB "${RECOMP_GEN_DIR}/recomp_stubs_unresolved.c")
 set_property(SOURCE "${RECOMP_UNRESOLVED_STUB}" APPEND PROPERTY
     COMPILE_DEFINITIONS "sub_000252AF=sub_000252AF_unresolved")
+# Each stub reports the first time it runs (src/mm3_unresolved_observe.c);
+# the frontend watch build brings its own observer.
+if(NOT MM3_FRONTEND_WATCH)
+    if(MSVC)
+        set(unresolved_observe "/FI${CMAKE_CURRENT_SOURCE_DIR}/src/mm3_unresolved_observe.h")
+    else()
+        set(unresolved_observe "-include" "${CMAKE_CURRENT_SOURCE_DIR}/src/mm3_unresolved_observe.h")
+    endif()
+    set_property(SOURCE "${RECOMP_UNRESOLVED_STUB}" APPEND PROPERTY COMPILE_OPTIONS ${unresolved_observe})
+endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/mm3_runtime_entry_repairs.json")
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/mm3_runtime_entry_repairs.json" runtime_entries_json)
@@ -282,10 +303,19 @@ endforeach()
 # function entry (RECOMP_GEN_PROLOGUE in src/mm3_recomp_types.h); it goes
 # through the same transformed copy.
 option(MM3_GEN_REGISTER_CACHE "Generated functions keep register addresses and the guest base in locals" ON)
+# Functions doing a lot of x87 work also keep the x87 stack, top, control word
+# and compare state in locals, written back at every call and return
+# (scripts/mm3_gen_x87_locals.py; bit-identical, tests/mm3_gen_x87_locals_regression.py).
+option(MM3_GEN_X87_LOCALS "x87-heavy generated functions keep their x87 state in locals" ON)
+set(MM3_GEN_CACHE_ARGS "")
+if(MM3_GEN_X87_LOCALS)
+    set(MM3_GEN_CACHE_ARGS "--x87-locals")
+endif()
 if(MM3_GEN_REGISTER_CACHE)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_gen_register_cache.py")
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_gen_register_cache.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_gen_x87_locals.py")
     foreach(gen_source IN LISTS RECOMP_GEN_SOURCES)
         get_filename_component(gen_dir "${gen_source}" DIRECTORY)
         # Not the dispatch table or the one-line unresolved-call stubs.
@@ -410,7 +440,7 @@ foreach(distance_input IN LISTS distance_owners)
             file(WRITE "${distance_plain}" "${distance_content}")
             execute_process(COMMAND "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_gen_register_cache.py"
-                    "${distance_plain}" "${distance_plain}.cached"
+                    "${distance_plain}" "${distance_plain}.cached" ${MM3_GEN_CACHE_ARGS}
                 RESULT_VARIABLE distance_result OUTPUT_QUIET)
             if(NOT distance_result EQUAL 0)
                 message(FATAL_ERROR "mm3_gen_register_cache.py failed on ${distance_name}")
@@ -492,6 +522,12 @@ add_executable(${PROJECT_NAME}
  src/mm3_circuit_races.c
  src/mm3_lua_errors.c
  src/mm3_damage_diagnostics.c
+ src/mm3_language.c
+ src/mm3_vehicle_dynamics.c
+ src/mm3_lua_natives.c
+ src/mm3_ui_guard.c
+ src/mm3_heap_guard.c
+ src/mm3_unresolved_observe.c
  src/mm3_car_selection_compat.c
  src/mm3_car_order.c
  src/mm3_speedometer.c
