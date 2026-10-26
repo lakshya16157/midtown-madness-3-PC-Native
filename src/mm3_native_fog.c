@@ -96,7 +96,7 @@ static void fog_report(void)
     s_fog_packets = s_fog_made_space = s_fog_fallbacks = 0;
 }
 
-/* The triangle exhaust (mm3_exhaust.c) names this camera's triangles ahead
+/* The exhaust smoke (mm3_exhaust.c) names this camera's smoke ahead
  * of its fog pass, with or without native fog. */
 static void exhaust_send(void)
 {

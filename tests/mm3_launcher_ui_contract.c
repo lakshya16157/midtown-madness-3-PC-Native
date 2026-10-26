@@ -568,12 +568,16 @@ static void contextual_help(HWND window)
         CHECK(SendMessageA(improved, BM_GETCHECK, 0, 0) != BST_CHECKED && SendMessageA(original, BM_GETCHECK, 0, 0) == BST_CHECKED);
         CHECK(help_contains(window, "Original") && help_contains(window, "On"));
         CHECK(!IsWindowEnabled(trees) && IsWindowEnabled(sky) && IsWindowEnabled(GetDlgItem(window, ID_FOV)));
+        /* Settings the Original game fixes at the Xbox's are greyed out too. */
+        CHECK(!IsWindowEnabled(GetDlgItem(window, ID_DRAW)) && !IsWindowEnabled(GetDlgItem(window, ID_VIEW)) &&
+              !IsWindowEnabled(GetDlgItem(window, ID_MINIMAP)) && IsWindowEnabled(GetDlgItem(window, ID_MSAA)));
         CHECK((SendMessageA(trees, BM_GETCHECK, 0, 0) == BST_CHECKED) == trees_on);
         SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_ORIGINAL, BN_CLICKED), (LPARAM)original);
         CHECK(SendMessageA(original, BM_GETCHECK, 0, 0) == BST_CHECKED); /* A choice, not a toggle. */
         SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_OPTION + MM3_LAUNCH_IMPROVED, BN_CLICKED), (LPARAM)improved);
         CHECK(SendMessageA(improved, BM_GETCHECK, 0, 0) == BST_CHECKED && SendMessageA(original, BM_GETCHECK, 0, 0) != BST_CHECKED);
         CHECK(IsWindowEnabled(trees) && help_contains(window, "Improved"));
+        CHECK(IsWindowEnabled(GetDlgItem(window, ID_DRAW)) && IsWindowEnabled(GetDlgItem(window, ID_MINIMAP)));
     }
     for (int i = 1; i < MM3_LAUNCH_OPTION_COUNT; ++i) {
         int id = ID_OPTION + i;

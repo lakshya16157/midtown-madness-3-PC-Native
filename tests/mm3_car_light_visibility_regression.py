@@ -529,8 +529,8 @@ def main():
                                 'static int glow_driver,flare_driver;\n'
                                 'void mm3_glow_driver_scope(int driver) { glow_driver=driver; }\n'
                                 'int mm3_exhaust_enabled(void) { return 0; }\n'
-                                'void mm3_exhaust_lamp(uint32_t kind, const float transform[12]) '
-                                '{ (void)kind; (void)transform; }\n'
+                                'void mm3_exhaust_lamp(uint32_t owner, uint32_t kind, const float transform[12]) '
+                                '{ (void)owner; (void)kind; (void)transform; }\n'
                                 'void sub_001A842A(void) { ++flares; flare_color=MEM32(flare_node+0x64); '
                                 'flare_driver=glow_driver; g_esp+=16; }')
         source = source.replace('#pragma warning(push)',

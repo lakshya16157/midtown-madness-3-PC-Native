@@ -65,6 +65,10 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
 
 ## Improvements in this fork
 
+- **New in 2.0 beta 1:**
+  - **Exhaust smoke** replaces the triangle exhaust (`MM3_EXHAUST_TRIANGLES`, the name it shipped under, off by default): soft camera-facing puffs from each car's own pipes, a light haze at idle, denser and faster with speed and throttle, carried in the wake, rising, swirling, growing and thinning out. `tools/car-models/exhaust_points.py` writes `src/mm3_exhaust_models.h` from every installed model: its lamp nodes and its pipes (the artists' unused ExhaustSmoke emitter nodes, else its exhaust pipe parts, else the body's rear-bottom). A car is matched to its model by the lamps it draws (`[MM3_EXHAUST] car ... is <model>`), which also place the model in the world. The renderer pass now fades the smoke over its last 0.25 m in front of the scene and draws after the stencil quads that darken car shadows, so shadows are no longer painted onto it.
+  - **Circuit races stay out of Checkpoint:** the race picture strip no longer draws the circuits' pictures after the downloadable races outside Circuit mode.
+  - **Launcher:** in the Original game the distance and minimap settings are greyed out (the Xbox's are used).
 - **New in 2.0 beta 0:**
   - **Original or Improved:** the launcher's Mods tab starts with a choice. The Original game (`MM3_IMPROVED=0`) keeps widescreen, the skyline, native fog, the sound processor and the player's extras (keyboard, unlocks, developer tools, System Link) and turns every mod off: distances 1x, retail car/lamp/world lighting and glows, no loading spinner, the game's own north marker and race arrow, no route line, no drafting or rollover assist, original opponents, no Graphics Settings menu, no circuits, no extra cars, retail DLC race text, no falling trees, no exhaust, and the retail minimap. Each mod of the Improved game has its own switch, laid out as Graphics and audio, Improved visuals and Improved gameplay.
   - **Spanish voices in the main missions:** the sound manager kept its voice language (`+0xB8`) at English unless the game started in Spanish; the chosen language is now applied after Game Setup and at every start, so Angelina and the others speak Spanish.
@@ -1023,7 +1027,7 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `MM3_EXTRA_CARS` | saved setting or `1` | `0` leaves cars added by Setup (IDs from 9000) out of the vehicle menus. |
 | `MM3_DLC_RACE_INFO` | saved setting or `1` | Names, descriptions and pictures for the downloadable races 11-20; `0` shows them as the Xbox did. |
 | `MM3_FALLING_TREES` | saved setting or `1` | `0` keeps the original tree collisions. |
-| `MM3_EXHAUST_TRIANGLES` | saved setting or `0` | `1` makes cars puff triangles from their exhausts. |
+| `MM3_EXHAUST_TRIANGLES` | saved setting or `0` | `1`: exhaust smoke from each car's own pipes (Mods tab, "Exhaust smoke"). |
 | `MM3_VOICE_FIXES` | `1` | `0` plays the disc's Spanish Paris voice bank (police in Italian). |
 | `RECOMP_LINE_WIDTH` | `1` | Width of line and point lists (MM3's rain streaks) in guest pixels at the raised internal resolution; `2` doubles it, `0` keeps them one screen pixel (the old, nearly invisible rain). |
 | `RECOMP_RUMBLE` | `1` | Controller vibration: the game's own rumble goes to the XInput pad (Steam Input passes it on to PlayStation pads). The game's vibration option turns it off in play; `0` keeps the controller still. |

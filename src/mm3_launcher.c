@@ -270,7 +270,7 @@ static void help_show(Launcher *ui, int id)
             "Show the cars you added with the installer's Car Workshop in the vehicle menu. Off shows only the Xbox cars and the official downloadable ones.",
             "Give the downloadable Blitz and Checkpoint races their own names, descriptions and course pictures, in the game's language. Off: they appear as the Xbox showed them.",
             "Small trees and lamp posts tip over and fall when a car hits them hard. Off: they react as in the original game.",
-            "Instead of smoke, cars puff small triangles from their exhausts. More and faster triangles come out as the car speeds up; each one drifts, grows and fades away."
+            "Cars breathe soft exhaust smoke from their own exhaust pipes: a light haze standing still, more of it and leaving the pipe faster the faster they go and the harder they accelerate. It drifts in the air, spreads and fades away."
         };
         int option = id - ID_OPTION, on = checked(ui, id);
         title = mm3_launcher_options[option].label;
@@ -376,7 +376,8 @@ static void help_show(Launcher *ui, int id)
         case ID_DRAW: case ID_VIEW:
             title = id == ID_DRAW ? "Object detail distance" : "Building view distance";
             body = id == ID_DRAW ? "Keep detailed objects, pedestrian models and blob shadows visible farther away. 1x uses the Xbox distances; 2x-4x extend them. This does not set the city's building visibility range." : "Extend city/building visibility and the camera's far range. 1x uses the Xbox range. Streamed city cells limit how much extra geometry is available; facade detail extends only up to 2x.";
-            effect = checked(ui, ID_OPTION + MM3_LAUNCH_DISTANCE) ? (id == ID_DRAW ? "Higher values increase scene and CPU/GPU work. Lower this if dense streets reduce performance." : "Higher values can increase rendering work; 3x/4x may not reveal more buildings where the streamed-city limit is reached.") : "Extended detail and building distance is off. Both distances will use 1x until you enable that mod.";
+            effect = !checked(ui, ID_OPTION + MM3_LAUNCH_IMPROVED) ? "The Original game is selected (Mods tab), so the Xbox distances (1x) are used." :
+                     checked(ui, ID_OPTION + MM3_LAUNCH_DISTANCE) ? (id == ID_DRAW ? "Higher values increase scene and CPU/GPU work. Lower this if dense streets reduce performance." : "Higher values can increase rendering work; 3x/4x may not reveal more buildings where the streamed-city limit is reached.") : "Extended detail and building distance is off. Both distances will use 1x until you enable that mod.";
             break;
         case ID_SHOW_FPS:
             title = "Show FPS"; snprintf(value, sizeof value, "%s", checked(ui, id) ? "On" : "Off");
@@ -386,7 +387,8 @@ static void help_show(Launcher *ui, int id)
         case ID_MINIMAP:
             title = "Minimap style";
             body = combo_value(control(ui, id)) ? "Draw transparent roads in perspective, with framing that responds to driving speed. This changes the minimap's presentation." : "Use the original Xbox minimap appearance and framing.";
-            effect = "Choose the style you find easier to read. Mission goals and the actual road layout are unchanged.";
+            effect = !checked(ui, ID_OPTION + MM3_LAUNCH_IMPROVED) ? "The Original game is selected (Mods tab), so the original Xbox minimap is used." :
+                     "Choose the style you find easier to read. Mission goals and the actual road layout are unchanged.";
             break;
         case ID_FOV: {
             char *end;
@@ -834,12 +836,16 @@ static void mods_controls(Launcher *ui)
     label(ui, 2, "Preferences apply when Play starts the game. F10 opens display settings in game.", 145, 573, 680);
 }
 
-/* Grey out the Improved columns while the Original game is selected. */
+/* Grey out the Improved columns while the Original game is selected, and
+ * the Settings it fixes at the Xbox's (distances, minimap style). */
 static void mods_enable(Launcher *ui)
 {
     int improved = checked(ui, ID_OPTION + MM3_LAUNCH_IMPROVED);
     for (int i = 1; i < MM3_LAUNCH_OPTION_COUNT; ++i)
         if (!mm3_launcher_option_in_original(i)) EnableWindow(control(ui, ID_OPTION + i), improved);
+    EnableWindow(control(ui, ID_DRAW), improved);
+    EnableWindow(control(ui, ID_VIEW), improved);
+    EnableWindow(control(ui, ID_MINIMAP), improved);
 }
 
 static int pad_source(const XINPUT_GAMEPAD *pad)

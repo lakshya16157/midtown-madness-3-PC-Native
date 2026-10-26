@@ -14,7 +14,7 @@ static unsigned char *arena;
 static const uint32_t self = 0x10000, horizon = 0x12000, stack = 0x20000;
 static const uint32_t camera = 0x30000, device = 0x40000, packet = 0x50000, space = 0x60000;
 int nv2a_d3d_distance_fog_ready(void) { return available; }
-/* The triangle exhaust is off here (tests/mm3_exhaust_regression.py). */
+/* The exhaust smoke is off here (tests/mm3_exhaust_regression.py). */
 int mm3_exhaust_enabled(void) { return 0; }
 int mm3_exhaust_packet(uint32_t view, uint32_t words[18]) { (void)view; (void)words; return 0; }
 float mm3_city_haze_scale(void) { return 2.0f; }

@@ -239,7 +239,9 @@ void sub_001238B7(void)
 #define STRIP_SCROLL 0x2Cu
 #define STRIP_BOXES 12u
 #define PICTURE_RACE 0xCu
+#define BOX_ITERATOR_ARGUMENT 0x14u
 #define BOX_NUMBER_ARGUMENT 0x18u
+#define BOX_ARGUMENT_BYTES 0x34u
 
 extern void sub_00103BE1_original(void);
 extern void sub_001038D0_original(void);
@@ -267,9 +269,20 @@ void sub_00103BE1(void)
     if (first) MEM32(head) = first;
 }
 
+/* Outside Circuit mode the strip still walks every picture of the city, the
+ * circuits' after the downloadable races', although none of them can be
+ * chosen there: leave their boxes out. The box draw (stdcall, RET 0x34)
+ * takes the walk's iterator at +0x14, whose node holds the race. */
 void sub_001038D0(void)
 {
+    uint32_t iterator, node;
     if (circuit_mode) MEM32(g_esp + BOX_NUMBER_ARGUMENT) += CIRCUIT_FIRST_RACE;
+    else if (guest_object(iterator = MEM32(g_esp + BOX_ITERATOR_ARGUMENT), 4u) &&
+             guest_object(node = MEM32(iterator), 0x18u) &&
+             (int32_t)MEM32(node + PICTURE_RACE) >= CIRCUIT_FIRST_RACE) {
+        g_esp += 4u + BOX_ARGUMENT_BYTES;
+        return;
+    }
     sub_001038D0_original();
 }
 

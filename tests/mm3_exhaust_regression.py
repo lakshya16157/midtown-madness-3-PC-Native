@@ -1,4 +1,4 @@
-"""Triangle exhaust (src/mm3_exhaust.c), on and off."""
+"""Exhaust smoke (src/mm3_exhaust.c), on and off."""
 import os
 from pathlib import Path
 import shutil

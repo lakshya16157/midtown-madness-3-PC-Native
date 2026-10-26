@@ -17,7 +17,7 @@ static unsigned integrated;
 static const uint32_t stack = 0xFF00;
 
 void sub_001D7441_original(void) { ++integrated; g_esp += 8; }
-/* The triangle exhaust is off here (tests/mm3_exhaust_regression.py). */
+/* The exhaust smoke is off here (tests/mm3_exhaust_regression.py). */
 int mm3_exhaust_enabled(void) { return 0; }
 void mm3_exhaust_step(uint32_t car, uint32_t body, float dt) { (void)car; (void)body; (void)dt; }
 void sub_001D7441(void);

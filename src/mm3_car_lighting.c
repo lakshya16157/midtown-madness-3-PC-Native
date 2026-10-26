@@ -979,11 +979,11 @@ static void car_debug_report(void)
 
 void sub_000CF2DA(void)
 {
-    /* The triangle exhaust finds the back of each car from its lamps. */
+    /* The exhaust smoke finds each car's model and pipes from its lamps. */
     if (mm3_exhaust_enabled()) {
         uint32_t transform = MEM32(g_esp + 4u);
         if (transform >= 0x10000u && transform < 0x08000000u - 48u)
-            mm3_exhaust_lamp(MEM32(g_ecx + 0x34u), (const float *)XBOX_PTR(transform));
+            mm3_exhaust_lamp(MEM32(g_ecx + 4u), MEM32(g_ecx + 0x34u), (const float *)XBOX_PTR(transform));
     }
     if (!mm3_mod_car_lighting()) { sub_000CF2DA_original(); return; }
     car_light_hook();

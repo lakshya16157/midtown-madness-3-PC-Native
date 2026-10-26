@@ -43,13 +43,53 @@ Spanish voices in Spanish.
 | Visuals | Gameplay |
 |---|---|
 | Longer view distance | 20 extra circuit races (Washington DC and Paris) |
-| Car headlight beams and glowing tail lights | Extra cars ([Car Workshop](DEVELOPERS.md#added-cars-and-editing-stats)) |
+| Car headlight beams and glowing tail lights | [Extra cars](#extra-cars-and-car-workshop), editable in Car Workshop |
 | Better street lamps, tunnels included | Names and pictures for the DLC races |
 | Better night lighting | Trees fall over when hit |
 | Lamp flares hidden behind buildings | Slipstream drafting |
 | Route line on the map | Rollover assist |
 | In-game Graphics Settings menu | AI opponents in DLC and extra cars |
-| Triangle exhaust (off by default) | |
+| Exhaust smoke from each car's own pipes (off by default) | |
+
+## Graphics settings
+
+| Setting | Where | Original game | Improved game |
+|---|---|---|---|
+| Window size, fullscreen, screen, aspect ratio | Launcher **Settings** | Yes | Yes |
+| Maximum FPS (up to 60), VSync, FPS in the title | Launcher **Settings** | Yes | Yes |
+| Internal resolution, anti-aliasing, texture filtering | Launcher **Settings** | Yes | Yes |
+| Object detail and building view distance | Launcher **Settings** | Xbox distances | 1x to 4x |
+| Minimap style | Launcher **Settings** | Xbox minimap | Xbox or improved |
+| Widescreen HUD, smooth skyline, depth fog, field of view | Launcher **Mods** | Yes | Yes |
+| Lighting and the other visual mods | Launcher **Mods** | Off | Each on or off |
+
+While playing:
+
+- **F10** opens the settings window in both versions. Changes that need a restart say so.
+- In the **Improved** game, **Graphics Settings** is also in the main menu (between Options
+  and Profiles) and in the pause menu, so you can change them with the controller.
+- **F11** or **Alt+Enter** switches fullscreen on and off.
+
+## Extra cars and Car Workshop
+
+Setup's **Add extra cars** adds nine community cars (see the [credits](#extra-car-credits)).
+In the Improved game they appear in the car list after the original and DLC cars. To hide
+them, untick **Extra installed cars** in the launcher's Mods tab. The Original game always
+leaves them out.
+
+**Car Workshop** lets you change them: name, menu ratings, top speed and acceleration,
+weight, grip, gears, speedometer, paint and body.
+
+1. Install [Python 3](https://www.python.org/downloads/) (keep the default options).
+2. Download this project (**Code > Download ZIP** at the top of this page) and unzip it.
+3. Close the game. In the unzipped folder, run
+   `tools\car-mods\editor.cmd --game-dir "<install folder>\game_files"`, for example
+   `--game-dir "C:\Games\Midtown Madness 3\game_files"`.
+4. Pick a car under **Added**. Hover over any value for a tip. **Compare with** shows
+   another car's values beside yours, and one click copies a value.
+5. Click **Save & Apply**, then start the game to try your car.
+
+The full guide is in [tools/car-mods/README.md](tools/car-mods/README.md).
 
 ## Controls
 
@@ -60,8 +100,7 @@ Spanish voices in Spanish.
   - Menus: **Z** confirms, **X** or **Escape** goes back, **Enter** pauses.
   - Hold **Ctrl** to enlarge the map.
 - **Change bindings** in the launcher's **Controls** tab.
-- **Graphics:** use the launcher's Settings tab, Graphics Settings in the main menu, or
-  **F10** while playing.
+- **Graphics:** see [Graphics settings](#graphics-settings).
 
 ## Multiplayer (System Link)
 

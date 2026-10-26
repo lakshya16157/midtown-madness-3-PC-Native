@@ -338,6 +338,6 @@ void sub_001D7441(void)
     self->has_velocity = 1;
     report(now);
     sub_001D7441_original();
-    /* The triangle exhaust follows the integrated (drawn) car. */
+    /* The exhaust smoke follows the integrated (drawn) car. */
     mm3_exhaust_step(car, body, dt);
 }

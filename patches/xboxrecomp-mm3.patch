@@ -18198,7 +18198,7 @@ index 0000000..ba782e5
 +#endif /* NV2A_BLACK_FRAME_LOGIC_ONLY */
 +#endif /* NV2A_BLACK_FRAME_H */
 diff --git a/src/video/nv2a_d3d11.c b/src/video/nv2a_d3d11.c
-index b9f3fa2..c9fe18c 100644
+index b9f3fa2..4c16ac1 100644
 --- a/src/video/nv2a_d3d11.c
 +++ b/src/video/nv2a_d3d11.c
 @@ -19,9 +19,10 @@
@@ -22838,7 +22838,7 @@ index b9f3fa2..c9fe18c 100644
 +                    st->blend_enable, st->blend_sfactor, st->blend_dfactor);
 +        }
 +    }
-+    world_tris_before_2d(idx, ni, lo, pos);
++    world_tris_before_2d(st, idx, ni, lo, pos);
 +    slow_draw = slow_frame_begin();
      memset(&uc, 0, sizeof uc);
      memcpy(uc.def, def, sizeof uc.def);
@@ -24779,7 +24779,7 @@ index b9f3fa2..c9fe18c 100644
 +{ (void)st; (void)seq; (void)depth_to_world; (void)view; (void)proj; }
  #endif
 diff --git a/src/video/nv2a_d3d11.h b/src/video/nv2a_d3d11.h
-index 082f091..280646c 100644
+index 082f091..f49d7db 100644
 --- a/src/video/nv2a_d3d11.h
 +++ b/src/video/nv2a_d3d11.h
 @@ -2,12 +2,13 @@
@@ -24915,7 +24915,7 @@ index 082f091..280646c 100644
  /* A title that multiplies its far plane by `scale` (w-buffered, so depth is
   * w / far) still indexes its authored depth lookups (fog ramps) with the
   * original fractions. Depth read back as a texture is reported in those:
-@@ -104,9 +185,36 @@ void nv2a_d3d_set_edge_hud(int on);
+@@ -104,9 +185,38 @@ void nv2a_d3d_set_edge_hud(int on);
   * stretched so the rest of the authored ramp ends at the new far plane.
   * scale 1 (the default) leaves depth untouched. */
  void nv2a_d3d_set_depth_view_remap(float scale, float knee);
@@ -24944,15 +24944,17 @@ index 082f091..280646c 100644
 + * ordered packet naming that batch with its camera -- the title's
 + * world-to-camera rows (row vectors: right, up, forward, translation; three
 + * floats each), projection _11, _22, _31, _32 and the W depth scale. */
-+#define NV2A_WORLD_TRIS_MAX 6144u
++#define NV2A_WORLD_TRIS_MAX 24576u
 +typedef struct { float x, y, z; uint32_t rgba; } NvWorldVertex;
 +void nv2a_d3d_world_tris_publish(uint32_t seq, const NvWorldVertex *v, uint32_t count);
++/* The batch fades out over its last 0.25 m in front of the scene (soft
++ * particles), and is drawn after the frame's stencil (shadow) quads. */
 +void nv2a_d3d_world_tris(const NvD3DState *st, uint32_t seq, float depth_to_world,
 +                         const float view[12], const float proj[4]);
  
  /* NV097_CLEAR_SURFACE: flags as the method's parameter, rect inclusive. */
  void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
-@@ -129,6 +237,21 @@ int  nv2a_d3d_prof_enabled(void);
+@@ -129,6 +239,21 @@ int  nv2a_d3d_prof_enabled(void);
  /* A flip's surfaces are still being read back into guest memory: DMA_GET and
   * fence releases must wait. Completes whatever the GPU has finished. */
  int  nv2a_d3d_writeback_busy(void);
@@ -26830,21 +26832,23 @@ index 0000000..9dc9c00
 +#endif
 diff --git a/src/video/nv2a_world_tris.h b/src/video/nv2a_world_tris.h
 new file mode 100644
-index 0000000..88df98a
+index 0000000..22e65bd
 --- /dev/null
 +++ b/src/video/nv2a_world_tris.h
-@@ -0,0 +1,265 @@
+@@ -0,0 +1,278 @@
 +/* World-space triangles a title adds to its scene (MM3's triangle exhaust).
 + * Included after nv2a_distance_fog.h, which supplies the binding helpers.
 + *
 + * The title thread publishes each frame's triangles into a host ring
 + * (nv2a_d3d_world_tris_publish) and names the batch in an ordered no-op
 + * packet with its camera (NV2A_HOST_TRIS_*). The executor holds that packet
-+ * until the frame's first pre-transformed 2D draw -- the name tags and HUD
-+ * follow the whole 3D scene, cars and particles included -- and draws the
-+ * batch there: alpha blended over the scene target, hidden per pixel behind
-+ * the scene's stored W depth, the way the fog pass reads it. A frame without
-+ * 2D drops its batch. */
++ * until the frame's first pre-transformed 2D draw that is not stencil
++ * tested -- the name tags and HUD follow the whole 3D scene, cars,
++ * particles and the stencil quads that darken shadows included -- and draws
++ * the batch there: alpha blended over the scene target, fading out over its
++ * last 0.25 m in front of the scene's stored W depth (read the way the fog
++ * pass reads it), so soft geometry meets the ground and walls without a hard
++ * edge. A frame without such 2D drops its batch. */
 +static const char s_world_tris_hlsl[] =
 +"cbuffer Tris : register(b0) { float4 view[3]; float4 proj; float4 band; };\n"
 +"struct VI { float3 p : POSITION; float4 c : COLOR; };\n"
@@ -26867,8 +26871,10 @@ index 0000000..88df98a
 +"#else\n"
 +"  float z = Depth.Load(int3(int2(i.pos.xy), 0));\n"
 +"#endif\n"
-+"  if (z < 0.99999 && i.z > z * band.x + band.y) discard;\n"
-+"  return i.c;\n"
++"  float4 c = i.c;\n"
++"  if (z < 0.99999) c.a *= saturate((z * band.x - i.z + band.y) * band.z);\n"
++"  if (c.a <= 0.002) discard;\n"
++"  return c;\n"
 +"}\n";
 +
 +typedef struct { float view[3][4], proj[4], band[4]; } WorldTrisConsts;
@@ -27004,7 +27010,8 @@ index 0000000..88df98a
 +    }
 +    memcpy(c.proj, proj, sizeof c.proj);
 +    c.band[0] = depth_to_world * (((st->surface_format >> 4) & 15u) == 1 ? 65536.f : 16777216.f);
-+    c.band[1] = 0.05f;                        /* metres: surfaces it lies on */
++    c.band[1] = 0.02f;                        /* metres: surfaces it lies on */
++    c.band[2] = 4.0f;                         /* fades over 0.25 m */
 +    if (!isfinite(c.band[0])) return;
 +    s_world_tris_pending.st = *st;
 +    s_world_tris_pending.c = c;
@@ -27086,10 +27093,15 @@ index 0000000..88df98a
 +
 +/* Pre-transformed 2D (w == 1 everywhere) after the packet: the 3D scene is
 + * complete. */
-+static void world_tris_before_2d(const uint32_t *idx, uint32_t ni, uint32_t lo, const float (*pos)[4])
++static void world_tris_before_2d(const NvD3DState *st, const uint32_t *idx, uint32_t ni, uint32_t lo,
++                                 const float (*pos)[4])
 +{
 +    uint32_t k;
-+    if (!s_world_tris_pending.valid || !pos) return;
++    /* MM3 darkens shadows with stencil-tested full-screen quads after the
++     * scene: the batch goes over them, not under. (The HUD keeps the test on
++     * with an always-passing function.) */
++    if (!s_world_tris_pending.valid || !pos ||
++        (st->stencil_test && cmp(st->stencil_func) != D3D11_COMPARISON_ALWAYS)) return;
 +    for (k = 0; k < ni; ++k)
 +        if (pos[idx[k] - lo][3] != 1.0f) return;
 +    world_tris_draw();
@@ -27097,6 +27109,9 @@ index 0000000..88df98a
 +
 +static void world_tris_frame_end(void)
 +{
++    static unsigned dropped;
++    if (s_world_tris_pending.valid && ++dropped == 120u)
++        fprintf(stderr, "[TRIS] 120 batches dropped: no 2D draw followed them in their frame\n");
 +    s_world_tris_pending.valid = 0;
 +}
 diff --git a/tests/dsp/CMakeLists.txt b/tests/dsp/CMakeLists.txt

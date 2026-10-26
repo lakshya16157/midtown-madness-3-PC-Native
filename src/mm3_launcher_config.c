@@ -45,7 +45,7 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"MM3_EXTRA_CARS", "Extra installed cars", 1},
     {"MM3_DLC_RACE_INFO", "DLC race names and pictures", 1},
     {"MM3_FALLING_TREES", "Trees fall over when hit", 1},
-    {"MM3_EXHAUST_TRIANGLES", "Triangle exhaust", 0}
+    {"MM3_EXHAUST_TRIANGLES", "Exhaust smoke", 0}
 };
 
 /* The Original game (MM3_IMPROVED=0): every mod off and the game's own HUD

@@ -1,5 +1,7 @@
-/* Triangle exhaust (src/mm3_exhaust.c): emission, motion, fading and the
- * packet it hands the renderer, on a stand-in car body and camera. */
+/* Exhaust smoke (src/mm3_exhaust.c): a car is matched to its model by the
+ * lamps it draws and smokes from that model's pipes; puffs move on their own,
+ * grow and fade; the packet it hands the renderer. On a stand-in car body
+ * and camera, with the real model table. */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <assert.h>
@@ -9,29 +11,35 @@
 #include <string.h>
 #include "recomp_types.h"
 #include "mm3_exhaust.h"
+#include "mm3_exhaust_models.h"
 #include <video/nv2a_d3d11.h>
 
 ptrdiff_t g_xbox_mem_offset;
 static unsigned char memory[0x420000];
 static uint32_t published_seq, published_count;
 static NvWorldVertex published[NV2A_WORLD_TRIS_MAX];
-enum { BODY = 0x100000, BUS = 0x101000, CAMERA = 0x200000, TIME_OF_DAY = 0x407C30 };
+enum { BODY = 0x100000, OTHER = 0x101000, CAMERA = 0x200000, TIME_OF_DAY = 0x407C30, PUFF = 24 };
+static float model_rows[3][3], model_origin[3];
 
 void nv2a_d3d_world_tris_publish(uint32_t seq, const NvWorldVertex *v, uint32_t count)
 {
-    assert(count && count % 3 == 0 && count <= NV2A_WORLD_TRIS_MAX);
+    assert(count && count % PUFF == 0 && count <= NV2A_WORLD_TRIS_MAX);
     published_seq = seq;
     published_count = count;
     memcpy(published, v, count * sizeof *v);
 }
 
-/* An upright car heading +z (rows right, up, forward, position). */
-static void place(uint32_t body, float x, float z, float vz, float up_y)
+/* The car body: rows right, up, forward (yawed by `yaw` about up), at x, z. */
+static void place(uint32_t body, float x, float z, float vz, float yaw, float up_y)
 {
-    float rows[12] = {1, 0, 0, 0, up_y, 0, 0, 0, 1, x, 0.5f, z};
+    float c = cosf(yaw), s = sinf(yaw);
+    float rows[12] = {c, 0, -s, 0, up_y, 0, s, 0, c, x, 0.5f, z};
     memset(memory + body, 0, 0x1C4);
-    MEMF(body + 0x28) = vz;
+    MEMF(body + 0x20) = s * vz;
+    MEMF(body + 0x28) = c * vz;
     memcpy(memory + body + 0xA4, rows, sizeof rows);
+    memcpy(model_rows, rows, sizeof model_rows);
+    memcpy(model_origin, rows + 9, sizeof model_origin);
 }
 
 /* Eye at (0, 1.5, -10) looking along +z: identity rotation, translation -eye.
@@ -45,122 +53,205 @@ static void camera(void)
     memcpy(memory + CAMERA + 0x1F24, view, sizeof view);
 }
 
+static int model_named(const char *name)
+{
+    int m;
+    for (m = 0; m < (int)(sizeof mm3_exhaust_models / sizeof mm3_exhaust_models[0]); ++m)
+        if (!strcmp(mm3_exhaust_models[m].name, name)) return m;
+    assert(!"model missing");
+    return -1;
+}
+
+static void to_world(const float p[3], int translate, float out[3])
+{
+    unsigned b;
+    for (b = 0; b < 3; ++b)
+        out[b] = p[0] * model_rows[0][b] + p[1] * model_rows[1][b] + p[2] * model_rows[2][b] +
+                 (translate ? model_origin[b] : 0.0f);
+}
+
+/* The car draws each lamp of model `m`, as the game does: W = R M. */
+static void draw_lamps(uint32_t owner, int m)
+{
+    const Mm3ExhaustModel *model = &mm3_exhaust_models[m];
+    unsigned i, a, b, k;
+    for (i = 0; i < model->lamps; ++i) {
+        const Mm3ExhaustLamp *lamp = &mm3_exhaust_lamps[model->lamp + i];
+        float w[12];
+        for (a = 0; a < 3; ++a)
+            for (b = 0; b < 3; ++b) {
+                w[a * 3 + b] = 0;
+                for (k = 0; k < 3; ++k) w[a * 3 + b] += lamp->m[a * 3 + k] * model_rows[k][b];
+            }
+        to_world(lamp->m + 9, 1, w + 9);
+        mm3_exhaust_lamp(owner, lamp->kind, w);
+        mm3_exhaust_lamp(owner, lamp->kind, w);   /* a second pass: one entry */
+    }
+}
+
 static uint32_t packet(uint32_t words[18])
 {
     published_count = 0;
     if (!mm3_exhaust_packet(CAMERA, words)) return 0;
     assert(words[0] == published_seq);
-    return published_count / 3;
+    return published_count / PUFF;
 }
 
-/* Steps at 60 Hz; the body moves on at its own speed, as in play. */
 static void steps(uint32_t car, uint32_t body, int count)
 {
     while (count--) {
+        MEMF(body + 0xC8) += MEMF(body + 0x20) / 60.0f;
         MEMF(body + 0xD0) += MEMF(body + 0x28) / 60.0f;
+        model_origin[0] = MEMF(body + 0xC8); model_origin[2] = MEMF(body + 0xD0);
         mm3_exhaust_step(car, body, 1.0f / 60.0f);
     }
 }
 
-static float mean(int axis)
+/* Puff `n`'s centre (the first vertex of each of its triangles). */
+static const NvWorldVertex *centre(uint32_t n) { return &published[n * PUFF]; }
+
+static float nearest_pipe(int m, const NvWorldVertex *v)
 {
-    double sum = 0;
-    uint32_t i;
-    for (i = 0; i < published_count; ++i) sum += axis == 0 ? published[i].x : axis == 1 ? published[i].y : published[i].z;
-    return (float)(sum / published_count);
+    const Mm3ExhaustModel *model = &mm3_exhaust_models[m];
+    float best = 1e9f;
+    unsigned i;
+    for (i = 0; i < model->pipes; ++i) {
+        float w[3], d;
+        to_world(mm3_exhaust_pipes[model->pipe + i].p, 1, w);
+        d = sqrtf((w[0] - v->x) * (w[0] - v->x) + (w[1] - v->y) * (w[1] - v->y) + (w[2] - v->z) * (w[2] - v->z));
+        if (d < best) best = d;
+    }
+    return best;
 }
 
-static float alpha_max(void)
+static float mean_z(void)
 {
-    uint32_t i, a = 0;
-    for (i = 0; i < published_count; ++i) if (published[i].rgba >> 24 > a) a = published[i].rgba >> 24;
-    return (float)a / 255.0f;
+    double sum = 0;
+    uint32_t n, puffs = published_count / PUFF;
+    for (n = 0; n < puffs; ++n) sum += centre(n)->z;
+    return (float)(sum / puffs);
 }
 
 int main(int argc, char **argv)
 {
-    uint32_t words[18], tris, first;
-    float view[12], z_before, spread_before, spread_after;
+    uint32_t words[18], puffs, n, idle, used[4] = {0};
+    int corvette, sedan;
+    float view[12];
     g_xbox_mem_offset = (ptrdiff_t)memory;
     camera();
-    place(BODY, 0, 0, 0, 1);
+    corvette = model_named("Corvette");
+    sedan = model_named("Ambient_Sedan");
+    assert(mm3_exhaust_models[corvette].pipes == 4);
+    place(BODY, 0, 0, 0, 0.3f, 1);
     if (argc > 1 && !strcmp(argv[1], "off")) {
-        mm3_exhaust_lamp(1, (const float *)(memory + BODY + 0xA4));
+        draw_lamps(0x7000, corvette);
         steps(0x5000, BODY, 60);
         assert(!mm3_exhaust_enabled() && !packet(words) && !published_count);
-        puts("PASS triangle exhaust off: no triangles, no packet (MM3_EXHAUST_TRIANGLES unset)");
+        puts("PASS exhaust smoke off: no smoke, no packet (MM3_EXHAUST_TRIANGLES unset)");
         return 0;
     }
     assert(mm3_exhaust_enabled());
-    /* Nothing yet; the first packet tells it where the camera is. */
+    /* The first packet says where the camera is; the drawn lamps make the
+     * car a Corvette (its four authored ExhaustSmoke pipes). */
+    steps(0x5000, BODY, 1);
+    draw_lamps(0x7000, corvette);
     assert(!packet(words));
-    /* A car standing still puffs a few at a time (7 a second, ~1 s each). */
-    steps(0x5000, BODY, 90);
-    tris = packet(words);
-    assert(tris >= 4 && tris <= 13);
+    /* Fresh smoke leaves the Corvette's own pipes. */
+    steps(0x5000, BODY, 15);
+    puffs = packet(words);
+    assert(puffs >= 1);
+    {
+        float closest = 1e9f;
+        for (n = 0; n < puffs; ++n)
+            if (nearest_pipe(corvette, centre(n)) < closest) closest = nearest_pipe(corvette, centre(n));
+        assert(closest < 0.12f);
+    }
+    for (n = 0; n < puffs; ++n) {
+        const Mm3ExhaustModel *model = &mm3_exhaust_models[corvette];
+        unsigned i;
+        assert(nearest_pipe(corvette, centre(n)) < 0.6f);
+        for (i = 0; i < model->pipes; ++i) {
+            float w[3];
+            to_world(mm3_exhaust_pipes[model->pipe + i].p, 1, w);
+            if (fabsf(w[0] - centre(n)->x) + fabsf(w[2] - centre(n)->z) < 0.15f) used[i] = 1;
+        }
+        /* A soft disc: opaque-ish centre, clear rim, light grey by day. */
+        assert(centre(n)->rgba >> 24 > 0 && published[n * PUFF + 1].rgba >> 24 == 0);
+        assert((centre(n)->rgba & 0xFF) >= 170 && ((centre(n)->rgba >> 8) & 0xFF) == (centre(n)->rgba & 0xFF));
+    }
     memcpy(view, words + 2, sizeof view);
     assert(view[0] == 1 && view[4] == 1 && view[8] == 1 && view[10] == -1.5f && view[11] == 10);
     assert(*(float *)&words[1] == 1.0f / 1000.0f && *(float *)&words[14] == 1.5f && *(float *)&words[15] == 2.0f);
-    /* Behind the car (typical back 2.2 m) and lit by day. */
-    assert(mean(2) < -1.5f && mean(2) > -5.0f);
-    assert((published[0].rgba & 0xFF) >= 140 && ((published[0].rgba >> 8) & 0xFF) == (published[0].rgba & 0xFF));
-    /* Paused: no steps, the same triangles. */
-    first = published_seq;
-    z_before = mean(2);
-    assert(packet(words) == tris && mean(2) == z_before && published_seq == first + 1);
-    /* At 30 m/s: many more, left in a trail behind the moving car (it is
-     * 30 m on after a second). */
-    place(BODY, 0, 0, 30, 1);
-    steps(0x5000, BODY, 60);
-    tris = packet(words);
-    assert(tris >= 30 && tris <= 96);
-    assert(mean(2) < 30.0f - 4.0f && mean(2) > 0.0f);
-    /* Out of range they stop coming, and the ones out there keep to their
-     * own paths in the world, grow and fade until none is left. */
-    place(BODY, 0, 500, 30, 1);
-    spread_before = alpha_max();
-    steps(0x5000, BODY, 20);
-    tris = packet(words);
-    assert(tris > 0 && mean(2) < 40.0f && alpha_max() < spread_before);
-    steps(0x5000, BODY, 60);
-    spread_after = (float)packet(words);
-    assert(spread_after == 0);
-    /* A long vehicle: its tail lamps 4.6 m back move the pipe. */
-    place(BUS, 4, 0, 0, 1);
-    steps(0x6000, BUS, 1);
-    {
-        float lamp[12] = {1, 0, 0, 0, 1, 0, 0, 0, -1, 4.8f, 1.4f, -4.6f};
-        mm3_exhaust_lamp(1, lamp);
-        lamp[9] = 3.2f;
-        mm3_exhaust_lamp(2, lamp);
-        mm3_exhaust_lamp(0, lamp);                /* a headlamp is no back */
+    /* A car standing still: a light haze, ~9 puffs a second, ~1.3-2.2 s each. */
+    draw_lamps(0x7000, corvette);
+    steps(0x5000, BODY, 120);
+    idle = packet(words);
+    assert(idle >= 10 && idle <= 30);
+    assert(used[0] + used[1] + used[2] + used[3] >= 2);   /* more than one pipe */
+    /* Paused: no steps, the same smoke. */
+    assert(packet(words) == idle);
+    /* Accelerating to 30 m/s: much more, left behind the car in a trail. */
+    for (n = 0; n < 60; ++n) {
+        place(BODY, MEMF(BODY + 0xC8), MEMF(BODY + 0xD0), 0.5f * (float)n, 0.3f, 1);
+        draw_lamps(0x7000, corvette);
+        steps(0x5000, BODY, 1);
+        packet(words);
     }
-    steps(0x6000, BUS, 90);
+    puffs = packet(words);
+    assert(puffs > idle * 2);
+    assert(mean_z() < MEMF(BODY + 0xD0) - 3.0f);
+    /* Out of range it stops; the smoke out there keeps its own path, then
+     * thins out to nothing. */
+    place(BODY, 0, 900, 30, 0.3f, 1);
+    steps(0x5000, BODY, 30);
+    puffs = packet(words);
+    assert(puffs > 0 && mean_z() < 60.0f);
+    steps(0x5000, BODY, 150);
+    assert(!packet(words));
+    /* Traffic without exhaust parts: its pipe from the body's rear-bottom. */
+    place(OTHER, 4, 0, 0, 0, 1);
+    steps(0x6000, OTHER, 1);
+    draw_lamps(0x7100, sedan);
     packet(words);
-    assert(mean(2) < -4.0f && mean(2) > -8.0f && mean(0) < 4.0f);
-    /* At night they are dimmer. */
+    steps(0x6000, OTHER, 30);
+    puffs = packet(words);
+    assert(puffs >= 1 && nearest_pipe(sedan, centre(puffs - 1)) < 0.25f);
+    /* At night it is dimmer. */
     MEM32(TIME_OF_DAY) = 3;
     packet(words);
-    assert((published[0].rgba & 0xFF) < 100);
+    assert((centre(0)->rgba & 0xFF) < 100);
     MEM32(TIME_OF_DAY) = 0;
-    /* A rolled car puffs nothing. */
-    place(BODY, -4, 0, 0, -1);
-    steps(0x7000, BODY, 120);
-    packet(words);
-    assert(mean(0) > 0.0f);                       /* only the bus's, at x 4 */
+    /* A car whose lamps fit no model smokes from a typical pipe. */
+    {
+        float odd[12] = {1, 0, 0, 0, 1, 0, 0, 0, 1, -4, 3, 1};
+        place(BODY, -4, 0, 0, 0, 1);
+        steps(0x7000, BODY, 1);
+        mm3_exhaust_lamp(0x7200, 1, odd);
+        odd[9] = -3.1f;
+        mm3_exhaust_lamp(0x7200, 1, odd);
+        packet(words);
+        steps(0x7000, BODY, 30);
+        puffs = packet(words);
+        assert(puffs >= 1);
+    }
+    /* A rolled car does not smoke. */
+    place(BODY, -8, 0, 0, 0, -1);
+    steps(0x7300, BODY, 120);
     /* A camera that is not a perspective view sends nothing. */
     MEMF(CAMERA + 0x1F10) = 0;
     assert(!packet(words));
     MEMF(CAMERA + 0x1F10) = 1000.0f; MEMF(CAMERA + 0x1F20) = 5.0f;
     assert(!packet(words));
     camera();
-    /* A car no longer stepped while others are leaves with its triangles. */
+    for (n = 0; n < published_count / PUFF; ++n) assert(centre(n)->x > -7.0f);
+    /* A car no longer stepped while others are leaves with its smoke. */
     Sleep(600);
-    steps(0x7000, BODY, 2);
-    tris = packet(words);
-    assert(!tris || mean(0) < 0.0f);
-    puts("PASS triangle exhaust: idle and speed-scaled emission behind the car, world-space motion, "
-         "growth and fade to nothing, freeze while paused, lamp-placed pipe, night dimming, rolled cars "
-         "and departed cars, perspective cameras only");
+    steps(0x6000, OTHER, 2);
+    puffs = packet(words);
+    for (n = 0; n < puffs; ++n) assert(centre(n)->x > 2.0f);
+    puts("PASS exhaust smoke: cars matched to their models by their lamps (Corvette's four pipes, a sedan's "
+         "body-placed pipe, a typical pipe for unknown lamps), soft puffs from the pipes, idle haze and "
+         "speed/throttle-scaled smoke, own world-space paths, fade to nothing, pause, night, rolled and "
+         "departed cars, perspective cameras only");
     return 0;
 }
