@@ -25,57 +25,62 @@ You need Windows 10 or 11 (64-bit), a Direct3D 11 graphics card and about 6 GB o
 disk space. The first start shows the intro movies for about 3½ minutes; the game has not
 frozen.
 
-## Original or Improved
+## Look and gameplay
 
-The launcher opens before the game. Its **Mods** tab starts with a choice:
+The launcher opens before the game. Its two mods tabs each start with a choice:
 
-- **Original game**: Midtown Madness 3 as it was on the Xbox, running natively at your
-  resolution with the graphics and audio upgrades, and nothing else.
-- **Improved game** (default): the same, plus the mods below, each with its own switch.
+- **Visual + audio mods**: the **Original look** (the Xbox visuals, camera, menus and HUD) or the
+  **Improved look** (default), with the visual mods below, each with its own switch.
+  Nothing on this tab changes the gameplay.
+- **Gameplay mods**: **Xbox gameplay** (default) plays exactly as the Xbox game: its
+  physics and damage, its cars for you and the opponents, its races and unlocks, its race
+  arrow and minimap. **Modded gameplay** adds the gameplay mods below, each with its own
+  switch.
 
-Both include widescreen, anti-aliasing and sharper textures, the accurate Xbox sound
-processor, controller vibration, keyboard controls, System Link and many fixes. These
+Every choice includes widescreen, anti-aliasing and sharper textures, the accurate Xbox
+sound processor, controller vibration, keyboard controls, System Link and many fixes. These
 include working post-race menus, console-accurate car damage at 60 fps, visible rain, and
 Spanish voices in Spanish.
 
 **Mods:**
 
-| Visuals | Gameplay |
+| Visual + audio (Improved look) | Gameplay (Modded gameplay) |
 |---|---|
 | Longer view distance | 20 extra circuit races (Washington DC and Paris) |
 | Car headlight beams and glowing tail lights | [Extra cars](#extra-cars-and-car-workshop), editable in Car Workshop |
-| Better street lamps, tunnels included | Names and pictures for the DLC races |
+| Better street lamps, tunnels included | Circuit opponents in DLC and extra cars |
 | Better night lighting | Trees fall over when hit |
-| Lamp flares hidden behind buildings | Slipstream drafting |
-| Route line on the map | Rollover assist |
-| In-game Graphics Settings menu | AI opponents in DLC and extra cars |
-| Exhaust smoke from each car's own pipes (off by default) | |
+| Lamp flares hidden behind buildings | Slipstream drafting (off by default) |
+| Names and pictures for the DLC races | Rollover assist (off by default) |
+| In-game Graphics Settings menu | Route line on the map, race arrow hidden |
+| Exhaust smoke from each car's own pipes (off by default) | Improved minimap, which shows more of the map at speed |
+| Quit in the main menu, minimap compass pins hidden | Unlock all vehicles, developer tools (off by default) |
 
 ## Graphics settings
 
-| Setting | Where | Original game | Improved game |
+| Setting | Where | Original look | Improved look |
 |---|---|---|---|
 | Window size, fullscreen, screen, aspect ratio | Launcher **Settings** | Yes | Yes |
 | Maximum FPS (up to 60), VSync, FPS in the title | Launcher **Settings** | Yes | Yes |
 | Internal resolution, anti-aliasing, texture filtering | Launcher **Settings** | Yes | Yes |
 | Object detail and building view distance | Launcher **Settings** | Xbox distances | 1x to 4x |
-| Minimap style | Launcher **Settings** | Xbox minimap | Xbox or improved |
-| Widescreen HUD, smooth skyline, depth fog, field of view | Launcher **Mods** | Yes | Yes |
-| Lighting and the other visual mods | Launcher **Mods** | Off | Each on or off |
+| Minimap style | Launcher **Settings** | Xbox minimap | Xbox, or improved with Modded gameplay |
+| Widescreen HUD, smooth skyline, depth fog, field of view | Launcher **Visual + audio mods** | Yes | Yes |
+| Lighting and the other visual mods | Launcher **Visual + audio mods** | Off | Each on or off |
 
 While playing:
 
-- **F10** opens the settings window in both versions. Changes that need a restart say so.
-- In the **Improved** game, **Graphics Settings** is also in the main menu (between Options
+- **F10** opens the settings window with either look. Changes that need a restart say so.
+- With the **Improved look**, **Graphics Settings** is also in the main menu (between Options
   and Profiles) and in the pause menu, so you can change them with the controller.
 - **F11** or **Alt+Enter** switches fullscreen on and off.
 
 ## Extra cars and Car Workshop
 
 Setup's **Add extra cars** adds nine community cars (see the [credits](#extra-car-credits)).
-In the Improved game they appear in the car list after the original and DLC cars. To hide
-them, untick **Extra installed cars** in the launcher's Mods tab. The Original game always
-leaves them out.
+With **Modded gameplay** they appear in the car list after the original and DLC cars. To
+hide them, untick **Extra installed cars** on the launcher's Gameplay mods tab. Xbox
+gameplay always leaves them out, and opponents in the original races always drive Xbox cars.
 
 **Car Workshop** lets you change them: name, menu ratings, top speed and acceleration,
 weight, grip, gears, speedometer, paint and body.

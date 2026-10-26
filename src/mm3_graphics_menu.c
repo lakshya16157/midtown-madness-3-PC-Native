@@ -64,8 +64,10 @@ static const unsigned choice_counts[GRAPHICS_SETTING_COUNT] = {12, 2, 7, 2, 9, 2
 #define GRAPHICS_CHOICE_COUNT 60u
 /* The single player Circuit row and the other mode rows (mm3_circuit_races.c),
  * after the choices so every earlier action ID stays the same. */
-enum { CIRCUIT_BEGIN = GRAPHICS_COMMAND_COUNT + GRAPHICS_CHOICE_COUNT, CIRCUIT_END };
-#define GRAPHICS_ACTION_COUNT (CIRCUIT_END + 1u)
+enum { CIRCUIT_BEGIN = GRAPHICS_COMMAND_COUNT + GRAPHICS_CHOICE_COUNT, CIRCUIT_END,
+       GAME_QUIT };             /* the main menu's Quit row (MM3_MENU_QUIT) */
+#define GRAPHICS_ACTION_COUNT (GAME_QUIT + 1u)
+extern void mm3_quit_game(void);
 static const int resolutions[][2] = {
     {800, 600}, {1024, 768}, {1280, 720}, {1280, 800}, {1366, 768},
     {1536, 960}, {1600, 900}, {1920, 1080}, {1920, 1200},
@@ -109,6 +111,8 @@ static void action_name(unsigned action, char *name, size_t capacity)
         snprintf(name, capacity, "%s", command_names[action]);
     else if (action == CIRCUIT_BEGIN || action == CIRCUIT_END)
         snprintf(name, capacity, "%s", action == CIRCUIT_BEGIN ? "circuitBegin" : "circuitEnd");
+    else if (action == GAME_QUIT)
+        snprintf(name, capacity, "gameQuit");
     else if (decode_choice(action, &setting, &choice))
         snprintf(name, capacity, "graphicsSelect%s%u", setting_keys[setting], choice);
     else if (capacity) name[0] = 0;
@@ -267,6 +271,10 @@ static void run_action(unsigned action)
         mm3_circuit_set_mode(action == CIRCUIT_BEGIN);
         return;
     }
+    if (action == GAME_QUIT) {
+        mm3_quit_game();
+        return;
+    }
     /* Pause HUD choices publish just this preference, using a fresh snapshot
      * so the F10 panel and an old graphics draft cannot overwrite each other. */
     if (action == GRAPHICS_MINIMAP_STOCK || action == GRAPHICS_MINIMAP_IMPROVED) {
@@ -329,6 +337,16 @@ const char *mm3_graphics_menu_label(const char *key)
     if (!key || strncmp(key, "SID_MM3_GRAPHICS_", 17) != 0) return NULL;
     field = key + 17;
     if (!strcmp(field, "HUD")) return "HUD Settings";
+    /* The main menu's Quit row and its help, in the game's language. */
+    if (!strcmp(field, "QUIT") || !strcmp(field, "QUIT_HELP")) {
+        static const char *const quits[5] = {"Quit", "Quitter", "Beenden", "Esci", "Salir"};
+        static const char *const helps[5] = {"Leave the game and return to Windows.",
+            "Quitter le jeu et revenir \xE0 Windows.", "Das Spiel beenden und zu Windows zur\xFC\x63kkehren.",
+            "Esci dal gioco e torna a Windows.", "Sal del juego y vuelve a Windows."};
+        unsigned language = MEM32(0x003C5648u);
+        if (language > 4) language = 0;
+        return field[4] ? helps[language] : quits[language];
+    }
     if (!strcmp(field, "HUD_MINIMAP_STOCK") || !strcmp(field, "HUD_MINIMAP_IMPROVED")) {
         MM3DisplaySettings current;
         int improved = !strcmp(field, "HUD_MINIMAP_IMPROVED");

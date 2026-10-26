@@ -182,12 +182,41 @@ int main(int argc, char **argv)
     memcpy(view, words + 2, sizeof view);
     assert(view[0] == 1 && view[4] == 1 && view[8] == 1 && view[10] == -1.5f && view[11] == 10);
     assert(*(float *)&words[1] == 1.0f / 1000.0f && *(float *)&words[14] == 1.5f && *(float *)&words[15] == 2.0f);
+    /* Traffic drawn in the next lane, with no simulated body here, does not
+     * lend the Corvette its pipe (the user's double exhaust, 2026-10-26). */
+    {
+        float rows[3][3], origin[3];
+        memcpy(rows, model_rows, sizeof rows);
+        memcpy(origin, model_origin, sizeof origin);
+        for (n = 0; n < 3; ++n) model_origin[n] += 2.6f * model_rows[0][n];
+        draw_lamps(0x7400, sedan);
+        memcpy(model_rows, rows, sizeof rows);
+        memcpy(model_origin, origin, sizeof origin);
+        draw_lamps(0x7000, corvette);
+        packet(words);
+        steps(0x5000, BODY, 30);
+        puffs = packet(words);
+        assert(puffs >= 1);
+        for (n = 0; n < puffs; ++n) assert(nearest_pipe(corvette, centre(n)) < 0.6f);
+    }
     /* A car standing still: a light haze, ~9 puffs a second, ~1.3-2.2 s each. */
     draw_lamps(0x7000, corvette);
     steps(0x5000, BODY, 120);
     idle = packet(words);
     assert(idle >= 10 && idle <= 30);
     assert(used[0] + used[1] + used[2] + used[3] >= 2);   /* more than one pipe */
+    /* Densest at the pipe: a puff keeps its smoke as it spreads, so the
+     * spread-out ones further off are fainter. */
+    {
+        float near_sum = 0, far_sum = 0;
+        unsigned near_n = 0, far_n = 0;
+        for (n = 0; n < idle; ++n) {
+            float d = nearest_pipe(corvette, centre(n)), a = (float)(centre(n)->rgba >> 24);
+            if (d < 0.2f) { near_sum += a; ++near_n; }
+            else if (d > 0.45f) { far_sum += a; ++far_n; }
+        }
+        assert(near_n && far_n && near_sum / near_n > 2.0f * far_sum / far_n);
+    }
     /* Paused: no steps, the same smoke. */
     assert(packet(words) == idle);
     /* Accelerating to 30 m/s: much more, left behind the car in a trail. */
@@ -200,6 +229,10 @@ int main(int argc, char **argv)
     puffs = packet(words);
     assert(puffs > idle * 2);
     assert(mean_z() < MEMF(BODY + 0xD0) - 3.0f);
+    /* More puffs keep the trail whole, not thicker: the trail a few metres
+     * back is a faint haze. */
+    for (n = 0; n < puffs; ++n)
+        if (centre(n)->z < MEMF(BODY + 0xD0) - 4.0f) assert((centre(n)->rgba >> 24) < 40);
     /* Out of range it stops; the smoke out there keeps its own path, then
      * thins out to nothing. */
     place(BODY, 0, 900, 30, 0.3f, 1);
@@ -249,7 +282,8 @@ int main(int argc, char **argv)
     steps(0x6000, OTHER, 2);
     puffs = packet(words);
     for (n = 0; n < puffs; ++n) assert(centre(n)->x > 2.0f);
-    puts("PASS exhaust smoke: cars matched to their models by their lamps (Corvette's four pipes, a sedan's "
+    puts("PASS exhaust smoke: cars matched to their models by their lamps (Corvette's four pipes, traffic "
+         "alongside keeps its pipe, a sedan's "
          "body-placed pipe, a typical pipe for unknown lamps), soft puffs from the pipes, idle haze and "
          "speed/throttle-scaled smoke, own world-space paths, fade to nothing, pause, night, rolled and "
          "departed cars, perspective cameras only");

@@ -458,13 +458,13 @@ static void contextual_help(HWND window)
         ID_SOURCE, ID_PAD_PORT, ID_CAPTURE, ID_UNBIND};
     static const int buttons[] = {ID_DEFAULTS, IDOK, IDCANCEL};
     HelpText text, previous;
-    char page_titles[3][256];
-    for (int page = 0; page < 3; ++page) {
+    char page_titles[LAUNCHER_PAGES][256];
+    for (int page = 0; page < LAUNCHER_PAGES; ++page) {
         select_page(window, page);
         help_text(window, &text); help_layout(window);
         snprintf(page_titles[page], sizeof page_titles[page], "%s", text.title);
+        for (int other = 0; other < page; ++other) CHECK(strcmp(page_titles[other], page_titles[page]));
     }
-    CHECK(strcmp(page_titles[0], page_titles[1]) && strcmp(page_titles[1], page_titles[2]));
 
     select_page(window, 0);
     for (int i = 0; i < (int)(sizeof settings / sizeof settings[0]); ++i) {
@@ -551,43 +551,72 @@ static void contextual_help(HWND window)
     CHECK(help_contains(window, "invalid") || help_contains(window, "enter") || help_contains(window, "must"));
     edit_value(window, ID_FOV, "0");
     CHECK(help_contains(window, "retail") || help_contains(window, "original"));
+    select_page(window, 3);
     focus_control(window, ID_REQUIRED); help_text(window, &text); help_layout(window);
-    CHECK(!IsWindowEnabled(GetDlgItem(window, ID_REQUIRED)));
+    CHECK(!IsWindowEnabled(GetDlgItem(window, ID_REQUIRED)) && IsWindowVisible(GetDlgItem(window, ID_REQUIRED)));
     CHECK(help_contains(window, "required") || help_contains(window, "always"));
 
-    /* Original or Improved: a pair of choices, the Improved columns greyed out
-     * in the Original and every choice there kept. */
+    /* Original or Improved look: a pair of choices, the visual mods greyed
+     * out in the Original look and every choice there kept. */
     select_page(window, 2);
     {
         HWND original = GetDlgItem(window, ID_ORIGINAL), improved = GetDlgItem(window, ID_OPTION + MM3_LAUNCH_IMPROVED);
-        HWND trees = GetDlgItem(window, ID_OPTION + MM3_LAUNCH_TREES), sky = GetDlgItem(window, ID_OPTION + MM3_LAUNCH_SKY);
-        int trees_on = SendMessageA(trees, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        HWND lights = GetDlgItem(window, ID_OPTION + MM3_LAUNCH_CAR_LIGHT), sky = GetDlgItem(window, ID_OPTION + MM3_LAUNCH_SKY);
+        HWND trees = GetDlgItem(window, ID_OPTION + MM3_LAUNCH_TREES);
+        int lights_on = SendMessageA(lights, BM_GETCHECK, 0, 0) == BST_CHECKED;
         CHECK(original && improved && IsWindowVisible(original) && IsWindowVisible(improved));
         CHECK(SendMessageA(improved, BM_GETCHECK, 0, 0) == BST_CHECKED && SendMessageA(original, BM_GETCHECK, 0, 0) != BST_CHECKED);
         SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_ORIGINAL, BN_CLICKED), (LPARAM)original);
         CHECK(SendMessageA(improved, BM_GETCHECK, 0, 0) != BST_CHECKED && SendMessageA(original, BM_GETCHECK, 0, 0) == BST_CHECKED);
         CHECK(help_contains(window, "Original") && help_contains(window, "On"));
-        CHECK(!IsWindowEnabled(trees) && IsWindowEnabled(sky) && IsWindowEnabled(GetDlgItem(window, ID_FOV)));
-        /* Settings the Original game fixes at the Xbox's are greyed out too. */
+        CHECK(!IsWindowEnabled(lights) && IsWindowEnabled(sky) && IsWindowEnabled(GetDlgItem(window, ID_FOV)));
+        /* Settings the Original look fixes at the Xbox's are greyed out too. */
         CHECK(!IsWindowEnabled(GetDlgItem(window, ID_DRAW)) && !IsWindowEnabled(GetDlgItem(window, ID_VIEW)) &&
               !IsWindowEnabled(GetDlgItem(window, ID_MINIMAP)) && IsWindowEnabled(GetDlgItem(window, ID_MSAA)));
-        CHECK((SendMessageA(trees, BM_GETCHECK, 0, 0) == BST_CHECKED) == trees_on);
+        CHECK((SendMessageA(lights, BM_GETCHECK, 0, 0) == BST_CHECKED) == lights_on);
         SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_ORIGINAL, BN_CLICKED), (LPARAM)original);
         CHECK(SendMessageA(original, BM_GETCHECK, 0, 0) == BST_CHECKED); /* A choice, not a toggle. */
         SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_OPTION + MM3_LAUNCH_IMPROVED, BN_CLICKED), (LPARAM)improved);
         CHECK(SendMessageA(improved, BM_GETCHECK, 0, 0) == BST_CHECKED && SendMessageA(original, BM_GETCHECK, 0, 0) != BST_CHECKED);
-        CHECK(IsWindowEnabled(trees) && help_contains(window, "Improved"));
-        CHECK(IsWindowEnabled(GetDlgItem(window, ID_DRAW)) && IsWindowEnabled(GetDlgItem(window, ID_MINIMAP)));
+        CHECK(IsWindowEnabled(lights) && help_contains(window, "Improved"));
+        CHECK(IsWindowEnabled(GetDlgItem(window, ID_DRAW)));
+        /* The look never touches the gameplay mods. */
+        CHECK(!IsWindowVisible(trees));
+    }
+    /* Xbox or Modded gameplay: Xbox gameplay by default, the gameplay mods
+     * greyed out with it and the minimap fixed at the Xbox's. */
+    select_page(window, 3);
+    {
+        HWND xbox = GetDlgItem(window, ID_XBOX_GAMEPLAY), modded = GetDlgItem(window, ID_OPTION + MM3_LAUNCH_GAMEPLAY);
+        HWND trees = GetDlgItem(window, ID_OPTION + MM3_LAUNCH_TREES), arrow = GetDlgItem(window, ID_OPTION + MM3_LAUNCH_RACE_ARROW);
+        int trees_on = SendMessageA(trees, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        CHECK(xbox && modded && IsWindowVisible(xbox) && IsWindowVisible(modded) && IsWindowVisible(trees));
+        CHECK(SendMessageA(xbox, BM_GETCHECK, 0, 0) == BST_CHECKED && SendMessageA(modded, BM_GETCHECK, 0, 0) != BST_CHECKED);
+        CHECK(!IsWindowEnabled(trees) && !IsWindowEnabled(arrow) && !IsWindowEnabled(GetDlgItem(window, ID_MINIMAP)));
+        CHECK(IsWindowEnabled(GetDlgItem(window, ID_DRAW)));
+        focus_control(window, ID_OPTION + MM3_LAUNCH_RACE_ARROW); help_text(window, &text);
+        CHECK(contains(text.title, "Hide") && help_contains(window, "shows it"));
+        SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_OPTION + MM3_LAUNCH_GAMEPLAY, BN_CLICKED), (LPARAM)modded);
+        CHECK(SendMessageA(modded, BM_GETCHECK, 0, 0) == BST_CHECKED && SendMessageA(xbox, BM_GETCHECK, 0, 0) != BST_CHECKED);
+        CHECK(help_contains(window, "Modded") && help_contains(window, "On"));
+        CHECK(IsWindowEnabled(trees) && IsWindowEnabled(arrow) && IsWindowEnabled(GetDlgItem(window, ID_MINIMAP)));
+        CHECK((SendMessageA(trees, BM_GETCHECK, 0, 0) == BST_CHECKED) == trees_on);
+        SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_OPTION + MM3_LAUNCH_GAMEPLAY, BN_CLICKED), (LPARAM)modded);
+        CHECK(SendMessageA(modded, BM_GETCHECK, 0, 0) == BST_CHECKED); /* A choice, not a toggle. */
+        SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_XBOX_GAMEPLAY, BN_CLICKED), (LPARAM)xbox);
+        CHECK(SendMessageA(xbox, BM_GETCHECK, 0, 0) == BST_CHECKED && !IsWindowEnabled(trees));
+        CHECK(help_contains(window, "Xbox") && help_contains(window, "On"));
     }
     for (int i = 1; i < MM3_LAUNCH_OPTION_COUNT; ++i) {
         int id = ID_OPTION + i;
         HWND child = GetDlgItem(window, id);
-        if (i == MM3_LAUNCH_IMPROVED) continue;
-        select_page(window, i == MM3_LAUNCH_DSP || i == MM3_LAUNCH_NETWORK ? 0 : 2);
+        if (i == MM3_LAUNCH_IMPROVED || i == MM3_LAUNCH_GAMEPLAY) continue;
+        select_page(window, i == MM3_LAUNCH_DSP || i == MM3_LAUNCH_NETWORK ? 0 :
+                    mm3_launcher_option_master(i) == MM3_LAUNCH_GAMEPLAY ? 3 : 2);
         CHECK(child && IsWindowVisible(child));
         focus_control(window, id); help_text(window, &previous); help_layout(window);
         CHECK(*previous.value);
-        CHECK(strstr(previous.title, mm3_launcher_options[i].label));
+        CHECK(strstr(previous.title, option_caption(i)));
         int before = SendMessageA(child, BM_GETCHECK, 0, 0) == BST_CHECKED;
         SendMessageA(window, WM_COMMAND, MAKEWPARAM(id, BN_CLICKED), (LPARAM)child);
         help_text(window, &text); help_layout(window);
@@ -770,6 +799,7 @@ static void smaller_layout(void)
     focus_control(window, ID_BINDINGS);
     capture_page(window, "controls-720p");
     page_show(&ui, 2); help_layout(window); capture_page(window, "mods-720p");
+    page_show(&ui, 3); help_layout(window); capture_page(window, "gameplay-720p");
     DestroyWindow(window); DeleteObject(ui.font); DeleteObject(ui.heading);
 }
 int main(int argc, char **argv)
@@ -810,6 +840,9 @@ int main(int argc, char **argv)
     CHECK(mm3_launcher_config_load(&config, error, sizeof error));
     CHECK(config.drive_keys[0] == 'W' && config.pad[0] == 15 && config.fov_degrees == 95);
     CHECK(config.controller_count == 4);
+    /* Xbox gameplay by default: the game sees every gameplay mod off. */
+    CHECK(!config.option[MM3_LAUNCH_GAMEPLAY] && !strcmp(getenv("MM3_GAMEPLAY_MODS"), "0"));
+    CHECK(!strcmp(getenv("MM3_EXTRA_CIRCUITS"), "0") && !strcmp(getenv("MM3_HUD_RACE_ARROW"), "1"));
     mm3_display_settings_defaults(&display, NULL);
     CHECK(mm3_display_settings_load(&display, error, sizeof error));
     CHECK(display.fps_limit == 30 && display.vsync);

@@ -84,9 +84,14 @@ def main():
                         str(ROOT / "tests/mm3_camera_contract.c"),
                         "/Fo:" + str(folder / "contract.obj"), "/Fe:" + str(executable)]
         subprocess.run(command, check=True, cwd=folder)
-        for value in (None, "", "60", "80", "95.5", "100", "110", "nan", "inf", "59", "111", "80garbage"):
+        for value in (None, "", "60", "80", "95.5", "100", "110", "nan", "inf", "59", "111", "80garbage",
+                      "original"):
             environment = os.environ.copy()
             environment.pop("MM3_FOV_DEGREES", None)
+            environment.pop("MM3_IMPROVED", None)
+            if value == "original":
+                environment["MM3_IMPROVED"] = "0"   # the Xbox chase camera
+                value = None
             if value is not None:
                 environment["MM3_FOV_DEGREES"] = value
             expected = value if value in ("60", "80", "95.5", "100", "110") else "0"
@@ -99,7 +104,7 @@ def main():
         if "--check-mutants" in sys.argv:
             mutants = {
                 "missing near-distance adjustment": production.replace(
-                    "if (MEM32(g_esp) == 0x001EF922u)", "if (0)"),
+                    "if (MEM32(g_esp) == 0x001EF922u && chase_adjusted())", "if (0)"),
                 "matrix/culling FOV mismatch": production.replace(
                     "MEMF(g_ebp + 8) = fovy;", "(void)fovy;"),
                 "write after native RET 20": production.replace(
@@ -108,6 +113,7 @@ def main():
             }
             environment = os.environ.copy()
             environment["MM3_FOV_DEGREES"] = "100"
+            environment.pop("MM3_IMPROVED", None)
             for name, mutant in mutants.items():
                 assert mutant != production, name
                 (folder / "production_widescreen.c").write_text(mutant, encoding="utf-8")

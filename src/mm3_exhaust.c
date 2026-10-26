@@ -44,6 +44,16 @@
 #define RATE_PER_SPEED 1.6f     /* more per m/s */
 #define RATE_THROTTLE 30.0f     /* more when accelerating hard */
 #define RATE_MAX 110.0f
+/* How much smoke leaves the pipe a second (puff count only keeps the trail
+ * continuous): an idling engine, a little more with revs, most when the
+ * engine works hard. Each puff carries its share and keeps it as it spreads,
+ * so it thins with the area it covers: densest at the pipe, a faint haze
+ * further off, and no more smoke for seeing more of the trail. */
+#define FLOW_IDLE 1.0f
+#define FLOW_PER_SPEED 0.03f
+#define FLOW_THROTTLE 4.0f
+#define DENSITY 3.2f            /* optical depth of one unit of smoke at R_REF */
+#define R_REF 0.07f             /* metres: a puff just out of the pipe */
 #define EXIT_IDLE 1.6f          /* m/s out of the pipe at rest */
 #define EXIT_PER_SPEED 0.12f    /* faster per m/s of the car */
 #define WAKE 0.55f              /* share of the car's velocity the wake carries */
@@ -57,7 +67,7 @@
 
 typedef struct {
     float p[3], v[3];
-    float age, life, r0, r1, alpha, shade, spin;
+    float age, life, r0, r1, smoke, shade, spin;
 } Puff;
 
 typedef struct {
@@ -209,19 +219,46 @@ static int identify(const Owner *o, float M[3][3], float t[3], float *error)
     return best;
 }
 
+/* The simulated body a drawn car belongs to. The drawn model sits on its
+ * body's centre line, facing its way, and leads it by up to a frame of
+ * travel (measured 2026-10-26: sideways and up within 2 cm, ahead 0.44 m at
+ * 18 m/s and 1.0 m at 40 m/s). Traffic is drawn but has no body here: a
+ * traffic car alongside (2-3.5 m off) must not lend the car its pipes,
+ * which gave the player's car a second, misplaced exhaust. */
+static Car *body_for(const Owner *o, float M[3][3], const float t[3])
+{
+    static unsigned refused;
+    Car *best = NULL;
+    float least = 0, local[3], w[3], facing, error;
+    unsigned i, k;
+    for (i = 0; i < CARS; ++i) {
+        Car *c = &s_cars[i];
+        if (!c->car) continue;
+        facing = M[2][0] * c->axes[2][0] + M[2][1] * c->axes[2][1] + M[2][2] * c->axes[2][2];
+        for (k = 0; k < 3; ++k) w[k] = t[k] - c->axes[3][k];
+        for (k = 0; k < 3; ++k) local[k] = dot3(w, c->axes[k]);
+        if (facing < 0.98f || fabsf(local[0]) > 0.3f || fabsf(local[1]) > 0.5f ||
+            fabsf(local[2]) > 0.3f + 0.035f * c->speed) {
+            if (dot3(w, w) < 3.5f * 3.5f && refused < 4u) {
+                ++refused;
+                fprintf(stderr, "[MM3_EXHAUST] %s %08X beside car %08X (%.2f, %.2f, %.2f m in its frame, "
+                        "facing %.3f) keeps its own pipes\n", mm3_exhaust_models[o->model].name, o->owner,
+                        c->car, local[0], local[1], local[2], facing);
+            }
+            continue;
+        }
+        error = dot3(local, local);
+        if (!best || error < least) { best = c; least = error; }
+    }
+    return best;
+}
+
 /* A drawn car's pipes, in the frame of the body it belongs to. */
 static void place_pipes(const Owner *o, float M[3][3], const float t[3])
 {
     const Mm3ExhaustModel *model = &mm3_exhaust_models[o->model];
-    Car *car = NULL;
-    float nearest = 3.5f * 3.5f;
+    Car *car = body_for(o, M, t);
     unsigned i, k, n = model->pipes < 4 ? model->pipes : 4;
-    for (i = 0; i < CARS; ++i) {
-        float d[3];
-        if (!s_cars[i].car) continue;
-        d[0] = s_cars[i].axes[3][0] - t[0]; d[1] = s_cars[i].axes[3][1] - t[1]; d[2] = s_cars[i].axes[3][2] - t[2];
-        if (dot3(d, d) < nearest) { nearest = dot3(d, d); car = &s_cars[i]; }
-    }
     if (!car) return;
     for (i = 0; i < n; ++i) {
         const Mm3ExhaustPipe *pipe = &mm3_exhaust_pipes[model->pipe + i];
@@ -317,7 +354,7 @@ static Car *car_slot(uint32_t car, double now)
     return free_slot;
 }
 
-static void spawn(Car *c, unsigned pipe, const float velocity[3], float dt)
+static void spawn(Car *c, unsigned pipe, const float velocity[3], float dt, float smoke)
 {
     Puff *p = &c->puff[c->next++ % PUFFS];
     const float *local = c->pipes ? c->pipe[pipe] : default_pipe, *aim = c->pipes ? c->dir[pipe] : default_dir;
@@ -335,10 +372,10 @@ static void spawn(Car *c, unsigned pipe, const float velocity[3], float dt)
         p->v[k] = velocity[k] * WAKE + dir[k] / length * exit + spread() * 0.25f;
     }
     p->age = 0;
-    p->life = 1.3f + 0.9f * random01();
+    p->life = 1.0f + 0.8f * random01();
     p->r0 = 0.04f + 0.02f * random01();
-    p->r1 = 0.5f + 0.35f * random01() + 0.3f * c->throttle;
-    p->alpha = 0.2f + 0.22f * c->throttle + 0.04f * random01();
+    p->r1 = 0.35f + 0.25f * random01() + 0.25f * c->throttle;
+    p->smoke = smoke * (0.85f + 0.3f * random01());
     p->shade = 0.70f + 0.12f * random01();
     p->spin = 6.2831853f * random01();
 }
@@ -380,11 +417,12 @@ void mm3_exhaust_step(uint32_t car, uint32_t body, float dt)
     if (c->axes[1][1] > 0.3f && s_eye_valid) {
         float d[3] = {c->axes[3][0] - s_eye[0], c->axes[3][1] - s_eye[1], c->axes[3][2] - s_eye[2]};
         if (dot3(d, d) < NEAR_EYE * NEAR_EYE) {
-            float rate = RATE_IDLE + RATE_PER_SPEED * speed + RATE_THROTTLE * c->throttle;
+            float rate = fminf(RATE_IDLE + RATE_PER_SPEED * speed + RATE_THROTTLE * c->throttle, RATE_MAX);
+            float flow = FLOW_IDLE + FLOW_PER_SPEED * speed + FLOW_THROTTLE * c->throttle;
             unsigned pipes = c->pipes ? c->pipes : 1u;
-            c->emit += (rate < RATE_MAX ? rate : RATE_MAX) * dt;
+            c->emit += rate * dt;
             while (c->emit >= 1.0f && spawned < 16) {
-                spawn(c, c->next % pipes, velocity, dt);
+                spawn(c, c->next % pipes, velocity, dt, flow / rate);
                 c->emit -= 1.0f;
                 ++spawned;
             }
@@ -453,10 +491,14 @@ int mm3_exhaust_packet(uint32_t camera, uint32_t words[18])
             reach = dot3(d, d);
             if (reach > DRAW_RANGE * DRAW_RANGE) continue;
             x = p->age / p->life;
-            /* Grows fast as it leaves the pipe, then spreads slowly; thins
-             * out as it grows. */
+            /* Grows fast as it leaves the pipe, then spreads slowly. Its
+             * smoke spreads with it: the optical depth falls as the puff
+             * grows (a little slower than its area, as it also deepens),
+             * and the last of it dissipates before the puff ends. */
             r = p->r0 + (p->r1 - p->r0) * (1.0f - expf(-3.0f * x)) / (1.0f - expf(-3.0f));
-            a = p->alpha * fminf(p->age / 0.06f, 1.0f) * (1.0f - x) * (1.0f - x);
+            a = p->smoke * DENSITY * powf(R_REF / fmaxf(r, R_REF), 1.5f) *
+                fminf(p->age / 0.03f, 1.0f) * (1.0f - x * x);
+            a = 1.0f - expf(-a);
             a *= 1.0f - fminf(sqrtf(reach) / DRAW_RANGE, 1.0f);
             if (a < 0.004f) continue;
             centre = pack(p->shade * light, a);

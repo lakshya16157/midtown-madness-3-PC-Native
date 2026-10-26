@@ -14,11 +14,15 @@ enum MM3LauncherOption {
     MM3_LAUNCH_DSP, MM3_LAUNCH_NETWORK,
     MM3_LAUNCH_NORTH_MARKER, MM3_LAUNCH_RACE_ARROW, MM3_LAUNCH_ROUTE_NAVIGATION,
     MM3_LAUNCH_DRAFTING, MM3_LAUNCH_ROLL_GUARD, MM3_LAUNCH_AI_ALL_CARS,
-    /* 0 = the Original game: the Xbox game at the PC's resolution with the
-     * graphics and audio improvements, every mod off (mm3_launcher_config_apply). */
+    /* 0 = the Original look: the Xbox visuals, menus and HUD at the PC's
+     * resolution with the graphics and audio upgrades (mm3_launcher_config_apply). */
     MM3_LAUNCH_IMPROVED,
     MM3_LAUNCH_GRAPHICS_MENU, MM3_LAUNCH_CIRCUITS, MM3_LAUNCH_EXTRA_CARS, MM3_LAUNCH_DLC_INFO,
     MM3_LAUNCH_TREES, MM3_LAUNCH_EXHAUST,
+    /* 0 = Xbox gameplay: every gameplay mod off, the game's own race arrow
+     * and minimap (mm3_launcher_config_apply). */
+    MM3_LAUNCH_GAMEPLAY,
+    MM3_LAUNCH_QUIT,             /* the main menu's Sign In row becomes Quit */
     MM3_LAUNCH_OPTION_COUNT
 };
 
@@ -55,7 +59,10 @@ int mm3_launcher_config_save(const MM3LauncherConfig *config, char *error, size_
 /* Set one complete field. Invalid values leave the snapshot unchanged. */
 int mm3_launcher_config_assign(MM3LauncherConfig *config, const char *key, const char *value);
 int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size_t capacity);
-/* 1 when the option keeps the player's choice in the Original game. */
-int mm3_launcher_option_in_original(int option);
+/* The switch an option depends on: MM3_LAUNCH_IMPROVED for the visual and
+ * audio mods (the Original look sets them as on the Xbox), MM3_LAUNCH_GAMEPLAY
+ * for the gameplay mods (Xbox gameplay sets them as on the Xbox), or -1 for
+ * an option that is always the player's choice. */
+int mm3_launcher_option_master(int option);
 
 #endif

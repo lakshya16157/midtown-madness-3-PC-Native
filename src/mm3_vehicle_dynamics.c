@@ -29,7 +29,8 @@
  * and pulls a little harder: up to MM3_DRAFT_ACCEL m/s^2 (default 1.6) along
  * its direction of travel at 150 km/h and above, less at lower speed, in a
  * wake that fades from 10 to 30 m behind the car in front and widens with
- * distance. Players and AI opponents alike. MM3_DRAFTING=0 turns it off.
+ * distance. Players and AI opponents alike. The Xbox game has no slipstream:
+ * only MM3_DRAFTING=1 turns it on.
  *
  * Roll guard: some original cars rolled over in hard corners. Once a car on
  * its wheels leans past 20 degrees, the part of its roll rate that leans it
@@ -38,7 +39,8 @@
  * left alone, and pitch and yaw are untouched. The guard stands down for
  * a second after an impact (a sudden horizontal speed change), in the air
  * (fast vertical motion), near upside down and when nearly stopped, so crashes
- * still tumble cars. MM3_ROLL_GUARD=0 turns it off.
+ * still tumble cars. It changes how the Xbox cars drive: only
+ * MM3_ROLL_GUARD=1 turns it on.
  *
  * Logs: [MM3_DRAFT] each 30 s with drafting time per car, [MM3_ROLL] when the
  * guard catches a car leaning past 28 degrees (a few a minute). */
@@ -78,7 +80,7 @@ static unsigned s_roll_lines;
 static int flag(const char *name)
 {
     const char *v = getenv(name);
-    return !(v && !strcmp(v, "0"));
+    return v && !strcmp(v, "1");
 }
 
 static int drafting_enabled(void)

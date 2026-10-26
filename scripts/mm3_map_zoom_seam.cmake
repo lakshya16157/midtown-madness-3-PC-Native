@@ -113,6 +113,7 @@ function(mm3_add_map_zoom source_variable function_name)
     set(border_replacement [=[    if (mm3_minimap_improved()) {
         esp += 8; /* Improved map has no MapCircle border. */
     } else {
+        mm3_map_ring_texture_pins(MEM32(esp)); /* the ring's E/S/W pins (src/mm3_map_pins.c) */
         PUSH32(esp, 0x0011DBB1u); RECOMP_ABI_CALL(0x001C1585u, sub_001C1585); /* call 0x001C1585 */
     }]=])
     set(compass_original [=[loc_0011DBF1: ;
@@ -202,6 +203,7 @@ function(mm3_add_map_zoom source_variable function_name)
     string(REPLACE "${body}" "${transformed}" content "${content}")
     set(declarations "#include <stdint.h>${newline}extern int mm3_minimap_improved(void);${newline}extern void mm3_map_zoom_reset(uint32_t);${newline}extern void mm3_map_square_geometry(uint32_t, uint32_t, float);${newline}extern float mm3_map_square_marker_distance(uint32_t, uint32_t, float, float);${newline}extern void mm3_map_zoom_update(uint32_t, float);${newline}extern void mm3_map_zoom_apply(uint32_t, uint32_t);${newline}extern void mm3_map_zoom_window(uint32_t, uint32_t);${newline}extern float mm3_map_zoom_checkpoint_scale(uint32_t, uint32_t);${newline}")
     string(APPEND declarations "extern void mm3_map_zoom_compass_geometry(uint32_t, uint32_t);${newline}")
+    string(APPEND declarations "extern void mm3_map_ring_texture_pins(uint32_t);${newline}")
     string(APPEND declarations "extern void mm3_map_ui_capacity(void);${newline}")
     string(FIND "${content}" "extern void mm3_map_zoom_reset(" declared)
     if(declared LESS 0)

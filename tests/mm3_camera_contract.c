@@ -83,10 +83,17 @@ static void reset_call(void) {
     MEM32(stack + 8) = 0x12345678;
 }
 
+static int xbox_camera;
+
 static void chase_contract(void) {
     unsigned i, j, repeat;
     uint32_t retail[14];
     unsigned char before[0x40];
+    /* The Original look (MM3_IMPROVED=0) keeps the Xbox camera. */
+    const char *look = getenv("MM3_IMPROVED");
+    float shift;
+    xbox_camera = look && !strcmp(look, "0");
+    shift = xbox_camera ? 0.0f : 0.25f;
     /* Varied per-car eye/goal parameters, plus the native null-parameter
      * defaults. Values also distinguish every coordinate and near/far pair. */
     for (i = 0; i < 6; ++i) {
@@ -105,7 +112,7 @@ static void chase_contract(void) {
             assert(solver_calls == calls + 1 && g_esp == stack + 8 && g_fp_top == 0);
             assert(g_ebx == 0x13579 && g_edi == 0x24680 && MEM32(stack + 8) == 0x12345678);
             for (j = 0; j < 14; ++j) {
-                if (j == 4 || j == 7) close_float(number(captured[j]), number(retail[j]) - 0.25f);
+                if (j == 4 || j == 7) close_float(number(captured[j]), number(retail[j]) - shift);
                 else assert(captured[j] == retail[j]);
             }
             assert(!memcmp(before, (const void *)XBOX_PTR(params), sizeof before));
@@ -245,6 +252,7 @@ int main(int argc, char **argv) {
     g_xbox_mem_offset = (ptrdiff_t)memory;
     native_constants();
     chase_contract(); projection_contract(override); live_resize_contract(override);
-    printf("PASS camera: near-only +0.25m, native matrix/culling, FOV %.3g, six aspects, 200 live resizes, menu retirement and ABI guards\n", override);
+    printf("PASS camera: near-only %s, native matrix/culling, FOV %.3g, six aspects, 200 live resizes, menu retirement and ABI guards\n",
+           xbox_camera ? "Xbox distance" : "+0.25m", override);
     return 0;
 }

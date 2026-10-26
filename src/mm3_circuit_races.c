@@ -156,6 +156,11 @@ void mm3_circuit_set_mode(int on)
     circuit_mode = on != 0;
 }
 
+int mm3_circuit_mode_on(void)
+{
+    return circuit_mode;
+}
+
 /* Circuits are numbered from race 20 on; how many a city has. */
 static uint32_t circuit_count(uint32_t city)
 {

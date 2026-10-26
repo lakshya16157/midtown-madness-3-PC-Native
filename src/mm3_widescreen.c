@@ -236,6 +236,18 @@ static float camera_fov_degrees(void)
     return degrees;
 }
 
+/* The near chase sits 0.25 m farther back with the Improved look; the
+ * Original look (MM3_IMPROVED=0) keeps the Xbox camera. */
+static int chase_adjusted(void)
+{
+    static int adjusted = -1;
+    if (adjusted < 0) {
+        const char *look = getenv("MM3_IMPROVED");
+        adjusted = !(look && !strcmp(look, "0"));
+    }
+    return adjusted;
+}
+
 extern void sub_001EEC53_original(void);
 void sub_001EEC53(void)
 {
@@ -244,7 +256,7 @@ void sub_001EEC53(void)
      * Mode 7 (far chase) instead returns to 001EF7DC. Adjust only this
      * call's Z arguments, before the original speed interpolation, damping
      * and collision solver; no vehicle parameters or other views change. */
-    if (MEM32(g_esp) == 0x001EF922u) {
+    if (MEM32(g_esp) == 0x001EF922u && chase_adjusted()) {
         float start_z = MEMF(g_esp + 0x14), end_z = MEMF(g_esp + 0x20);
         if (isfinite(start_z) && isfinite(end_z) && start_z < 0.0f && end_z < 0.0f) {
             MEMF(g_esp + 0x14) = start_z - 0.25f;

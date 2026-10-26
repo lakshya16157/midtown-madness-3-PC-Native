@@ -1,7 +1,10 @@
-/* Car damage sees 30 fps frames (src/mm3_damage_diagnostics.c): faster than
- * 30 fps, each car's contact impulse is summed over 1/30 s and handed to the
- * damage step once per 1/30 s, in every job and race; the record keeps its
- * real value. */
+/* Car damage counted as on the Xbox (src/mm3_damage_diagnostics.c): the
+ * physics runs in 1/120 s steps and each step's damage step reads the car's
+ * largest impulse found since its frame began. Faster than 30 fps game frames
+ * are grouped into four-step console frames: what the first game frame finds
+ * is applied in the console frame's later steps (three times, as on the
+ * Xbox), what a later game frame finds is left for the next console frame;
+ * the record keeps its real value. */
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
@@ -26,7 +29,8 @@ void sub_001CDB6C_original(void)
 void sub_00021DCF(void);
 void sub_001CDB6C(void);
 
-static float damage_step(uint32_t comp, float impulse)
+/* One physics step's damage step for the car with part `comp`: what it saw. */
+static float step(uint32_t comp, float impulse)
 {
     uint32_t rec = MEM32(MEM32(comp + 0x3C) + 4);
     unsigned before = damage_calls;
@@ -38,12 +42,17 @@ static float damage_step(uint32_t comp, float impulse)
     return seen_impulse[before % 64];
 }
 
-static int near(float a, float b) { return fabsf(a - b) <= 1e-3f * fabsf(b) + 1e-4f; }
+/* The end of a game frame: the frame timer adds the frame's ticks to its
+ * total (frame object +0x28). */
+static void end_frame(float fps)
+{
+    MEMF(frame + 0x54) = 1.0f / fps;
+    MEM32(frame + 0x28) += (uint32_t)(733333333.0f / fps);
+}
 
 int main(int argc, char **argv)
 {
     int off = argc > 1 && !strcmp(argv[1], "off");
-    float total = 0;
     int i;
     g_xbox_mem_offset = (ptrdiff_t)memory;
     if (off) _putenv_s("MM3_DAMAGE_FRAME_FIX", "0");
@@ -51,69 +60,157 @@ int main(int argc, char **argv)
     MEM32(other + 0x3C) = other_body; MEM32(other_body + 4) = other_record;
     MEM32(0x3C5C90) = frame;
     MEMF(0x3C0328) = 50.0f; MEMF(0x3C0330) = 1.0f;          /* a wreck job */
-    MEMF(frame + 0x54) = 1.0f / 60.0f;
     /* The contact scaler passes the job's scale through unchanged. */
     g_esp = stack; g_ecx = record; MEM32(g_esp) = 0x1F14E5; MEMF(g_esp + 4) = 50.0f;
     sub_00021DCF(); assert(seen_scale == 50.0f && g_esp == stack + 8);
+    end_frame(30);                                          /* a console frame starts */
     if (off) {
-        assert(damage_step(component, 900.0f) == 900.0f && damage_step(component, 700.0f) == 700.0f);
-        puts("PASS damage frame fix off: MM3_DAMAGE_FRAME_FIX=0 keeps every frame's impulse");
+        assert(step(component, 900) == 900 && step(component, 900) == 900);
+        end_frame(60);
+        assert(step(component, 0) == 0 && step(component, 0) == 0);
+        puts("PASS damage frame fix off: MM3_DAMAGE_FRAME_FIX=0 keeps the game's own frames");
         return 0;
     }
-    /* 60 fps: two frames make one console frame. */
-    assert(damage_step(component, 900.0f) == 0.0f);
-    assert(near(damage_step(component, 700.0f), 1600.0f));
-    assert(damage_step(component, 0.0f) == 0.0f);
-    assert(damage_step(component, 0.0f) == 0.0f);
-    /* Cars are gathered separately. */
-    assert(damage_step(other, 300.0f) == 0.0f);
-    assert(damage_step(component, 500.0f) == 0.0f);
-    assert(near(damage_step(other, 100.0f), 400.0f));
-    assert(near(damage_step(component, 500.0f), 1000.0f));
-    /* 45 fps: two console frames every three frames, the impulse conserved. */
-    MEMF(frame + 0x54) = 1.0f / 45.0f;
-    for (i = 0; i < 9; ++i) total += damage_step(component, 300.0f);
-    assert(near(total, 2700.0f - 0.0f) || total < 2700.0f);   /* what is handed over never exceeds what came in */
-    assert(total > 2000.0f);
-    /* 30 fps and slower keep every frame as the game has it. */
-    MEMF(frame + 0x54) = 1.0f / 30.0f;
-    assert(damage_step(component, 800.0f) >= 800.0f);         /* plus any 45 fps leftover */
-    assert(damage_step(component, 800.0f) == 800.0f);
-    MEMF(frame + 0x54) = 1.0f / 20.0f;
-    assert(damage_step(component, 800.0f) == 800.0f);
-    /* A slow frame hands over what a faster stretch had gathered. */
-    MEMF(frame + 0x54) = 1.0f / 60.0f;
-    assert(damage_step(component, 900.0f) == 0.0f);
-    MEMF(frame + 0x54) = 1.0f / 30.0f;
-    assert(near(damage_step(component, 100.0f), 1000.0f));
-    assert(damage_step(component, 100.0f) == 100.0f);
+    /* 60 fps: two steps a game frame, two game frames a console frame. The
+     * main impact, found in the first game frame, is applied in steps 2-4:
+     * three times, as on the Xbox. */
+    assert(step(component, 0) == 0 && step(component, 900) == 900);
+    end_frame(60);
+    assert(step(component, 0) == 900 && step(component, 0) == 900);
+    end_frame(60);
+    /* The next console frame starts from nothing. */
+    assert(step(component, 0) == 0 && step(component, 0) == 0);
+    end_frame(60);
+    assert(step(component, 0) == 0 && step(component, 0) == 0);
+    end_frame(60);
+    /* Found in the second game frame: left for the next console frame, where
+     * the Xbox would have found it, and applied three times there. */
+    assert(step(component, 0) == 0 && step(component, 0) == 0);
+    end_frame(60);
+    assert(step(component, 0) == 0 && step(component, 700) == 0);
+    end_frame(60);
+    assert(step(component, 0) == 0 && step(component, 0) == 700);
+    end_frame(60);
+    assert(step(component, 0) == 700 && step(component, 0) == 700);
+    end_frame(60);
+    assert(step(component, 0) == 0 && step(component, 0) == 0);
+    end_frame(60);
+    assert(step(component, 0) == 0 && step(component, 0) == 0);
+    end_frame(60);
+    /* A larger find takes over: the first frame's 300, then the 800 the
+     * second frame found, in the next console frame. */
+    assert(step(component, 0) == 0 && step(component, 300) == 300);
+    end_frame(60);
+    assert(step(component, 0) == 300 && step(component, 800) == 300);
+    end_frame(60);
+    assert(step(component, 0) == 0 && step(component, 200) == 800);
+    end_frame(60);
+    assert(step(component, 0) == 800 && step(component, 0) == 800);
+    end_frame(60);
+    assert(step(component, 0) == 0 && step(component, 0) == 0);
+    end_frame(60);
+    assert(step(component, 0) == 0 && step(component, 0) == 0);
+    end_frame(60);
+    /* A contact found every frame (pushing against a wall) is applied three
+     * times a console frame, as on the Xbox, not twice as often. */
+    for (i = 0; i < 3; ++i) {
+        assert(step(component, 0) == 0 && step(component, 500) == 500);
+        end_frame(60);
+        assert(step(component, 0) == 500 && step(component, 500) == 500);
+        end_frame(60);
+    }
+    assert(step(component, 0) == 0 && step(component, 0) == 500);
+    end_frame(60);
+    assert(step(component, 0) == 500 && step(component, 0) == 500);
+    end_frame(60);
+    assert(step(component, 0) == 0 && step(component, 0) == 0);
+    end_frame(60);
+    assert(step(component, 0) == 0 && step(component, 0) == 0);
+    end_frame(60);
+    /* A hit already in the record at a later game frame's first step came
+     * before that frame's steps (another car's update): the Xbox finds it
+     * before its next frame's first step and applies it four times. */
+    assert(step(component, 0) == 0 && step(component, 0) == 0);
+    end_frame(60);
+    assert(step(component, 600) == 0 && step(component, 600) == 0);
+    end_frame(60);
+    assert(step(component, 0) == 600 && step(component, 0) == 600);
+    end_frame(60);
+    assert(step(component, 0) == 600 && step(component, 0) == 600);
+    end_frame(60);
+    assert(step(component, 0) == 0 && step(component, 0) == 0);
+    end_frame(60);
+    assert(step(component, 0) == 0 && step(component, 0) == 0);
+    end_frame(60);
+    /* One there at a console frame's first step: four times as well. */
+    assert(step(component, 650) == 650 && step(component, 650) == 650);
+    end_frame(60);
+    assert(step(component, 0) == 650 && step(component, 0) == 650);
+    end_frame(60);
+    assert(step(component, 0) == 0 && step(component, 0) == 0);
+    end_frame(60);
+    assert(step(component, 0) == 0 && step(component, 0) == 0);
+    end_frame(60);
+    /* Cars are kept apart, each with its own steps. */
+    assert(step(other, 0) == 0 && step(component, 0) == 0);
+    assert(step(other, 400) == 400 && step(component, 0) == 0);
+    end_frame(60);
+    assert(step(other, 0) == 400 && step(component, 0) == 0);
+    assert(step(other, 0) == 400 && step(component, 200) == 0);
+    end_frame(60);
+    assert(step(other, 0) == 0 && step(component, 0) == 0);
+    assert(step(other, 0) == 0 && step(component, 0) == 200);
+    end_frame(60);
+    assert(step(other, 0) == 0 && step(component, 0) == 200);
+    assert(step(other, 0) == 0 && step(component, 0) == 200);
+    end_frame(60);
+    /* 30 fps: four steps a frame, every frame its own console frame, exactly
+     * the game's own behaviour. */
+    assert(step(component, 0) == 0 && step(component, 800) == 800);
+    assert(step(component, 800) == 800 && step(component, 800) == 800);
+    end_frame(30);
+    for (i = 0; i < 4; ++i) assert(step(component, 0) == 0);
+    end_frame(30);
+    /* Slower (20 fps, six steps a frame): still the game's own frames. */
+    for (i = 0; i < 6; ++i) assert(step(component, 600) == 600);
+    end_frame(20);
+    for (i = 0; i < 6; ++i) assert(step(component, 0) == 0);
+    end_frame(20);
+    /* 45 fps (three steps a frame): frames stand alone. */
+    assert(step(component, 0) == 0 && step(component, 0) == 0 && step(component, 600) == 600);
+    end_frame(45);
+    for (i = 0; i < 3; ++i) assert(step(component, 0) == 0);
+    end_frame(45);
     /* Ordinary races and jobs without a damage scale (the ambulance jobs) too. */
-    MEMF(frame + 0x54) = 1.0f / 60.0f;
     MEMF(0x3C0328) = 1.0f; MEMF(0x3C0330) = 1.0f;
-    assert(damage_step(component, 800.0f) == 0.0f);
-    assert(near(damage_step(component, 800.0f), 1600.0f));
-    /* A car without a hit opens no window. */
+    assert(step(component, 0) == 0 && step(component, 800) == 800);
+    end_frame(60);
+    assert(step(component, 0) == 800 && step(component, 0) == 800);
+    end_frame(60);
+    assert(step(component, 0) == 0 && step(component, 0) == 0);
+    end_frame(60);
+    assert(step(component, 0) == 0 && step(component, 0) == 0);
+    end_frame(60);
+    /* Many cars at once, each in its own console frame. */
     for (i = 0; i < 300; ++i) {
         uint32_t comp = 0x100000 + (uint32_t)i * 0x100, rec = 0x200000 + (uint32_t)i * 0x400;
         MEM32(comp + 0x3C) = comp + 0x40; MEM32(comp + 0x40 + 4) = rec;
-        assert(damage_step(comp, 0.0f) == 0.0f);
+        assert(step(comp, 0.0f) == 0.0f && step(comp, 400.0f + (float)i) == 400.0f + (float)i);
     }
-    /* 200 cars in collisions at once each gather their own. */
-    for (i = 0; i < 200; ++i)
-        assert(damage_step(0x100000 + (uint32_t)i * 0x100, 400.0f + (float)i) == 0.0f);
-    for (i = 0; i < 200; ++i)
-        assert(near(damage_step(0x100000 + (uint32_t)i * 0x100, 100.0f), 500.0f + (float)i));
-    /* All handed over: every window closed, so 300 cars fit again. */
+    end_frame(60);
     for (i = 0; i < 300; ++i)
-        assert(damage_step(0x100000 + (uint32_t)i * 0x100, 0.0f) == 0.0f);
-    for (i = 0; i < 250; ++i)
-        assert(damage_step(0x100000 + (uint32_t)i * 0x100, 50.0f) == 0.0f);
-    for (i = 0; i < 250; ++i)
-        assert(near(damage_step(0x100000 + (uint32_t)i * 0x100, 50.0f), 100.0f));
-    MEM32(0x3C5C90) = 0; MEMF(0x3C0328) = 50.0f;               /* no frame object yet */
-    assert(damage_step(component, 800.0f) == 800.0f);
-    puts("PASS damage frame fix: faster than 30 fps each car's impulse reaches the damage step once per 1/30 s "
-         "(60 and 45 fps) in wreck jobs, ordinary races and ambulance jobs alike, cars apart (250 at once), "
-         "record restored; 30 fps and slower unchanged, a slow frame flushes what was gathered");
+        assert(step(0x100000 + (uint32_t)i * 0x100, 0.0f) == 400.0f + (float)i &&
+               step(0x100000 + (uint32_t)i * 0x100, 0.0f) == 400.0f + (float)i);
+    end_frame(60);
+    for (i = 0; i < 300; ++i)
+        assert(step(0x100000 + (uint32_t)i * 0x100, 0.0f) == 0.0f &&
+               step(0x100000 + (uint32_t)i * 0x100, 0.0f) == 0.0f);
+    puts("PASS damage frame fix: at 60 fps the main impact found in a console frame's first game frame is "
+         "applied three times as on the Xbox, a later frame's find moves to the next console frame, a "
+         "hit found before a frame's steps four times wherever it falls, a "
+         "steady contact is applied three times a console frame, a larger find takes over, cars apart "
+         "(300 at once), "
+         "frames told apart by the game's frame clock, record restored; 30 fps and slower keep the game's "
+         "own frames, 45 fps frames stand alone; ordinary races and ambulance jobs alike");
     return 0;
 }

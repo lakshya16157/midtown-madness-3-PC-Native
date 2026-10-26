@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools/native-menu"))
 from native_menu import Object, Reference, Resource, named_references, row_button, rows, sid_text
 from generate import (ADVANCED, ADVANCED_ROWS, DISPLAY, DISPLAY_ROWS, GRAPHICS_INFOBOX,
-                      GRAPHICS_INFO_WIDGET, INFOBOX, INFO_WIDGET, MAIN, MAIN_WITHOUT_GRAPHICS, MULTIPOP_TEMPLATE, OPTIONS,
+                      GRAPHICS_INFO_WIDGET, INFOBOX, INFO_WIDGET, MAIN, MAIN_WITHOUT_GRAPHICS, MAIN_WITHOUT_QUIT,
+                      MAIN_QUIT_WITHOUT_GRAPHICS, MULTIPOP_TEMPLATE, OPTIONS,
                       PAUSE_HUD, PAUSE_OPTIONS, PICKER_COUNTS, PICKERS, PICKER_TITLES, RESOLUTION_OTHER,
                       RESOLUTION_PRIMARY, RESOLUTION_SECONDARY, ROW_DESTINATIONS,
                       TITLE, TITLE_ADVANCED, TITLE_DISPLAY, generate_resources, picker_rows, write_header,
@@ -50,7 +51,7 @@ class NativeMenuTests(unittest.TestCase):
         self.assertEqual(decoded.root.parts[2].object.parts, [struct.pack("<i", 7)])
 
     def test_main_placement_preserves_existing_destinations(self):
-        menu = self.resources[MAIN]
+        menu = self.resources[MAIN + MAIN_WITHOUT_QUIT]
         labels = [label for label, _, _ in rows(menu)]
         self.assertEqual(labels, ["SID_CAREER", "SID_SINGLE_PLAYER", "SID_MULTIPLAYER",
                                   "SID_OPTIONS", "SID_MM3_GRAPHICS_TITLE", "SID_PROFILES"])
@@ -71,6 +72,27 @@ class NativeMenuTests(unittest.TestCase):
         self.assertEqual(sid_text(data.parts[4].object), "SID_MM3_GRAPHICS_HELP")
         for ref in named_references(menu, "main/oftMainIndex"):
             self.assertEqual(struct.unpack("<i", ref.object.parts[0])[0], 6)
+
+    def check_quit(self, menu, labels):
+        """Quit in place of Sign In: the last row, gameQuit, its help at the
+        Sign In help's index, the Sign In/Out switch and focus index gone."""
+        actual = rows(menu)
+        self.assertEqual([label for label, _, _ in actual], labels + ["SID_MM3_GRAPHICS_QUIT"])
+        self.assertEqual([rect[1] for _, rect, _ in actual], [30 * index for index in range(len(labels) + 1)])
+        self.assertIsNone(actual[-1][2].parts[0].object)
+        self.assertEqual(function_names(row_button(actual[-1][2]).parts[3].object), ["functions/gameQuit"])
+        data = named_references(menu, "main/oftMain")[0].object
+        self.assertEqual(len(data.parts), len(labels) + 2)
+        self.assertEqual(sid_text(data.parts[len(labels)].object), "SID_MM3_GRAPHICS_QUIT_HELP")
+        self.assertFalse([part for part in data.parts if isinstance(part, Reference) and part.object and
+                          part.object.kind == "IndexDataData"])
+        self.assertFalse([obj for obj in menu.root.walk() if obj.kind == "CullVariableAndEventActionNode"])
+
+    def test_main_quit_replaces_sign_in(self):
+        self.check_quit(self.resources[MAIN], ["SID_CAREER", "SID_SINGLE_PLAYER", "SID_MULTIPLAYER",
+                                               "SID_OPTIONS", "SID_MM3_GRAPHICS_TITLE", "SID_PROFILES"])
+        self.check_quit(self.resources[MAIN + MAIN_QUIT_WITHOUT_GRAPHICS],
+                        ["SID_CAREER", "SID_SINGLE_PLAYER", "SID_MULTIPLAYER", "SID_OPTIONS", "SID_PROFILES"])
 
     def test_main_without_graphics_keeps_retail_rows(self):
         # MM3_GRAPHICS_MENU=0 with the circuits kept: the retail rows, help
@@ -245,7 +267,8 @@ class NativeMenuTests(unittest.TestCase):
         self.assertNotEqual(PICKERS["VIEW_DISTANCE"], PICKERS["DISTANCE"])
 
     def test_header_and_determinism(self):
-        self.assertEqual(len(self.encoded), 7 + 2 * len(PICKER_COUNTS) + 1 + 2 + 7 + 1)
+        # Four main menus (Graphics row and Quit, each with or without).
+        self.assertEqual(len(self.encoded), 9 + 2 * len(PICKER_COUNTS) + 1 + 2 + 7 + 1)
         self.assertEqual(generate_resources(self.archive), self.encoded)
         with tempfile.TemporaryDirectory(prefix="mm3-native-menu-") as directory:
             header = Path(directory) / "resources.h"

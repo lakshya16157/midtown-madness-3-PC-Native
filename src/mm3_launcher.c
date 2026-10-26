@@ -27,11 +27,13 @@ enum {
     ID_CAPTURE, ID_UNBIND, ID_SOURCE, ID_BIND_LABEL, ID_PAD_STATUS, ID_PAD_PORT, ID_PAD_COUNT,
     ID_RESOLUTION, ID_MODE, ID_FPS, ID_VSYNC, ID_SCALE, ID_ASPECT, ID_MSAA,
     ID_ANISO, ID_DRAW, ID_VIEW, ID_SHOW_FPS, ID_MINIMAP, ID_FOV, ID_PORT, ID_PEERS,
-    ID_SCREEN, ID_ORIGINAL,
+    ID_SCREEN, ID_ORIGINAL, ID_XBOX_GAMEPLAY,
     ID_HELP_TITLE, ID_HELP_VALUE, ID_HELP_BODY, ID_HELP_EFFECT, ID_REQUIRED,
     ID_PAD_SUMMARY, ID_PAD_HINT,
     ID_OPTION = 300,
-    LAUNCHER_WIDTH = 1215, LAUNCHER_HEIGHT = 754
+    LAUNCHER_WIDTH = 1215, LAUNCHER_HEIGHT = 754,
+    /* Settings, Controls, Visual + audio mods, Gameplay mods. */
+    LAUNCHER_PAGES = 4
 };
 typedef struct LauncherControl { HWND window; int page; } LauncherControl;
 /* A connected display, for the Screen choice. number is the N of \\.\DISPLAYN,
@@ -71,6 +73,22 @@ static const char *const key_labels[MM3_LAUNCHER_KEYS] = {
 };
 
 static HWND control(Launcher *ui, int id) { return GetDlgItem(ui->window, id); }
+/* Two options switch off a retail HUD element. Their boxes offer hiding it,
+ * so on both mods tabs a tick always means a change from the Xbox game. */
+static int option_inverted(int option)
+{ return option == MM3_LAUNCH_NORTH_MARKER || option == MM3_LAUNCH_RACE_ARROW; }
+static const char *option_caption(int option)
+{
+    if (option == MM3_LAUNCH_NORTH_MARKER) return "Hide the minimap compass pins";
+    if (option == MM3_LAUNCH_RACE_ARROW) return "Hide the race direction arrow";
+    return mm3_launcher_options[option].label;
+}
+/* The two choices at the top of the mods tabs. */
+static int radio_choice(int id)
+{
+    return id == ID_ORIGINAL || id == ID_OPTION + MM3_LAUNCH_IMPROVED ||
+           id == ID_XBOX_GAMEPLAY || id == ID_OPTION + MM3_LAUNCH_GAMEPLAY;
+}
 static void help_show(Launcher *ui, int id);
 static LRESULT CALLBACK help_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
                                   UINT_PTR subclass, DWORD_PTR reference)
@@ -248,7 +266,7 @@ static void help_show(Launcher *ui, int id)
             "Add warm, local illumination around street lamps, with source-sized reach. Keeps the lamps' placement, activation and breakage. Off uses retail lamp lighting.",
             "Adjust world and local-light composition. Daylight keeps its authored colors; default night fill is darker so lamps stand out. Softens overlapping light fields. Off uses retail composition.",
             "Use scene depth to hide lamp flares behind cars and buildings. Off can leave bright flares visible through solid objects.",
-            "Make all installed vehicles, including hidden bonus cars, selectable. This adds no downloads and does not complete career missions.",
+            "Changes the gameplay. Make all installed vehicles, including hidden bonus cars, selectable without earning them. This adds no downloads and does not complete career missions.",
             "Allow the game's developer scripts and commands. The developer HUD, menu, camera modes and E3 preset below depend on this switch and on the scripts prepared by tools\\debug-features\\prepare.py; they invoke the game's own developer commands.",
             "Show the game's diagnostic HUD at race start, including position and vehicle data. Requires developer tools and prepared scripts.",
             "Open the game's developer menu at race start. Its experimental commands can change the current scene and do not pause the mission timer. Requires developer tools and prepared scripts.",
@@ -258,29 +276,35 @@ static void help_show(Launcher *ui, int id)
             "Use scene depth for distance haze and a smoother horizon transition. Off restores the game's original fog and horizon path.",
             "Run the game's sound-processor programs for effects such as reverb, spatial processing and final mixing. Off uses a simpler voice mix.",
             "Enable System Link networking for local multiplayer and configured UDP peers. This does not provide Xbox Live sign-in. Leave off for ordinary offline play.",
-            "Show the game's N letter, which marks north on the edge of the minimap as the map turns. Off keeps the minimap free of it.",
-            "Show the game's yellow arrow at the top of the screen, which points toward the next checkpoint in races. Off hides it; with Route navigation on, the minimap still shows the route.",
-            "Draw the route to the next checkpoint or job target on the race map, like a navigation system, along the roads the course takes. Off shows the map without a drawn route, as in the original game.",
-            "A car close behind another, in its wake, pulls a little harder: up to about 6 km/h more each second at high speed, fading over 30 m. Works for you and the AI opponents alike. Off: no slipstream, as in the original game.",
-            "Some original cars could roll over in hard corners. Once a car on its wheels leans past 20 degrees, its roll is damped and eased back; crashes, jumps and upside-down cars are left alone. Off: original handling.",
-            "In circuit races the opponents may drive any installed car, DLC and extra cars included, and the rival takes the best car of a faster group than yours. Off keeps the opponents to the original cars.",
-            "Play with the mods on this tab: better lighting, longer view distance, extra races and cars, new driving assists and more. Original plays the Xbox game as it was, with only the PC graphics and audio upgrades.",
+            "Hide the compass pins on the edge of the round minimap: the N letter and the east, south and west pins, which turn with the map. Off shows them, as on the Xbox.",
+            "Changes the gameplay. Hide the game's yellow arrow at the top of the screen, which points toward the next checkpoint in races. Off shows it, as on the Xbox. With the route line on, the minimap still shows the way.",
+            "Changes the gameplay. Draw the route to the next checkpoint or job target on the race map, like a navigation system, along the roads the course takes. Off shows the map without a drawn route, as on the Xbox.",
+            "Changes the gameplay. A car close behind another, in its wake, pulls a little harder: up to about 6 km/h more each second at high speed, fading over 30 m. Works for you and the AI opponents alike. Off (default): no slipstream, as in the original game.",
+            "Changes the gameplay. Some original cars could roll over in hard corners. Once a car on its wheels leans past 20 degrees, its roll is damped and eased back; crashes, jumps and upside-down cars are left alone. Off (default): original handling.",
+            "In circuit races the opponents may drive any installed car, DLC and extra cars included, and the rival takes the best car of a faster group than yours. Off keeps the opponents to the original cars. The original races always give the opponents the Xbox cars.",
+            "Play with the visual and audio mods on this tab: better lighting, longer view distance, exhaust smoke, the in-game Graphics menu and more. The closest chase camera also sits a little farther back. Original look shows the Xbox visuals, camera, menus and HUD, with only the PC graphics and audio upgrades. Nothing on this tab changes the gameplay.",
             "Add Graphics Settings to the game's own main and pause menus, to change resolution, quality and the HUD without leaving the game. Off: the menus are as on the Xbox; F10 still opens the settings window.",
-            "Add Circuit mode to Single Player: lap races through Washington DC and Paris, with AI opponents. Off: the original modes only.",
-            "Show the cars you added with the installer's Car Workshop in the vehicle menu. Off shows only the Xbox cars and the official downloadable ones.",
+            "Changes the gameplay. Add Circuit mode to Single Player: lap races through Washington DC and Paris, with AI opponents. Off: the original modes only.",
+            "Changes the gameplay. Show the cars you added with the installer's Car Workshop in the vehicle menu, to drive them yourself. Off shows only the Xbox cars and the official downloadable ones.",
             "Give the downloadable Blitz and Checkpoint races their own names, descriptions and course pictures, in the game's language. Off: they appear as the Xbox showed them.",
-            "Small trees and lamp posts tip over and fall when a car hits them hard. Off: they react as in the original game.",
-            "Cars breathe soft exhaust smoke from their own exhaust pipes: a light haze standing still, more of it and leaving the pipe faster the faster they go and the harder they accelerate. It drifts in the air, spreads and fades away."
+            "Changes the gameplay. Small trees and lamp posts tip over and fall when a car hits them hard. Off: they react as on the Xbox.",
+            "Cars breathe soft exhaust smoke from their own exhaust pipes: a light haze standing still, more of it and leaving the pipe faster the faster they go and the harder they accelerate. It drifts in the air, spreads and fades away.",
+            "Play with the gameplay mods ticked on this tab. Xbox gameplay drives, races and progresses exactly as the Xbox game: no driving assists, falling trees, extra races or cars, unlocks, developer commands or route line, and the game's own race arrow and minimap.",
+            "Put Quit in the main menu, in place of Sign In (Xbox Live, which no longer exists). Quit closes the game, as closing its window does. Off shows Sign In, as on the Xbox."
         };
-        int option = id - ID_OPTION, on = checked(ui, id);
-        title = mm3_launcher_options[option].label;
+        int option = id - ID_OPTION, on = checked(ui, id), master = mm3_launcher_option_master(option);
+        title = option_caption(option);
         body = descriptions[option];
         snprintf(value, sizeof value, "%s", on ? "On" : "Off");
         effect = "Applies when you press Play. Your choice is saved for the next launch.";
-        if (option == MM3_LAUNCH_IMPROVED)
-            effect = "Every mod on this tab can still be turned on or off one by one.";
-        else if (!mm3_launcher_option_in_original(option) && !checked(ui, ID_OPTION + MM3_LAUNCH_IMPROVED))
-            effect = "The Original game is selected, so this mod stays off. Choose Improved game to use it.";
+        if (option == MM3_LAUNCH_IMPROVED || option == MM3_LAUNCH_GAMEPLAY)
+            effect = "Every option on this tab can still be turned on or off one by one.";
+        else if (master == MM3_LAUNCH_IMPROVED && !checked(ui, ID_OPTION + master))
+            effect = option_inverted(option) ? "The Original look is selected, so the game shows it, as on the Xbox. Choose Improved look to hide it." :
+                     "The Original look is selected, so this mod stays off. Choose Improved look to use it.";
+        else if (master == MM3_LAUNCH_GAMEPLAY && !checked(ui, ID_OPTION + master))
+            effect = option_inverted(option) ? "Xbox gameplay is selected, so the game shows it, as on the Xbox. Choose Modded gameplay to hide it." :
+                     "Xbox gameplay is selected, so this stays off, as on the Xbox. Choose Modded gameplay to use it.";
         else if (option == MM3_LAUNCH_DSP)
             effect = MM3_LAUNCHER_AUDIO ? (on ? "More accurate effects and mixing, with higher CPU use. Turn off if audio processing limits performance." : "Uses less CPU, with simpler audio effects and mixing.") : "This build does not include the sound-processor option.";
         else if (option >= MM3_LAUNCH_DEV_HUD && option <= MM3_LAUNCH_E3)
@@ -376,7 +400,7 @@ static void help_show(Launcher *ui, int id)
         case ID_DRAW: case ID_VIEW:
             title = id == ID_DRAW ? "Object detail distance" : "Building view distance";
             body = id == ID_DRAW ? "Keep detailed objects, pedestrian models and blob shadows visible farther away. 1x uses the Xbox distances; 2x-4x extend them. This does not set the city's building visibility range." : "Extend city/building visibility and the camera's far range. 1x uses the Xbox range. Streamed city cells limit how much extra geometry is available; facade detail extends only up to 2x.";
-            effect = !checked(ui, ID_OPTION + MM3_LAUNCH_IMPROVED) ? "The Original game is selected (Mods tab), so the Xbox distances (1x) are used." :
+            effect = !checked(ui, ID_OPTION + MM3_LAUNCH_IMPROVED) ? "The Original look is selected (Visual + audio mods tab), so the Xbox distances (1x) are used." :
                      checked(ui, ID_OPTION + MM3_LAUNCH_DISTANCE) ? (id == ID_DRAW ? "Higher values increase scene and CPU/GPU work. Lower this if dense streets reduce performance." : "Higher values can increase rendering work; 3x/4x may not reveal more buildings where the streamed-city limit is reached.") : "Extended detail and building distance is off. Both distances will use 1x until you enable that mod.";
             break;
         case ID_SHOW_FPS:
@@ -386,8 +410,9 @@ static void help_show(Launcher *ui, int id)
             break;
         case ID_MINIMAP:
             title = "Minimap style";
-            body = combo_value(control(ui, id)) ? "Draw transparent roads in perspective, with framing that responds to driving speed. This changes the minimap's presentation." : "Use the original Xbox minimap appearance and framing.";
-            effect = !checked(ui, ID_OPTION + MM3_LAUNCH_IMPROVED) ? "The Original game is selected (Mods tab), so the original Xbox minimap is used." :
+            body = combo_value(control(ui, id)) ? "Draw transparent roads in perspective, with framing that widens with driving speed, so more of the map shows at speed." : "Use the original Xbox minimap appearance and framing.";
+            effect = !checked(ui, ID_OPTION + MM3_LAUNCH_IMPROVED) ? "The Original look is selected (Visual + audio mods tab), so the original Xbox minimap is used." :
+                     !checked(ui, ID_OPTION + MM3_LAUNCH_GAMEPLAY) ? "Xbox gameplay is selected (Gameplay mods tab). The improved minimap shows more of the map at speed, so the original Xbox minimap is used." :
                      "Choose the style you find easier to read. Mission goals and the actual road layout are unchanged.";
             break;
         case ID_FOV: {
@@ -457,9 +482,14 @@ static void help_show(Launcher *ui, int id)
             break;
         }
         case ID_ORIGINAL:
-            title = "Original game"; snprintf(value, sizeof value, "%s", checked(ui, id) ? "On" : "Off");
-            body = "The Xbox game as it was, at your PC's resolution and frame rate, with the PC graphics and audio upgrades: widescreen, sharper rendering, native fog and the accurate sound processor. No new lighting, cars, races, menus or driving changes.";
-            effect = "The mods in the Improved columns stay off. Your choices there are kept for when you choose Improved game again.";
+            title = "Original look"; snprintf(value, sizeof value, "%s", checked(ui, id) ? "On" : "Off");
+            body = "The Xbox visuals, camera, menus and HUD, at your PC's resolution and frame rate, with the PC graphics and audio upgrades: widescreen, sharper rendering, native fog and the accurate sound processor. No new lighting, effects or menus.";
+            effect = "The Improved visual mods stay off. Your choices there are kept for when you choose Improved look again. The gameplay is set on the Gameplay mods tab.";
+            break;
+        case ID_XBOX_GAMEPLAY:
+            title = "Xbox gameplay"; snprintf(value, sizeof value, "%s", checked(ui, id) ? "On" : "Off");
+            body = "Drive, race and progress exactly as in the Xbox game: its physics and damage, its cars for you and the opponents, its races, its unlocks, its race arrow and its minimap. The PC port's fixes that restore Xbox behaviour stay on.";
+            effect = "Every gameplay mod stays off. Your choices there are kept for when you choose Modded gameplay again.";
             break;
         case ID_REQUIRED:
             title = "Collision-cell safety repair"; snprintf(value, sizeof value, "Always on");
@@ -473,7 +503,7 @@ static void help_show(Launcher *ui, int id)
             break;
         case IDOK:
             title = "Ready to play"; value[0] = 0;
-            body = "Play validates and saves all three tabs, then launches the game with these preferences. Changing a control here does not alter a game that is already running.";
+            body = "Play validates and saves every tab, then launches the game with these preferences. Changing a control here does not alter a game that is already running.";
             effect = "Hover over, focus or change any setting to see its current value and what it does. In-game Graphics Settings are available with F10.";
             break;
         case IDCANCEL:
@@ -482,8 +512,11 @@ static void help_show(Launcher *ui, int id)
             effect = "Your previously saved preferences remain available for the next launch.";
             break;
         case ID_TABS:
-            title = ui->page == 0 ? "Game settings" : ui->page == 1 ? "Controls" : "Mods"; value[0] = 0;
-            body = ui->page == 0 ? "Set the display, rendering quality, minimap, audio and System Link options. Select any setting to read an explanation and its performance tradeoffs." : ui->page == 1 ? "Set up keyboard, mouse and controller inputs. Select a binding to see what it currently uses and how capture works." : "Choose the Original game or the Improved game, then pick the mods you want. Select an option to read its effect and any requirements.";
+            title = ui->page == 0 ? "Game settings" : ui->page == 1 ? "Controls" : ui->page == 2 ? "Visual and audio mods" : "Gameplay mods"; value[0] = 0;
+            body = ui->page == 0 ? "Set the display, rendering quality, minimap, audio and System Link options. Select any setting to read an explanation and its performance tradeoffs." :
+                   ui->page == 1 ? "Set up keyboard, mouse and controller inputs. Select a binding to see what it currently uses and how capture works." :
+                   ui->page == 2 ? "Choose the Original look or the Improved look, then pick the visual and audio mods you want. None of them changes the gameplay." :
+                   "Choose Xbox gameplay or Modded gameplay, then pick the gameplay mods you want. With Xbox gameplay the game plays as on the Xbox.";
             effect = "Every choice is saved when you press Play. Cancel discards this launcher's edits.";
             break;
         default: return;
@@ -629,8 +662,9 @@ static void populate(Launcher *ui)
     set_checked(ui, ID_KEYBOARD, ui->config.option[MM3_LAUNCH_KEYBOARD]);
     combo_select(control(ui, ID_PAD_COUNT), ui->config.controller_count);
     for (int i = 1; i < MM3_LAUNCH_OPTION_COUNT; ++i)
-        set_checked(ui, ID_OPTION + i, ui->config.option[i]);
+        set_checked(ui, ID_OPTION + i, option_inverted(i) ? !ui->config.option[i] : ui->config.option[i]);
     set_checked(ui, ID_ORIGINAL, !ui->config.option[MM3_LAUNCH_IMPROVED]);
+    set_checked(ui, ID_XBOX_GAMEPLAY, !ui->config.option[MM3_LAUNCH_GAMEPLAY]);
     mods_enable(ui);
     snprintf(text, sizeof text, "%d", ui->config.fov_degrees); SetWindowTextA(control(ui, ID_FOV), text);
     snprintf(text, sizeof text, "%d", ui->config.network_port); SetWindowTextA(control(ui, ID_PORT), text);
@@ -678,7 +712,7 @@ static int read_controls(Launcher *ui, char *error, size_t capacity)
     ui->config.option[MM3_LAUNCH_KEYBOARD] = checked(ui, ID_KEYBOARD);
     ui->config.controller_count = combo_value(control(ui, ID_PAD_COUNT));
     for (int i = 1; i < MM3_LAUNCH_OPTION_COUNT; ++i)
-        ui->config.option[i] = checked(ui, ID_OPTION + i);
+        ui->config.option[i] = option_inverted(i) ? !checked(ui, ID_OPTION + i) : checked(ui, ID_OPTION + i);
     GetWindowTextA(control(ui, ID_PEERS), ui->config.peers, sizeof ui->config.peers);
     if (!mm3_launcher_config_valid(&ui->config)) {
         snprintf(error, capacity, "Check the controller bindings and peer addresses (host:port, comma separated; up to eight).");
@@ -795,57 +829,86 @@ static void controls_controls(Launcher *ui)
     add(ui, 1, "STATIC", "Select an action, then capture a key/button or select a controller source. Escape cancels capture. Stick axes stay analog. Controller bindings apply equally to players 1-4.",
          0, -1, 417, 504, 399, 80);
 }
-/* The Mods tab: the Original or the Improved game first, then three columns.
- * The first keeps the player's choices in both games; the Improved columns
- * are greyed out (and off in game, mm3_launcher_config_apply) in the Original. */
-static void mods_controls(Launcher *ui)
+typedef struct OptionColumn { int x, width; const char *title, *subtitle; int options[11]; } OptionColumn;
+/* A mods tab's columns of options (0 ends a column, -1 starts its subtitle). */
+static void option_columns(Launcher *ui, int page, const OptionColumn *columns, int count)
 {
-    static const struct { int x, width; const char *title; int options[11]; } columns[] = {
-        {42, 240, "Graphics and audio", {MM3_LAUNCH_WIDESCREEN, MM3_LAUNCH_SKY, MM3_LAUNCH_NATIVE_FOG, -1,
-            MM3_LAUNCH_UNLOCK, MM3_LAUNCH_DEV_TOOLS, MM3_LAUNCH_DEV_HUD, MM3_LAUNCH_DEBUG_MENU,
-            MM3_LAUNCH_CAMERAS, MM3_LAUNCH_E3, 0}},
-        {300, 250, "Improved visuals", {MM3_LAUNCH_DISTANCE, MM3_LAUNCH_CAR_LIGHT, MM3_LAUNCH_LAMP_LIGHT,
-            MM3_LAUNCH_WORLD_LIGHT, MM3_LAUNCH_FLARE_DEPTH, MM3_LAUNCH_LOADING, MM3_LAUNCH_ROUTE_NAVIGATION,
-            MM3_LAUNCH_NORTH_MARKER, MM3_LAUNCH_RACE_ARROW, MM3_LAUNCH_GRAPHICS_MENU, MM3_LAUNCH_EXHAUST}},
-        {560, 260, "Improved gameplay", {MM3_LAUNCH_CIRCUITS, MM3_LAUNCH_EXTRA_CARS, MM3_LAUNCH_DLC_INFO,
-            MM3_LAUNCH_TREES, MM3_LAUNCH_DRAFTING, MM3_LAUNCH_ROLL_GUARD, MM3_LAUNCH_AI_ALL_CARS, 0}}
-    };
-    HWND fixed;
-    check(ui, 2, ID_ORIGINAL, "Original game", 42, 92, 240);
-    check(ui, 2, ID_OPTION + MM3_LAUNCH_IMPROVED, mm3_launcher_options[MM3_LAUNCH_IMPROVED].label, 300, 92, 250);
-    label(ui, 2, "Both play at your PC's resolution with the graphics and audio upgrades.", 42, 122, 774);
-    for (int c = 0; c < (int)(sizeof columns / sizeof columns[0]); ++c) {
+    for (int c = 0; c < count; ++c) {
         int y = 164;
-        HWND title = add(ui, 2, "STATIC", columns[c].title, 0, -1, columns[c].x, y, columns[c].width, 26);
+        HWND title = add(ui, page, "STATIC", columns[c].title, 0, -1, columns[c].x, y, columns[c].width, 26);
         SendMessageA(title, WM_SETFONT, (WPARAM)ui->section, TRUE);
         for (int i = 0; i < 11 && columns[c].options[i]; ++i, y += 34) {
             int option = columns[c].options[i];
             if (option < 0) {
-                title = add(ui, 2, "STATIC", "Extras", 0, -1, columns[c].x, y + 40, columns[c].width, 26);
+                title = add(ui, page, "STATIC", columns[c].subtitle, 0, -1, columns[c].x, y + 40, columns[c].width, 26);
                 SendMessageA(title, WM_SETFONT, (WPARAM)ui->section, TRUE);
                 y += 6;
                 continue;
             }
-            check(ui, 2, ID_OPTION + option, mm3_launcher_options[option].label, columns[c].x, y + 32, columns[c].width);
+            check(ui, page, ID_OPTION + option, option_caption(option), columns[c].x, y + 32, columns[c].width);
         }
     }
+}
+
+/* The Visual + audio mods tab: the Original or the Improved look first, then
+ * three columns. The first keeps the player's choices in both looks; the
+ * others are greyed out in the Original look (and as on the Xbox in game,
+ * mm3_launcher_config_apply). Nothing on this tab changes the gameplay. */
+static void look_controls(Launcher *ui)
+{
+    static const OptionColumn columns[] = {
+        {42, 240, "Graphics and audio", NULL, {MM3_LAUNCH_WIDESCREEN, MM3_LAUNCH_SKY, MM3_LAUNCH_NATIVE_FOG, 0}},
+        {300, 250, "Improved visuals", NULL, {MM3_LAUNCH_DISTANCE, MM3_LAUNCH_CAR_LIGHT, MM3_LAUNCH_LAMP_LIGHT,
+            MM3_LAUNCH_WORLD_LIGHT, MM3_LAUNCH_FLARE_DEPTH, MM3_LAUNCH_EXHAUST, 0}},
+        {560, 260, "Menus and HUD", NULL, {MM3_LAUNCH_LOADING, MM3_LAUNCH_GRAPHICS_MENU, MM3_LAUNCH_QUIT,
+            MM3_LAUNCH_DLC_INFO, MM3_LAUNCH_NORTH_MARKER, 0}}
+    };
+    check(ui, 2, ID_ORIGINAL, "Original look", 42, 92, 240);
+    check(ui, 2, ID_OPTION + MM3_LAUNCH_IMPROVED, mm3_launcher_options[MM3_LAUNCH_IMPROVED].label, 300, 92, 250);
+    label(ui, 2, "Both looks keep the PC's graphics and audio upgrades. Nothing here changes gameplay.", 42, 122, 774);
+    option_columns(ui, 2, columns, (int)(sizeof columns / sizeof columns[0]));
     label(ui, 2, "Field of view: 0 = retail, or 60-110", 42, 546, 240);
     add(ui, 2, "EDIT", "0", ES_NUMBER | WS_TABSTOP, ID_FOV, 42, 570, 77, 26);
-    fixed = check(ui, 2, ID_REQUIRED, "Collision repair (always on)", 560, 446, 260);
-    SendMessageA(fixed, BM_SETCHECK, BST_CHECKED, 0); EnableWindow(fixed, FALSE);
     label(ui, 2, "Preferences apply when Play starts the game. F10 opens display settings in game.", 145, 573, 680);
 }
 
-/* Grey out the Improved columns while the Original game is selected, and
- * the Settings it fixes at the Xbox's (distances, minimap style). */
+/* The Gameplay mods tab: Xbox or Modded gameplay first, then every option
+ * that changes how the game plays, greyed out with Xbox gameplay (and as on
+ * the Xbox in game, mm3_launcher_config_apply). */
+static void gameplay_controls(Launcher *ui)
+{
+    static const OptionColumn columns[] = {
+        {42, 240, "Driving", "Developer tools", {MM3_LAUNCH_DRAFTING, MM3_LAUNCH_ROLL_GUARD, MM3_LAUNCH_TREES, -1,
+            MM3_LAUNCH_DEV_TOOLS, MM3_LAUNCH_DEV_HUD, MM3_LAUNCH_DEBUG_MENU, MM3_LAUNCH_CAMERAS, MM3_LAUNCH_E3, 0}},
+        {300, 250, "Races and cars", NULL, {MM3_LAUNCH_CIRCUITS, MM3_LAUNCH_EXTRA_CARS, MM3_LAUNCH_AI_ALL_CARS,
+            MM3_LAUNCH_UNLOCK, 0}},
+        {560, 260, "Navigation", NULL, {MM3_LAUNCH_ROUTE_NAVIGATION, MM3_LAUNCH_RACE_ARROW, 0}}
+    };
+    HWND fixed;
+    check(ui, 3, ID_XBOX_GAMEPLAY, "Xbox gameplay", 42, 92, 240);
+    check(ui, 3, ID_OPTION + MM3_LAUNCH_GAMEPLAY, mm3_launcher_options[MM3_LAUNCH_GAMEPLAY].label, 300, 92, 250);
+    label(ui, 3, "Xbox gameplay plays as the Xbox game did. Modded gameplay uses the mods ticked below.", 42, 122, 774);
+    option_columns(ui, 3, columns, (int)(sizeof columns / sizeof columns[0]));
+    fixed = check(ui, 3, ID_REQUIRED, "Collision repair (always on)", 560, 446, 260);
+    SendMessageA(fixed, BM_SETCHECK, BST_CHECKED, 0); EnableWindow(fixed, FALSE);
+    label(ui, 3, "The port's fixes that restore Xbox behaviour, such as car damage at 60 fps, are always on.", 42, 573, 774);
+}
+
+/* Grey out each mod while its tab's Xbox choice is selected (Original look,
+ * Xbox gameplay), and the Settings that choice fixes at the Xbox's:
+ * distances with the Original look, the minimap (a new look that also shows
+ * more of the map at speed) with either. */
 static void mods_enable(Launcher *ui)
 {
     int improved = checked(ui, ID_OPTION + MM3_LAUNCH_IMPROVED);
-    for (int i = 1; i < MM3_LAUNCH_OPTION_COUNT; ++i)
-        if (!mm3_launcher_option_in_original(i)) EnableWindow(control(ui, ID_OPTION + i), improved);
+    int modded = checked(ui, ID_OPTION + MM3_LAUNCH_GAMEPLAY);
+    for (int i = 1; i < MM3_LAUNCH_OPTION_COUNT; ++i) {
+        int master = mm3_launcher_option_master(i);
+        if (master >= 0) EnableWindow(control(ui, ID_OPTION + i), checked(ui, ID_OPTION + master));
+    }
     EnableWindow(control(ui, ID_DRAW), improved);
     EnableWindow(control(ui, ID_VIEW), improved);
-    EnableWindow(control(ui, ID_MINIMAP), improved);
+    EnableWindow(control(ui, ID_MINIMAP), improved && modded);
 }
 
 static int pad_source(const XINPUT_GAMEPAD *pad)
@@ -869,7 +932,7 @@ static void pad_navigation(Launcher *ui, WORD pressed)
     if (pressed & XINPUT_GAMEPAD_B) { SendMessageA(ui->window, WM_COMMAND, IDCANCEL, 0); return; }
     if (pressed & (XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER)) {
         int direction = pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER ? 1 : -1;
-        page_show(ui, (ui->page + direction + 3) % 3); SetFocus(ui->tabs); return;
+        page_show(ui, (ui->page + direction + LAUNCHER_PAGES) % LAUNCHER_PAGES); SetFocus(ui->tabs); return;
     }
     if (pressed & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT)) {
         if (!_stricmp(kind, "COMBOBOX")) {
@@ -1051,10 +1114,11 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         tab.mask = TCIF_TEXT;
         tab.pszText = "Settings"; TabCtrl_InsertItem(ui->tabs, 0, &tab);
         tab.pszText = "Controls"; TabCtrl_InsertItem(ui->tabs, 1, &tab);
-        tab.pszText = "Mods"; TabCtrl_InsertItem(ui->tabs, 2, &tab);
+        tab.pszText = "Visual + audio mods"; TabCtrl_InsertItem(ui->tabs, 2, &tab);
+        tab.pszText = "Gameplay mods"; TabCtrl_InsertItem(ui->tabs, 3, &tab);
         /* The tab is a sibling; put it behind its page controls. */
         SetWindowPos(ui->tabs, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        settings_controls(ui); controls_controls(ui); mods_controls(ui);
+        settings_controls(ui); controls_controls(ui); look_controls(ui); gameplay_controls(ui);
         add(ui, -1, "STATIC", "", SS_ETCHEDVERT, -1, 855, 85, 2, 550);
         label(ui, -1, "SETTING GUIDE", 880, 103, 295);
         HWND help_title = add(ui, -1, "STATIC", "", SS_NOPREFIX, ID_HELP_TITLE, 880, 139, 295, 76);
@@ -1079,11 +1143,12 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             page_show(ui, TabCtrl_GetCurSel(ui->tabs));
         return 0;
     case WM_COMMAND:
-        if (HIWORD(wparam) == BN_CLICKED && (LOWORD(wparam) == ID_ORIGINAL ||
-            LOWORD(wparam) == ID_OPTION + MM3_LAUNCH_IMPROVED)) {
-            int improved = LOWORD(wparam) != ID_ORIGINAL;
-            set_checked(ui, ID_OPTION + MM3_LAUNCH_IMPROVED, improved);
-            set_checked(ui, ID_ORIGINAL, !improved);
+        if (HIWORD(wparam) == BN_CLICKED && radio_choice(LOWORD(wparam))) {
+            int look = LOWORD(wparam) == ID_ORIGINAL || LOWORD(wparam) == ID_OPTION + MM3_LAUNCH_IMPROVED;
+            int option = look ? MM3_LAUNCH_IMPROVED : MM3_LAUNCH_GAMEPLAY;
+            int on = LOWORD(wparam) == ID_OPTION + option;
+            set_checked(ui, ID_OPTION + option, on);
+            set_checked(ui, look ? ID_ORIGINAL : ID_XBOX_GAMEPLAY, !on);
             mods_enable(ui);
             help_show(ui, LOWORD(wparam));
             return 0;
@@ -1153,8 +1218,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         char caption[256];
         RECT box = draw->rcItem, text = draw->rcItem;
         int size = (int)lroundf(16.f * ui->scale);
-        UINT flags = draw->CtlID == ID_ORIGINAL || draw->CtlID == ID_OPTION + MM3_LAUNCH_IMPROVED ?
-                     DFCS_BUTTONRADIO : DFCS_BUTTONCHECK;
+        UINT flags = radio_choice((int)draw->CtlID) ? DFCS_BUTTONRADIO : DFCS_BUTTONCHECK;
         if (draw->CtlType != ODT_BUTTON) break;
         FillRect(draw->hDC, &draw->rcItem, (HBRUSH)(COLOR_BTNFACE + 1));
         box.left += 2; box.right = box.left + size;
@@ -1184,8 +1248,10 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             page_show(ui, 1); ui->group = 1; combo_select(control(ui, ID_GROUP), 1); bindings_refresh(ui);
             valid = valid && SendMessageA(control(ui, ID_BINDINGS), LB_GETCOUNT, 0, 0) == MM3_LAUNCHER_KEYS;
             page_show(ui, 2); valid = valid && IsWindowVisible(control(ui, ID_FOV));
+            page_show(ui, 3); valid = valid && IsWindowVisible(control(ui, ID_XBOX_GAMEPLAY)) &&
+                                    IsWindowVisible(control(ui, ID_OPTION + MM3_LAUNCH_DRAFTING));
             page_show(ui, 0);
-            fprintf(stderr, "[MM3_LAUNCHER_SMOKE] controls=%d tabs=3 keyboard_bindings=24 pad_ports=4 dualsense=%d xinput_connected=%d result=%s\n",
+            fprintf(stderr, "[MM3_LAUNCHER_SMOKE] controls=%d tabs=4 keyboard_bindings=24 pad_ports=4 dualsense=%d xinput_connected=%d result=%s\n",
                 ui->control_count, ui->dualsense_count,
                 ui->pad_seen[0] + ui->pad_seen[1] + ui->pad_seen[2] + ui->pad_seen[3], valid ? "PASS" : "FAIL");
             if (!valid) ui->smoke = -1;

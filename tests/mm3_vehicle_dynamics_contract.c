@@ -101,13 +101,16 @@ int main(int argc, char **argv)
     uint32_t b;
     g_xbox_mem_offset = (ptrdiff_t)memory;
     if (argc > 1 && !strcmp(argv[1], "off")) {
-        _putenv_s("MM3_DRAFTING", "0");
-        _putenv_s("MM3_ROLL_GUARD", "0");
+        /* Unset, as without the launcher: the Xbox game's handling. */
+        _putenv_s("MM3_DRAFTING", "");
+        _putenv_s("MM3_ROLL_GUARD", "");
         assert(draft_gain(1.0f / 60.0f, 8.0f, 0.0f) == 0.0f);
         assert(roll_after(1.0f / 60.0f, 0.5f) == 2.0f);
-        puts("PASS vehicle dynamics off: MM3_DRAFTING=0 / MM3_ROLL_GUARD=0 leave every car as is");
+        puts("PASS vehicle dynamics off by default: no MM3_DRAFTING / MM3_ROLL_GUARD leaves every car as is");
         return 0;
     }
+    _putenv_s("MM3_DRAFTING", "1");
+    _putenv_s("MM3_ROLL_GUARD", "1");
     /* In the wake 8 m behind at 144 km/h: about 1.6 * (40 / 41.7)^2 m/s in 1 s. */
     g60 = draft_gain(1.0f / 60.0f, 8.0f, 0.0f);
     g30 = draft_gain(1.0f / 30.0f, 8.0f, 0.0f);

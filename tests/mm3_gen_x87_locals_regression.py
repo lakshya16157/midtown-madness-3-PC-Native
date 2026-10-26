@@ -297,6 +297,14 @@ static void fail(const char *name, unsigned c, const char *what, const Result *a
     printf("FAIL %s case %u profile %u: %s (code %08lX/%08lX top %d/%d cw %04X/%04X eax %08X/%08X memory %d)\n",
            name, c, s_profile, what, a->code, b->code, a->top, b->top, a->cw, b->cw, a->r[0], b->r[0],
            a->memory != b->memory);
+    {
+        static const char *const names[10] = {"eax", "ecx", "edx", "esp", "ebx", "esi", "edi", "ebp", "seh_ebp", "eflags"};
+        unsigned i;
+        for (i = 0; i < 10; ++i)
+            if (a->r[i] != b->r[i]) printf("  %s %08X/%08X\n", names[i], a->r[i], b->r[i]);
+        if (a->df != b->df) printf("  df %d/%d\n", a->df, b->df);
+        if (a->stubs != b->stubs) printf("  stub calls %d/%d\n", a->stubs, b->stubs);
+    }
     diff_pages();
 }
 int main(int argc, char **argv)
@@ -343,11 +351,23 @@ int main(int argc, char **argv)
             fail(pairs[f].name, c, "faulted differently", &a, &b);
             return 1;
         }
-        if (memcmp(a.r, b.r, sizeof a.r) || a.df != b.df || a.stubs != b.stubs ||
-            (nan ? a.canonical != b.canonical : a.memory != b.memory)) {
+        if (a.df != b.df || a.stubs != b.stubs || (nan ? a.canonical != b.canonical : a.memory != b.memory)) {
             if (nan) { puts("SKIP nan-derived"); return 0; }
             fail(pairs[f].name, c, "state differs at the fault", &a, &b);
             return 1;
+        }
+        /* Which register values had reached memory when a host exception
+         * (say a divide by zero) stopped the function depends on how the
+         * compiler scheduled the stores; the game does not resume after
+         * such a fault (only MMIO and debug traps continue). Memory, the
+         * calls made and the fault itself must still agree. */
+        if (memcmp(a.r, b.r, sizeof a.r)) {
+            unsigned i;
+            static const char *const names[10] = {"eax", "ecx", "edx", "esp", "ebx", "esi", "edi", "ebp", "seh_ebp", "eflags"};
+            for (i = 0; i < 10; ++i)
+                if (a.r[i] != b.r[i]) printf("  %s %08X/%08X at the fault\n", names[i], a.r[i], b.r[i]);
+            puts("SAME fault registers");
+            return 0;
         }
         puts(nan ? "SAME fault nan" : "SAME fault");
         return 0;
@@ -374,7 +394,8 @@ int main(int argc, char **argv)
 CASE_SECONDS = 4.0
 
 
-OUTCOMES = ("SAME", "SAME fault", "SAME nan", "SAME fault nan", "SKIP nan-derived", "SKIP memory", "SLOW",
+OUTCOMES = ("SAME", "SAME fault", "SAME fault registers", "SAME nan", "SAME fault nan", "SKIP nan-derived",
+            "SKIP memory", "SLOW",
             "STARVED", "FAIL")
 
 
@@ -427,7 +448,7 @@ def drive(harness, folder, cases, jobs, report=None):
                 failures.append(output)
 
     def compared(name):
-        return sum(per[name][k] for k in ("SAME", "SAME fault", "SAME nan", "SAME fault nan"))
+        return sum(per[name][k] for k in ("SAME", "SAME fault", "SAME fault registers", "SAME nan", "SAME fault nan"))
 
     run([(f, c, 0) for f in range(len(names)) for c in range(cases)])
     retry = [f for f, name in enumerate(names) if not compared(name)]

@@ -23,7 +23,10 @@ MATH = ("sub_0002DC95", "sub_0006ACC3", "sub_000C6ADC",
 SQUARE_ORIGINAL = "    PUSH32(esp, 0x0011DB57u); RECOMP_ABI_CALL(0x000C6ADCu, sub_000C6ADC); /* call 0x000C6ADC */"
 SQUARE_REPLACEMENT = "    if (mm3_minimap_improved()) {\n        mm3_map_square_geometry(eax, ecx, MEMF(esp));\n        mm3_map_zoom_window(ebx, MEM32(eax));\n        esp += 4; /* Inverse city-UV rotation consumes the native angle argument. */\n    } else {\n    " + SQUARE_ORIGINAL + "\n    }"
 BORDER_ORIGINAL = "    PUSH32(esp, 0x0011DBB1u); RECOMP_ABI_CALL(0x001C1585u, sub_001C1585); /* call 0x001C1585 */"
-BORDER_REPLACEMENT = "    if (mm3_minimap_improved()) {\n        esp += 8; /* Improved map has no MapCircle border. */\n    } else {\n    " + BORDER_ORIGINAL + "\n    }"
+BORDER_REPLACEMENT = ("    if (mm3_minimap_improved()) {\n        esp += 8; /* Improved map has no MapCircle border. */\n"
+                      "    } else {\n"
+                      "        mm3_map_ring_texture_pins(MEM32(esp)); /* the ring's E/S/W pins (src/mm3_map_pins.c) */\n    "
+                      + BORDER_ORIGINAL + "\n    }")
 COMPASS_ORIGINAL = "loc_0011DBF1: ;\n    fp_push(MEMF(ebx + 0x4C)); /* fld float */"
 COMPASS_REPLACEMENT = "loc_0011DBF1: ;\n    mm3_map_zoom_compass_geometry(ebx, ebp + -740);\n    fp_push(MEMF(ebx + 0x4C)); /* fld float */"
 MARKER_ORIGINAL = "    fp_top() = RECOMP_FP_PC(sqrt(fp_top())); /* fsqrt */"
@@ -219,6 +222,7 @@ def main():
         shutil.copyfile(ROOT / "src/mm3_recomp_types.h", folder / "recomp_types.h")
         production = (ROOT / "src/mm3_map_zoom.c").read_text()
         (folder / "production_map_zoom.c").write_text(production)
+        (folder / "production_map_pins.c").write_text((ROOT / "src/mm3_map_pins.c").read_text())
         executable = folder / "contract.exe"
         command = ["cl", "/nologo", "/W3", "/WX", "/wd4102", "/Od", "/std:c11",
                    "/I" + str(folder), "/I" + str(ROOT / "tools/xboxrecomp/include"),

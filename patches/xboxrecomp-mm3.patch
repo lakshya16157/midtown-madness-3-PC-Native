@@ -18198,7 +18198,7 @@ index 0000000..ba782e5
 +#endif /* NV2A_BLACK_FRAME_LOGIC_ONLY */
 +#endif /* NV2A_BLACK_FRAME_H */
 diff --git a/src/video/nv2a_d3d11.c b/src/video/nv2a_d3d11.c
-index b9f3fa2..4c16ac1 100644
+index b9f3fa2..52c9dae 100644
 --- a/src/video/nv2a_d3d11.c
 +++ b/src/video/nv2a_d3d11.c
 @@ -19,9 +19,10 @@
@@ -19867,7 +19867,15 @@ index b9f3fa2..4c16ac1 100644
  /* --------------------------------------------------------------- surfaces */
  
  typedef struct {
-@@ -1255,9 +2252,21 @@ typedef struct {
+@@ -1237,6 +2234,7 @@ typedef struct {
+     uint32_t color_fmt;             /* SURFACE_FORMAT colour code */
+     float sx, sy;                   /* host pixels per guest pixel */
+     int swizzled;
++    int screen_copy;                /* swizzled copy of the display (see night_glass_reads_copy) */
+     ID3D11Texture2D *tex;           /* single-sample; what srv reads */
+     ID3D11Texture2D *ms;            /* MSAA target rtv draws into, or NULL */
+     int ms_dirty;                   /* ms drawn since the last resolve */
+@@ -1255,9 +2253,21 @@ typedef struct {
      ID3D11RenderTargetView *rtv;
      ID3D11ShaderResourceView *srv;
      uint8_t *shadow;                /* guest bytes as of the last sync */
@@ -19890,7 +19898,7 @@ index b9f3fa2..4c16ac1 100644
  } Surface;
  
  typedef struct {
-@@ -1269,10 +2278,16 @@ typedef struct {
+@@ -1269,10 +2279,16 @@ typedef struct {
      ID3D11ShaderResourceView *y16_srv;
      ID3D11RenderTargetView *y16_rtv;
      uint32_t zf, w, h;                      /* zeta format code, guest size last bound with */
@@ -19908,7 +19916,7 @@ index b9f3fa2..4c16ac1 100644
  #define MAX_SURFACES 32
  #define MAX_DEPTHS 16
  static Surface s_surf[MAX_SURFACES];
-@@ -1283,6 +2298,7 @@ static Surface *s_cur_rt;
+@@ -1283,6 +2299,7 @@ static Surface *s_cur_rt;
  static uint32_t s_aa_x = 1, s_aa_y = 1;
  static Depth *s_cur_ds;
  
@@ -19916,7 +19924,7 @@ index b9f3fa2..4c16ac1 100644
  static uint32_t surface_color_bpp(uint32_t fmt)
  {
      switch (fmt & 0xF) {
-@@ -1350,49 +2366,58 @@ static void unbind_targets(void)
+@@ -1350,49 +2367,58 @@ static void unbind_targets(void)
  
  static void unbind_textures(void)
  {
@@ -19992,7 +20000,7 @@ index b9f3fa2..4c16ac1 100644
  }
  
  static void blit(ID3D11ShaderResourceView *srv, ID3D11RenderTargetView *rtv,
-@@ -1412,14 +2437,22 @@ static void guest_span(const Surface *s, float *x0, float *x1)
+@@ -1412,14 +2438,22 @@ static void guest_span(const Surface *s, float *x0, float *x1)
      *x1 = (1.0f + f) * 0.5f;
  }
  
@@ -20018,7 +20026,7 @@ index b9f3fa2..4c16ac1 100644
          uint32_t *dst = out + (size_t)y * s->w;
          if (s->bpp == 4) {
              memcpy(dst, row, (size_t)s->w * 4);
-@@ -1454,6 +2487,8 @@ static ID3D11ShaderResourceView *s_up_srv[2];
+@@ -1454,6 +2488,8 @@ static ID3D11ShaderResourceView *s_up_srv[2];
  static UINT s_up_w[2], s_up_h[2];
  static uint32_t *s_up_pixels, *s_mask_pixels;
  static size_t s_up_cap, s_mask_cap;
@@ -20027,7 +20035,7 @@ index b9f3fa2..4c16ac1 100644
  
  /* slot 0: image, slot 1: change mask */
  static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT w, UINT h)
-@@ -1465,10 +2500,12 @@ static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT
+@@ -1465,10 +2501,12 @@ static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT
          s_up_tex[k] = make_texture(w, h, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM,
                                     D3D11_BIND_SHADER_RESOURCE, 0);
          if (!s_up_tex[k]) return NULL;
@@ -20042,7 +20050,7 @@ index b9f3fa2..4c16ac1 100644
      ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)s_up_tex[k], 0,
                                            NULL, pixels, w * 4, 0);
      return s_up_srv[k];
-@@ -1489,6 +2526,172 @@ static uint32_t *scratch_pixels(size_t count)
+@@ -1489,6 +2527,172 @@ static uint32_t *scratch_pixels(size_t count)
      return s_up_pixels;
  }
  
@@ -20215,7 +20223,7 @@ index b9f3fa2..4c16ac1 100644
  /* Guest memory is the authority for what the CPU writes. A shadow copy of
   * each surface's guest bytes says which pixels the CPU changed since the last
   * look; only those replace what the GPU drew. A loading screen drawn by the
-@@ -1496,71 +2699,146 @@ static uint32_t *scratch_pixels(size_t count)
+@@ -1496,71 +2700,146 @@ static uint32_t *scratch_pixels(size_t count)
  static void surface_sync_impl(Surface *s, int force)
  {
      uint32_t rowb = s->w * s->bpp, y, x, x0 = 0xFFFFFFFFu, x1 = 0, y0 = 0xFFFFFFFFu, y1 = 0;
@@ -20416,7 +20424,7 @@ index b9f3fa2..4c16ac1 100644
  }
  
  static void surface_sync(Surface *s, int force)
-@@ -1572,8 +2850,11 @@ static void surface_sync(Surface *s, int force)
+@@ -1572,8 +2851,11 @@ static void surface_sync(Surface *s, int force)
      if (s_prof_on > 0) s_prof[PROF_SYNC] += qpc() - t0;
  }
  
@@ -20428,7 +20436,7 @@ index b9f3fa2..4c16ac1 100644
      if (s_cur_rt == s) unbind_targets();
      if (s->srv) ID3D11ShaderResourceView_Release(s->srv);
      if (s->rtv) ID3D11RenderTargetView_Release(s->rtv);
-@@ -1588,6 +2869,7 @@ static void surface_release(Surface *s)
+@@ -1588,6 +2870,7 @@ static void surface_release(Surface *s)
      if (s->chain) ID3D11Texture2D_Release(s->chain);
      if (s->tex) ID3D11Texture2D_Release(s->tex);
      free(s->shadow);
@@ -20436,7 +20444,7 @@ index b9f3fa2..4c16ac1 100644
      memset(s, 0, sizeof *s);
  }
  
-@@ -1635,11 +2917,20 @@ static Surface *surface_get(uint32_t va, uint32_t pitch, uint32_t fmt,
+@@ -1635,11 +2918,20 @@ static Surface *surface_get(uint32_t va, uint32_t pitch, uint32_t fmt,
      } else {
          for (i = 0; i < MAX_SURFACES && !victim; i++)
              if (!s_surf[i].tex) victim = &s_surf[i];
@@ -20460,7 +20468,7 @@ index b9f3fa2..4c16ac1 100644
      surface_release(victim);
      s = victim;
      s->phys = p; s->va = va; s->pitch = pitch; s->bpp = bpp;
-@@ -1784,8 +3075,12 @@ static int bind_targets(const NvD3DState *st, int want_depth, Surface **out,
+@@ -1784,8 +3076,12 @@ static int bind_targets(const NvD3DState *st, int want_depth, Surface **out,
          return 0;
      if (s && d && (d->iw != s->iw || d->ih != s->ih))
          d = NULL;
@@ -20475,7 +20483,7 @@ index b9f3fa2..4c16ac1 100644
      if (s != s_cur_rt || d != s_cur_ds) {
          ID3D11RenderTargetView *rtv = s ? s->rtv : NULL;
          unbind_textures();
-@@ -1901,11 +3196,20 @@ static void yuv_pair(const uint8_t *g, int uyvy, uint32_t out[2])
+@@ -1901,11 +3197,20 @@ static void yuv_pair(const uint8_t *g, int uyvy, uint32_t out[2])
  }
  
  typedef struct TexEntry {
@@ -20498,7 +20506,7 @@ index b9f3fa2..4c16ac1 100644
      ID3D11ShaderResourceView *srv;
      struct TexEntry *next;
  } TexEntry;
-@@ -1918,48 +3222,240 @@ static size_t s_tex_bytes, s_tex_count;
+@@ -1918,48 +3223,240 @@ static size_t s_tex_bytes, s_tex_count;
  /* Where each level/face lives, and the span to hash. */
  typedef struct {
      int kind, bpp, levels, faces;
@@ -20746,7 +20754,7 @@ index b9f3fa2..4c16ac1 100644
          for (by = 0; by < bh; by++)
              for (bx = 0; bx < bw; bx++) {
                  d3d8_dxt_decode_block(src + ((size_t)by * bw + bx) * L->bpp, t->color, px);
-@@ -1969,6 +3465,11 @@ static void decode_level(const NvD3DTexture *t, const TexLayout *L, const uint8_
+@@ -1969,6 +3466,11 @@ static void decode_level(const NvD3DTexture *t, const TexLayout *L, const uint8_
              }
          return;
      }
@@ -20758,7 +20766,7 @@ index b9f3fa2..4c16ac1 100644
      if (L->kind == K_LIN) {
          for (y = 0; y < h; y++) {
              const uint8_t *row = src + (size_t)y * t->pitch;
-@@ -2004,6 +3505,7 @@ static void tex_free(TexEntry *e)
+@@ -2004,6 +3506,7 @@ static void tex_free(TexEntry *e)
  {
      if (e->srv) ID3D11ShaderResourceView_Release(e->srv);
      if (e->tex) ID3D11Texture2D_Release(e->tex);
@@ -20766,7 +20774,7 @@ index b9f3fa2..4c16ac1 100644
      s_tex_bytes -= e->bytes;
      s_tex_count--;
      free(e);
-@@ -2023,12 +3525,15 @@ static void tex_evict(void)
+@@ -2023,12 +3526,15 @@ static void tex_evict(void)
          {
              TexEntry *e = *best;
              *best = e->next;
@@ -20783,7 +20791,7 @@ index b9f3fa2..4c16ac1 100644
  static void halve_bgra(const uint32_t *src, uint32_t w, uint32_t h, uint32_t *dst)
  {
      uint32_t nw = w > 1 ? w / 2 : 1, nh = h > 1 ? h / 2 : 1, x, y, c;
-@@ -2057,46 +3562,229 @@ static int host_levels(const TexLayout *L, const NvD3DTexture *t)
+@@ -2057,46 +3563,229 @@ static int host_levels(const TexLayout *L, const NvD3DTexture *t)
      return n > L->levels ? n : L->levels;
  }
  
@@ -21028,7 +21036,7 @@ index b9f3fa2..4c16ac1 100644
          if (L.faces == 6) {
              sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
              sd.TextureCube.MipLevels = (UINT)hl;
-@@ -2104,71 +3792,102 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
+@@ -2104,71 +3793,102 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
              sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
              sd.Texture2D.MipLevels = (UINT)hl;
          }
@@ -21163,7 +21171,7 @@ index b9f3fa2..4c16ac1 100644
  /* -------------------------------------------------------- state objects */
  
  typedef struct { uint64_t key; void *obj; } StateSlot;
-@@ -2231,12 +3950,12 @@ static D3D11_BLEND_OP blend_op(uint32_t e)
+@@ -2231,12 +3951,12 @@ static D3D11_BLEND_OP blend_op(uint32_t e)
      }
  }
  
@@ -21179,7 +21187,7 @@ index b9f3fa2..4c16ac1 100644
      void **slot = state_slot(s_blend_cache, key);
      if (!*slot) {
          D3D11_BLEND_DESC d;
-@@ -2244,7 +3963,9 @@ static ID3D11BlendState *blend_state(int enable, uint32_t sf, uint32_t df,
+@@ -2244,7 +3964,9 @@ static ID3D11BlendState *blend_state(int enable, uint32_t sf, uint32_t df,
          memset(&d, 0, sizeof d);
          r->BlendEnable = enable ? TRUE : FALSE;
          r->SrcBlend = blend_factor(sf, 0);
@@ -21190,7 +21198,7 @@ index b9f3fa2..4c16ac1 100644
          r->SrcBlendAlpha = blend_factor(sf, 1);
          r->DestBlendAlpha = blend_factor(df, 1);
          r->BlendOp = r->BlendOpAlpha = blend_op(eq);
-@@ -2254,6 +3975,12 @@ static ID3D11BlendState *blend_state(int enable, uint32_t sf, uint32_t df,
+@@ -2254,6 +3976,12 @@ static ID3D11BlendState *blend_state(int enable, uint32_t sf, uint32_t df,
      return (ID3D11BlendState *)*slot;
  }
  
@@ -21203,7 +21211,7 @@ index b9f3fa2..4c16ac1 100644
  static D3D11_COMPARISON_FUNC cmp(uint32_t f)
  {
      switch (f) {
-@@ -2282,6 +4009,15 @@ static D3D11_STENCIL_OP sop(uint32_t o)
+@@ -2282,6 +4010,15 @@ static D3D11_STENCIL_OP sop(uint32_t o)
      }
  }
  
@@ -21219,7 +21227,7 @@ index b9f3fa2..4c16ac1 100644
  static ID3D11DepthStencilState *ds_state(int zt, uint32_t zf, int zw, int st,
                                           uint32_t sf, uint32_t rmask, uint32_t wmask,
                                           uint32_t fail_, uint32_t zfail, uint32_t zpass)
-@@ -2346,12 +4082,29 @@ static D3D11_TEXTURE_ADDRESS_MODE addr_mode(uint32_t m)
+@@ -2346,12 +4083,29 @@ static D3D11_TEXTURE_ADDRESS_MODE addr_mode(uint32_t m)
      }
  }
  
@@ -21250,7 +21258,7 @@ index b9f3fa2..4c16ac1 100644
      if (bias13 & 0x1000) bias13 -= 0x2000;
      key = (uint64_t)minf | ((uint64_t)magf << 8) | ((uint64_t)(bias13 & 0x1FFF) << 12) |
            ((uint64_t)(levels & 15) << 25) | ((uint64_t)(reduce != 0) << 29) |
-@@ -2393,9 +4146,26 @@ static ID3D11SamplerState *sampler(const NvD3DTexture *t, int levels, int reduce
+@@ -2393,9 +4147,26 @@ static ID3D11SamplerState *sampler(const NvD3DTexture *t, int levels, int reduce
          }
          ID3D11Device_CreateSamplerState(s_dev, &d, (ID3D11SamplerState **)slot);
      }
@@ -21277,7 +21285,7 @@ index b9f3fa2..4c16ac1 100644
  /* ------------------------------------------------------------------- draw */
  
  static uint32_t mode_needs_texture(uint32_t mode)
-@@ -2436,18 +4206,77 @@ static ID3D11ShaderResourceView *feedback_copy(Surface *s)
+@@ -2436,18 +4207,77 @@ static ID3D11ShaderResourceView *feedback_copy(Surface *s)
      return s_feedback_srv;
  }
  
@@ -21364,7 +21372,7 @@ index b9f3fa2..4c16ac1 100644
  }
  
  static uint32_t write_mask(const NvD3DState *st, Surface *s)
-@@ -2461,36 +4290,178 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
+@@ -2461,36 +4291,220 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
      return m;
  }
  
@@ -21390,12 +21398,16 @@ index b9f3fa2..4c16ac1 100644
 + * stored widened (its image already spans the wide screen), and any render
 + * target or depth buffer at all (never source artwork). */
 +static int s_draw_textured, s_draw_reads_wide, s_draw_reads_surface;
++static int s_draw_copies_display;   /* stage 0 samples a display-sized target */
 +static int s_draw_minimap_improved, s_draw_map_base, s_draw_map_masked;
 +static uint32_t s_draw_tex_addr, s_draw_tex_extent;
 +static int s_flare_depth_test;
 +static float s_local_light_gain = 1.0f;
 +static int s_local_light_softness;
 +static int s_local_light_overlap;
++static int s_night_glass;
++static uint32_t s_lit_frame = 0xFFFFFFFFu;  /* s_frame of the last local-light composite */
++static ID3D11ShaderResourceView *s_glass_blank;
 +static int s_draw_bspline;
 +static uint32_t s_bspline_sf, s_bspline_df;
  
@@ -21442,6 +21454,44 @@ index b9f3fa2..4c16ac1 100644
 +void nv2a_d3d_set_local_light_overlap(int enabled)
 +{
 +    s_local_light_overlap = enabled != 0;
++}
++
++void nv2a_d3d_set_night_glass(int enabled)
++{
++    s_night_glass = enabled != 0;
++}
++
++/* The title copies the top half of the display, flipped, into a small
++ * swizzled target before cars are drawn; car paint and glass sample it as a
++ * reflection. At night that copy predates the local-light composite, so it
++ * holds the unlit albedo and its alpha. Translucent glass drawn after the
++ * composite blends that daylight image over the dark scene: pedestrians and
++ * facades show through bus shelters and windows as light ghosts. With
++ * nv2a_d3d_set_night_glass those draws read transparent black instead. */
++static int night_glass_reads_copy(const NvD3DState *st, const Surface *rt)
++{
++    return s_night_glass && rt && rt->screen_copy && s_lit_frame == s_frame && st->blend_enable;
++}
++
++static ID3D11ShaderResourceView *glass_blank_srv(void)
++{
++    if (!s_glass_blank) {
++        static const uint32_t zero = 0;
++        D3D11_TEXTURE2D_DESC d;
++        D3D11_SUBRESOURCE_DATA init = { &zero, 4, 4 };
++        ID3D11Texture2D *t = NULL;
++        memset(&d, 0, sizeof d);
++        d.Width = d.Height = d.MipLevels = d.ArraySize = 1;
++        d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
++        d.SampleDesc.Count = 1;
++        d.Usage = D3D11_USAGE_IMMUTABLE;
++        d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
++        if (SUCCEEDED(ID3D11Device_CreateTexture2D(s_dev, &d, &init, &t))) {
++            ID3D11Device_CreateShaderResourceView(s_dev, (ID3D11Resource *)t, NULL, &s_glass_blank);
++            ID3D11Texture2D_Release(t);
++        }
++    }
++    return s_glass_blank;
 +}
 +
 +/* The installed Light/LightDraw.psh only: volume alpha times source RGB,
@@ -21568,7 +21618,7 @@ index b9f3fa2..4c16ac1 100644
          c = k ? surface_find(phys(t->addr) + off) : rt;
          if (!c || !c->swizzled || c->w != w || c->h != h || c->bpp != bpp || c == s_cur_rt)
              break;
-@@ -2580,14 +4551,13 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
+@@ -2580,14 +4594,13 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
          unbind_targets();
          ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &s->y16_rtv, NULL);
          ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
@@ -21590,7 +21640,7 @@ index b9f3fa2..4c16ac1 100644
          ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, &src);
          ID3D11DeviceContext_Draw(s_ctx, 3, 0);
          unbind_targets();
-@@ -2597,9 +4567,14 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
+@@ -2597,9 +4610,14 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
      return s->y16_srv;
  }
  
@@ -21607,7 +21657,7 @@ index b9f3fa2..4c16ac1 100644
      if (!d->zsrv) return NULL;
      if (!d->y16) {
          d->y16 = make_texture(2 * d->iw, d->ih, 1, 1, DXGI_FORMAT_R16G16B16A16_UNORM,
-@@ -2609,7 +4584,8 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
+@@ -2609,7 +4627,8 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
          ID3D11Device_CreateRenderTargetView(s_dev, (ID3D11Resource *)d->y16, NULL, &d->y16_rtv);
          d->y16_gen = d->gen - 1;
      }
@@ -21617,7 +21667,7 @@ index b9f3fa2..4c16ac1 100644
          ID3D11ShaderResourceView *src[1] = { d->zsrv };
          D3D11_VIEWPORT vp = { 0, 0, (float)(2 * d->iw), (float)d->ih, 0, 1 };
          D3D11_RECT sc = { 0, 0, (LONG)(2 * d->iw), (LONG)d->ih };
-@@ -2617,29 +4593,526 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
+@@ -2617,29 +4636,526 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
          unbind_targets();
          ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &d->y16_rtv, NULL);
          ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
@@ -22153,7 +22203,7 @@ index b9f3fa2..4c16ac1 100644
  static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                            uint32_t *out_gw, uint32_t *out_gh, uint32_t *out_zmax)
  {
-@@ -2647,12 +5120,29 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2647,12 +5163,29 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      Depth *d;
      uint32_t gw, gh, n, zf;
      PSConsts pc;
@@ -22169,7 +22219,7 @@ index b9f3fa2..4c16ac1 100644
 +    int raw_depth_view = st->rc_seen && st->rc.stage_program == 0x6C621u;
      float slope = 0, bf[4];
 -    s_draw_textured = s_draw_reads_wide = 0;
-+    s_draw_textured = s_draw_reads_wide = s_draw_reads_surface = 0;
++    s_draw_textured = s_draw_reads_wide = s_draw_reads_surface = s_draw_copies_display = 0;
 +    s_draw_minimap_improved = nv2a_d3d_hud_active() && !st->depth_test &&
 +        s_minimap_style_query && s_minimap_style_query() &&
 +        !(s_centered_ui_query && s_centered_ui_query());
@@ -22186,7 +22236,7 @@ index b9f3fa2..4c16ac1 100644
  
      {
          /* Bring-up switches: RECOMP_D3D_SKIP_CMASK / _SKIP_SFACTOR (hex) drop
-@@ -2673,6 +5163,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2673,6 +5206,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          cull = st->cull_face == 0x404 ? 1 : st->cull_face == 0x405 ? 2 : 3;
      if (cull == 3 && topology == NV_D3D_TRIANGLES)
          return 0;                                /* front and back culled */
@@ -22197,7 +22247,7 @@ index b9f3fa2..4c16ac1 100644
      /* Y16 views of 32-bit targets are drawn before this draw's targets go
       * on; see y16_ps. */
      for (n = 0; n < 4; n++) {
-@@ -2682,17 +5176,33 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2682,17 +5219,33 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          if (t->color != 0x35 || t->cube || !t->addr) continue;
          /* A depth buffer wins over a colour surface at the same address:
           * MM3 binds one there for colour-masked stencil passes. */
@@ -22234,7 +22284,7 @@ index b9f3fa2..4c16ac1 100644
      for (n = 0; n < 4; n++) {
          const NvD3DTexture *t = &st->tex[n];
          uint32_t mode = (st->rc.stage_program >> (n * 5)) & 31;
-@@ -2707,13 +5217,47 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2707,15 +5260,52 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          if (!mode_needs_texture(mode) || !t->addr || !t->width || !t->height)
              continue;
          tex_format(t->color, &kind);
@@ -22252,6 +22302,7 @@ index b9f3fa2..4c16ac1 100644
 +            s_draw_tex_extent = t->width > t->height ? t->width : t->height;
 +        }
 +        if (rt && fabsf(rt->sx / rt->sy - 1.0f) > 0.001f) s_draw_reads_wide = 1;
++        if (n == 0 && rt && rt->w == GUEST_W && rt->h == GUEST_H) s_draw_copies_display = 1;
          zt = t->color == 0x35 && !t->cube ? depth_find(phys(t->addr)) : NULL;
 +        if (rt || zt) s_draw_reads_surface = 1;
 +        /* Only LU_IMAGE_Y16 (the fog's way) has a depth view; any other
@@ -22284,8 +22335,12 @@ index b9f3fa2..4c16ac1 100644
 +            if (!raw_depth_view) s_depth_hazed = 1;
              pc.tex_scale[n][0] = 1.0f / (float)(2 * zt->w);
              pc.tex_scale[n][1] = 1.0f / (float)zt->h;
++        } else if (night_glass_reads_copy(st, rt)) {
++            view = glass_blank_srv();
          } else if (rt) {
-@@ -2742,9 +5286,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+             surface_sync(rt, 0);
+             surface_resolve(rt);
+@@ -2742,9 +5332,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                  }
              }
          } else {
@@ -22297,7 +22352,7 @@ index b9f3fa2..4c16ac1 100644
              if (kind == K_LIN) {
                  pc.tex_scale[n][0] = 1.0f / (float)t->width;
                  pc.tex_scale[n][1] = 1.0f / (float)t->height;
-@@ -2757,8 +5300,19 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2757,8 +5346,19 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
              pc.tex_scale[n][2] = pc.tex_scale[n][3] = 1.0f;
          }
          if (!view) continue;
@@ -22319,7 +22374,7 @@ index b9f3fa2..4c16ac1 100644
          pc.tex_info[n][0] = (t->control0 >> 2) & 1;
          pc.tex_info[n][1] = t->filter >> 28;
          /* Point taps of an upscaled linear target average the guest pixel's
-@@ -2777,7 +5331,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2777,7 +5377,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      /* A sampled surface's CPU upload can blit and unbind this draw's
       * outputs. Restore targets and viewport before binding its textures. */
      if ((s != s_cur_rt || d != s_cur_ds) &&
@@ -22328,7 +22383,7 @@ index b9f3fa2..4c16ac1 100644
          return 0;
  
      /* Combiners. */
-@@ -2797,7 +5351,23 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2797,7 +5397,24 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      pc.stage_prog = st->rc_seen ? st->rc.stage_program : (st->tex_used & 1);
      pc.alpha_func = st->alpha_func;
      pc.alpha_ref = st->alpha_ref;
@@ -22337,6 +22392,7 @@ index b9f3fa2..4c16ac1 100644
 +                  (s_draw_bspline ? 4u : 0u);
 +    if (s_local_light_softness && raw_depth_view) pc.ps_flags |= 0x200u;
 +    if (s_local_light_overlap && is_local_light_composite(st)) pc.ps_flags |= 0x400u;
++    if (is_local_light_composite(st)) s_lit_frame = s_frame;
 +    sky_ramp_draw(st, s, &pc);
 +    if (s_local_light_gain > 1.0f && is_local_light_composite(st)) {
 +        static int announced;
@@ -22353,7 +22409,7 @@ index b9f3fa2..4c16ac1 100644
      pc.other_input = st->other_stage_input;
      pc.dot_map = st->dot_rgb_mapping;
      /* SET_FOG_COLOR keeps red in the low byte. */
-@@ -2805,7 +5375,13 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2805,7 +5422,13 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      pc.fog_color[1] = ((st->fog_color >> 8) & 0xFF) / 255.0f;
      pc.fog_color[2] = ((st->fog_color >> 16) & 0xFF) / 255.0f;
      pc.fog_color[3] = (st->fog_color >> 24) / 255.0f;
@@ -22368,7 +22424,7 @@ index b9f3fa2..4c16ac1 100644
          uint32_t zm = zf == 1 ? 0xFFFFu : 0xFFFFFFu;
          if (st->poly_offset_fill) {
              pc.zp0[0] = st->poly_offset_factor;
-@@ -2815,29 +5391,32 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2815,29 +5438,32 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          pc.zp0[3] = s_cur_sy;
          pc.zp1[0] = 1.0f / ((float)zm + 1.0f);
          pc.zp1[1] = (float)zm;
@@ -22411,7 +22467,7 @@ index b9f3fa2..4c16ac1 100644
                                                     st->front_face == 0x901, bias, slope));
      apply_scissor(st, gw, gh);
      if ((st->blend_sfactor | st->blend_dfactor) & 0x8000) {
-@@ -2851,11 +5430,11 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2851,11 +5477,11 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      } else {
          bf[0] = bf[1] = bf[2] = bf[3] = 0;
      }
@@ -22428,7 +22484,7 @@ index b9f3fa2..4c16ac1 100644
                       st->stencil_test, st->stencil_func, st->stencil_func_mask,
                       st->stencil_write_mask, st->stencil_fail,
                       st->stencil_zfail, st->stencil_zpass) : s_ds_off,
-@@ -2871,6 +5450,19 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2871,6 +5497,19 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
   * from a primitive's last vertex on the NV2A (GL's provoking vertex) but its
   * first on D3D11, so flat primitives are rotated to lead with their last
   * vertex; rotating a triangle keeps its winding. */
@@ -22448,7 +22504,7 @@ index b9f3fa2..4c16ac1 100644
  static void copy_indices(uint32_t *o, const uint32_t *idx, uint32_t ni, uint32_t sub,
                           int topology, int flat)
  {
-@@ -2894,8 +5486,8 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
+@@ -2894,8 +5533,8 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
  {
      if (bytes > cap) return NULL;
      if (*pos + bytes > cap) *pos = 0;
@@ -22459,7 +22515,7 @@ index b9f3fa2..4c16ac1 100644
          return NULL;
      return (uint8_t *)m->pData + *pos;
  }
-@@ -2908,18 +5500,134 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
+@@ -2908,18 +5547,134 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
   * (index - sub); fills dx with each vertex's x shift in guest pixels and
   * returns 0 when nothing moves, leaving only the shader's 4:3 squeeze. */
  #define HUD_GAP 24.0f
@@ -22597,7 +22653,7 @@ index b9f3fa2..4c16ac1 100644
          if (r) root = r;
          if (pc) piece = pc;
          if (!b) return 0;
-@@ -2929,13 +5637,16 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2929,13 +5684,16 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
  #define FIND(x) do { while (root[x] != x) x = root[x] = root[root[x]]; } while (0)
      /* pieces: vertices joined by primitives */
      for (i = 0; i < nv; i++) root[i] = i;
@@ -22615,7 +22671,7 @@ index b9f3fa2..4c16ac1 100644
      for (i = 0; i < nv; i++) {
          uint32_t r = i;
          FIND(r);
-@@ -2943,6 +5654,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2943,6 +5701,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
              piece[i] = np;
              box[np][0] = box[np][2] = 1e30f;
              box[np][1] = box[np][3] = -1e30f;
@@ -22623,7 +22679,7 @@ index b9f3fa2..4c16ac1 100644
              np++;
          }
      }
-@@ -2951,6 +5663,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2951,6 +5710,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
          FIND(r);
          n = piece[r];
          piece[i] = n;
@@ -22631,7 +22687,7 @@ index b9f3fa2..4c16ac1 100644
          if (pos[i][0] < box[n][0]) box[n][0] = pos[i][0];
          if (pos[i][0] > box[n][1]) box[n][1] = pos[i][0];
          if (pos[i][1] < box[n][2]) box[n][2] = pos[i][1];
-@@ -2962,6 +5675,14 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2962,6 +5722,14 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
      for (i = 0; i < np; i++)
          for (k = i + 1; k < np; k++) {
              uint32_t a = i, b = k;
@@ -22646,7 +22702,7 @@ index b9f3fa2..4c16ac1 100644
              if (box[i][2] > box[k][3] || box[k][2] > box[i][3] ||
                  box[i][0] > box[k][1] + HUD_GAP || box[k][0] > box[i][1] + HUD_GAP)
                  continue;
-@@ -2976,19 +5697,41 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2976,19 +5744,41 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
      for (i = 0; i < nv; i++) {
          uint32_t c = piece[i];
          FIND(c);
@@ -22689,7 +22745,7 @@ index b9f3fa2..4c16ac1 100644
  /* ---------------------------------------------- vertex processing on the GPU
   *
   * Every draw runs ub_vs: it pulls the title's raw vertex arrays from a byte
-@@ -2998,7 +5741,6 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2998,7 +5788,6 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
   * its depth the same way (no z-fighting between passes), nothing waits on a
   * shader compile, and no vertex is drawn from a CPU transform. */
  
@@ -22697,7 +22753,7 @@ index b9f3fa2..4c16ac1 100644
  extern const uint32_t (*nv2a_vsh_program(uint32_t *start, uint32_t *version))[4];
  extern const float (*nv2a_vsh_constants(uint32_t *version))[4];
  
-@@ -3015,9 +5757,103 @@ static uint32_t attr_bytes(uint32_t type, uint32_t size)
+@@ -3015,9 +5804,103 @@ static uint32_t attr_bytes(uint32_t type, uint32_t size)
      }
  }
  
@@ -22802,7 +22858,7 @@ index b9f3fa2..4c16ac1 100644
  }
  
  void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr[16],
-@@ -3025,6 +5861,7 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3025,6 +5908,7 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
                        uint32_t lo, uint32_t hi, const float (*pos)[4])
  {
      static uint32_t s_prog_version, s_vconst_version;
@@ -22810,7 +22866,7 @@ index b9f3fa2..4c16ac1 100644
      static float *dx;
      static uint32_t dx_cap;
      struct { const uint8_t *base; uint32_t stride, span; } grp[16];
-@@ -3035,11 +5872,30 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3035,11 +5919,30 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      uint8_t *p;
      UINT total = 0, at = 0, ib_bytes = ni * 4;
      float squeeze = 1.0f, shift = 0.0f, yscale = 1.0f;
@@ -22843,7 +22899,7 @@ index b9f3fa2..4c16ac1 100644
      memset(&uc, 0, sizeof uc);
      memcpy(uc.def, def, sizeof uc.def);
      /* Arrays: interleaved ones share one copied span. */
-@@ -3067,90 +5923,407 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3067,90 +5970,407 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      }
      for (i = 0; i < ngrp; i++)
          total += (((grp[i].stride ? (count - 1) * grp[i].stride : 0) + grp[i].span) + 15) & ~15u;
@@ -23287,7 +23343,7 @@ index b9f3fa2..4c16ac1 100644
  
      uc.info[1] = program ? 1u : 0u;
      if (program) {
-@@ -3158,39 +6331,113 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3158,39 +6378,118 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
          const uint32_t (*prog)[4] = nv2a_vsh_program(&start, &pver);
          const float (*consts)[4] = nv2a_vsh_constants(&cver);
          uc.info[0] = start;
@@ -23389,6 +23445,11 @@ index b9f3fa2..4c16ac1 100644
 +        }
 +        if (wide_line) ID3D11DeviceContext_GSSetShader(s_ctx, NULL, NULL, 0);
 +        surface_draw_written(s, write_mask(st, s));
++        if (s && s->swizzled && s_draw_copies_display && !s->screen_copy) {
++            s->screen_copy = 1;
++            fprintf(stderr, "[D3D11] %08X %ux%u holds the title's display copy (glass reflections)\n",
++                    s->phys, s->w, s->h);
++        }
 +        if (s_prof_on > 0 && st->rc_seen && st->rc.stage_program == 0x6C621u) {
 +            Depth *source = s_prof_light_source_candidate, *target = s_cur_ds;
 +            s_prof_light_draws++;
@@ -23415,7 +23476,7 @@ index b9f3fa2..4c16ac1 100644
      RECOMP_PROFILE_END();
  }
  
-@@ -3204,11 +6451,18 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3204,11 +6503,18 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      float cc[8];
      D3D11_RECT r;
      int zclear = (flags & 1) != 0, sclear = (flags & 2) != 0;
@@ -23436,7 +23497,7 @@ index b9f3fa2..4c16ac1 100644
      if (s) {
          if (flags & 0x10) mask |= D3D11_COLOR_WRITE_ENABLE_RED;
          if (flags & 0x20) mask |= D3D11_COLOR_WRITE_ENABLE_GREEN;
-@@ -3217,9 +6471,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3217,9 +6523,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
              mask |= D3D11_COLOR_WRITE_ENABLE_ALPHA;
      }
      if (!d) { zclear = sclear = 0; }
@@ -23449,7 +23510,7 @@ index b9f3fa2..4c16ac1 100644
      zf = (st->surface_format >> 4) & 0xF;
      unpack4(color, cc);
      if (s && (s->color_fmt & 0xF) == 0x3) {
-@@ -3231,28 +6486,39 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3231,28 +6538,39 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      memset(cc + 4, 0, 16);
      cc[4] = zf == 1 ? (float)(zstencil & 0xFFFF) / 65535.0f
                      : (float)(zstencil >> 8) / 16777215.0f;
@@ -23501,7 +23562,7 @@ index b9f3fa2..4c16ac1 100644
  }
  
  /* -------------------------------------------------------------- write-back */
-@@ -3270,6 +6536,282 @@ typedef struct {
+@@ -3270,6 +6588,282 @@ typedef struct {
      ID3D11RenderTargetView *down_rtv;
  } WbSlot;
  static WbSlot s_wb[MAX_SURFACES];
@@ -23784,7 +23845,7 @@ index b9f3fa2..4c16ac1 100644
  
  static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
  {
-@@ -3289,12 +6831,14 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
+@@ -3289,12 +6883,14 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
              return 0;
          k->w = w; k->h = h;
      }
@@ -23805,7 +23866,7 @@ index b9f3fa2..4c16ac1 100644
      }
      return 1;
  }
-@@ -3305,62 +6849,181 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
+@@ -3305,62 +6901,181 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
   * (nv2a_d3d_writeback_busy), holding back DMA_GET and fence releases until
   * then -- the title cannot learn the frame is finished before its pixels are
   * in guest memory. */
@@ -23996,7 +24057,7 @@ index b9f3fa2..4c16ac1 100644
                  for (x = 0; x < s->w; x++) {
                      uint32_t c = src[x];
                      o[x] = r565 ? (uint16_t)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07E0) | ((c >> 3) & 0x1F))
-@@ -3370,33 +7033,48 @@ static int writeback_finish(int wait)
+@@ -3370,33 +7085,48 @@ static int writeback_finish(int wait)
              }
              memcpy(s->shadow + (size_t)y * rowb, row, rowb);
          }
@@ -24052,7 +24113,7 @@ index b9f3fa2..4c16ac1 100644
      RECOMP_PROFILE_BEGIN("D3D11 write-back issue");
      for (i = 0; i < MAX_SURFACES; i++) {
          Surface *s = &s_surf[i];
-@@ -3409,9 +7087,10 @@ static void writeback_surfaces(void)
+@@ -3409,9 +7139,10 @@ static void writeback_surfaces(void)
              continue;
          surface_resolve(s);
          if (scaled) {
@@ -24066,7 +24127,7 @@ index b9f3fa2..4c16ac1 100644
              ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)k->stage,
                                               (ID3D11Resource *)k->down);
          } else {
-@@ -3420,11 +7099,23 @@ static void writeback_surfaces(void)
+@@ -3420,11 +7151,23 @@ static void writeback_surfaces(void)
          }
          s->gpu_dirty = 0;                        /* later draws dirty it again */
          k->pending = 1;
@@ -24091,7 +24152,7 @@ index b9f3fa2..4c16ac1 100644
  }
  
  /* ----------------------------------------------------- visibility tests */
-@@ -3439,13 +7130,16 @@ static uint64_t s_zpass;
+@@ -3439,13 +7182,16 @@ static uint64_t s_zpass;
  static void zpass_collect(void)
  {
      UINT64 n = 0;
@@ -24108,7 +24169,7 @@ index b9f3fa2..4c16ac1 100644
  }
  
  void nv2a_d3d_zpass_enable(int on)
-@@ -3490,10 +7184,43 @@ static ID3D11ShaderResourceView *s_ovl_srv;
+@@ -3490,10 +7236,43 @@ static ID3D11ShaderResourceView *s_ovl_srv;
  static UINT s_ovl_w, s_ovl_h;
  static uint32_t s_ovl_serial = 0xFFFFFFFFu;
  static DWORD s_last_present, s_last_flip;
@@ -24152,7 +24213,7 @@ index b9f3fa2..4c16ac1 100644
  static int ensure_swapchain(void)
  {
      HWND h = xbox_FramebufferWindowHandle();
-@@ -3505,6 +7232,8 @@ static int ensure_swapchain(void)
+@@ -3505,6 +7284,8 @@ static int ensure_swapchain(void)
      hh = (UINT)(rc.bottom - rc.top);
      if (!w || !hh) return 0;                    /* minimised */
      if (s_swap && s_swap_hwnd != h) {
@@ -24161,7 +24222,7 @@ index b9f3fa2..4c16ac1 100644
          IDXGISwapChain1_Release(s_swap);
          s_swap = NULL;
      }
-@@ -3522,7 +7251,17 @@ static int ensure_swapchain(void)
+@@ -3522,7 +7303,17 @@ static int ensure_swapchain(void)
          d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
          d.SampleDesc.Count = 1;
          d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -24180,7 +24241,7 @@ index b9f3fa2..4c16ac1 100644
          d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
          hr = fac ? IDXGIFactory2_CreateSwapChainForHwnd(fac, (IUnknown *)s_dev, h, &d,
                                                          NULL, NULL, &s_swap) : E_FAIL;
-@@ -3534,9 +7273,11 @@ static int ensure_swapchain(void)
+@@ -3534,9 +7325,11 @@ static int ensure_swapchain(void)
          if (dxdev) IDXGIDevice_Release(dxdev);
          if (FAILED(hr)) { fail("CreateSwapChainForHwnd", hr); return 0; }
          s_swap_hwnd = h; s_swap_w = w; s_swap_h = hh;
@@ -24193,7 +24254,7 @@ index b9f3fa2..4c16ac1 100644
          if (FAILED(IDXGISwapChain1_ResizeBuffers(s_swap, 0, w, hh, DXGI_FORMAT_UNKNOWN, 0)))
              return 0;
          s_swap_w = w; s_swap_h = hh;
-@@ -3556,24 +7297,38 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
+@@ -3556,24 +7349,38 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
      if (!prefix) return;
      if (!remaining) {
          int count = 0;
@@ -24234,7 +24295,7 @@ index b9f3fa2..4c16ac1 100644
          ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)st, (ID3D11Resource *)bb);
          if (SUCCEEDED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource *)st, 0,
                                               D3D11_MAP_READ, 0, &m))) {
-@@ -3607,6 +7362,8 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
+@@ -3607,6 +7414,8 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
              ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)st, 0);
          }
          ID3D11Texture2D_Release(st);
@@ -24243,7 +24304,7 @@ index b9f3fa2..4c16ac1 100644
      }
      remaining--;
  }
-@@ -3638,10 +7395,18 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3638,10 +7447,18 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
      pc->src_size[0] = (float)s->w; pc->src_size[1] = (float)s->h;
      pc->src_size[2] = (float)s->iw; pc->src_size[3] = (float)s->ih;
      pc->force_alpha[0] = 1.0f;
@@ -24262,7 +24323,7 @@ index b9f3fa2..4c16ac1 100644
      upload_cb(s_cb_present, pc, sizeof *pc);
      unbind_textures();
      unbind_targets();
-@@ -3652,22 +7417,21 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3652,22 +7469,21 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
      vp.MinDepth = 0; vp.MaxDepth = 1;
      sc.left = 0; sc.top = 0; sc.right = (LONG)w; sc.bottom = (LONG)h;
      ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
@@ -24294,7 +24355,7 @@ index b9f3fa2..4c16ac1 100644
      ID3D11DeviceContext_Draw(s_ctx, 4, 0);
      unbind_targets();
      unbind_textures();
-@@ -3718,22 +7482,75 @@ static void prepare_overlay(PresentConsts *pc)
+@@ -3718,22 +7534,75 @@ static void prepare_overlay(PresentConsts *pc)
      pc->ovl_in[2] = 1.0f;
  }
  
@@ -24371,7 +24432,7 @@ index b9f3fa2..4c16ac1 100644
          if (!s_cap_tex || s_cap_w != s->iw || s_cap_h != s->ih) {
              if (s_cap_rtv) ID3D11RenderTargetView_Release(s_cap_rtv);
              if (s_cap_tex) ID3D11Texture2D_Release(s_cap_tex);
-@@ -3749,25 +7566,104 @@ static void present_surface(Surface *s)
+@@ -3749,25 +7618,104 @@ static void present_surface(Surface *s)
              composite(s_cap_rtv, s->iw, s->ih, s, &pc, 0);
              capture_backbuffer(s_cap_tex);
          }
@@ -24489,7 +24550,7 @@ index b9f3fa2..4c16ac1 100644
  /* The flip completes at the display's next vertical blank, as it does on the
   * NV2A: FLIP_STALL holds the GPU until then, and the title, waiting on the
   * GPU, is paced by it. Completing it at once let menus run at hundreds of
-@@ -3779,40 +7675,31 @@ static void pace_vblank(void)
+@@ -3779,40 +7727,31 @@ static void pace_vblank(void)
      static LARGE_INTEGER freq;
      static int64_t next;
      static HANDLE timer;
@@ -24546,7 +24607,7 @@ index b9f3fa2..4c16ac1 100644
      }
  }
  
-@@ -3822,30 +7709,41 @@ static void pace_vblank(void)
+@@ -3822,30 +7761,41 @@ static void pace_vblank(void)
   * the monitor's native resolution and shape). A resize applies once it has
   * settled for RESIZE_SETTLE_MS, by dropping every host surface; they are
   * rebuilt at the new size from guest memory, which the flip just updated.
@@ -24597,7 +24658,7 @@ index b9f3fa2..4c16ac1 100644
          scale = (float)atof(e);
      } else {
          /* RECOMP_SUPERSAMPLE=N (1..4) renders N x N host pixels per window
-@@ -3860,7 +7758,9 @@ static void display_config(int now)
+@@ -3860,7 +7810,9 @@ static void display_config(int now)
          if (scale < 1.0f) scale = 1.0f;
          if (scale > 8.0f) scale = 8.0f;
      }
@@ -24608,7 +24669,7 @@ index b9f3fa2..4c16ac1 100644
      if (!now && fabsf(scale - s_scale) < 1e-3f && fabsf(aspect - s_aspect) < 1e-4f)
          return;
      if (!now) {
-@@ -3874,6 +7774,11 @@ static void display_config(int now)
+@@ -3874,6 +7826,11 @@ static void display_config(int now)
      }
      s_scale = scale;
      s_aspect = aspect;
@@ -24620,7 +24681,7 @@ index b9f3fa2..4c16ac1 100644
      fprintf(stderr, "[D3D11] rendering %ux%u (window %ux%u, aspect %.3f)\n",
              (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
              w, h, aspect);
-@@ -3897,10 +7802,16 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
+@@ -3897,10 +7854,16 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
  void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
  {
      Surface *s;
@@ -24637,7 +24698,7 @@ index b9f3fa2..4c16ac1 100644
      s = surface_find(phys(surface_addr));
      if (!s && pitch)
          s = scan_surface(surface_addr, pitch);
-@@ -3908,23 +7819,29 @@ void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
+@@ -3908,23 +7871,29 @@ void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch)
      s_last_flip = GetTickCount();
      {
          int64_t t0 = s_prof_on > 0 ? qpc() : 0, t1;
@@ -24674,7 +24735,7 @@ index b9f3fa2..4c16ac1 100644
      s_frame++;
  }
  
-@@ -3932,33 +7849,64 @@ void nv2a_d3d_tick(void)
+@@ -3932,33 +7901,64 @@ void nv2a_d3d_tick(void)
  {
      DWORD now;
      uint32_t va, pitch;
@@ -24745,7 +24806,7 @@ index b9f3fa2..4c16ac1 100644
  int nv2a_d3d_prof_enabled(void) { return 0; }
  void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
  { (void)slot; (void)ticks; (void)verts; }
-@@ -3977,7 +7925,32 @@ void nv2a_d3d_zpass_enable(int on) { (void)on; }
+@@ -3977,7 +7977,33 @@ void nv2a_d3d_zpass_enable(int on) { (void)on; }
  void nv2a_d3d_zpass_clear(void) {}
  uint32_t nv2a_d3d_zpass_read(void) { return 0; }
  float nv2a_d3d_display_aspect(void) { return 4.0f / 3.0f; }
@@ -24761,6 +24822,7 @@ index b9f3fa2..4c16ac1 100644
 +void nv2a_d3d_set_local_light_gain(float gain) { (void)gain; }
 +void nv2a_d3d_set_local_light_softness(int enabled) { (void)enabled; }
 +void nv2a_d3d_set_local_light_overlap(int enabled) { (void)enabled; }
++void nv2a_d3d_set_night_glass(int enabled) { (void)enabled; }
 +void nv2a_d3d_set_bspline_blend(uint32_t sfactor, uint32_t dfactor)
 +{ (void)sfactor; (void)dfactor; }
  void nv2a_d3d_set_depth_view_remap(float scale, float knee) { (void)scale; (void)knee; }
@@ -24779,7 +24841,7 @@ index b9f3fa2..4c16ac1 100644
 +{ (void)st; (void)seq; (void)depth_to_world; (void)view; (void)proj; }
  #endif
 diff --git a/src/video/nv2a_d3d11.h b/src/video/nv2a_d3d11.h
-index 082f091..f49d7db 100644
+index 082f091..aae0c27 100644
 --- a/src/video/nv2a_d3d11.h
 +++ b/src/video/nv2a_d3d11.h
 @@ -2,12 +2,13 @@
@@ -24827,7 +24889,7 @@ index 082f091..f49d7db 100644
      /* Output merger. */
      uint32_t blend_enable, blend_sfactor, blend_dfactor, blend_equation;
      uint32_t blend_color, color_mask;
-@@ -91,12 +98,86 @@ int nv2a_d3d_widescreen(void);
+@@ -91,12 +98,91 @@ int nv2a_d3d_widescreen(void);
  int  nv2a_d3d_init(void);
  int  nv2a_d3d_active(void);
  
@@ -24908,6 +24970,11 @@ index 082f091..f49d7db 100644
 + * unrelated draws, alpha blend factors and output masks retain guest state.
 + * Off by default. Register before rendering starts. */
 +void nv2a_d3d_set_local_light_overlap(int enabled);
++/* Title opt-in: after the local-light composite of a frame, translucent draws
++ * that sample the title's swizzled display copy (a reflection taken before
++ * the composite, so unlit at night) read transparent black instead. Keeps
++ * night glass from showing light ghosts of the daylight scene; off by default. */
++void nv2a_d3d_set_night_glass(int enabled);
 +/* Title opt-in for its magnified 256x256 DXT5 horizon panorama. Stage zero
 + * uses cubic B-spline sampling only for this blend pair without depth test.
 + * Register before rendering starts; a zero source factor disables it. */
@@ -24915,7 +24982,7 @@ index 082f091..f49d7db 100644
  /* A title that multiplies its far plane by `scale` (w-buffered, so depth is
   * w / far) still indexes its authored depth lookups (fog ramps) with the
   * original fractions. Depth read back as a texture is reported in those:
-@@ -104,9 +185,38 @@ void nv2a_d3d_set_edge_hud(int on);
+@@ -104,9 +190,38 @@ void nv2a_d3d_set_edge_hud(int on);
   * stretched so the rest of the authored ramp ends at the new far plane.
   * scale 1 (the default) leaves depth untouched. */
  void nv2a_d3d_set_depth_view_remap(float scale, float knee);
@@ -24954,7 +25021,7 @@ index 082f091..f49d7db 100644
  
  /* NV097_CLEAR_SURFACE: flags as the method's parameter, rect inclusive. */
  void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
-@@ -129,6 +239,21 @@ int  nv2a_d3d_prof_enabled(void);
+@@ -129,6 +244,21 @@ int  nv2a_d3d_prof_enabled(void);
  /* A flip's surfaces are still being read back into guest memory: DMA_GET and
   * fence releases must wait. Completes whatever the GPU has finished. */
  int  nv2a_d3d_writeback_busy(void);

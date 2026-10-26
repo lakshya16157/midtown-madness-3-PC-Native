@@ -21,6 +21,9 @@ int mm3_circuit_parse_line(const char *line, unsigned *city, unsigned *race,
 /* The single player Circuit button (1) or another mode (0): race setup lists
  * only the circuits, or every race but them. */
 void mm3_circuit_set_mode(int on);
+/* 1 while the Circuit button is the chosen mode: the race being set up is a
+ * circuit (the other mode rows and retail race screens turn it off). */
+int mm3_circuit_mode_on(void);
 
 /* Guest addresses of the names "singlePlayer/screenCircuitCitySelect" and
  * "singlePlayer/screenCircuitRaceSetup", which the menu path after a circuit

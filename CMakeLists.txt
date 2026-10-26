@@ -109,10 +109,9 @@ set(MM3_DEFINITION_ONLY_FUNCTIONS ${MM3_DISTANCE_FUNCTIONS})
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0015A929)
 # Ordered host depth fog and its optional horizon replacement.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000F8DCE sub_000F8750)
-# Car damage: src/mm3_damage_diagnostics.c logs each scaled hit and gathers
-# every car's impulses into 30 fps frames for the damage step.
-list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00021DCF sub_001CDB6C)
-# The language chosen in Game Setup survives a restart (src/mm3_language.c).
+# Car damage: src/mm3_damage_diagnostics.c logs each scaled hit and keeps every
+# car's impulse over an Xbox frame's four physics steps for the damage step.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00021DCF sub_001CDB6C)# The language chosen in Game Setup survives a restart (src/mm3_language.c).
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001193A6 sub_00124822)
 # The downloadable races' own route pictures (src/mm3_dlc_races.c).
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_002430FD)
@@ -154,8 +153,9 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS
     sub_001C5E11 sub_0006B3EF sub_0011C650)
 # Preserve same-chunk catalog calls to the retired-car selection fallback.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001DDFC5)
-# Keep retail vehicles first and sort custom/DLC menu entries by top speed.
-list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001DE752)
+# Keep retail vehicles first and sort custom/DLC menu entries by top speed;
+# race opponents get the Xbox cars, never the installer's extra cars.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001DE752 sub_001DE012)
 # The CRT MMX probe must preserve the stack effects of PUSHFD/POPFD.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00093770)
 # The CRT remainder loop tests FPREM's C2, independently of a previous FCMP.
@@ -527,6 +527,7 @@ add_executable(${PROJECT_NAME}
  src/mm3_voice_fixes.c
  src/mm3_lua_errors.c
  src/mm3_damage_diagnostics.c
+ src/mm3_map_pins.c
  src/mm3_language.c
  src/mm3_vehicle_dynamics.c
  src/mm3_lua_natives.c
@@ -583,7 +584,7 @@ set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_L
 set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_LAUNCHER_NETWORK=1)
 # The release this build belongs to: the launcher's title and the first log
 # line show it, so a report says which version it came from.
-set(MM3_VERSION "2.0 beta 1")
+set(MM3_VERSION "2.0 beta 2")
 set_property(SOURCE src/mm3_launcher.c src/main.c APPEND PROPERTY COMPILE_DEFINITIONS
     "MM3_VERSION=\"${MM3_VERSION}\"")
 if(WIN32)

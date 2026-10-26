@@ -47,6 +47,10 @@ ROW_DESTINATIONS = {**PICKERS, "ADVANCED": ADVANCED, "MORE_RESOLUTIONS": RESOLUT
 # src/mm3_menu_resources.c serves this variant of the main menu when the
 # launcher turns the Graphics Settings menu off but keeps the circuits.
 MAIN_WITHOUT_GRAPHICS = "#nographics"
+# Quit in place of Sign In (Xbox Live, gone): the launcher's "Quit in the main
+# menu" (MM3_MENU_QUIT). The main menu therefore comes in four variants.
+MAIN_WITHOUT_QUIT = "#noquit"
+MAIN_QUIT_WITHOUT_GRAPHICS = "#nographics#quit"
 SP_TYPE = "singlePlayer/screenSinglePlayerType"
 SP_SETUP = "singlePlayer/screenSinglePlayerRaceSetup"
 CITY_SELECT = "shared/screenCitySelect"
@@ -106,6 +110,31 @@ def main_menu(retail, graphics=True):
             if value >= 4:
                 ref.object.parts[0] = struct.pack("<i", value + 1)
     return end_circuits(resource)
+
+
+def quit_row(resource):
+    """Sign In (the last row, Xbox Live) becomes Quit: the Profiles row's own
+    button with a Quit label and the gameQuit command, which closes the game
+    as closing its window does (src/mm3_graphics_menu.c). Its help replaces
+    the Sign In/Out help at the same focus index."""
+    profile = find_row(resource, "strings/choiceProfiles")
+    sign_in = profile.parts[0].object
+    if (sign_in is None or sign_in.kind != "TransformNode" or len(sign_in.parts) != 3 or
+            row_button(sign_in) is not None or sign_in.parts[0].object is not None or
+            not sign_in.parts[2].object or sign_in.parts[2].object.kind != "TabstopNode"):
+        raise ValueError("Retail Sign In row changed")
+    tabstop = clone(profile.parts[2])
+    button = tabstop.object.references()[0].object
+    button.parts[1] = Reference("graphics/choiceQuit", sid("SID_MM3_GRAPHICS_QUIT"))
+    button.parts[3] = actions([call_function("gameQuit")])
+    sign_in.parts[2] = tabstop
+    data = named_references(resource, "main/oftMain")[0].object
+    switches = [index for index, part in enumerate(data.parts)
+                if isinstance(part, Reference) and part.object and part.object.kind == "IndexDataData"]
+    if len(switches) != 1:
+        raise ValueError("Retail Sign In help changed")
+    data.parts[switches[0]] = Reference(object=sid("SID_MM3_GRAPHICS_QUIT_HELP"))
+    return resource
 
 
 def end_circuits(resource):
@@ -401,8 +430,10 @@ def generate_resources(archive):
     if (multipop.parts[0].name != "pathMain" or not isinstance(multipop.parts[1], bytes) or
             len(multipop.parts[1]) != 21 or struct.unpack_from("<I", multipop.parts[1], 17)[0] != 2):
         raise ValueError("Retail career multi-pop count changed")
-    resources = {MAIN: main_menu(decoded[MAIN]),
+    resources = {MAIN: quit_row(main_menu(decoded[MAIN])),
+                 MAIN + MAIN_WITHOUT_QUIT: main_menu(decoded[MAIN]),
                  MAIN + MAIN_WITHOUT_GRAPHICS: main_menu(decoded[MAIN], graphics=False),
+                 MAIN + MAIN_QUIT_WITHOUT_GRAPHICS: quit_row(main_menu(decoded[MAIN], graphics=False)),
                  DISPLAY: page(decoded[OPTIONS], DISPLAY_ROWS, "graphics/display", TITLE_DISPLAY, True),
                  ADVANCED: page(decoded[OPTIONS], ADVANCED_ROWS, "graphics/advanced", TITLE_ADVANCED, False),
                  TITLE_DISPLAY: title_resource(decoded[TITLE], "TITLE"),

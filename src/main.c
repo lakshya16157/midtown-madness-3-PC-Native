@@ -48,6 +48,12 @@ static void mm3_close_game(void)
     ExitProcess(0);
 }
 
+/* The main menu's Quit row (mm3_graphics_menu.c): the same as closing the window. */
+void mm3_quit_game(void)
+{
+    mm3_close_game();
+}
+
 static BOOL WINAPI mm3_console_control(DWORD event)
 {
     if (event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT &&
@@ -308,6 +314,7 @@ int main(void)
     nv2a_d3d_prepare_distance_fog(!getenv("MM3_NATIVE_FOG") || strcmp(getenv("MM3_NATIVE_FOG"), "0"));
     xbox_FramebufferSetCloseHandler(mm3_close_game);
     nv2a_d3d_set_flare_depth_test(!getenv("MM3_MOD_FLARE_DEPTH") || strcmp(getenv("MM3_MOD_FLARE_DEPTH"), "0"));
+    nv2a_d3d_set_night_glass(!getenv("MM3_NIGHT_GLASS") || strcmp(getenv("MM3_NIGHT_GLASS"), "0"));
     mm3_world_lighting_apply_gain();
     mm3_voice_fixes_install();
     if (!getenv("MM3_MOD_SKY") || strcmp(getenv("MM3_MOD_SKY"), "0"))

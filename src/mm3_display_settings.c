@@ -19,12 +19,14 @@ static SRWLOCK s_settings_lock = SRWLOCK_INIT;
 
 int mm3_minimap_improved(void)
 {
-    /* The launcher's Original game (MM3_IMPROVED=0) keeps the retail minimap. */
+    /* The improved minimap is a new look and also shows more of the map at
+     * speed, a navigation aid: the launcher's Original look (MM3_IMPROVED=0)
+     * and Xbox gameplay (MM3_GAMEPLAY_MODS=0) keep the retail minimap. */
     static volatile LONG original = -1;
     int improved;
     if (original < 0) {
-        const char *value = getenv("MM3_IMPROVED");
-        original = value && !strcmp(value, "0");
+        const char *look = getenv("MM3_IMPROVED"), *gameplay = getenv("MM3_GAMEPLAY_MODS");
+        original = (look && !strcmp(look, "0")) || (gameplay && !strcmp(gameplay, "0"));
     }
     if (original) return 0;
     AcquireSRWLockShared(&s_settings_lock);

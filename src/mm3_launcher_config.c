@@ -33,39 +33,59 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"MM3_NATIVE_FOG", "Native depth fog", 1},
     {"RECOMP_APU_DSP", "Accurate sound processor", 1},
     {"RECOMP_NET", "System Link networking", 0},
-    {"MM3_HUD_NORTH_MARKER", "North marker on minimap", 0},
+    {"MM3_HUD_NORTH_MARKER", "Compass pins on minimap", 0},
     {"MM3_HUD_RACE_ARROW", "Race direction arrow", 0},
     {"MM3_ROUTE_NAVIGATION", "Route line on the map", 1},
-    {"MM3_DRAFTING", "Slipstream drafting", 1},
-    {"MM3_ROLL_GUARD", "Rollover assist", 1},
-    {"MM3_AI_ALL_CARS", "AI uses DLC and extra cars", 1},
-    {"MM3_IMPROVED", "Improved game", 1},
+    {"MM3_DRAFTING", "Slipstream drafting", 0},
+    {"MM3_ROLL_GUARD", "Rollover assist", 0},
+    {"MM3_AI_ALL_CARS", "Circuit AI uses all cars", 1},
+    {"MM3_IMPROVED", "Improved look", 1},
     {"MM3_GRAPHICS_MENU", "In-game Graphics menu", 1},
     {"MM3_EXTRA_CIRCUITS", "Extra circuit races", 1},
     {"MM3_EXTRA_CARS", "Extra installed cars", 1},
     {"MM3_DLC_RACE_INFO", "DLC race names and pictures", 1},
     {"MM3_FALLING_TREES", "Trees fall over when hit", 1},
-    {"MM3_EXHAUST_TRIANGLES", "Exhaust smoke", 0}
+    {"MM3_EXHAUST_TRIANGLES", "Exhaust smoke", 0},
+    {"MM3_GAMEPLAY_MODS", "Modded gameplay", 0},
+    {"MM3_MENU_QUIT", "Quit in the main menu", 1}
 };
 
-/* The Original game (MM3_IMPROVED=0): every mod off and the game's own HUD
- * markers on; the graphics and audio improvements (widescreen, skyline,
- * native fog, sound processor) and the player's extras (keyboard, unlocks,
- * developer tools, System Link) stay as chosen. */
-static const struct { int option; const char *value; } original_game[] = {
+typedef struct { int option; const char *value; } MM3ForcedOption;
+/* The Original look (MM3_IMPROVED=0): the Xbox's own visuals, menus and HUD;
+ * the graphics and audio upgrades (widescreen, skyline, native fog, sound
+ * processor) stay as chosen. Nothing here changes the gameplay. */
+static const MM3ForcedOption original_look[] = {
     {MM3_LAUNCH_DISTANCE, "0"}, {MM3_LAUNCH_CAR_LIGHT, "0"}, {MM3_LAUNCH_LAMP_LIGHT, "0"},
     {MM3_LAUNCH_WORLD_LIGHT, "0"}, {MM3_LAUNCH_FLARE_DEPTH, "0"}, {MM3_LAUNCH_LOADING, "0"},
-    {MM3_LAUNCH_NORTH_MARKER, "1"}, {MM3_LAUNCH_RACE_ARROW, "1"}, {MM3_LAUNCH_ROUTE_NAVIGATION, "0"},
-    {MM3_LAUNCH_DRAFTING, "0"}, {MM3_LAUNCH_ROLL_GUARD, "0"}, {MM3_LAUNCH_AI_ALL_CARS, "0"},
-    {MM3_LAUNCH_GRAPHICS_MENU, "0"}, {MM3_LAUNCH_CIRCUITS, "0"}, {MM3_LAUNCH_EXTRA_CARS, "0"},
-    {MM3_LAUNCH_DLC_INFO, "0"}, {MM3_LAUNCH_TREES, "0"}, {MM3_LAUNCH_EXHAUST, "0"}
+    {MM3_LAUNCH_NORTH_MARKER, "1"}, {MM3_LAUNCH_GRAPHICS_MENU, "0"}, {MM3_LAUNCH_DLC_INFO, "0"},
+    {MM3_LAUNCH_EXHAUST, "0"}, {MM3_LAUNCH_QUIT, "0"}
+};
+/* Xbox gameplay (MM3_GAMEPLAY_MODS=0): driving, races, cars, progression and
+ * navigation as on the Xbox. No driving assists, falling trees, circuits,
+ * extra cars, unlocks or developer commands; the game's own race arrow and no
+ * route line (the retail minimap too: mm3_minimap_improved). */
+static const MM3ForcedOption xbox_gameplay[] = {
+    {MM3_LAUNCH_DRAFTING, "0"}, {MM3_LAUNCH_ROLL_GUARD, "0"}, {MM3_LAUNCH_TREES, "0"},
+    {MM3_LAUNCH_CIRCUITS, "0"}, {MM3_LAUNCH_EXTRA_CARS, "0"}, {MM3_LAUNCH_AI_ALL_CARS, "0"},
+    {MM3_LAUNCH_UNLOCK, "0"}, {MM3_LAUNCH_ROUTE_NAVIGATION, "0"}, {MM3_LAUNCH_RACE_ARROW, "1"},
+    {MM3_LAUNCH_DEV_TOOLS, "0"}, {MM3_LAUNCH_DEV_HUD, "0"}, {MM3_LAUNCH_DEBUG_MENU, "0"},
+    {MM3_LAUNCH_CAMERAS, "0"}, {MM3_LAUNCH_E3, "0"}
 };
 
-int mm3_launcher_option_in_original(int option)
+/* The launcher saves every option, so a changed default would never reach a
+ * saved file. Files from before this revision get these options back at
+ * their new default once. Revision 2: drafting and the rollover assist change
+ * how cars drive, so they start off, as on the Xbox. */
+#define SETTINGS_REVISION 2
+static const int revision_defaults[] = {MM3_LAUNCH_DRAFTING, MM3_LAUNCH_ROLL_GUARD};
+
+int mm3_launcher_option_master(int option)
 {
-    for (size_t i = 0; i < sizeof original_game / sizeof original_game[0]; ++i)
-        if (original_game[i].option == option) return 0;
-    return 1;
+    for (size_t i = 0; i < sizeof original_look / sizeof original_look[0]; ++i)
+        if (original_look[i].option == option) return MM3_LAUNCH_IMPROVED;
+    for (size_t i = 0; i < sizeof xbox_gameplay / sizeof xbox_gameplay[0]; ++i)
+        if (xbox_gameplay[i].option == option) return MM3_LAUNCH_GAMEPLAY;
+    return -1;
 }
 const char *const mm3_launcher_key_names[MM3_LAUNCHER_KEYS] = {
     "A", "B", "X", "Y", "WHITE", "BLACK", "LT", "RT", "START", "BACK",
@@ -243,7 +263,7 @@ int mm3_launcher_config_load(MM3LauncherConfig *config, char *error, size_t capa
     char path[32768], line[2048];
     wchar_t wide[32768];
     FILE *file;
-    int failed;
+    int failed, revision = 1;
     error_set(error, capacity, "");
     if (!mm3_launcher_config_path(path, sizeof path, error, capacity)) return 0;
     if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, 32768)) return 0;
@@ -263,12 +283,20 @@ int mm3_launcher_config_load(MM3LauncherConfig *config, char *error, size_t capa
         equals = strchr(key, '=');
         if (!equals) continue;
         *equals = 0; key = trim(key); value = trim(equals + 1);
+        if (!strcmp(key, "MM3_SETTINGS_REVISION")) {
+            if (!integer(value, 1, INT_MAX, &revision))
+                error_set(error, capacity, "Some unknown or invalid launcher settings were ignored.");
+            continue;
+        }
         if (!mm3_launcher_config_assign(config, key, value))
             error_set(error, capacity, "Some unknown or invalid launcher settings were ignored.");
     }
     failed = ferror(file);
     if (fclose(file)) failed = 1;
     if (failed) error_set(error, capacity, "Cannot finish reading launcher settings.");
+    else if (revision < SETTINGS_REVISION)
+        for (size_t i = 0; i < sizeof revision_defaults / sizeof revision_defaults[0]; ++i)
+            config->option[revision_defaults[i]] = mm3_launcher_options[revision_defaults[i]].default_value;
     return !failed;
 }
 
@@ -321,7 +349,8 @@ int mm3_launcher_config_save(const MM3LauncherConfig *config, char *error, size_
     format_map(keys, sizeof keys, config->keys, MM3_LAUNCHER_KEYS, mm3_launcher_key_names, 0);
     format_map(drive, sizeof drive, config->drive_keys, MM3_LAUNCHER_DRIVE_KEYS, mm3_launcher_drive_names, 0);
     format_map(pad, sizeof pad, config->pad, MM3_LAUNCHER_PAD_INPUTS, mm3_launcher_pad_names, 1);
-    if (fprintf(file, "# Midtown Madness 3 launcher preferences\n[launcher]\n") < 0) failed = 1;
+    if (fprintf(file, "# Midtown Madness 3 launcher preferences\n[launcher]\nMM3_SETTINGS_REVISION=%d\n",
+                SETTINGS_REVISION) < 0) failed = 1;
     for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i)
         if (fprintf(file, "%s=%d\n", mm3_launcher_options[i].key, config->option[i]) < 0) failed = 1;
     if (fprintf(file, "RECOMP_USB_PADS=%d\nMM3_FOV_DEGREES=%d\nRECOMP_NET_PORT=%d\nRECOMP_NET_PEERS=%s\n"
@@ -391,10 +420,14 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
     format_map(pad, sizeof pad, config->pad, MM3_LAUNCHER_PAD_INPUTS, mm3_launcher_pad_names, 1);
     SET("RECOMP_KEYMAP", keys); SET("MM3_DRIVE_KEYMAP", drive); SET("RECOMP_PADMAP", pad);
     if (!config->option[MM3_LAUNCH_IMPROVED]) {
-        for (size_t i = 0; i < sizeof original_game / sizeof original_game[0]; ++i)
-            SET(mm3_launcher_options[original_game[i].option].key, original_game[i].value);
+        for (size_t i = 0; i < sizeof original_look / sizeof original_look[0]; ++i)
+            SET(mm3_launcher_options[original_look[i].option].key, original_look[i].value);
         SET("MM3_GLOW_LIFT", "0");         /* lamp glows at their retail positions */
+        SET("MM3_NIGHT_GLASS", "0");       /* night glass keeps the daylight screen copy */
     }
+    if (!config->option[MM3_LAUNCH_GAMEPLAY])
+        for (size_t i = 0; i < sizeof xbox_gameplay / sizeof xbox_gameplay[0]; ++i)
+            SET(mm3_launcher_options[xbox_gameplay[i].option].key, xbox_gameplay[i].value);
     if (!config->option[MM3_LAUNCH_WIDESCREEN]) SET("RECOMP_ASPECT", "4:3");
     if (!config->option[MM3_LAUNCH_DISTANCE] || !config->option[MM3_LAUNCH_IMPROVED]) {
         SET("RECOMP_DRAW_DISTANCE", "1"); SET("RECOMP_VIEW_DISTANCE", "1");

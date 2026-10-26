@@ -36,6 +36,8 @@ static int circuit_mode = -1;
 static uint32_t circuit_city_screen, circuit_setup_screen;
 static unsigned circuit_name_blocks;
 void mm3_circuit_set_mode(int on) { circuit_mode = on; }
+static unsigned quits;
+void mm3_quit_game(void) { ++quits; }
 void mm3_circuit_set_screens(uint32_t city_select, uint32_t race_setup)
 {
     circuit_city_screen = city_select;
@@ -331,6 +333,10 @@ int main(void)
     assert(circuit_mode == 1 && commits == 4);
     execute(CIRCUIT_END);
     assert(circuit_mode == 0 && commits == 4);
+    /* The main menu's Quit row closes the game and touches no setting. */
+    assert(quits == 0);
+    execute(GAME_QUIT);
+    assert(quits == 1 && circuit_mode == 0 && commits == 4);
     puts("Native graphics menu contract passed.");
     return 0;
 }

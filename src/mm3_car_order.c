@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include "recomp_types.h"
 #include "mm3_mod_flags.h"
 
@@ -35,18 +36,17 @@ static unsigned speed_rating(uint32_t entry)
     return speed <= 9u ? speed : 10u;
 }
 
-static int comes_before(uint32_t a, uint32_t b, int catalog_order)
+static int comes_before(uint32_t a, uint32_t b)
 {
     unsigned a_rank = original_rank(MEM32(a));
     unsigned b_rank = original_rank(MEM32(b));
     unsigned extras = (unsigned)(sizeof original_car_ids / sizeof original_car_ids[0]);
 
     if (a_rank != extras || b_rank != extras) {
-        /* Restore catalog order for old installs that ranked all cars by
-         * overall score. In the filtered menu, keep the retail available /
-         * visible-locked groups and the relative order of original cars. */
+        /* Keep the retail available / visible-locked groups and the
+         * relative order of original cars. */
         if (a_rank != extras && b_rank != extras)
-            return catalog_order && a_rank < b_rank;
+            return 0;
         return a_rank != extras;
     }
     if (speed_rating(a) != speed_rating(b))
@@ -55,7 +55,7 @@ static int comes_before(uint32_t a, uint32_t b, int catalog_order)
     return MEM32(a) < MEM32(b);
 }
 
-static void order_vector(uint32_t vector, int catalog_order)
+static void order_vector(uint32_t vector)
 {
     uint32_t start, end, cursor;
     if (!guest_range(vector, 16u)) return;
@@ -69,7 +69,7 @@ static void order_vector(uint32_t vector, int catalog_order)
         if (!guest_range(MEM32(cursor), 0x2A4u)) return;
     for (cursor = start + 4u; cursor < end; cursor += 4u) {
         uint32_t entry = MEM32(cursor), position = cursor;
-        while (position > start && comes_before(entry, MEM32(position - 4u), catalog_order)) {
+        while (position > start && comes_before(entry, MEM32(position - 4u))) {
             MEM32(position) = MEM32(position - 4u);
             position -= 4u;
         }
@@ -81,6 +81,8 @@ static void order_vector(uint32_t vector, int catalog_order)
  * vector, EAX returns that vector, and RET 4 consumes its argument. The retail
  * implementation continues to decide membership, race classes and locks.
  * Reorder both its cache and its returned copy so cached/rebuilt lists agree.
+ * The catalog's own list (+4) keeps the order the game loaded it in: race
+ * opponents are picked from it (sub_001DE012).
  * Host helpers never touch guest registers, preserving every original effect. */
 /* Cars added by the installer (Car Workshop variants, IDs from 9000) are
  * left out of the menu's list with MM3_EXTRA_CARS=0 (the launcher's Original
@@ -107,12 +109,79 @@ void sub_001DE752(void)
 {
     uint32_t catalog = g_ebx;
     uint32_t output = MEM32(g_esp + 4u);
-    if (guest_range(catalog, 0x24u)) order_vector(catalog + 4u, 1);
     sub_001DE752_original();
-    if (guest_range(catalog, 0x24u)) order_vector(catalog + 0x14u, 0);
-    order_vector(output, 0);
+    if (guest_range(catalog, 0x24u)) order_vector(catalog + 0x14u);
+    order_vector(output);
     if (!mm3_mod_extra_cars()) {
         if (guest_range(catalog, 0x24u)) hide_extra_cars(catalog + 0x14u);
         hide_extra_cars(output);
     }
+}
+
+/* Race opponents' cars. Retail Checkpoint races call getRandomVehicleFromGroup
+ * (this Lua handler) from logic_general.lua randomCarInGroup with the player's
+ * class: it gathers the catalog's cars (+4) of class +0x30 that are not hidden
+ * (+0x28), in catalog order, and pick 1 takes the last (the rival's "best
+ * car"), pick 2 one of the last two, else any. The installer's extra cars
+ * share the retail classes and load after the originals, so they became the
+ * best car of their class: a Koenigsegg race's rival drove a Regera, a Viper
+ * race's a Panoz. The Xbox had none of them. Hide each extra car from the
+ * pick while its class still has a car of the Xbox's own (retail or
+ * downloadable); circuit races may still pick them when the launcher's
+ * MM3_AI_ALL_CARS allows it (tools/races/logic_circuit.lua). */
+extern void sub_001DE012_original(void);
+extern int mm3_circuit_mode_on(void);
+
+#define VEHICLE_CATALOG 0x003C5C94u
+#define CAR_CLASSES 64u
+#define CATALOG_CARS 2048u
+
+static int circuit_extras_allowed(void)
+{
+    const char *v = getenv("MM3_AI_ALL_CARS");
+    return mm3_circuit_mode_on() && !(v && !strcmp(v, "0"));
+}
+
+void sub_001DE012(void)
+{
+    static uint32_t hidden[CATALOG_CARS];
+    static int logged;
+    uint8_t xbox_class[CAR_CLASSES] = {0};
+    uint32_t catalog = MEM32(VEHICLE_CATALOG), start, end, cursor;
+    unsigned count = 0, i;
+    if (circuit_extras_allowed() || !guest_range(catalog, 0x24u)) {
+        sub_001DE012_original();
+        return;
+    }
+    start = MEM32(catalog + 8u);
+    end = MEM32(catalog + 12u);
+    if (end < start || (end - start) % 4u || end - start > 4u * CATALOG_CARS ||
+        !guest_range(start, end - start)) {
+        sub_001DE012_original();
+        return;
+    }
+    for (cursor = start; cursor < end; cursor += 4u) {
+        uint32_t entry = MEM32(cursor);
+        if (!guest_range(entry, 0x2A4u)) {
+            sub_001DE012_original();
+            return;
+        }
+        if (MEM32(entry) < FIRST_EXTRA_CAR_ID && !MEM8(entry + 0x28u) &&
+            MEM32(entry + 0x30u) < CAR_CLASSES)
+            xbox_class[MEM32(entry + 0x30u)] = 1;
+    }
+    for (cursor = start; cursor < end; cursor += 4u) {
+        uint32_t entry = MEM32(cursor), car_class = MEM32(entry + 0x30u);
+        if (MEM32(entry) >= FIRST_EXTRA_CAR_ID && !MEM8(entry + 0x28u) &&
+            car_class < CAR_CLASSES && xbox_class[car_class]) {
+            MEM8(entry + 0x28u) = 1;
+            hidden[count++] = entry;
+        }
+    }
+    if (count && !logged) {
+        logged = 1;
+        fprintf(stderr, "[MM3_AI_CARS] race opponents drive the Xbox cars: %u installer cars left out of their picks\n", count);
+    }
+    sub_001DE012_original();
+    for (i = 0; i < count; ++i) MEM8(hidden[i] + 0x28u) = 0;
 }

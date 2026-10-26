@@ -138,6 +138,7 @@ void sub_001C1585(void) {
     }
     ++draw_count; g_esp += 12;
 }
+#include "production_map_pins.c"
 #undef RECOMP_ICALL_SAFE_AT
 #define RECOMP_ICALL_SAFE_AT(target, saved, site) fake_icall(target)
 #undef RECOMP_ICALL_SAFE
