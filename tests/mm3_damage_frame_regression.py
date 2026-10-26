@@ -1,4 +1,4 @@
-"""Wreck-job car-to-car damage follows the frame time (src/mm3_damage_diagnostics.c)."""
+"""Car damage follows the frame time in every job and race (src/mm3_damage_diagnostics.c)."""
 from pathlib import Path
 import shutil
 import subprocess

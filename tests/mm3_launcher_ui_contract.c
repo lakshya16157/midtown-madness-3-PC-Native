@@ -555,9 +555,30 @@ static void contextual_help(HWND window)
     CHECK(!IsWindowEnabled(GetDlgItem(window, ID_REQUIRED)));
     CHECK(help_contains(window, "required") || help_contains(window, "always"));
 
+    /* Original or Improved: a pair of choices, the Improved columns greyed out
+     * in the Original and every choice there kept. */
+    select_page(window, 2);
+    {
+        HWND original = GetDlgItem(window, ID_ORIGINAL), improved = GetDlgItem(window, ID_OPTION + MM3_LAUNCH_IMPROVED);
+        HWND trees = GetDlgItem(window, ID_OPTION + MM3_LAUNCH_TREES), sky = GetDlgItem(window, ID_OPTION + MM3_LAUNCH_SKY);
+        int trees_on = SendMessageA(trees, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        CHECK(original && improved && IsWindowVisible(original) && IsWindowVisible(improved));
+        CHECK(SendMessageA(improved, BM_GETCHECK, 0, 0) == BST_CHECKED && SendMessageA(original, BM_GETCHECK, 0, 0) != BST_CHECKED);
+        SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_ORIGINAL, BN_CLICKED), (LPARAM)original);
+        CHECK(SendMessageA(improved, BM_GETCHECK, 0, 0) != BST_CHECKED && SendMessageA(original, BM_GETCHECK, 0, 0) == BST_CHECKED);
+        CHECK(help_contains(window, "Original") && help_contains(window, "On"));
+        CHECK(!IsWindowEnabled(trees) && IsWindowEnabled(sky) && IsWindowEnabled(GetDlgItem(window, ID_FOV)));
+        CHECK((SendMessageA(trees, BM_GETCHECK, 0, 0) == BST_CHECKED) == trees_on);
+        SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_ORIGINAL, BN_CLICKED), (LPARAM)original);
+        CHECK(SendMessageA(original, BM_GETCHECK, 0, 0) == BST_CHECKED); /* A choice, not a toggle. */
+        SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_OPTION + MM3_LAUNCH_IMPROVED, BN_CLICKED), (LPARAM)improved);
+        CHECK(SendMessageA(improved, BM_GETCHECK, 0, 0) == BST_CHECKED && SendMessageA(original, BM_GETCHECK, 0, 0) != BST_CHECKED);
+        CHECK(IsWindowEnabled(trees) && help_contains(window, "Improved"));
+    }
     for (int i = 1; i < MM3_LAUNCH_OPTION_COUNT; ++i) {
         int id = ID_OPTION + i;
         HWND child = GetDlgItem(window, id);
+        if (i == MM3_LAUNCH_IMPROVED) continue;
         select_page(window, i == MM3_LAUNCH_DSP || i == MM3_LAUNCH_NETWORK ? 0 : 2);
         CHECK(child && IsWindowVisible(child));
         focus_control(window, id); help_text(window, &previous); help_layout(window);

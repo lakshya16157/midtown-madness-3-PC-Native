@@ -19,7 +19,14 @@ static SRWLOCK s_settings_lock = SRWLOCK_INIT;
 
 int mm3_minimap_improved(void)
 {
+    /* The launcher's Original game (MM3_IMPROVED=0) keeps the retail minimap. */
+    static volatile LONG original = -1;
     int improved;
+    if (original < 0) {
+        const char *value = getenv("MM3_IMPROVED");
+        original = value && !strcmp(value, "0");
+    }
+    if (original) return 0;
     AcquireSRWLockShared(&s_settings_lock);
     improved = s_current.minimap_improved;
     ReleaseSRWLockShared(&s_settings_lock);

@@ -17,29 +17,56 @@
 const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"RECOMP_KEYBOARD", "Enable keyboard controls (player 1)", 1},
     {"MM3_MOD_WIDESCREEN", "Widescreen view and HUD", 1},
-    {"MM3_MOD_DRAW_DISTANCE", "Extended detail and building distance", 1},
+    {"MM3_MOD_DRAW_DISTANCE", "Longer view distance", 1},
     {"MM3_MOD_SKY", "Smooth skyline", 1},
-    {"MM3_MOD_CAR_LIGHTING", "Improved vehicle lighting", 1},
-    {"MM3_MOD_LAMP_LIGHTING", "Improved street-lamp lighting", 1},
+    {"MM3_MOD_CAR_LIGHTING", "Improved car lights", 1},
+    {"MM3_MOD_LAMP_LIGHTING", "Improved street lamps", 1},
     {"MM3_MOD_WORLD_LIGHTING", "Improved world lighting", 1},
-    {"MM3_MOD_FLARE_DEPTH", "Hide lamp flares behind buildings and cars", 1},
+    {"MM3_MOD_FLARE_DEPTH", "Flares hide behind objects", 1},
     {"MM3_UNLOCK_ALL_CARS", "Unlock all vehicles", 0},
-    {"MM3_MOD_DEV_TOOLS", "Enable retail developer tools", 0},
-    {"MM3_DEV_HUD", "Developer HUD at race start", 0},
-    {"MM3_DEBUG_MENU", "Developer menu at race start", 0},
+    {"MM3_MOD_DEV_TOOLS", "Retail developer tools", 0},
+    {"MM3_DEV_HUD", "Developer HUD", 0},
+    {"MM3_DEBUG_MENU", "Developer menu", 0},
     {"MM3_EXTENDED_CAMERAS", "Extended camera modes", 0},
     {"MM3_E3_PRESET", "E3 demonstration preset", 0},
     {"RECOMP_LOADING_SPINNER", "Loading animation", 1},
-    {"MM3_NATIVE_FOG", "Native depth fog and smooth horizon", 1},
+    {"MM3_NATIVE_FOG", "Native depth fog", 1},
     {"RECOMP_APU_DSP", "Accurate sound processor", 1},
     {"RECOMP_NET", "System Link networking", 0},
-    {"MM3_HUD_NORTH_MARKER", "Show the north marker on the minimap", 0},
-    {"MM3_HUD_RACE_ARROW", "Show the race direction arrow", 0},
-    {"MM3_ROUTE_NAVIGATION", "Route navigation line on the map", 1},
-    {"MM3_DRAFTING", "Slipstream drafting behind other cars", 1},
-    {"MM3_ROLL_GUARD", "Rollover assist in hard corners", 1},
-    {"MM3_AI_ALL_CARS", "Circuit opponents drive DLC and extra cars", 1}
+    {"MM3_HUD_NORTH_MARKER", "North marker on minimap", 0},
+    {"MM3_HUD_RACE_ARROW", "Race direction arrow", 0},
+    {"MM3_ROUTE_NAVIGATION", "Route line on the map", 1},
+    {"MM3_DRAFTING", "Slipstream drafting", 1},
+    {"MM3_ROLL_GUARD", "Rollover assist", 1},
+    {"MM3_AI_ALL_CARS", "AI uses DLC and extra cars", 1},
+    {"MM3_IMPROVED", "Improved game", 1},
+    {"MM3_GRAPHICS_MENU", "In-game Graphics menu", 1},
+    {"MM3_EXTRA_CIRCUITS", "Extra circuit races", 1},
+    {"MM3_EXTRA_CARS", "Extra installed cars", 1},
+    {"MM3_DLC_RACE_INFO", "DLC race names and pictures", 1},
+    {"MM3_FALLING_TREES", "Trees fall over when hit", 1},
+    {"MM3_EXHAUST_TRIANGLES", "Triangle exhaust", 0}
 };
+
+/* The Original game (MM3_IMPROVED=0): every mod off and the game's own HUD
+ * markers on; the graphics and audio improvements (widescreen, skyline,
+ * native fog, sound processor) and the player's extras (keyboard, unlocks,
+ * developer tools, System Link) stay as chosen. */
+static const struct { int option; const char *value; } original_game[] = {
+    {MM3_LAUNCH_DISTANCE, "0"}, {MM3_LAUNCH_CAR_LIGHT, "0"}, {MM3_LAUNCH_LAMP_LIGHT, "0"},
+    {MM3_LAUNCH_WORLD_LIGHT, "0"}, {MM3_LAUNCH_FLARE_DEPTH, "0"}, {MM3_LAUNCH_LOADING, "0"},
+    {MM3_LAUNCH_NORTH_MARKER, "1"}, {MM3_LAUNCH_RACE_ARROW, "1"}, {MM3_LAUNCH_ROUTE_NAVIGATION, "0"},
+    {MM3_LAUNCH_DRAFTING, "0"}, {MM3_LAUNCH_ROLL_GUARD, "0"}, {MM3_LAUNCH_AI_ALL_CARS, "0"},
+    {MM3_LAUNCH_GRAPHICS_MENU, "0"}, {MM3_LAUNCH_CIRCUITS, "0"}, {MM3_LAUNCH_EXTRA_CARS, "0"},
+    {MM3_LAUNCH_DLC_INFO, "0"}, {MM3_LAUNCH_TREES, "0"}, {MM3_LAUNCH_EXHAUST, "0"}
+};
+
+int mm3_launcher_option_in_original(int option)
+{
+    for (size_t i = 0; i < sizeof original_game / sizeof original_game[0]; ++i)
+        if (original_game[i].option == option) return 0;
+    return 1;
+}
 const char *const mm3_launcher_key_names[MM3_LAUNCHER_KEYS] = {
     "A", "B", "X", "Y", "WHITE", "BLACK", "LT", "RT", "START", "BACK",
     "UP", "DOWN", "LEFT", "RIGHT", "LS", "RS", "LX-", "LX+", "LY-", "LY+",
@@ -363,8 +390,13 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
     format_map(drive, sizeof drive, config->drive_keys, MM3_LAUNCHER_DRIVE_KEYS, mm3_launcher_drive_names, 0);
     format_map(pad, sizeof pad, config->pad, MM3_LAUNCHER_PAD_INPUTS, mm3_launcher_pad_names, 1);
     SET("RECOMP_KEYMAP", keys); SET("MM3_DRIVE_KEYMAP", drive); SET("RECOMP_PADMAP", pad);
+    if (!config->option[MM3_LAUNCH_IMPROVED]) {
+        for (size_t i = 0; i < sizeof original_game / sizeof original_game[0]; ++i)
+            SET(mm3_launcher_options[original_game[i].option].key, original_game[i].value);
+        SET("MM3_GLOW_LIFT", "0");         /* lamp glows at their retail positions */
+    }
     if (!config->option[MM3_LAUNCH_WIDESCREEN]) SET("RECOMP_ASPECT", "4:3");
-    if (!config->option[MM3_LAUNCH_DISTANCE]) {
+    if (!config->option[MM3_LAUNCH_DISTANCE] || !config->option[MM3_LAUNCH_IMPROVED]) {
         SET("RECOMP_DRAW_DISTANCE", "1"); SET("RECOMP_VIEW_DISTANCE", "1");
     }
 #undef SET

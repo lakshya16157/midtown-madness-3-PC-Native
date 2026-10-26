@@ -14,6 +14,10 @@ static unsigned char *arena;
 static const uint32_t self = 0x10000, horizon = 0x12000, stack = 0x20000;
 static const uint32_t camera = 0x30000, device = 0x40000, packet = 0x50000, space = 0x60000;
 int nv2a_d3d_distance_fog_ready(void) { return available; }
+/* The triangle exhaust is off here (tests/mm3_exhaust_regression.py). */
+int mm3_exhaust_enabled(void) { return 0; }
+int mm3_exhaust_packet(uint32_t view, uint32_t words[18]) { (void)view; (void)words; return 0; }
+float mm3_city_haze_scale(void) { return 2.0f; }
 void sub_000F8DCE_original(void) { ++fog_calls; assert(g_ecx == self && g_esp == stack); g_eax = 0x55660000; g_esp += 16; }
 void sub_000F8750_original(void) { ++horizon_calls; assert(g_ecx == horizon && g_esp == stack); g_eax = 0x77880000; g_esp += 8; }
 /* Title MakeSpace: stdcall (minimum, requested) below a return slot. With
@@ -150,6 +154,35 @@ int main(int argc, char **argv)
     sub_000F8DCE(); assert(!fog_calls && MEM32(0x80010004) == 0x58424647);
     assert(MEM32(device) == 0x80010030 && g_esp == stack + 16);
     assert(!fog_range(0xFFFFFFF0u, 48) && !fog_range(0x07FFFFF0u, 48));
+    /* The sky's fog ramp (handle +0x28 -> D3D texture at +0x14: a 64x32
+     * A8R8G8B8 in contiguous memory) goes ahead of the fog packet with the
+     * pass's row argument and the authored-distance remap. */
+    for (i = 0; i < 4; ++i) {
+        const uint32_t handle = 0x14000, texture = 0x14100;
+        setup(); MEM32(device + 4) = packet + 0x100;
+        MEM32(self + 0x28) = handle; MEM32(handle + 0x14) = texture;
+        MEM32(texture) = 0x01040001; MEM32(texture + 4) = 0x00782000;
+        MEM32(texture + 8) = 0x00209B83; MEM32(texture + 12) = 0x05610629;
+        MEMF(stack + 8) = .25f;
+        if (i == 1) MEM32(texture) = 0x01050001;         /* a surface, not a texture */
+        if (i == 2) MEM32(texture + 12) = 0x05610C29;    /* DXT1, not the ramp's layout */
+        if (i == 3) MEM32(texture + 4) = 0x04000000;     /* outside contiguous memory */
+        sub_000F8DCE();
+        assert(!fog_calls && g_esp == stack + 16 && MEM32(stack + 4) == 0xFFAABBCC);
+        if (i) { assert(MEM32(packet) == 0x402C0100 && MEM32(device) == packet + 48); continue; }
+        assert(MEM32(packet) == 0x40180100 && MEM32(packet + 4) == 0x52424647);
+        assert(MEM32(packet + 8) == 0x80782000 && MEM32(packet + 12) == 0x05610629);
+        assert(MEMF(packet + 16) == .25f && MEMF(packet + 20) == 2.0f && MEMF(packet + 24) == .78f);
+        assert(MEM32(packet + 28) == 0x402C0100 && MEM32(packet + 32) == 0x58424647);
+        assert(MEM32(packet + 52) == 0xFFAABBCC && MEMF(packet + 72) == 6.25f);
+        assert(MEM32(device) == packet + 76 && MEM32(packet + 76) == 0xA5A5A5A5);
+    }
+    /* Room for the fog packet but not the ramp as well: ask for space. */
+    setup(); space_room = 1; MEM32(device + 4) = packet + 60;
+    MEM32(self + 0x28) = 0x14000; MEM32(0x14000 + 0x14) = 0x14100;
+    MEM32(0x14100) = 0x01040001; MEM32(0x14104) = 0x00782000; MEM32(0x1410C) = 0x05610629;
+    sub_000F8DCE();
+    assert(space_calls == 1 && MEM32(space) == 0x40180100 && MEM32(device) == space + 76);
     /* Every 30 s: passes, passes that needed space, retail fallbacks. */
     s_fog_window = 0; test_clock = 1000;
     s_fog_packets = s_fog_made_space = s_fog_fallbacks = 0;
@@ -166,6 +199,6 @@ int main(int argc, char **argv)
     assert(s_fog_window == test_clock && s_fog_packets == 1 && !s_fog_made_space && !s_fog_fallbacks);
 done:
     assert(VirtualFree(arena, 0, MEM_RELEASE));
-    puts("PASS native fog ordered packet, camera projection, title push-buffer space instead of a retail fog frame, fallback, horizon ownership, high RAM alias, 30 s report and guest ABI");
+    puts("PASS native fog ordered packet, sky fog ramp ahead of it, camera projection, title push-buffer space instead of a retail fog frame, fallback, horizon ownership, high RAM alias, 30 s report and guest ABI");
     return 0;
 }

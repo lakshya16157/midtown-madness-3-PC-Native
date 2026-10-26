@@ -110,10 +110,12 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0015A929)
 # Ordered host depth fog and its optional horizon replacement.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000F8DCE sub_000F8750)
 # Car damage: src/mm3_damage_diagnostics.c logs each scaled hit and gathers
-# the wreck jobs' impulses into 30 fps frames for the damage step.
+# every car's impulses into 30 fps frames for the damage step.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00021DCF sub_001CDB6C)
 # The language chosen in Game Setup survives a restart (src/mm3_language.c).
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001193A6 sub_00124822)
+# The downloadable races' own route pictures (src/mm3_dlc_races.c).
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_002430FD)
 # Slipstream drafting and the roll guard on every car's integrate step
 # (src/mm3_vehicle_dynamics.c).
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001D7441)
@@ -520,6 +522,9 @@ add_executable(${PROJECT_NAME}
  src/mm3_stress_debug.c
  src/mm3_custom_car_names.c
  src/mm3_circuit_races.c
+ src/mm3_dlc_races.c
+ src/mm3_exhaust.c
+ src/mm3_voice_fixes.c
  src/mm3_lua_errors.c
  src/mm3_damage_diagnostics.c
  src/mm3_language.c
@@ -576,6 +581,11 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 target_link_libraries(${PROJECT_NAME} PRIVATE xboxrecomp)
 set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_LAUNCHER_AUDIO=1)
 set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_LAUNCHER_NETWORK=1)
+# The release this build belongs to: the launcher's title and the first log
+# line show it, so a report says which version it came from.
+set(MM3_VERSION "2.0 beta 0")
+set_property(SOURCE src/mm3_launcher.c src/main.c APPEND PROPERTY COMPILE_DEFINITIONS
+    "MM3_VERSION=\"${MM3_VERSION}\"")
 if(WIN32)
     target_link_libraries(${PROJECT_NAME} PRIVATE comctl32 xinput)
 endif()

@@ -7,6 +7,7 @@
 #include <windows.h>
 #endif
 #include "recomp_types.h"
+#include "mm3_exhaust.h"
 
 /* Slipstream drafting and the roll guard, for every car on MM3's car physics.
  *
@@ -304,16 +305,18 @@ void sub_001D7441(void)
     double now;
     Car *self;
     unsigned i;
-    if ((!drafting_enabled() && !roll_guard_enabled()) || !(dt > 0.0f) || dt > 0.25f ||
+    int dynamics = drafting_enabled() || roll_guard_enabled();
+    if ((!dynamics && !mm3_exhaust_enabled()) || !(dt > 0.0f) || dt > 0.25f ||
         !mapped(vehicle, 0x0Cu) || !mapped(car = MEM32(vehicle + 8u), 0x40u) ||
         !mapped(simulation = MEM32(car + 0x3Cu), 8u) || !mapped(body = MEM32(simulation + 4u), 0x1C4u)) {
         sub_001D7441_original();
         return;
     }
     for (i = 0; i < 3; ++i) velocity[i] = MEMF(body + 0x20u + i * 4u);
-    if (!isfinite(velocity[0]) || !isfinite(velocity[1]) || !isfinite(velocity[2]) ||
+    if (!dynamics || !isfinite(velocity[0]) || !isfinite(velocity[1]) || !isfinite(velocity[2]) ||
         !isfinite(MEMF(body + 0xC8u)) || !isfinite(MEMF(body + 0xD0u))) {
         sub_001D7441_original();
+        mm3_exhaust_step(car, body, dt);
         return;
     }
     now = now_seconds();
@@ -335,4 +338,6 @@ void sub_001D7441(void)
     self->has_velocity = 1;
     report(now);
     sub_001D7441_original();
+    /* The triangle exhaust follows the integrated (drawn) car. */
+    mm3_exhaust_step(car, body, dt);
 }

@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "mm3_recomp_types.h"
+#include "mm3_mod_flags.h"
 #include "mm3_tree_body.h"
 #include "mm3_collision_profile.h"
 #ifdef MM3_TREE_TEST_HELPERS
@@ -259,6 +260,8 @@ int mm3_tree_use_solid_contact(uint32_t record, float speed)
     char sound[TREE_NAME_SIZE];
     uint32_t metadata;
     uint16_t flags;
+    /* MM3_FALLING_TREES=0 (the launcher's Original game): retail trees. */
+    if (!mm3_mod_falling_trees()) return 0;
     if (record > UINT32_MAX - 0x10Cu || !tree_read(record + 0x100, &flags, sizeof flags)) return 0;
     metadata = tree_word(record + 0x108);
     if (!tree_read(metadata, local, sizeof local) || !local_object_tree(local, sound)) return 0;

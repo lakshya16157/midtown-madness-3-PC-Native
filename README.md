@@ -280,6 +280,19 @@ reference workflow uses a bare XDVDFS XISO rather than a two-part redump image.
 
 ## Improvements in this fork
 
+- **New in 2.0 beta 0:**
+  - **Original or Improved:** the launcher's Mods tab starts with a choice. The Original game (`MM3_IMPROVED=0`) keeps widescreen, the skyline, native fog, the sound processor and the player's extras (keyboard, unlocks, developer tools, System Link) and turns every mod off: distances 1x, retail car/lamp/world lighting and glows, no loading spinner, the game's own north marker and race arrow, no route line, no drafting or rollover assist, original opponents, no Graphics Settings menu, no circuits, no extra cars, retail DLC race text, no falling trees, no exhaust, and the retail minimap. Each mod of the Improved game has its own switch, laid out as Graphics and audio, Improved visuals and Improved gameplay.
+  - **Spanish voices in the main missions:** the sound manager kept its voice language (`+0xB8`) at English unless the game started in Spanish; the chosen language is now applied after Game Setup and at every start, so Angelina and the others speak Spanish.
+  - **Spanish Paris police:** on the original disc they spoke Italian. Setup builds `Voice/Spanish/Paris_mm3.xwb` from the Spanish bank with the 42 police lines taken from the French one, and the game opens it in place of `Paris.xwb` (`MM3_VOICE_FIXES=0` keeps the disc's bank).
+  - **DLC race names and pictures:** the downloadable Blitz and Checkpoint races 11-20 get names, descriptions (season, time, weather, checkpoints and time limit) in five languages and their own course pictures (`MM3_DLC_RACE_INFO`). The DLC itself is not changed.
+  - **Triangle exhaust (`MM3_EXHAUST_TRIANGLES`, off by default):** every car near the camera puffs small triangles from its exhaust, more and faster with speed; they move on their own in the world, spin, grow and fade. They are simulated with the car physics and drawn by a renderer pass over the finished 3D scene, behind anything nearer.
+  - **Switches for the Graphics Settings menu and the circuits** (`MM3_GRAPHICS_MENU`, `MM3_EXTRA_CIRCUITS`), extra cars (`MM3_EXTRA_CARS`) and falling trees (`MM3_FALLING_TREES`).
+  - **The version** shows in the launcher title and the first log line (`[MM3_VERSION]`).
+  - **Rain you can see:** MM3 draws its rain as 16,384 line streaks a frame. Lines came out one screen pixel wide at the PC's higher resolution, so the rain was a few faint hairlines; they are now one Xbox pixel wide, as on the console (`RECOMP_LINE_WIDTH` scales it).
+  - **Weather fog and white trees:** each sky has its own fog curve (dense in rain, a light mist on winter mornings). The native fog used one curve for every weather, so in rain the city lost its haze while the trees, which still used the sky's curve, turned pale white against clear buildings. The world fog now follows the sky's curve wherever it is denser, and trees take their fog from the same depth as the buildings around them.
+  - **HUD shrinking and leaves jumping:** some full-screen effects during a race (a fade, a 128 px overlay, a sprite batch spread across the screen) were taken for menu artwork, which put the rest of that frame, HUD and trees included, on the smaller 4:3 menu canvas. Only real artwork (one quad of a 256 px or larger image) counts now, and dimmers and tints cover the whole wide screen. `[HUD]` lines name each full-screen draw once.
+  - **Car damage at 60 fps everywhere:** collision hits now count as at the console's 30 fps in every job and race, not only the wreck jobs, so the ambulance and other "don't wreck it" jobs are as hard as on the Xbox. `MM3_DAMAGE_FRAME_FIX=0` restores the old behaviour.
+  - **Tunnel and underpass lighting:** their wall lamps are uplighters aimed at the ceiling, so the road under them stayed dark at night. Each such lamp now also lights a pool of its own colour down to the road (`[MM3_LAMPS] ... uplighter` names each kind once).
 - **New in Setup 1.7:**
   - **Post-race menu fixed:** after some circuit and checkpoint races (for example losing to an opponent in the second race of a session) the results and the post-race menu never appeared, or the game crashed. A piece of the original game's text-drawing code had never been translated, so it returned with scrambled registers and wrecked the results screen. It is translated now, with guards that log `[MM3_UI_GUARD]` instead of crashing if anything similar happens.
   - **Controller vibration:** the game's own rumble now reaches the controller (XInput, and PlayStation pads through Steam Input). The game's vibration option turns it off.
@@ -1220,6 +1233,14 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `MM3_DRAFTING` | saved setting or `1` | Slipstream: a car close behind another pulls a little harder, for players and opponents alike (Mods tab). `0` drives as the original game. |
 | `MM3_ROLL_GUARD` | saved setting or `1` | Rollover assist: damps a car's roll once it leans past 20 degrees in a hard corner; crashes and jumps are left alone (Mods tab). |
 | `MM3_AI_ALL_CARS` | saved setting or `1` | Circuit-race opponents may drive DLC and extra cars; the rival takes the best car of a faster class (Mods tab). `0` keeps them to the original cars. |
+| `MM3_IMPROVED` | saved setting or `1` | `0` plays the Original game: the launcher turns every mod off (Mods tab). |
+| `MM3_GRAPHICS_MENU` / `MM3_EXTRA_CIRCUITS` | saved setting or `1` | The in-game Graphics Settings menu and the Circuit mode with its 20 races; `0` leaves the game's own menus. |
+| `MM3_EXTRA_CARS` | saved setting or `1` | `0` leaves cars added by Setup (IDs from 9000) out of the vehicle menus. |
+| `MM3_DLC_RACE_INFO` | saved setting or `1` | Names, descriptions and pictures for the downloadable races 11-20; `0` shows them as the Xbox did. |
+| `MM3_FALLING_TREES` | saved setting or `1` | `0` keeps the original tree collisions. |
+| `MM3_EXHAUST_TRIANGLES` | saved setting or `0` | `1` makes cars puff triangles from their exhausts. |
+| `MM3_VOICE_FIXES` | `1` | `0` plays the disc's Spanish Paris voice bank (police in Italian). |
+| `RECOMP_LINE_WIDTH` | `1` | Width of line and point lists (MM3's rain streaks) in guest pixels at the raised internal resolution; `2` doubles it, `0` keeps them one screen pixel (the old, nearly invisible rain). |
 | `RECOMP_RUMBLE` | `1` | Controller vibration: the game's own rumble goes to the XInput pad (Steam Input passes it on to PlayStation pads). The game's vibration option turns it off in play; `0` keeps the controller still. |
 | `RECOMP_NET` | saved setting or `0` | `nat` or `1` enables the System Link adapter and UDP peer transport. |
 | `RECOMP_NET_PORT` / `RECOMP_NET_PEERS` | `3075` / empty | Local UDP tunnel port and up to eight comma-separated peer `host:port` entries. |

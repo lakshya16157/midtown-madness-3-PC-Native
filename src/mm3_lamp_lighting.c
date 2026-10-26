@@ -416,13 +416,82 @@ static uint32_t lamp_source_color(uint32_t source, uint32_t color)
         (uint32_t)((float)blue * gain * (1.0f - 0.40f * warmth) + 0.5f);
 }
 
+/* Tunnel and underpass walls carry uplighters: lamp-coloured spots aimed up
+ * at the ceiling (the Peripherique tunnels: city fixtures 3 m up, 45 degrees
+ * up, 7 m long, very dim), so the road under them stayed dark (user,
+ * 2026-10-24). Such a fixture also lights a pool of its own hue around it that
+ * reaches the road, through the native point submission with the producer's
+ * world matrix (aimed at least 0.3 up): 1.75x the mounting height where it
+ * is known, as a street lamp's pool, otherwise the fixture's own length (the
+ * tunnel fixtures' objects do not stand on the road, so their height is not
+ * known). Both producers build a look-at view matrix with 259A65 (eye, at,
+ * up): its axes are columns, the aim z = normalize(at - eye) is column 2, so
+ * its height is at +0x18. */
+#define LAMP_SPILL_PEAK 0x48u
+static float lamp_matrix_up(uint32_t matrix)
+{
+    float up = lamp_address(matrix, 0x40u) ? MEMF(matrix + 0x18u) : 0.0f;
+    return up >= 0.3f && up <= 1.001f ? up : 0.0f;
+}
+
+static int lamp_is_uplighter(uint32_t source, uint32_t matrix)
+{
+    float range = MEMF(source + 0x4F);
+    return MEM8(source + 0x53) && lamp_matrix_up(matrix) > 0.0f &&
+           lamp_lights_ground(MEM32(source + 0x2B)) && range > 0.0f && range <= LAMP_STREET_MAX_RANGE;
+}
+
+static void lamp_uplighter_spill(uint32_t matrix, uint32_t authored, uint32_t alpha, float reach,
+                                 float fade, const char *kind, float range, float up)
+{
+    static uint32_t logged[16];
+    static unsigned nlogged;
+    uint32_t color, key = authored ^ ((uint32_t)(range * 16.0f) << 24);
+    unsigned red = (authored >> 16) & 255u, green = (authored >> 8) & 255u, blue = authored & 255u;
+    unsigned peak = red > green ? red : green, i;
+    uint32_t saved[] = {g_eax, g_ecx, g_edx, g_ebp, g_seh_ebp}, stack_top = g_esp;
+    union { float f; uint32_t u; } radius = {reach};
+    if (blue > peak) peak = blue;
+    if (!peak || !(reach > 0.0f) || reach > 2.0f * LAMP_STREET_MAX_RANGE || !lamp_address(matrix, 0x40u) ||
+        !lamp_address(g_esp - 16u, 16u)) return;
+    color = lamp_color_gain((alpha & 0xFF000000u) | (authored & 0x00FFFFFFu),
+        (float)LAMP_SPILL_PEAK / (float)peak * mm3_local_light_gain(MEM32(0x00407C30u)) * fade);
+    PUSH32(g_esp, radius.u);
+    PUSH32(g_esp, color);
+    PUSH32(g_esp, matrix);
+    PUSH32(g_esp, 0); /* host-owned call, no guest return address */
+    sub_00021E18_original();
+    g_eax = saved[0]; g_ecx = saved[1]; g_edx = saved[2]; g_ebp = saved[3]; g_seh_ebp = saved[4];
+    g_esp = stack_top;
+    for (i = 0; i < nlogged && logged[i] != key; ++i) {}
+    if (i == nlogged && nlogged < 16) {
+        logged[nlogged++] = key;
+        fprintf(stderr, "[MM3_LAMPS] %s uplighter %06X (%.0f m spot aimed %.0f deg up) lights the road under it: "
+                "%.1f m pool %06X\n", kind, (unsigned)(authored & 0xFFFFFFu), range,
+                asinf(fminf(1.0f, up)) * 57.29578f, reach, (unsigned)(color & 0xFFFFFFu));
+    }
+}
+
+/* The object-light producer (0xCF424: a light object's position and target,
+ * colour halved) submits its spots from 0xCF5ED. */
+static void lamp_object_spill(uint32_t matrix, uint32_t color, float range)
+{
+    float up = lamp_matrix_up(matrix);
+    if (!(up > 0.0f) || !isfinite(range) || !(range > 0.0f) || range > LAMP_STREET_MAX_RANGE ||
+        !lamp_lights_ground(color & 0x00FFFFFFu)) return;
+    lamp_uplighter_spill(matrix, color, color, range, 1.0f, "object", range, up);
+}
+
 void sub_000489A6(void)
 {
     if (!mm3_mod_lamp_lighting()) { sub_000489A6_original(); return; }
     uint32_t stack = g_esp;
     uint32_t color = MEM32(stack + 8);
+    uint32_t matrix = MEM32(stack + 4), source = g_ebx;
     int world_source = MEM32(stack) == 0x000E2533u;
     int traffic_signal = MEM32(stack) == 0x0016945Au;
+    int object_light = MEM32(stack) == 0x000CF5EDu;
+    float range = MEMF(stack + 12);
     if (world_source && s_lamp_glow_only) { g_esp += 20; return; } /* ret 16 */
     if (world_source) {
         uint32_t tuned = lamp_source_color(g_ebx, color);
@@ -439,6 +508,11 @@ void sub_000489A6(void)
     }
     sub_000489A6_original();
     if (world_source || traffic_signal) MEM32(stack + 8) = color;
+    if (world_source && lamp_address(source, 0x56) && lamp_is_uplighter(source, matrix))
+        lamp_uplighter_spill(matrix, MEM32(source + 0x2B), color,
+                             s_lamp_height >= 1.0f ? LAMP_POINT_MOUNT_REACH * s_lamp_height : MEMF(source + 0x4F),
+                             s_lamp_added_fade, "city", MEMF(source + 0x4F), lamp_matrix_up(matrix));
+    if (object_light) lamp_object_spill(matrix, color, range);
 }
 
 void sub_00021E18(void)

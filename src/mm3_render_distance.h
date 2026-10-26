@@ -11,5 +11,9 @@ float mm3_view_distance_scale(void);
 float mm3_facade_distance_scale(void);
 /* Native city loader seam; records its actual resident-cell range limit. */
 void mm3_city_streaming_limit(unsigned int renderer);
+/* How much farther the city is drawn than its authored range (at least 1):
+ * the depth scale that puts a sky fog ramp back at its authored distance. */
+float mm3_city_haze_scale(void);
+#define MM3_FOG_RAMP_KNEE 0.78f
 
 #endif

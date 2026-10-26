@@ -15,7 +15,7 @@ def main():
         shutil.copyfile(ROOT / "src/mm3_recomp_types.h", folder / "recomp_types.h")
         executable = folder / "contract.exe"
         subprocess.run(["cl", "/nologo", "/W4", "/WX", "/wd4100", "/Od", "/std:c11", "/D_CRT_SECURE_NO_WARNINGS",
-                        "/I" + str(folder), "/I" + str(ROOT / "tools/xboxrecomp/include"),
+                        "/I" + str(folder), "/I" + str(ROOT / "src"), "/I" + str(ROOT / "tools/xboxrecomp/include"),
                         str(ROOT / "tests/mm3_vehicle_dynamics_contract.c"), str(ROOT / "src/mm3_vehicle_dynamics.c"),
                         "/Fo:" + str(folder) + "\\", "/Fe:" + str(executable)],
                        check=True, cwd=folder, stdout=subprocess.DEVNULL)

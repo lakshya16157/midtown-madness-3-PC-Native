@@ -18,13 +18,16 @@
 #ifndef MM3_LAUNCHER_NETWORK
 #define MM3_LAUNCHER_NETWORK 0
 #endif
+#ifndef MM3_VERSION
+#define MM3_VERSION "development build"
+#endif
 
 enum {
     ID_TABS = 100, ID_DEFAULTS, ID_STATUS, ID_KEYBOARD, ID_GROUP, ID_BINDINGS,
     ID_CAPTURE, ID_UNBIND, ID_SOURCE, ID_BIND_LABEL, ID_PAD_STATUS, ID_PAD_PORT, ID_PAD_COUNT,
     ID_RESOLUTION, ID_MODE, ID_FPS, ID_VSYNC, ID_SCALE, ID_ASPECT, ID_MSAA,
     ID_ANISO, ID_DRAW, ID_VIEW, ID_SHOW_FPS, ID_MINIMAP, ID_FOV, ID_PORT, ID_PEERS,
-    ID_SCREEN,
+    ID_SCREEN, ID_ORIGINAL,
     ID_HELP_TITLE, ID_HELP_VALUE, ID_HELP_BODY, ID_HELP_EFFECT, ID_REQUIRED,
     ID_PAD_SUMMARY, ID_PAD_HINT,
     ID_OPTION = 300,
@@ -40,8 +43,8 @@ typedef struct LauncherScreen {
 enum { SCREEN_MAIN = 0, SCREEN_MISSING = 99, LAUNCHER_SCREENS = 16 };
 typedef struct Launcher {
     HWND window, tabs;
-    HFONT font, heading;
-    LauncherControl controls[120];
+    HFONT font, heading, section;
+    LauncherControl controls[160];
     int control_count, page, result, done, smoke, capture, capture_armed, group;
     WORD previous_pad[4];
     int pad_seen[4];
@@ -260,14 +263,25 @@ static void help_show(Launcher *ui, int id)
             "Draw the route to the next checkpoint or job target on the race map, like a navigation system, along the roads the course takes. Off shows the map without a drawn route, as in the original game.",
             "A car close behind another, in its wake, pulls a little harder: up to about 6 km/h more each second at high speed, fading over 30 m. Works for you and the AI opponents alike. Off: no slipstream, as in the original game.",
             "Some original cars could roll over in hard corners. Once a car on its wheels leans past 20 degrees, its roll is damped and eased back; crashes, jumps and upside-down cars are left alone. Off: original handling.",
-            "In circuit races the opponents may drive any installed car, DLC and extra cars included, and the rival takes the best car of a faster group than yours. Off keeps the opponents to the original cars."
+            "In circuit races the opponents may drive any installed car, DLC and extra cars included, and the rival takes the best car of a faster group than yours. Off keeps the opponents to the original cars.",
+            "Play with the mods on this tab: better lighting, longer view distance, extra races and cars, new driving assists and more. Original plays the Xbox game as it was, with only the PC graphics and audio upgrades.",
+            "Add Graphics Settings to the game's own main and pause menus, to change resolution, quality and the HUD without leaving the game. Off: the menus are as on the Xbox; F10 still opens the settings window.",
+            "Add Circuit mode to Single Player: lap races through Washington DC and Paris, with AI opponents. Off: the original modes only.",
+            "Show the cars you added with the installer's Car Workshop in the vehicle menu. Off shows only the Xbox cars and the official downloadable ones.",
+            "Give the downloadable Blitz and Checkpoint races their own names, descriptions and course pictures, in the game's language. Off: they appear as the Xbox showed them.",
+            "Small trees and lamp posts tip over and fall when a car hits them hard. Off: they react as in the original game.",
+            "Instead of smoke, cars puff small triangles from their exhausts. More and faster triangles come out as the car speeds up; each one drifts, grows and fades away."
         };
         int option = id - ID_OPTION, on = checked(ui, id);
         title = mm3_launcher_options[option].label;
         body = descriptions[option];
         snprintf(value, sizeof value, "%s", on ? "On" : "Off");
         effect = "Applies when you press Play. Your choice is saved for the next launch.";
-        if (option == MM3_LAUNCH_DSP)
+        if (option == MM3_LAUNCH_IMPROVED)
+            effect = "Every mod on this tab can still be turned on or off one by one.";
+        else if (!mm3_launcher_option_in_original(option) && !checked(ui, ID_OPTION + MM3_LAUNCH_IMPROVED))
+            effect = "The Original game is selected, so this mod stays off. Choose Improved game to use it.";
+        else if (option == MM3_LAUNCH_DSP)
             effect = MM3_LAUNCHER_AUDIO ? (on ? "More accurate effects and mixing, with higher CPU use. Turn off if audio processing limits performance." : "Uses less CPU, with simpler audio effects and mixing.") : "This build does not include the sound-processor option.";
         else if (option >= MM3_LAUNCH_DEV_HUD && option <= MM3_LAUNCH_E3)
             effect = checked(ui, ID_OPTION + MM3_LAUNCH_DEV_TOOLS) ? "Needs the optional prepared developer scripts. These are experimental game commands." : "Enable retail developer tools first. Prepared developer scripts are also required.";
@@ -440,6 +454,11 @@ static void help_show(Launcher *ui, int id)
                 effect = ui->capture ? "Listening now. Press the desired input, or Escape to cancel." : "Start capture, then press the desired input. Release controller buttons before capturing. Escape cancels.";
             break;
         }
+        case ID_ORIGINAL:
+            title = "Original game"; snprintf(value, sizeof value, "%s", checked(ui, id) ? "On" : "Off");
+            body = "The Xbox game as it was, at your PC's resolution and frame rate, with the PC graphics and audio upgrades: widescreen, sharper rendering, native fog and the accurate sound processor. No new lighting, cars, races, menus or driving changes.";
+            effect = "The mods in the Improved columns stay off. Your choices there are kept for when you choose Improved game again.";
+            break;
         case ID_REQUIRED:
             title = "Collision-cell safety repair"; snprintf(value, sizeof value, "Always on");
             body = "Repair decoded collision cells before the game's collision queries use them. This compatibility fix is required for reliable native gameplay.";
@@ -462,7 +481,7 @@ static void help_show(Launcher *ui, int id)
             break;
         case ID_TABS:
             title = ui->page == 0 ? "Game settings" : ui->page == 1 ? "Controls" : "Mods"; value[0] = 0;
-            body = ui->page == 0 ? "Set the display, rendering quality, minimap, audio and System Link options. Select any setting to read an explanation and its performance tradeoffs." : ui->page == 1 ? "Set up keyboard, mouse and controller inputs. Select a binding to see what it currently uses and how capture works." : "Choose visual enhancements and optional developer tools. Select an option to read its effect and any requirements.";
+            body = ui->page == 0 ? "Set the display, rendering quality, minimap, audio and System Link options. Select any setting to read an explanation and its performance tradeoffs." : ui->page == 1 ? "Set up keyboard, mouse and controller inputs. Select a binding to see what it currently uses and how capture works." : "Choose the Original game or the Improved game, then pick the mods you want. Select an option to read its effect and any requirements.";
             effect = "Every choice is saved when you press Play. Cancel discards this launcher's edits.";
             break;
         default: return;
@@ -488,6 +507,7 @@ static void page_show(Launcher *ui, int page)
     InvalidateRect(ui->window, NULL, TRUE);
 }
 static void bindings_refresh(Launcher *ui);
+static void mods_enable(Launcher *ui);
 static void binding_detail(Launcher *ui)
 {
     int selected = (int)SendMessageA(control(ui, ID_BINDINGS), LB_GETCURSEL, 0, 0);
@@ -608,6 +628,8 @@ static void populate(Launcher *ui)
     combo_select(control(ui, ID_PAD_COUNT), ui->config.controller_count);
     for (int i = 1; i < MM3_LAUNCH_OPTION_COUNT; ++i)
         set_checked(ui, ID_OPTION + i, ui->config.option[i]);
+    set_checked(ui, ID_ORIGINAL, !ui->config.option[MM3_LAUNCH_IMPROVED]);
+    mods_enable(ui);
     snprintf(text, sizeof text, "%d", ui->config.fov_degrees); SetWindowTextA(control(ui, ID_FOV), text);
     snprintf(text, sizeof text, "%d", ui->config.network_port); SetWindowTextA(control(ui, ID_PORT), text);
     SetWindowTextA(control(ui, ID_PEERS), ui->config.peers);
@@ -771,30 +793,53 @@ static void controls_controls(Launcher *ui)
     add(ui, 1, "STATIC", "Select an action, then capture a key/button or select a controller source. Escape cancels capture. Stick axes stay analog. Controller bindings apply equally to players 1-4.",
          0, -1, 417, 504, 399, 80);
 }
+/* The Mods tab: the Original or the Improved game first, then three columns.
+ * The first keeps the player's choices in both games; the Improved columns
+ * are greyed out (and off in game, mm3_launcher_config_apply) in the Original. */
 static void mods_controls(Launcher *ui)
 {
-    static const int options[] = {MM3_LAUNCH_WIDESCREEN, MM3_LAUNCH_DISTANCE, MM3_LAUNCH_SKY, MM3_LAUNCH_LOADING, MM3_LAUNCH_NATIVE_FOG,
-        MM3_LAUNCH_CAR_LIGHT, MM3_LAUNCH_LAMP_LIGHT, MM3_LAUNCH_WORLD_LIGHT,
-        MM3_LAUNCH_FLARE_DEPTH, MM3_LAUNCH_UNLOCK, MM3_LAUNCH_DEV_TOOLS,
-        MM3_LAUNCH_DEV_HUD, MM3_LAUNCH_DEBUG_MENU, MM3_LAUNCH_CAMERAS, MM3_LAUNCH_E3};
-    for (int i = 0; i < (int)(sizeof options / sizeof options[0]); ++i) {
-        int x = i < 8 ? 42 : 445, row = i < 8 ? i : i - 8;
-        check(ui, 2, ID_OPTION + options[i], mm3_launcher_options[options[i]].label, x, 104 + row * 38, 371);
+    static const struct { int x, width; const char *title; int options[11]; } columns[] = {
+        {42, 240, "Graphics and audio", {MM3_LAUNCH_WIDESCREEN, MM3_LAUNCH_SKY, MM3_LAUNCH_NATIVE_FOG, -1,
+            MM3_LAUNCH_UNLOCK, MM3_LAUNCH_DEV_TOOLS, MM3_LAUNCH_DEV_HUD, MM3_LAUNCH_DEBUG_MENU,
+            MM3_LAUNCH_CAMERAS, MM3_LAUNCH_E3, 0}},
+        {300, 250, "Improved visuals", {MM3_LAUNCH_DISTANCE, MM3_LAUNCH_CAR_LIGHT, MM3_LAUNCH_LAMP_LIGHT,
+            MM3_LAUNCH_WORLD_LIGHT, MM3_LAUNCH_FLARE_DEPTH, MM3_LAUNCH_LOADING, MM3_LAUNCH_ROUTE_NAVIGATION,
+            MM3_LAUNCH_NORTH_MARKER, MM3_LAUNCH_RACE_ARROW, MM3_LAUNCH_GRAPHICS_MENU, MM3_LAUNCH_EXHAUST}},
+        {560, 260, "Improved gameplay", {MM3_LAUNCH_CIRCUITS, MM3_LAUNCH_EXTRA_CARS, MM3_LAUNCH_DLC_INFO,
+            MM3_LAUNCH_TREES, MM3_LAUNCH_DRAFTING, MM3_LAUNCH_ROLL_GUARD, MM3_LAUNCH_AI_ALL_CARS, 0}}
+    };
+    HWND fixed;
+    check(ui, 2, ID_ORIGINAL, "Original game", 42, 92, 240);
+    check(ui, 2, ID_OPTION + MM3_LAUNCH_IMPROVED, mm3_launcher_options[MM3_LAUNCH_IMPROVED].label, 300, 92, 250);
+    label(ui, 2, "Both play at your PC's resolution with the graphics and audio upgrades.", 42, 122, 774);
+    for (int c = 0; c < (int)(sizeof columns / sizeof columns[0]); ++c) {
+        int y = 164;
+        HWND title = add(ui, 2, "STATIC", columns[c].title, 0, -1, columns[c].x, y, columns[c].width, 26);
+        SendMessageA(title, WM_SETFONT, (WPARAM)ui->section, TRUE);
+        for (int i = 0; i < 11 && columns[c].options[i]; ++i, y += 34) {
+            int option = columns[c].options[i];
+            if (option < 0) {
+                title = add(ui, 2, "STATIC", "Extras", 0, -1, columns[c].x, y + 40, columns[c].width, 26);
+                SendMessageA(title, WM_SETFONT, (WPARAM)ui->section, TRUE);
+                y += 6;
+                continue;
+            }
+            check(ui, 2, ID_OPTION + option, mm3_launcher_options[option].label, columns[c].x, y + 32, columns[c].width);
+        }
     }
-    /* HUD markers the original game shows, beside the field of view. */
-    check(ui, 2, ID_OPTION + MM3_LAUNCH_NORTH_MARKER, mm3_launcher_options[MM3_LAUNCH_NORTH_MARKER].label, 445, 440, 371);
-    check(ui, 2, ID_OPTION + MM3_LAUNCH_RACE_ARROW, mm3_launcher_options[MM3_LAUNCH_RACE_ARROW].label, 445, 478, 371);
-    check(ui, 2, ID_OPTION + MM3_LAUNCH_ROUTE_NAVIGATION, mm3_launcher_options[MM3_LAUNCH_ROUTE_NAVIGATION].label, 445, 516, 371);
-    label(ui, 2, "Horizontal field of view", 42, 435, 260);
-    add(ui, 2, "EDIT", "0", ES_NUMBER | WS_TABSTOP, ID_FOV, 310, 431, 77, 26);
-    label(ui, 2, "0 = retail, or 60-110 degrees", 42, 466, 345);
-    /* Driving assists, below the developer options. */
-    check(ui, 2, ID_OPTION + MM3_LAUNCH_DRAFTING, mm3_launcher_options[MM3_LAUNCH_DRAFTING].label, 445, 370, 371);
-    check(ui, 2, ID_OPTION + MM3_LAUNCH_ROLL_GUARD, mm3_launcher_options[MM3_LAUNCH_ROLL_GUARD].label, 445, 404, 371);
-    HWND fixed = check(ui, 2, ID_REQUIRED, "Collision-cell safety repair (required)", 42, 516, 371);
+    label(ui, 2, "Field of view: 0 = retail, or 60-110", 42, 546, 240);
+    add(ui, 2, "EDIT", "0", ES_NUMBER | WS_TABSTOP, ID_FOV, 42, 570, 77, 26);
+    fixed = check(ui, 2, ID_REQUIRED, "Collision repair (always on)", 560, 446, 260);
     SendMessageA(fixed, BM_SETCHECK, BST_CHECKED, 0); EnableWindow(fixed, FALSE);
-    check(ui, 2, ID_OPTION + MM3_LAUNCH_AI_ALL_CARS, mm3_launcher_options[MM3_LAUNCH_AI_ALL_CARS].label, 445, 554, 371);
-    label(ui, 2, "Preferences apply when Play starts the game. Graphics Settings remain available in game with F10.", 42, 600, 774);
+    label(ui, 2, "Preferences apply when Play starts the game. F10 opens display settings in game.", 145, 573, 680);
+}
+
+/* Grey out the Improved columns while the Original game is selected. */
+static void mods_enable(Launcher *ui)
+{
+    int improved = checked(ui, ID_OPTION + MM3_LAUNCH_IMPROVED);
+    for (int i = 1; i < MM3_LAUNCH_OPTION_COUNT; ++i)
+        if (!mm3_launcher_option_in_original(i)) EnableWindow(control(ui, ID_OPTION + i), improved);
 }
 
 static int pad_source(const XINPUT_GAMEPAD *pad)
@@ -990,7 +1035,9 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
         ui->heading = CreateFontA(-(int)lroundf(23.f * ui->scale), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
-        HWND title = add(ui, -1, "STATIC", "Midtown Madness 3", 0, -1, 25, 17, 570, 35);
+        ui->section = CreateFontA(-(int)lroundf(17.f * ui->scale), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
+        HWND title = add(ui, -1, "STATIC", "Midtown Madness 3  " MM3_VERSION, 0, -1, 25, 17, 570, 35);
         SendMessageA(title, WM_SETFONT, (WPARAM)ui->heading, TRUE);
         add(ui, -1, "STATIC", "Detecting controllers...", 0, ID_PAD_SUMMARY, 620, 23, 570, 24);
         label(ui, -1, "Choose your settings. The guide explains each value as you select or change it.", 25, 55, 1150);
@@ -1026,6 +1073,15 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             page_show(ui, TabCtrl_GetCurSel(ui->tabs));
         return 0;
     case WM_COMMAND:
+        if (HIWORD(wparam) == BN_CLICKED && (LOWORD(wparam) == ID_ORIGINAL ||
+            LOWORD(wparam) == ID_OPTION + MM3_LAUNCH_IMPROVED)) {
+            int improved = LOWORD(wparam) != ID_ORIGINAL;
+            set_checked(ui, ID_OPTION + MM3_LAUNCH_IMPROVED, improved);
+            set_checked(ui, ID_ORIGINAL, !improved);
+            mods_enable(ui);
+            help_show(ui, LOWORD(wparam));
+            return 0;
+        }
         if (HIWORD(wparam) == BN_CLICKED && (LOWORD(wparam) == ID_KEYBOARD ||
             LOWORD(wparam) == ID_VSYNC || LOWORD(wparam) == ID_SHOW_FPS ||
             (LOWORD(wparam) >= ID_OPTION && LOWORD(wparam) < ID_OPTION + MM3_LAUNCH_OPTION_COUNT))) {
@@ -1091,7 +1147,8 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         char caption[256];
         RECT box = draw->rcItem, text = draw->rcItem;
         int size = (int)lroundf(16.f * ui->scale);
-        UINT flags = DFCS_BUTTONCHECK;
+        UINT flags = draw->CtlID == ID_ORIGINAL || draw->CtlID == ID_OPTION + MM3_LAUNCH_IMPROVED ?
+                     DFCS_BUTTONRADIO : DFCS_BUTTONCHECK;
         if (draw->CtlType != ODT_BUTTON) break;
         FillRect(draw->hDC, &draw->rcItem, (HBRUSH)(COLOR_BTNFACE + 1));
         box.left += 2; box.right = box.left + size;
@@ -1204,7 +1261,7 @@ int mm3_launcher_run(void)
         bounds.left = bounds.top = 0;
         bounds.right = (LONG)lroundf((float)LAUNCHER_WIDTH * ui.scale); bounds.bottom = (LONG)lroundf((float)LAUNCHER_HEIGHT * ui.scale);
         AdjustWindowRectEx(&bounds, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE, WS_EX_CONTROLPARENT);
-        HWND window = CreateWindowExA(WS_EX_CONTROLPARENT, wc.lpszClassName, "Midtown Madness 3 - Play",
+        HWND window = CreateWindowExA(WS_EX_CONTROLPARENT, wc.lpszClassName, "Midtown Madness 3 " MM3_VERSION " - Play",
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
             work.left + ((work.right - work.left) - (bounds.right - bounds.left)) / 2,
             work.top + ((work.bottom - work.top) - (bounds.bottom - bounds.top)) / 2,
@@ -1233,7 +1290,7 @@ int mm3_launcher_run(void)
             }
             if (!IsDialogMessageA(window, &message)) { TranslateMessage(&message); DispatchMessageA(&message); }
         }
-        if (ui.font) DeleteObject(ui.font); if (ui.heading) DeleteObject(ui.heading);
+        if (ui.font) DeleteObject(ui.font); if (ui.heading) DeleteObject(ui.heading); if (ui.section) DeleteObject(ui.section);
         if (ui.smoke || !ui.result) return 0;
     } else if (!mm3_launcher_config_apply(&ui.config, warning, sizeof warning)) {
         fprintf(stderr, "[MM3_LAUNCHER] %s\n", warning); return 0;

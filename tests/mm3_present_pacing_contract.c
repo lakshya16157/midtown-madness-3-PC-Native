@@ -79,6 +79,7 @@ static int64_t qpc(void) { return clock_ticks; }
 static uint32_t present_options(void) { return 60; }
 static void reset_map_placement(void) {}
 static void hud_frame_complete(void) {}
+static void world_tris_frame_end(void) {}
 static int64_t hitch_trace_begin(void) { return 0; }
 static void hitch_trace_report(const char *phase, int64_t begin)
 { (void)phase; CHECK(begin == 0); }

@@ -1166,6 +1166,9 @@ def main():
                             'static unsigned flares; static uint32_t flare_color,flare_node;\n'
                             'static int glow_driver,flare_driver;\n'
                             'void mm3_glow_driver_scope(int driver) { glow_driver=driver; }\n'
+                            'int mm3_exhaust_enabled(void) { return 0; }\n'
+                            'void mm3_exhaust_lamp(uint32_t kind, const float transform[12]) '
+                            '{ (void)kind; (void)transform; }\n'
                             'void sub_001A842A(void) { ++flares; flare_color=MEM32(flare_node+0x64); '
                             'flare_driver=glow_driver; g_esp+=16; }')
     source += CHECKS.replace("static unsigned flares;", "")

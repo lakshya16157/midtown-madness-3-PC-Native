@@ -2,6 +2,7 @@
 #include "recomp_types.h"
 #include "mm3_graphics_menu.h"
 #include "mm3_circuit_races.h"
+#include "mm3_dlc_races.h"
 
 extern void sub_0011C194_original(void);
 extern void sub_00016148(void);
@@ -46,14 +47,18 @@ static const struct {
     { "SID_CAR_SHORT_9014", "Lamborghini Aventador" }
 };
 
-/* Circuit race names and lap messages (mm3_circuit_races.c). Their keys are
+/* Circuit race names and lap messages (mm3_circuit_races.c) and the
+ * downloadable races' names and descriptions (mm3_dlc_races.c). Their keys are
  * short; copy at most 40 guest bytes before matching. */
 static const char *circuit_key(uint32_t key)
 {
     char text[40];
     unsigned i;
     for (i = 0; i < sizeof text; ++i)
-        if (!(text[i] = (char)MEM8(key + i))) return mm3_circuit_label(text);
+        if (!(text[i] = (char)MEM8(key + i))) {
+            const char *dlc = mm3_dlc_race_label(text, MEM32(0x003C5648u));
+            return dlc ? dlc : mm3_circuit_label(text);
+        }
     return NULL;
 }
 

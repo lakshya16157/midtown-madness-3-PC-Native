@@ -29,8 +29,8 @@ CREDITS = {
     "Lamborghini Aventador LP700-4": "!lamboaven.ar",
 }
 CAR_MODS_FILES = ("prepare.py", "factory_specs.py", "factory_specs.json", "original_stats.py",
-                  "native_overrides.py", "driving_defaults.py", "race_stability.py")
-RACE_FILES = ("circuits.py", "circuits.json", "logic_circuit.lua")
+                  "native_overrides.py", "driving_defaults.py", "race_stability.py", "voice_fixes.py")
+RACE_FILES = ("circuits.py", "circuits.json", "logic_circuit.lua", "dlc_icons.json")
 STDLIB_HIDDEN =("argparse", "collections", "copy", "hashlib", "math", "re", "struct", "tempfile", "zipfile", "zlib")
 
 

@@ -40,7 +40,7 @@ from pathlib import Path
 # PyInstaller see and include them (it only analyses this file's own imports).
 _PAYLOAD_STDLIB = (argparse, collections, copy, hashlib, math, re, struct, tempfile, zipfile, zlib)
 
-VERSION = "1.7"
+VERSION = "2.0 beta 0"
 TITLE = "Midtown Madness 3 - Setup"
 # The car toolkit is in the project repository (it needs Python), not in the install.
 CAR_WORKSHOP_URL = "https://github.com/lakshya16157/midtown-madness-3-PC-Native/tree/main/tools/car-mods"
@@ -138,7 +138,8 @@ ORIGINAL_LOOK_SETTINGS = {
 IMPROVEMENTS_TEXT = (
     "Sharper image (2x resolution, 4x anti-aliasing, 16x texture filtering), longer draw distance,\n"
     "widescreen that fits your window and better night lighting.  Turn off for the original Xbox\n"
-    "look (4:3, 480p, retail distances).  Crash and gameplay bug fixes are always included."
+    "look (4:3, 480p, retail distances).  Crash and gameplay bug fixes are always included.\n"
+    "The launcher's Mods tab chooses the Original game or the Improved game with its mods."
 )
 
 

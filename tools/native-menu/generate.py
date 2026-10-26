@@ -44,6 +44,9 @@ ROW_DESTINATIONS = {**PICKERS, "ADVANCED": ADVANCED, "MORE_RESOLUTIONS": RESOLUT
 # own city select, race setup, title and race list lead to the same Checkpoint
 # game; src/mm3_circuit_races.c lists only circuits there and hides them from
 # Checkpoint, following circuitBegin/circuitEnd.
+# src/mm3_menu_resources.c serves this variant of the main menu when the
+# launcher turns the Graphics Settings menu off but keeps the circuits.
+MAIN_WITHOUT_GRAPHICS = "#nographics"
 SP_TYPE = "singlePlayer/screenSinglePlayerType"
 SP_SETUP = "singlePlayer/screenSinglePlayerRaceSetup"
 CITY_SELECT = "shared/screenCitySelect"
@@ -70,8 +73,12 @@ def path_action(template, destination):
     return result
 
 
-def main_menu(retail):
+def main_menu(retail, graphics=True):
+    """The main menu with a Graphics Settings row (graphics=False: only the
+    Circuit-list cleanup, for MM3_GRAPHICS_MENU=0 with circuits kept)."""
     resource = clone(retail)
+    if not graphics:
+        return end_circuits(resource)
     options = find_row(resource, "strings/choiceOptions")
     profile = find_row(resource, "strings/choiceProfiles")
     if options.parts[0].object is not profile:
@@ -98,6 +105,10 @@ def main_menu(retail):
             value, = struct.unpack("<i", ref.object.parts[0])
             if value >= 4:
                 ref.object.parts[0] = struct.pack("<i", value + 1)
+    return end_circuits(resource)
+
+
+def end_circuits(resource):
     # Multiplayer and Track Records share the checkpoint race list: every way
     # on from the main menu ends the single player Circuit list.
     for label, _, row in rows(resource):
@@ -391,6 +402,7 @@ def generate_resources(archive):
             len(multipop.parts[1]) != 21 or struct.unpack_from("<I", multipop.parts[1], 17)[0] != 2):
         raise ValueError("Retail career multi-pop count changed")
     resources = {MAIN: main_menu(decoded[MAIN]),
+                 MAIN + MAIN_WITHOUT_GRAPHICS: main_menu(decoded[MAIN], graphics=False),
                  DISPLAY: page(decoded[OPTIONS], DISPLAY_ROWS, "graphics/display", TITLE_DISPLAY, True),
                  ADVANCED: page(decoded[OPTIONS], ADVANCED_ROWS, "graphics/advanced", TITLE_ADVANCED, False),
                  TITLE_DISPLAY: title_resource(decoded[TITLE], "TITLE"),

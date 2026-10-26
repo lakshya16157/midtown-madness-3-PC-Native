@@ -53,6 +53,22 @@ def _load_circuits():
 circuits = _load_circuits()
 
 
+def _load_voice_fixes():
+    """voice_fixes.py (the retail disc's voice-language mix-ups), beside this tool."""
+    path = Path(__file__).resolve().parent / "voice_fixes.py"
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("mm3_voice_fixes", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+voice_fixes = _load_voice_fixes()
+VOICE_DIR = "Data/Shared/Audio/Voice"
+SPANISH_PARIS_FIXED = f"{VOICE_DIR}/Spanish/Paris_mm3.xwb"
+
+
 def default_config_path(directory: Path | None = None) -> Path:
     """Prefer machine-local settings without shipping model asset paths."""
     folder = Path(directory) if directory is not None else Path(__file__).resolve().parent
@@ -75,6 +91,7 @@ SPEEDOMETER = {"max_kmh": (100, 1200), "max_mph": (60, 750)}
 SPEEDOMETER_FILE = "Data/mm3_speedometers.ini"
 FACTORY_PHYSICS_FILE = "Data/mm3_factory_physics.ini"
 CIRCUITS_FILE = "Data/mm3_circuits.ini"
+DLC_ICONS_FILE = "Data/mm3_dlc_icons.ini"
 ORIGINAL_SPEEDOMETERS = {
     "AudiTT": "Audi TT", "Avalanche": "Chevrolet Avalanche", "Avant": "Audi RS 6 Avant",
     "ChevySSR": "Chevrolet SSR", "Corvette": "Chevrolet Corvette", "Crossfire": "Chrysler Crossfire",
@@ -858,6 +875,21 @@ def build_plan(game_dir: Path, originals: dict[str, bytes], config: dict,
         # The circuit names for the race list (src/mm3_circuit_races.c).
         output[CIRCUITS_FILE] = circuits.names_ini()
         counts["loose_files"] += 1
+        # The downloadable races' own route pictures (src/mm3_dlc_races.c).
+        if hasattr(circuits, "dlc_icons_ini"):
+            output[DLC_ICONS_FILE] = circuits.dlc_icons_ini()
+            counts["loose_files"] += 1
+    # Spanish Paris police in French instead of the retail Italian
+    # (voice_fixes.py; src/mm3_language.c opens the copy).
+    voice = game_dir / VOICE_DIR
+    if voice_fixes and all((voice / f"{lang}/Paris.{kind}").is_file()
+                           for lang in ("Spanish", "French") for kind in ("xwb", "xcp")):
+        fixed = voice_fixes.spanish_paris_police(
+            (voice / "Spanish/Paris.xwb").read_bytes(), (voice / "Spanish/Paris.xcp").read_bytes(),
+            (voice / "French/Paris.xwb").read_bytes(), (voice / "French/Paris.xcp").read_bytes())
+        if fixed:
+            output[SPANISH_PARIS_FIXED] = fixed
+            counts["loose_files"] += 1
     return output, counts
 
 

@@ -4,15 +4,11 @@
 #include <time.h>
 #include "recomp_types.h"
 
-/* Car damage, made frame-rate independent in the "wreck the car" jobs
- * (Paris Career 05/01 Inga's escape and 06/02, the Washington damage jobs).
+/* Car damage, made frame-rate independent.
  *
- * Their scripts call physicsCarToCarDamageScale(1, 50) (sub_00212D9D: 0x3C0330
- * and 0x3C0328) and playerSetDamageFactor(target, 0.15). Every car-to-car
- * contact ends with sub_00021DCF(scale) multiplying the car's contact record:
- * +0x1A4 holds the frame's largest contact impulse (sub_001DA648 keeps the
- * maximum). Each frame, the car's update sub_001D7425 -> sub_001D4794(dt)
- * turns that impulse into damage in sub_001CDB6C:
+ * Each frame the car's update sub_001D7425 -> sub_001D4794(dt) turns the car's
+ * contact record into damage in sub_001CDB6C: +0x1A4 holds the frame's largest
+ * contact impulse (sub_001DA648 keeps the maximum) and
  *   v = impulse * damage factor * car factor * 1230;
  *   nothing below 800; damage = (min(v, 30000) - 800) / 29200, capped at 1.
  *
@@ -22,22 +18,28 @@
  * direct-20261023-071535) hits peaked at a median 3,272 at 30 fps and 1,260 at
  * 60, which is why the job was only doable at 30 fps. Doubling each frame's
  * impulse would overshoot, because damage is applied every frame: twice the
- * frames would then do twice the console's damage.
+ * frames would then do twice the console's damage. Every car takes damage this
+ * way, so the player's car in the ambulance and other "do not wreck" jobs got
+ * off just as lightly as the van.
  *
- * So while a job has set a damage scale and the game runs faster than the
- * console's 30 fps, each car's impulse is summed over 1/30 s of play (game
- * frame time, frame object at 0x3C5C90, seconds at +0x54). The damage step
- * sees that sum once per 1/30 s and no impulse in between, exactly as a 30 fps
- * frame. The record keeps its real value for everything else (crash sounds).
- * At 30 fps or slower, and outside the jobs, nothing changes.
- * MM3_DAMAGE_FRAME_FIX=0 turns this off. Each scaled contact is logged as
- * [MM3_DAMAGE]. */
+ * So whenever the game runs faster than the console's 30 fps, each car's
+ * impulse is summed over 1/30 s of play (game frame time, frame object at
+ * 0x3C5C90, seconds at +0x54). The damage step sees that sum once per 1/30 s and
+ * no impulse in between, exactly as a 30 fps frame. The record keeps its real
+ * value for everything else (crash sounds). At 30 fps or slower nothing
+ * changes. MM3_DAMAGE_FRAME_FIX=0 turns this off.
+ *
+ * The wreck jobs (Paris Career 05/01 Inga's escape and 06/02) also call
+ * physicsCarToCarDamageScale(1, 50) (sub_00212D9D: 0x3C0330 and 0x3C0328) and
+ * playerSetDamageFactor(target, 0.15); every car-to-car contact ends with
+ * sub_00021DCF(scale) multiplying the contact record. While a job has set a
+ * scale, each scaled contact is logged as [MM3_DAMAGE]. */
 extern void sub_00021DCF_original(void);
 extern void sub_001CDB6C_original(void);
 
 #define DAMAGE_LOG_LINES 3000u
 #define CONSOLE_FRAME (1.0f / 30.0f)
-#define WINDOWS 64u
+#define WINDOWS 256u
 
 static int damage_job(void)
 {
@@ -85,20 +87,38 @@ void sub_00021DCF(void)
     sub_00021DCF_original();
 }
 
-/* One car's impulse gathered towards a 30 fps frame. */
+/* One car's impulse gathered towards a 30 fps frame. A window opens at a car's
+ * first hit and closes once everything gathered has been handed over, so only
+ * cars in a collision hold one. */
 static struct { uint32_t record; float impulse, seconds; } s_window[WINDOWS];
+static unsigned s_windows_open;
 
-static unsigned window_of(uint32_t record)
+static unsigned window_find(uint32_t record)
 {
-    unsigned i, free_slot = WINDOWS;
-    for (i = 0; i < WINDOWS; ++i) {
+    unsigned i, seen = 0;
+    for (i = 0; i < WINDOWS && seen < s_windows_open; ++i) {
+        if (!s_window[i].record) continue;
         if (s_window[i].record == record) return i;
-        if (!s_window[i].record && free_slot == WINDOWS) free_slot = i;
+        ++seen;
     }
-    if (free_slot == WINDOWS) free_slot = record / 4u % WINDOWS;   /* full: reuse a slot */
-    s_window[free_slot].record = record;
-    s_window[free_slot].impulse = s_window[free_slot].seconds = 0.0f;
-    return free_slot;
+    return WINDOWS;
+}
+
+static unsigned window_open(uint32_t record)
+{
+    unsigned i;
+    for (i = 0; i < WINDOWS && s_window[i].record; ++i) {}
+    if (i == WINDOWS) i = record / 4u % WINDOWS;           /* full: reuse a slot */
+    else ++s_windows_open;
+    s_window[i].record = record;
+    s_window[i].impulse = s_window[i].seconds = 0.0f;
+    return i;
+}
+
+static void window_close(unsigned slot)
+{
+    s_window[slot].record = 0;
+    --s_windows_open;
 }
 
 void sub_001CDB6C(void)
@@ -106,18 +126,36 @@ void sub_001CDB6C(void)
     uint32_t component = g_edx, body, record;
     float impulse, seconds = frame_seconds(), seen;
     unsigned slot;
-    if (!frame_fix_enabled() || !damage_job() || !(seconds > 0.0f) || seconds >= CONSOLE_FRAME ||
-        !guest_object(component) || !guest_object(body = MEM32(component + 0x3Cu)) ||
+    if (!frame_fix_enabled() || !guest_object(component) || !guest_object(body = MEM32(component + 0x3Cu)) ||
         !guest_object(record = MEM32(body + 4u))) {
         sub_001CDB6C_original();
         return;
     }
     impulse = MEMF(record + 0x1A4u);
-    if (!(impulse >= 0.0f) || impulse > 1.0e12f) {       /* not a plain impulse: leave it */
+    slot = window_find(record);
+    if (!(seconds > 0.0f) || seconds >= CONSOLE_FRAME || !(impulse >= 0.0f) || impulse > 1.0e12f) {
+        /* 30 fps or slower (or not a plain impulse): the game's own frame,
+         * plus whatever a faster stretch had gathered and not handed over. */
+        if (slot != WINDOWS) {
+            if (impulse >= 0.0f && impulse <= 1.0e12f) {
+                MEMF(record + 0x1A4u) = impulse + s_window[slot].impulse;
+                window_close(slot);
+                sub_001CDB6C_original();
+                MEMF(record + 0x1A4u) = impulse;
+                return;
+            }
+            window_close(slot);
+        }
         sub_001CDB6C_original();
         return;
     }
-    slot = window_of(record);
+    if (slot == WINDOWS) {
+        if (impulse == 0.0f) {                         /* no hit and nothing gathered */
+            sub_001CDB6C_original();
+            return;
+        }
+        slot = window_open(record);
+    }
     s_window[slot].impulse += impulse;
     s_window[slot].seconds += seconds;
     seen = 0.0f;
@@ -130,6 +168,7 @@ void sub_001CDB6C(void)
         s_window[slot].impulse -= seen;
         s_window[slot].seconds -= CONSOLE_FRAME;
         if (s_window[slot].seconds < 0.0f) s_window[slot].seconds = 0.0f;
+        if (!(s_window[slot].impulse > 1.0e-3f)) window_close(slot);
     }
     MEMF(record + 0x1A4u) = seen;
     sub_001CDB6C_original();

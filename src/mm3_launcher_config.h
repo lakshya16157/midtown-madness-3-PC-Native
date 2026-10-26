@@ -14,6 +14,11 @@ enum MM3LauncherOption {
     MM3_LAUNCH_DSP, MM3_LAUNCH_NETWORK,
     MM3_LAUNCH_NORTH_MARKER, MM3_LAUNCH_RACE_ARROW, MM3_LAUNCH_ROUTE_NAVIGATION,
     MM3_LAUNCH_DRAFTING, MM3_LAUNCH_ROLL_GUARD, MM3_LAUNCH_AI_ALL_CARS,
+    /* 0 = the Original game: the Xbox game at the PC's resolution with the
+     * graphics and audio improvements, every mod off (mm3_launcher_config_apply). */
+    MM3_LAUNCH_IMPROVED,
+    MM3_LAUNCH_GRAPHICS_MENU, MM3_LAUNCH_CIRCUITS, MM3_LAUNCH_EXTRA_CARS, MM3_LAUNCH_DLC_INFO,
+    MM3_LAUNCH_TREES, MM3_LAUNCH_EXHAUST,
     MM3_LAUNCH_OPTION_COUNT
 };
 
@@ -50,5 +55,7 @@ int mm3_launcher_config_save(const MM3LauncherConfig *config, char *error, size_
 /* Set one complete field. Invalid values leave the snapshot unchanged. */
 int mm3_launcher_config_assign(MM3LauncherConfig *config, const char *key, const char *value);
 int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size_t capacity);
+/* 1 when the option keeps the player's choice in the Original game. */
+int mm3_launcher_option_in_original(int option);
 
 #endif

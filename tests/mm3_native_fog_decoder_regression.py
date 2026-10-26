@@ -15,7 +15,9 @@ CONTRACT = r'''
 #include <string.h>
 #include "nv2a_d3d11.h"
 #define NV097_NO_OPERATION 0x100u
-static unsigned calls, ordinary;
+static unsigned calls, ordinary, ramps;
+static uint32_t ramp_addr, ramp_format;
+static float ramp_values[3];
 static uint32_t last_method, last_subch, colour, flags, state_marker = 7;
 static float captured[8];
 static void d3d_fill_state(NvD3DState *state) {
@@ -26,6 +28,19 @@ void nv2a_d3d_distance_fog(const NvD3DState *state, float a, float b,
     assert(state->color_addr == state_marker); ++calls;
     captured[0]=a; captured[1]=b; captured[2]=c; captured[3]=d;
     memcpy(captured+4,sky,4*sizeof(float)); colour=argb; flags=mode;
+}
+static unsigned tris;
+static uint32_t tris_seq;
+static float tris_values[17];
+void nv2a_d3d_world_tris(const NvD3DState *state, uint32_t seq, float depth_to_world,
+                         const float view[12], const float proj[4]) {
+    assert(state->color_addr == state_marker); ++tris; tris_seq = seq;
+    tris_values[0] = depth_to_world; memcpy(tris_values + 1, view, 12 * sizeof(float));
+    memcpy(tris_values + 13, proj, 4 * sizeof(float));
+}
+void nv2a_d3d_sky_fog_ramp(uint32_t addr, uint32_t format, float row, float scale, float knee) {
+    ++ramps; ramp_addr=addr; ramp_format=format;
+    ramp_values[0]=row; ramp_values[1]=scale; ramp_values[2]=knee;
 }
 static void feed(uint32_t subch,uint32_t method,uint32_t param) {
 DECODER
@@ -60,7 +75,29 @@ int main(void) {
     assert(ordinary==3 && last_method==0x2FC);
     for(n=0;n<1024;++n) packet();
     assert(calls==1026 && ordinary==3);
-    puts("PASS: production ordered fog packet payload/state, incomplete/restarted/interrupted packets, subchannels, ordinary window methods and repeated packet bounds");
+    /* The sky fog ramp ahead of a fog packet: its own five words, then the
+     * fog packet as before; a fog tag cuts an incomplete ramp short. */
+    feed(0,0x100,NV2A_HOST_RAMP_TAG); feed(0,0x100,0x80876000u); feed(0,0x100,0x05610629u);
+    feed(0,0x100,word(.655f)); feed(0,0x100,word(1)); feed(0,0x100,word(.78f));
+    assert(ramps==1 && ramp_addr==0x80876000u && ramp_format==0x05610629u);
+    assert(ramp_values[0]==.655f && ramp_values[1]==1 && ramp_values[2]==.78f);
+    packet(); assert(calls==1027 && ramps==1);
+    feed(0,0x100,NV2A_HOST_RAMP_TAG); feed(0,0x100,0x80876000u);
+    packet(); assert(calls==1028 && ramps==1);
+    feed(0,0x100,NV2A_HOST_RAMP_TAG); feed(0,0x2B4,1); feed(0,0x100,word(1));
+    assert(ramps==1 && ordinary==4);
+    /* World triangles: sequence, depth scale, twelve view and four
+     * projection floats; a fog tag cuts an incomplete one short. */
+    feed(0,0x100,NV2A_HOST_TRIS_TAG); feed(0,0x100,42);
+    for(n=0;n<17;++n) feed(0,0x100,word((float)n + .5f));
+    assert(tris==1 && tris_seq==42 && calls==1028);
+    for(n=0;n<17;++n) assert(tris_values[n]==(float)n + .5f);
+    feed(0,0x100,NV2A_HOST_TRIS_TAG); feed(0,0x100,43); feed(0,0x100,word(1));
+    packet(); assert(calls==1029 && tris==1);
+    feed(0,0x100,NV2A_HOST_TRIS_TAG); feed(0,0x2B4,1);
+    for(n=0;n<18;++n) feed(0,0x100,word(1));
+    assert(tris==1 && ordinary==5);
+    puts("PASS: production ordered fog packet payload/state, sky fog ramp packet, world triangle packet, incomplete/restarted/interrupted packets, subchannels, ordinary window methods and repeated packet bounds");
     return 0;
 }
 '''
@@ -69,7 +106,7 @@ if __name__ == "__main__":
     if not shutil.which("cl"):
         raise SystemExit("Run scripts/enter-env.ps1 first.")
     source = (RUNTIME / "src/kernel/nv2a_pb_exec.c").read_text()
-    decoder = re.search(r"^    static uint32_t fog_words\[.*?^    fog_word = 0;\n",
+    decoder = re.search(r"^    static uint32_t fog_words\[.*?^    fog_word = (?:ramp_word = )?(?:tris_word = )?0;\n",
                         source, re.M | re.S)
     assert decoder, "Production fog decoder is missing"
     with tempfile.TemporaryDirectory(prefix="mm3-fog-decoder-") as temporary:

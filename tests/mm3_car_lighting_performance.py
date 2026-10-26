@@ -345,7 +345,10 @@ def main():
     prefix = prefix.replace("memory[0x400000]", "memory[0x600000]")
     prefix = prefix.replace('void sub_001A842A(void) { assert(!"unexpected flare submission"); }',
                             'void sub_001A842A(void) { g_esp+=16; }\n'
-                            'void mm3_glow_driver_scope(int driver) { (void)driver; }')
+                            'void mm3_glow_driver_scope(int driver) { (void)driver; }\n'
+                            'int mm3_exhaust_enabled(void) { return 0; }\n'
+                            'void mm3_exhaust_lamp(uint32_t kind, const float transform[12]) '
+                            '{ (void)kind; (void)transform; }')
     with tempfile.TemporaryDirectory(prefix="mm3-car-performance-") as temporary:
         folder = Path(temporary)
         shutil.copyfile(ROOT / "src/mm3_recomp_types.h", folder / "recomp_types.h")

@@ -9,7 +9,8 @@
 static void clear_environment(void)
 {
     static const char *const extra[] = {"RECOMP_USB_PADS", "RECOMP_USB_NDP", "MM3_FOV_DEGREES", "RECOMP_NET_PORT", "RECOMP_NET_PEERS",
-        "RECOMP_KEYMAP", "MM3_DRIVE_KEYMAP", "RECOMP_PADMAP", "RECOMP_ASPECT", "RECOMP_DRAW_DISTANCE", "RECOMP_VIEW_DISTANCE"};
+        "RECOMP_KEYMAP", "MM3_DRIVE_KEYMAP", "RECOMP_PADMAP", "RECOMP_ASPECT", "RECOMP_DRAW_DISTANCE", "RECOMP_VIEW_DISTANCE",
+        "MM3_GLOW_LIFT"};
     for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i) assert(!_putenv_s(mm3_launcher_options[i].key, ""));
     for (int i = 0; i < (int)(sizeof extra / sizeof extra[0]); ++i) assert(!_putenv_s(extra[i], ""));
 }
@@ -108,6 +109,25 @@ int main(int argc, char **argv)
         assert(getenv("RECOMP_USB_PADS")[0] == '0' + count && !getenv("RECOMP_USB_PADS")[1]);
         assert(!strcmp(getenv("RECOMP_USB_NDP"), "1")); /* OHCI raises ports as needed. */
     }
+    /* The Original game: every mod off, the retail HUD markers on, the
+     * graphics/audio upgrades and the player's extras as chosen. */
+    assert(loaded.option[MM3_LAUNCH_IMPROVED]);
+    loaded.option[MM3_LAUNCH_DISTANCE] = 1; loaded.option[MM3_LAUNCH_TREES] = 1;
+    loaded.option[MM3_LAUNCH_SKY] = 1; loaded.option[MM3_LAUNCH_UNLOCK] = 1;
+    assert(mm3_launcher_config_apply(&loaded, error, sizeof error));
+    assert(!strcmp(getenv("MM3_FALLING_TREES"), "1") && !getenv("MM3_GLOW_LIFT"));
+    loaded.option[MM3_LAUNCH_IMPROVED] = 0;
+    assert(mm3_launcher_config_apply(&loaded, error, sizeof error));
+    for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i) {
+        const char *value = getenv(mm3_launcher_options[i].key);
+        if (i == MM3_LAUNCH_NORTH_MARKER || i == MM3_LAUNCH_RACE_ARROW) assert(!strcmp(value, "1"));
+        else if (!mm3_launcher_option_in_original(i)) assert(!strcmp(value, "0"));
+    }
+    assert(!strcmp(getenv("MM3_IMPROVED"), "0") && !strcmp(getenv("MM3_GLOW_LIFT"), "0"));
+    assert(!strcmp(getenv("MM3_MOD_SKY"), "1") && !strcmp(getenv("MM3_UNLOCK_ALL_CARS"), "1"));
+    assert(!strcmp(getenv("RECOMP_DRAW_DISTANCE"), "1") && !strcmp(getenv("RECOMP_VIEW_DISTANCE"), "1"));
+    assert(mm3_launcher_option_in_original(MM3_LAUNCH_WIDESCREEN) && mm3_launcher_option_in_original(MM3_LAUNCH_DSP));
+    assert(!mm3_launcher_option_in_original(MM3_LAUNCH_CIRCUITS) && !mm3_launcher_option_in_original(MM3_LAUNCH_LAMP_LIGHT));
     file = fopen(path, "wb"); assert(file);
     fputs("[launcher]\nUNKNOWN=1\nMM3_FOV_DEGREES=200\nRECOMP_USB_PADS=0\nRECOMP_KEYBOARD=0\nRECOMP_KEYMAP=A:45,B:zz\n", file);
     for (int i = 0; i < 3000; ++i) fputc('x', file);
@@ -118,6 +138,6 @@ int main(int argc, char **argv)
     assert(loaded.keys[0] == 'Z' && !loaded.option[MM3_LAUNCH_SKY]);
     assert(loaded.controller_count == 1); /* Old or invalid files retain the default. */
     clear_environment(); DeleteFileA(path);
-    puts("PASS launcher config: controller count/defaults, strict maps, atomic roundtrip, invalid fields, environment precedence, unchanged USB hub override and legacy developer scripts");
+    puts("PASS launcher config: controller count/defaults, strict maps, atomic roundtrip, invalid fields, environment precedence, unchanged USB hub override, legacy developer scripts and the Original game");
     return 0;
 }

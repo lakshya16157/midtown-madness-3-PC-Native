@@ -80,9 +80,34 @@ static void circuit_load_names(void)
     fclose(file);
 }
 
+/* The game's language (0x3C5648: 0 English, 1 French, 2 German, 3 Italian,
+ * 4 Spanish); others read English. Latin-1: the lookup widens each byte. */
+static unsigned circuit_language(void)
+{
+    unsigned language = MEM32(0x003C5648u);
+    return language <= 4 ? language : 0;
+}
+
+static const char *const circuit_button[5] = {"Circuit", "Circuit", "Rundkurs", "Circuito", "Circuito"};
+static const char *const circuit_about[5] = {
+    "Race laps around closed-off city circuits. The opponents get tougher with every circuit.",
+    "Faites des tours de circuits ferm\xE9s en ville. Les adversaires sont plus coriaces \xE0 chaque circuit.",
+    "Fahre Runden auf abgesperrten Stadtkursen. Mit jedem Rundkurs werden die Gegner st\xE4rker.",
+    "Corri giri su circuiti cittadini chiusi. Gli avversari diventano pi\xF9 forti a ogni circuito.",
+    "Da vueltas en circuitos urbanos cerrados. Los rivales son m\xE1s duros en cada circuito."
+};
+static const char *const lap_text[5] = {"LAP %lu OF %lu", "TOUR %lu SUR %lu", "RUNDE %lu VON %lu",
+                                        "GIRO %lu DI %lu", "VUELTA %lu DE %lu"};
+static const char *const final_lap[5] = {"FINAL LAP", "DERNIER TOUR", "LETZTE RUNDE", "ULTIMO GIRO",
+                                         "\xDALTIMA VUELTA"};
+static const char *const missed_text[5] = {
+    "CHECKPOINT %lu MISSED - GO BACK", "POINT DE CONTR\xD4LE %lu MANQU\xC9 - FAITES DEMI-TOUR",
+    "CHECKPOINT %lu VERPASST - ZUR\xDC\x43K", "CHECKPOINT %lu MANCATO - TORNA INDIETRO",
+    "PUNTO DE CONTROL %lu PERDIDO - VUELVE ATR\xC1S"};
+
 const char *mm3_circuit_label(const char *key)
 {
-    static char text[32];
+    static char text[64];
     char *end;
     unsigned long city, race, lap, laps;
     if (!key) return NULL;
@@ -104,16 +129,15 @@ const char *mm3_circuit_label(const char *key)
         key = circuit_info[city - 1][race - CIRCUIT_FIRST_RACE - 1];
         return *key ? key : NULL;
     }
-    if (!strcmp(key, "SID_MM3_CIRCUIT")) return "Circuit";
-    if (!strcmp(key, "SID_MM3_OFT_SRT_CIRCUIT"))
-        return "Race laps around closed-off city circuits. The opponents get tougher with every circuit.";
-    if (!strcmp(key, "SID_MM3_LAP_FINAL")) return "FINAL LAP";
+    if (!strcmp(key, "SID_MM3_CIRCUIT")) return circuit_button[circuit_language()];
+    if (!strcmp(key, "SID_MM3_OFT_SRT_CIRCUIT")) return circuit_about[circuit_language()];
+    if (!strcmp(key, "SID_MM3_LAP_FINAL")) return final_lap[circuit_language()];
     if (!strncmp(key, "SID_MM3_LAP_", 12)) {
         lap = strtoul(key + 12, &end, 10);
         if (end == key + 12 || *end != '_') return NULL;
         laps = strtoul(end + 1, &end, 10);
         if (*end || lap < 1 || laps < lap || laps > 9) return NULL;
-        snprintf(text, sizeof text, "LAP %lu OF %lu", lap, laps);
+        snprintf(text, sizeof text, lap_text[circuit_language()], lap, laps);
         return text;
     }
     /* A gate passed out of turn (logic_circuit.lua circuitMissed): the
@@ -121,7 +145,7 @@ const char *mm3_circuit_label(const char *key)
     if (!strncmp(key, "SID_MM3_MISSED_", 15)) {
         lap = strtoul(key + 15, &end, 10);
         if (end == key + 15 || *end || lap < 1 || lap > 99) return NULL;
-        snprintf(text, sizeof text, "CHECKPOINT %lu MISSED - GO BACK", lap);
+        snprintf(text, sizeof text, missed_text[circuit_language()], lap);
         return text;
     }
     return NULL;

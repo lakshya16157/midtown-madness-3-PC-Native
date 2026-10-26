@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "recomp_types.h"
+#include "mm3_mod_flags.h"
 #include "mm3_menu_resources.h"
 
 extern void sub_00119AEE_original(void);
@@ -28,6 +29,40 @@ static const MM3MenuResource *stream_resource(uint32_t object)
     return &mm3_menu_resources[tag - MENU_STREAM_TAG];
 }
 
+/* The launcher can leave out the Graphics Settings menu (its pages, the main
+ * menu row and the pause menu's HUD row: MM3_GRAPHICS_MENU=0) and the
+ * Circuit mode (its screens and the single player row: MM3_EXTRA_CIRCUITS=0);
+ * those screens then load from the game's own files. The main menu carries
+ * both, so without the graphics row it is the variant generate.py builds
+ * ("#nographics"), and without either the retail one. */
+static int graphics_resource(const char *name)
+{
+    return !_strnicmp(name, "graphics/", 9) || !_strnicmp(name, "titles/titleGraphics", 20) ||
+           !_stricmp(name, "Pausemenu/menuHud") || !_stricmp(name, "Pausemenu/menuOptions");
+}
+
+static int circuit_resource(const char *name)
+{
+    static const char *const names[] = {
+        "singlePlayer/screenSinglePlayerType", "singlePlayer/screenSinglePlayerRaceSetup",
+        "shared/screenCitySelect", "singlePlayer/screenCircuitCitySelect",
+        "singlePlayer/screenCircuitRaceSetup", "singlePlayer/modes/spCircuitMode", "titles/titleCircuit"};
+    unsigned i;
+    for (i = 0; i < sizeof names / sizeof names[0]; ++i)
+        if (!_stricmp(name, names[i])) return 1;
+    return 0;
+}
+
+static const char *served_name(const char *name)
+{
+    int graphics = mm3_mod_graphics_menu(), circuits = mm3_mod_extra_circuits();
+    if (!_stricmp(name, "main/screenMain"))
+        return graphics ? name : circuits ? "main/screenMain#nographics" : NULL;
+    if (graphics_resource(name)) return graphics ? name : NULL;
+    if (circuit_resource(name)) return circuits ? name : NULL;
+    return name;
+}
+
 void sub_00119AEE(void)
 {
     const char *name = (const char *)XBOX_PTR(MEM32(g_esp + 4u));
@@ -35,6 +70,10 @@ void sub_00119AEE(void)
     if (*name == '+') ++name;
     if (_strnicmp(name, "Menu/Frontend/", 14) == 0) name += 14;
     else if (_strnicmp(name, "Menu/Pausemenu/", 15) == 0) name += 5;
+    if (!(name = served_name(name))) {
+        sub_00119AEE_original();
+        return;
+    }
     for (i = 0; i < MM3_MENU_RESOURCE_COUNT; ++i)
         if (_stricmp(name, mm3_menu_resources[i].name) == 0) break;
     if (i == MM3_MENU_RESOURCE_COUNT) {

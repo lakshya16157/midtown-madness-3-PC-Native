@@ -562,6 +562,8 @@ def check_names(circuits):
 #include <stdlib.h>
 #include <string.h>
 enum {{ CIRCUIT_FIRST_RACE = 20, CIRCUIT_RACES = 10 }};
+static uint32_t test_language;          /* the game's language at 0x3C5648 */
+#define MEM32(address) test_language
 {labels}
 static const struct {{ unsigned city, race; const char *name, *info; }} cases[] = {{
 {cases}
@@ -581,6 +583,15 @@ int main(void)
     assert(!mm3_circuit_label("SID_C2R31QB") && !mm3_circuit_label("SID_C3R21QB") && !mm3_circuit_label("SID_C2R21Q"));
     assert(!strcmp(mm3_circuit_label("SID_MM3_CIRCUIT"), "Circuit"));
     assert(!strcmp(mm3_circuit_label("SID_MM3_LAP_2_5"), "LAP 2 OF 5"));
+    test_language = 4;                  /* Spanish, then French; unknown reads English */
+    assert(!strcmp(mm3_circuit_label("SID_MM3_CIRCUIT"), "Circuito"));
+    assert(!strcmp(mm3_circuit_label("SID_MM3_LAP_2_5"), "VUELTA 2 DE 5"));
+    assert(!strcmp(mm3_circuit_label("SID_MM3_LAP_FINAL"), "\\xDALTIMA VUELTA"));
+    test_language = 1;
+    assert(!strcmp(mm3_circuit_label("SID_MM3_MISSED_3"), "POINT DE CONTR\\xD4LE 3 MANQU\\xC9 - FAITES DEMI-TOUR"));
+    test_language = 9;
+    assert(!strcmp(mm3_circuit_label("SID_MM3_LAP_FINAL"), "FINAL LAP"));
+    test_language = 0;
     assert(!mm3_circuit_parse_line("3 20 X\\n", &city, &race, name, sizeof name, info, sizeof info));
     assert(!mm3_circuit_parse_line("1 30 X\\n", &city, &race, name, sizeof name, info, sizeof info));
     assert(!mm3_circuit_parse_line("1 20 \\n", &city, &race, name, sizeof name, info, sizeof info));

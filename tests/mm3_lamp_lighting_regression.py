@@ -554,7 +554,19 @@ static void restored(void)
     MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;assert(produce()==0);
     reset();MEMF(POSITION+4)=20;MEMF(SOURCE+0x4f)=20;MEM32(SOURCE+0x2b)=0x00ffffff;
     MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;assert(produce()==0);
-    printf("restored: thinned tunnel/wall/road lamps light at retail strength; signs, sideways spots, floods stay thinned\n");fflush(stdout);
+    /* A tunnel uplighter (a lamp-coloured 7m spot aimed up the wall) keeps its
+     * spot and also lights a pool of its hue down to the road: 1.75x its 5m
+     * mounting, at a 0x48 peak. Aimed down, sideways or coloured: no pool. */
+    reset();MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;MEM32(SOURCE+0x2b)=0x00ffca85;
+    MEMF(DIRECTION+4)=1;MEM32(QUEUE+0x5414)=RECORD+0x100;MEM32(0x407c30)=3;
+    assert(produce()==2 && MEM32(RECORD+0x50)==1 && MEM32(RECORD+0x150)==0);
+    assert(fabsf(MEMF(RECORD+0x140)-17.5f)<.01f && (MEM32(RECORD+0x14c)&0xFFFFFFu)==0x00483926u);
+    reset();MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;MEM32(SOURCE+0x2b)=0x00ffca85;
+    MEMF(DIRECTION)=1;MEMF(DIRECTION+4)=0;MEM32(QUEUE+0x5414)=RECORD+0x100;assert(produce()==1);
+    reset();MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;MEM32(SOURCE+0x2b)=0x000000ff;
+    MEMF(DIRECTION+4)=1;MEM32(QUEUE+0x5414)=RECORD+0x100;assert(produce()==1);
+    MEM32(0x407c30)=0;
+    printf("restored: thinned tunnel/wall/road lamps light at retail strength; signs, sideways spots, floods stay thinned; uplighters pool the road\n");fflush(stdout);
 }
 
 int main(void)

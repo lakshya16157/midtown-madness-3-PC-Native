@@ -15,7 +15,7 @@ extern int nv2a_d3d_distance_fog_ready(void);
  * effective city/camera multiplier belongs in that remap: changing object
  * LODs or requesting a range outside the resident cells must not move the
  * haze. The ramp's common sky-mask knee remains 0.78. */
-#define FOG_KNEE 0.78f
+#define FOG_KNEE MM3_FOG_RAMP_KNEE
 /* PAL MM3: increase the title's own visibility/LOD distances before its
  * native D3D11 translation sees geometry. Keep the original fade fractions,
  * frustum construction, streaming and temporary render-pass save/restore.
@@ -68,6 +68,11 @@ float mm3_draw_distance_scale(void)
 static float s_city_stream_cap;
 static float s_city_authored_distance;
 static float s_haze_scale;
+
+float mm3_city_haze_scale(void)
+{
+    return s_haze_scale >= 1.0f ? s_haze_scale : 1.0f;
+}
 
 /* Called once at the native loader's facade-renderer lookup, before its
  * original clamp. Streaming and both facade draw entries visit only the

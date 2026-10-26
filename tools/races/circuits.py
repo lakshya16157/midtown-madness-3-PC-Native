@@ -131,10 +131,11 @@ def outline(points, step):
     return out
 
 
-def icon_cdds(course):
+def icon_cdds(course, closed=True):
     """The race list's picture of a circuit, as in the retail ones: its route
     as a white line on a clear 64 x 64, north up (needs Pillow and
-    tools/car-models/mm3_textures.py; run by design.py write)."""
+    tools/car-models/mm3_textures.py; run by design.py write). closed=False
+    draws a start-to-finish route (dlc_icons.py)."""
     import importlib.util
     from PIL import Image, ImageDraw
     spec = importlib.util.spec_from_file_location(
@@ -152,7 +153,7 @@ def icon_cdds(course):
     image = Image.new("RGBA", (size, size), (255, 255, 255, 0))
     draw = ImageDraw.Draw(image)
     width = round(ICON_LINE * ICON_SCALE)
-    draw.line(place + place[:2], fill=(255, 255, 255, 255), width=width, joint="curve")
+    draw.line(place + place[:2] if closed else place, fill=(255, 255, 255, 255), width=width, joint="curve")
     for x, y in place:
         draw.ellipse((x - width / 2, y - width / 2, x + width / 2, y + width / 2), fill=(255, 255, 255, 255))
     small = image.resize((ICON_SIZE, ICON_SIZE), Image.LANCZOS)
@@ -350,7 +351,26 @@ def race_entries(hd, dvd, original_cars=()):
             dvd_entries[target] = base64.b64decode(circuit["icon"])
         elif "Menu/Gfx/races/NoIcon.cdds" in pictures:
             dvd_entries[target] = dvd.read("Menu/Gfx/races/NoIcon.cdds")
+    # The downloadable races' own route pictures (dlc_icons.py), beside the
+    # DLC's copies of races 1-10: src/mm3_dlc_races.c asks for <NN>_mm3.
+    for key, icon in dlc_icons().items():
+        dvd_entries[f"Menu/Gfx/races/{key}_mm3.cdds"] = base64.b64decode(icon)
     return {"Data_hd.zip": hd_entries, "Data_dvd.zip": dvd_entries}
+
+
+DLC_ICONS = HERE / "dlc_icons.json"
+
+
+def dlc_icons():
+    """{"<City>/<Mode>/<NN>": base64 CDDS} for the downloadable races 10-19."""
+    return json.loads(DLC_ICONS.read_text()) if DLC_ICONS.exists() else {}
+
+
+def dlc_icons_ini():
+    """Data/mm3_dlc_icons.ini: which downloadable races have a picture."""
+    lines = ["# MM3 downloadable races with their own route picture (<City>/<Mode>/<NN>_mm3.cdds)"]
+    lines.extend(sorted(dlc_icons()))
+    return ("\n".join(lines) + "\n").encode("ascii")
 
 
 def names_ini():

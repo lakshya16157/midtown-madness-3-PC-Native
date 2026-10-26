@@ -24,5 +24,11 @@ MM3_MOD_FLAG(mm3_mod_lamp_glows, "MM3_ALL_STREET_LAMPS", 1)
 MM3_MOD_FLAG(mm3_mod_north_marker, "MM3_HUD_NORTH_MARKER", 0)
 MM3_MOD_FLAG(mm3_mod_race_arrow, "MM3_HUD_RACE_ARROW", 0)
 MM3_MOD_FLAG(mm3_mod_route_navigation, "MM3_ROUTE_NAVIGATION", 1)
+MM3_MOD_FLAG(mm3_mod_dlc_race_info, "MM3_DLC_RACE_INFO", 1)
+MM3_MOD_FLAG(mm3_mod_falling_trees, "MM3_FALLING_TREES", 1)
+MM3_MOD_FLAG(mm3_mod_graphics_menu, "MM3_GRAPHICS_MENU", 1)
+MM3_MOD_FLAG(mm3_mod_extra_circuits, "MM3_EXTRA_CIRCUITS", 1)
+MM3_MOD_FLAG(mm3_mod_extra_cars, "MM3_EXTRA_CARS", 1)
+MM3_MOD_FLAG(mm3_mod_exhaust_triangles, "MM3_EXHAUST_TRIANGLES", 0)
 #undef MM3_MOD_FLAG
 #endif

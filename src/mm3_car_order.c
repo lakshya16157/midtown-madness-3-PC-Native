@@ -1,4 +1,5 @@
 #include "recomp_types.h"
+#include "mm3_mod_flags.h"
 
 extern void sub_001DE752_original(void);
 
@@ -81,6 +82,27 @@ static void order_vector(uint32_t vector, int catalog_order)
  * implementation continues to decide membership, race classes and locks.
  * Reorder both its cache and its returned copy so cached/rebuilt lists agree.
  * Host helpers never touch guest registers, preserving every original effect. */
+/* Cars added by the installer (Car Workshop variants, IDs from 9000) are
+ * left out of the menu's list with MM3_EXTRA_CARS=0 (the launcher's Original
+ * game); the Xbox's own and the official downloadable cars stay. Only the
+ * returned list and its cache shrink; the catalog keeps every entry. */
+#define FIRST_EXTRA_CAR_ID 9000u
+static void hide_extra_cars(uint32_t vector)
+{
+    uint32_t start, end, cursor, kept;
+    if (!guest_range(vector, 16u)) return;
+    start = MEM32(vector + 4u);
+    end = MEM32(vector + 8u);
+    if (end < start || (end - start) % 4u || end - start > 8192u || !guest_range(start, end - start)) return;
+    for (cursor = kept = start; cursor < end; cursor += 4u) {
+        uint32_t entry = MEM32(cursor);
+        if (guest_range(entry, 4u) && MEM32(entry) >= FIRST_EXTRA_CAR_ID) continue;
+        MEM32(kept) = entry;
+        kept += 4u;
+    }
+    MEM32(vector + 8u) = kept;
+}
+
 void sub_001DE752(void)
 {
     uint32_t catalog = g_ebx;
@@ -89,4 +111,8 @@ void sub_001DE752(void)
     sub_001DE752_original();
     if (guest_range(catalog, 0x24u)) order_vector(catalog + 0x14u, 0);
     order_vector(output, 0);
+    if (!mm3_mod_extra_cars()) {
+        if (guest_range(catalog, 0x24u)) hide_extra_cars(catalog + 0x14u);
+        hide_extra_cars(output);
+    }
 }

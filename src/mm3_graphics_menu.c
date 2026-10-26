@@ -372,9 +372,19 @@ const char *mm3_graphics_menu_label(const char *key)
         return NULL;
     }
     if (!strcmp(field, "MORE_RESOLUTIONS")) return "Other Resolutions...";
-    if (!strcmp(field, "TITLE")) return "Graphics Settings";
+    /* The main menu's row and help follow the game's language (0x3C5648;
+     * Latin-1, widened by the lookup); the pages behind them are English. */
+    if (!strcmp(field, "TITLE") || !strcmp(field, "HELP")) {
+        static const char *const titles[5] = {"Graphics Settings", "Param\xE8tres graphiques",
+            "Grafikeinstellungen", "Impostazioni grafiche", "Ajustes gr\xE1\x66icos"};
+        static const char *const helps[5] = {"Change display and graphics settings.",
+            "Modifiez l'affichage et les r\xE9glages graphiques.", "Anzeige- und Grafikeinstellungen \xE4ndern.",
+            "Modifica le impostazioni di schermo e grafica.", "Cambia la pantalla y los ajustes gr\xE1\x66icos."};
+        unsigned language = MEM32(0x003C5648u);
+        if (language > 4) language = 0;
+        return field[0] == 'T' ? titles[language] : helps[language];
+    }
     if (!strcmp(field, "ADVANCED")) return "Advanced Graphics";
-    if (!strcmp(field, "HELP")) return "Change display and graphics settings.";
     if (!strcmp(field, "APPLY")) return "Apply Settings";
     if (!strcmp(field, "DEFAULTS")) return "Restore Defaults";
     if (!strcmp(field, "STATUS")) return status;
