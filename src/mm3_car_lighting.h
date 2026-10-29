@@ -22,6 +22,9 @@ uint32_t mm3_car_lighting_mask(uint32_t owner, uint32_t mask, uint32_t time_of_d
 
 /* Source-only collection never submits lenses, geometry or native effects. */
 void mm3_car_lighting_emit(uint32_t node, uint32_t mask, const float source[12]);
+/* Development A/B: which car fields are queued (teleport pipe "carfields"). */
+void mm3_car_lighting_field_mask(long mask);
+void mm3_car_lighting_shape(const float shape[5]);
 void mm3_car_lighting_model(uint32_t graph, uint32_t selector);
 
 #endif

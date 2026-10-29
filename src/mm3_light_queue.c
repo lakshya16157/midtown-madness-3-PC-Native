@@ -241,6 +241,8 @@ static float light_kth_largest(float *values, int count, int k)
     return values[target];
 }
 
+static void light_watch_class(uint32_t record, unsigned light_class);
+
 static uint32_t light_queue_select(uint32_t queue, uint32_t slots, uint32_t count,
                                    uint32_t budget, const float eye[3])
 {
@@ -296,8 +298,10 @@ static uint32_t light_queue_select(uint32_t queue, uint32_t slots, uint32_t coun
             if (!(faded & 0x00FFFFFFu)) fade = 0.0f;
             else ++s_select.fading;
         }
-        if (fade > 0.0f) s_kept[kept++] = record;
-        else s_dropped[dropped++] = record;
+        if (fade > 0.0f) {
+            s_kept[kept++] = record;
+            light_watch_class(record, s_record_class[i]);
+        } else s_dropped[dropped++] = record;
     }
     for (i = 0; i != kept; ++i) MEM32(slots + i * 4u) = s_kept[i];
     for (i = 0; i != dropped; ++i) MEM32(slots + (kept + i) * 4u) = s_dropped[i];
@@ -488,3 +492,44 @@ void mm3_light_queue_frame(uint32_t queue)
     memset(&s_usage, 0, sizeof s_usage);
     s_usage.start = now;
 }
+
+/* For the volume watch (mm3_light_watch.c): each drawn record's class,
+ * the consumer's frame number and whether renderer profiling is on. */
+#define WATCH_CLASS_SLOTS 2048u
+static uint32_t s_watch_class_record[WATCH_CLASS_SLOTS], s_watch_class_frame[WATCH_CLASS_SLOTS];
+static uint8_t s_watch_class_value[WATCH_CLASS_SLOTS];
+static int s_watch_classes;
+
+void mm3_light_queue_watch_classes(int on) { s_watch_classes = on; }
+uint32_t mm3_light_queue_frame_number(void) { return s_frame; }
+int mm3_light_queue_reporting(void) { return light_queue_reporting(); }
+
+/* The class of each drawn record, stamped with the frame its volume is built
+ * in (the consumer's frame number moves on once selection ends). */
+static uint32_t light_watch_class_slot(uint32_t record)
+{
+    return ((record / 4u) * 0x9E3779B1u >> 21) % WATCH_CLASS_SLOTS;
+}
+
+static void light_watch_class(uint32_t record, unsigned light_class)
+{
+    uint32_t frame = s_frame + 1u ? s_frame + 1u : 1u, slot = light_watch_class_slot(record), i;
+    if (!s_watch_classes) return;
+    for (i = 0; i != 16; ++i, slot = (slot + 1u) % WATCH_CLASS_SLOTS)
+        if (s_watch_class_frame[slot] != frame || s_watch_class_record[slot] == record) {
+            s_watch_class_record[slot] = record;
+            s_watch_class_frame[slot] = frame;
+            s_watch_class_value[slot] = (uint8_t)light_class;
+            return;
+        }
+}
+
+uint32_t mm3_light_queue_watch_class(uint32_t record)
+{
+    uint32_t slot = light_watch_class_slot(record), i;
+    for (i = 0; i != 16; ++i, slot = (slot + 1u) % WATCH_CLASS_SLOTS)
+        if (s_watch_class_frame[slot] == s_frame && s_watch_class_record[slot] == record)
+            return s_watch_class_value[slot];
+    return 0;
+}
+

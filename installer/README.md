@@ -60,7 +60,8 @@ finished; it rejects file names in a disc image that could escape the install fo
 
 You need a built game (`scripts\setup.ps1` does it, giving
 `build\RelWithDebInfo\mm3_recomp.exe` and the extracted `game_files`), and a Python with
-PyInstaller (`pip install pyinstaller`).
+PyInstaller (`pip install pyinstaller`) and Pillow, which Setup bundles to draw the DLC
+races' loading screens (`tools\venv` has both).
 
 ```powershell
 # 1. Once: convert the community cars (skip if you do not want the extra-car option).

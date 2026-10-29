@@ -2,8 +2,9 @@
 
     python installer\\build.py [--packages installer\\car-packages] [--downloads DIR]
 
-Needs a Python with PyInstaller (pip install pyinstaller), a built game
-(build\\RelWithDebInfo\\mm3_recomp.exe) and car packages from build_car_packages.py.
+Needs a Python with PyInstaller (pip install pyinstaller) and Pillow (the DLC
+races' loading screens), a built game (build\\RelWithDebInfo\\mm3_recomp.exe)
+and car packages from build_car_packages.py.
 The result is one self-contained MM3-Setup.exe next to this script.
 """
 import argparse
@@ -29,9 +30,14 @@ CREDITS = {
     "Lamborghini Aventador LP700-4": "!lamboaven.ar",
 }
 CAR_MODS_FILES = ("prepare.py", "factory_specs.py", "factory_specs.json", "original_stats.py",
-                  "native_overrides.py", "driving_defaults.py", "race_stability.py", "voice_fixes.py")
-RACE_FILES = ("circuits.py", "circuits.json", "logic_circuit.lua", "dlc_icons.json")
+                  "native_overrides.py", "driving_defaults.py", "race_stability.py")
+RACE_FILES = ("circuits.py", "circuits.json", "logic_circuit.lua", "dlc_icons.json",
+              "dlc_loading.py", "dlc_loading.json")
+# The DLC races' loading screens read the city maps (CDDS) and draw with Pillow.
+TEXTURE_FILES = ("mm3_textures.py", "cdds_codebooks.json")
 STDLIB_HIDDEN =("argparse", "collections", "copy", "hashlib", "math", "re", "struct", "tempfile", "zipfile", "zlib")
+PILLOW_HIDDEN = ("PIL.Image", "PIL.ImageChops", "PIL.ImageDraw", "PIL.ImageFilter", "PIL.ImageFont",
+                 "PIL.ImageOps", "PIL.DdsImagePlugin", "PIL.TgaImagePlugin", "PIL.PngImagePlugin")
 
 
 def newest_game_exe(repo: Path) -> Path:
@@ -75,6 +81,10 @@ def stage_payload(payload: Path, repo: Path, packages: Path, downloads: Path) ->
     races.mkdir(parents=True)
     for name in RACE_FILES:
         shutil.copy2(repo / "tools" / "races" / name, races)
+    textures = payload / "tools" / "car-models"
+    textures.mkdir(parents=True)
+    for name in TEXTURE_FILES:
+        shutil.copy2(repo / "tools" / "car-models" / name, textures)
     # cars.local.json is the maintainer's tuned setup; the tracked cars.json is the untuned preset
     # (and carries no model packages). Either way, model_package paths are ../../out/car-models/packages.
     manifest = repo / "tools" / "car-mods" / "cars.local.json"
@@ -119,7 +129,7 @@ def main() -> int:
                "--add-data", f"{payload};payload",
                "--distpath", str(args.work / "dist"), "--workpath", str(args.work / "pyi"),
                "--specpath", str(args.work)]
-    for module in STDLIB_HIDDEN:
+    for module in STDLIB_HIDDEN + PILLOW_HIDDEN:
         command += ["--hidden-import", module]
     command.append(str(HERE / "installer.py"))
     print("running PyInstaller...")

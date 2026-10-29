@@ -55,7 +55,8 @@ static const SettingField s_fields[] = {
     INT_FIELD(aniso, "RECOMP_ANISO", 1, 16, 0),
     FLOAT_FIELD(draw_distance, "RECOMP_DRAW_DISTANCE", 1.0f, 4.0f),
     FLOAT_FIELD(view_distance, "RECOMP_VIEW_DISTANCE", 1.0f, 4.0f),
-    {"monitor", "RECOMP_MONITOR", SETTING_MONITOR, offsetof(MM3DisplaySettings, monitor), 0, 0, 0}
+    {"monitor", "RECOMP_MONITOR", SETTING_MONITOR, offsetof(MM3DisplaySettings, monitor), 0, 0, 0},
+    INT_FIELD(night_light, "MM3_NIGHT_WORLD_LIGHT", 0, 100, 0)
 };
 
 static void error_clear(char *error, size_t capacity)
@@ -200,6 +201,7 @@ void mm3_display_settings_defaults(MM3DisplaySettings *settings, const char *pro
     settings->draw_distance = (float)atof(profile->draw_distance);
     settings->view_distance = settings->draw_distance;
     strcpy(settings->monitor, "primary");
+    settings->night_light = MM3_NIGHT_LIGHT_DEFAULT;
 }
 
 #ifdef _WIN32
@@ -445,12 +447,12 @@ int mm3_display_settings_save(const MM3DisplaySettings *settings, char *error, s
                 "[display]\nwindow_width=%d\nwindow_height=%d\nfullscreen=%d\n"
                 "fps_limit=%d\nvsync=%d\nshow_fps=%d\nminimap_improved=%d\nrender_scale=%s\n"
                 "aspect=%s\nmsaa=%d\naniso=%d\ndraw_distance=%.9g\nview_distance=%.9g\n"
-                "monitor=%s\n",
+                "monitor=%s\nnight_light=%d\n",
                 settings->window_width, settings->window_height, settings->fullscreen,
                 settings->fps_limit, settings->vsync, settings->show_fps, settings->minimap_improved,
                 scale_value, settings->aspect, settings->msaa,
                 settings->aniso, (double)settings->draw_distance,
-                (double)settings->view_distance, settings->monitor) < 0) failed = 1;
+                (double)settings->view_distance, settings->monitor, settings->night_light) < 0) failed = 1;
     if (fflush(file)) failed = 1;
 #ifdef _WIN32
     if (_commit(_fileno(file))) failed = 1;

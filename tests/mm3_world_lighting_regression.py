@@ -45,10 +45,15 @@ static unsigned char memory[0x500000],expected_memory[sizeof memory];
 static uint32_t original_color;
 static float requested_gain;
 static int requested_softness;
-static int requested_overlap;
+static int requested_overlap,requested_sum=-1,requested_falloff=-1;
 void nv2a_d3d_set_local_light_gain(float gain) { requested_gain=gain; }
 void nv2a_d3d_set_local_light_softness(int enabled) { requested_softness=enabled; }
 void nv2a_d3d_set_local_light_overlap(int enabled) { requested_overlap=enabled; }
+void nv2a_d3d_set_local_light_sum(int enabled) { requested_sum=enabled; }
+void nv2a_d3d_set_local_light_falloff(int enabled) { requested_falloff=enabled; }
+float nv2a_d3d_set_local_light_shape(float source, float edge, float power, float white) { (void)source; (void)edge; (void)power; (void)white; return 1.0f; }
+static float requested_exposure[2]={-1.0f,-1.0f};
+int nv2a_d3d_set_local_light_exposure(float knee, float ceiling) { requested_exposure[0]=knee; requested_exposure[1]=ceiling; return 1; }
 static unsigned original_calls;
 static uint32_t observed_light_mode;
 static uint32_t time_of_day;
@@ -244,6 +249,18 @@ int main(int argc,char **argv)
     _putenv("MM3_LOCAL_LIGHT_GAIN=nan");mm3_world_lighting_apply_gain();assert(requested_gain==1.3f);
     assert(requested_softness==1);
     assert(requested_overlap==1);
+    /* Lights add as light does and fall off with the inverse square unless
+     * MM3_LIGHT_SUM=0 (both off) or MM3_LIGHT_FALLOFF=0 (the profile only). */
+    assert(requested_sum==1 && requested_falloff==1);
+    /* The colour-keeping exposure goes with the sum (MM3_LIGHT_EXPOSURE=0 off). */
+    assert(requested_exposure[0]==LIGHT_EXPOSURE_KNEE && requested_exposure[1]==LIGHT_EXPOSURE_CEILING);
+    _putenv("MM3_LIGHT_SUM=0");mm3_world_lighting_apply_gain();assert(requested_sum==0 && requested_falloff==0);
+    assert(requested_exposure[1]==0.0f);
+    _putenv("MM3_LIGHT_SUM=");_putenv("MM3_LIGHT_FALLOFF=0");mm3_world_lighting_apply_gain();
+    assert(requested_sum==1 && requested_falloff==0);
+    _putenv("MM3_LIGHT_FALLOFF=");mm3_world_lighting_apply_gain();assert(requested_sum==1 && requested_falloff==1);
+    _putenv("MM3_LIGHT_EXPOSURE=0");mm3_world_lighting_apply_gain();assert(requested_exposure[1]==0.0f);
+    _putenv("MM3_LIGHT_EXPOSURE=");mm3_world_lighting_apply_gain();assert(requested_exposure[1]==LIGHT_EXPOSURE_CEILING);
     _putenv("MM3_LOCAL_LIGHT_GAIN=");
     assert(mm3_world_light_scale(0xAB010203u,25)==0xAB000101u);
     assert(mm3_world_light_scale(0xA17E80FFu,25)==0xA1202040u);
@@ -276,7 +293,18 @@ int main(int argc,char **argv)
         for(i=0;i<3;i++) { composite(i,even,1);composite(i,even,0); }
         for(i=0;i<256;i++) quad(0xA1000000u+i*0x010101u,lift,even);
     }
-    puts("PASS: night-only RGB scale, day/invalid-time identity, ambient ABI, optional scoped boosts, LightApply vertices, native composite mode and unrelated renderer, alpha/unrelated callers intact");
+    /* Night brightness changes live (the F10 panel): the next colours use
+     * it; values outside 0..100 are ignored. */
+    mm3_world_lighting_set_night_light(60);night_percent=60;
+    mm3_world_lighting_set_night_light(-1);mm3_world_lighting_set_night_light(101);
+    for(time=0;time<sizeof times/sizeof *times;time++) {
+        time_of_day=times[time];
+        for(i=0;i<sizeof native_colors/sizeof *native_colors;i++) {
+            query(callers[0],native_colors[i],lift,even);
+            quad(native_colors[i],lift,even);
+        }
+    }
+    puts("PASS: night-only RGB scale, day/invalid-time identity, ambient ABI, optional scoped boosts, LightApply vertices, native composite mode and unrelated renderer, alpha/unrelated callers intact, live night brightness");
     return 0;
 }
 '''

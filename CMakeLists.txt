@@ -111,7 +111,14 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0015A929)
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000F8DCE sub_000F8750)
 # Car damage: src/mm3_damage_diagnostics.c logs each scaled hit and keeps every
 # car's impulse over an Xbox frame's four physics steps for the damage step.
-list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00021DCF sub_001CDB6C)# The language chosen in Game Setup survives a restart (src/mm3_language.c).
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00021DCF sub_001CDB6C)
+# Launcher time limits scale the scripts' race_timer and its bonuses
+# (src/mm3_time_limits.c).
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001F5F24 sub_001F5A5A)
+# One-frame light volume jumps are watched at the native volume builder
+# (src/mm3_light_watch.c, [MM3_LIGHT_JUMP]).
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00013068)
+# The language chosen in Game Setup survives a restart (src/mm3_language.c).
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001193A6 sub_00124822)
 # The downloadable races' own route pictures (src/mm3_dlc_races.c).
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_002430FD)
@@ -143,6 +150,8 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0011C194)
 # Circuit mode lists only the circuit races, with their own picture strip;
 # Checkpoint lists the rest.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001238B7 sub_00103BE1 sub_001038D0)
+# The profile box's Checkpoint line leaves switched-off circuits out.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001E0F69 sub_001E4F97)
 # Back from a circuit race the menu returns to the Circuit screens.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00120A9A)
 # Race script errors are printed to the log as well.
@@ -155,7 +164,8 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001DDFC5)
 # Keep retail vehicles first and sort custom/DLC menu entries by top speed;
 # race opponents get the Xbox cars, never the installer's extra cars.
-list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001DE752 sub_001DE012)
+# The profile box counts owned cars from the same list as its total.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001DE752 sub_001DE012 sub_001DE995)
 # The CRT MMX probe must preserve the stack effects of PUSHFD/POPFD.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00093770)
 # The CRT remainder loop tests FPREM's C2, independently of a previous FCMP.
@@ -524,9 +534,9 @@ add_executable(${PROJECT_NAME}
  src/mm3_circuit_races.c
  src/mm3_dlc_races.c
  src/mm3_exhaust.c
- src/mm3_voice_fixes.c
  src/mm3_lua_errors.c
  src/mm3_damage_diagnostics.c
+ src/mm3_time_limits.c
  src/mm3_map_pins.c
  src/mm3_language.c
  src/mm3_vehicle_dynamics.c
@@ -545,6 +555,7 @@ add_executable(${PROJECT_NAME}
  src/mm3_lamp_lighting.c
  src/mm3_lamp_glow.c
  src/mm3_light_queue.c
+ src/mm3_light_watch.c
  src/mm3_darkness_monitor.c
  src/recomp_trace_probe.c
  ${RECOMP_GEN_SOURCES})
@@ -584,7 +595,7 @@ set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_L
 set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_LAUNCHER_NETWORK=1)
 # The release this build belongs to: the launcher's title and the first log
 # line show it, so a report says which version it came from.
-set(MM3_VERSION "2.0 beta 2")
+set(MM3_VERSION "2.0")
 set_property(SOURCE src/mm3_launcher.c src/main.c APPEND PROPERTY COMPILE_DEFINITIONS
     "MM3_VERSION=\"${MM3_VERSION}\"")
 if(WIN32)

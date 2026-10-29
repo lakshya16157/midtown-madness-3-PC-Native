@@ -22,6 +22,8 @@ int nv2a_d3d_set_present_options(int vsync, int fps)
 void nv2a_d3d_set_render_scale(float scale) { published_scale = scale; }
 void nv2a_d3d_set_display_aspect(float aspect) { published_aspect = aspect; }
 void xbox_InputSetBlocked(int value) { InterlockedExchange((LONG *)&blocked, value); }
+static int night_published = -1;
+void mm3_world_lighting_set_night_light(int percent) { night_published = percent; }
 
 static HWND wait_dialog(void)
 {
@@ -102,6 +104,9 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
         CHECK(combo_float(dialog, IDC_DISPLAY_SCALE) == 5.f);
         CHECK(combo_float(dialog, IDC_DISPLAY_DISTANCE) == 1.25f);
         CHECK(combo_float(dialog, IDC_DISPLAY_VIEW_DISTANCE) == 3.25f);
+        CHECK(combo_value(dialog, IDC_DISPLAY_NIGHT_LIGHT) == MM3_NIGHT_LIGHT_DEFAULT);
+        CHECK(IsWindowEnabled(GetDlgItem(dialog, IDC_DISPLAY_NIGHT_LIGHT)));
+        combo_select(dialog, IDC_DISPLAY_NIGHT_LIGHT, 50);
         SetDlgItemTextA(dialog, IDC_DISPLAY_FPS, "45");
         combo_select(dialog, IDC_DISPLAY_ASPECT, 1); /* Live 4:3 selection. */
         combo_select(dialog, IDC_DISPLAY_MSAA, 2);
@@ -121,6 +126,7 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
         CHECK(fabsf(published_aspect - 4.f / 3.f) < 0.0001f);
         CHECK(published_width == 1280);
         CHECK(mm3_minimap_improved() == 0);
+        CHECK(night_published == 50);             /* night brightness applies live */
         GetDlgItemTextA(dialog, IDC_DISPLAY_STATUS, text, sizeof text);
         CHECK(strstr(text, "Saved.") && strstr(text, "Restart") && strstr(text, "anti-aliasing"));
         CHECK(strstr(text, "object detail distance") && strstr(text, "building view distance"));
@@ -151,13 +157,80 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
     return 0;
 }
 
+/* Started by the launcher in Xbox gameplay with the widescreen and distance
+ * mods off: those settings are greyed as in the launcher and keep the values
+ * it forced, Restore defaults leaves them, and Apply saves the player's own. */
+static DWORD WINAPI drive_fixed(LPVOID argument)
+{
+    HWND dialog = wait_dialog();
+    char text[512];
+    (void)argument;
+    CHECK(!IsWindowEnabled(GetDlgItem(dialog, IDC_DISPLAY_ASPECT)));
+    CHECK(!IsWindowEnabled(GetDlgItem(dialog, IDC_DISPLAY_DISTANCE)));
+    CHECK(!IsWindowEnabled(GetDlgItem(dialog, IDC_DISPLAY_VIEW_DISTANCE)));
+    CHECK(!IsWindowEnabled(GetDlgItem(dialog, IDC_DISPLAY_MINIMAP)));
+    CHECK(!IsWindowEnabled(GetDlgItem(dialog, IDC_DISPLAY_NIGHT_LIGHT)));
+    CHECK(IsWindowEnabled(GetDlgItem(dialog, IDC_DISPLAY_MSAA)));
+    CHECK(combo_value(dialog, IDC_DISPLAY_ASPECT) == 1);
+    CHECK(combo_float(dialog, IDC_DISPLAY_DISTANCE) == 1.f && combo_float(dialog, IDC_DISPLAY_VIEW_DISTANCE) == 1.f);
+    CHECK(combo_value(dialog, IDC_DISPLAY_MINIMAP) == 0);   /* what the game shows */
+    GetDlgItemTextA(dialog, IDC_DISPLAY_STATUS, text, sizeof text);
+    CHECK(strstr(text, "Greyed out") && strstr(text, "4:3") && strstr(text, "1x") && strstr(text, "Xbox gameplay"));
+    CHECK(strstr(text, "Improved world lighting"));
+    notify(dialog, IDC_DISPLAY_DEFAULTS, BN_CLICKED);
+    CHECK(combo_value(dialog, IDC_DISPLAY_ASPECT) == 1 && combo_float(dialog, IDC_DISPLAY_DISTANCE) == 1.f);
+    CHECK(combo_value(dialog, IDC_DISPLAY_MINIMAP) == 0);
+    combo_select(dialog, IDC_DISPLAY_MSAA, 2);
+    notify(dialog, IDC_DISPLAY_APPLY, BN_CLICKED);
+    CHECK(fabsf(published_aspect - 4.f / 3.f) < 0.0001f && mm3_minimap_improved() == 0);
+    PostMessageA(dialog, WM_COMMAND, IDCANCEL, 0);
+    return 0;
+}
+
+static int fixed_contract(const char *path)
+{
+    HWND owner;
+    HANDLE thread;
+    MM3DisplaySettings loaded;
+    char error[512];
+    FILE *file = fopen(path, "w");
+    CHECK(file);
+    fputs("aspect=16:9\ndraw_distance=3\nview_distance=4\nminimap_improved=1\nmsaa=4\nnight_light=40\n", file);
+    fclose(file);
+    CHECK(_putenv_s("MM3_DISPLAY_CONFIG", path) == 0);
+    CHECK(_putenv_s("MM3_GAMEPLAY_MODS", "0") == 0 && _putenv_s("MM3_MOD_WORLD_LIGHTING", "0") == 0);
+    CHECK(_putenv_s("MM3_MOD_WIDESCREEN", "0") == 0 && _putenv_s("RECOMP_ASPECT", "4:3") == 0);
+    CHECK(_putenv_s("MM3_MOD_DRAW_DISTANCE", "0") == 0);
+    CHECK(_putenv_s("RECOMP_DRAW_DISTANCE", "1") == 0 && _putenv_s("RECOMP_VIEW_DISTANCE", "1") == 0);
+    mm3_display_settings_init();
+    CHECK(settings_handler && fabsf(published_aspect - 4.f / 3.f) < 0.0001f);
+    owner = CreateWindowExA(0, "STATIC", "Display contract owner", WS_OVERLAPPEDWINDOW,
+                            100, 100, 1296, 839, NULL, NULL, GetModuleHandleA(NULL), NULL);
+    CHECK(owner);
+    thread = CreateThread(NULL, 0, drive_fixed, NULL, 0, NULL);
+    CHECK(thread);
+    settings_handler(owner);
+    CHECK(WaitForSingleObject(thread, 10000) == WAIT_OBJECT_0);
+    CloseHandle(thread);
+    mm3_display_settings_defaults(&loaded, NULL);
+    CHECK(mm3_display_settings_load(&loaded, error, sizeof error));
+    CHECK(loaded.msaa == 2);
+    CHECK(strcmp(loaded.aspect, "16:9") == 0 && loaded.draw_distance == 3.f && loaded.view_distance == 4.f);
+    CHECK(loaded.minimap_improved == 1 && loaded.night_light == 40);
+    DestroyWindow(owner);
+    puts("PASS: settings the launcher fixed (aspect, distances, minimap) are greyed with the reason, keep their "
+         "forced values through Restore defaults and Apply, and the file keeps the player's own choices");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     HWND owner;
     MM3DisplaySettings loaded;
     char error[512];
     int stage;
-    CHECK(argc == 2);
+    CHECK(argc == 2 || argc == 3);
+    if (argc == 3) return fixed_contract(argv[1]);
     CHECK(_putenv_s("MM3_DISPLAY_CONFIG", argv[1]) == 0);
     CHECK(_putenv_s("RECOMP_ASPECT", "1.77778") == 0);
     CHECK(_putenv_s("RECOMP_ANISO", "3") == 0);
@@ -184,7 +257,7 @@ int main(int argc, char **argv)
     CHECK(loaded.fps_limit == 45 && loaded.msaa == 2 && loaded.vsync == 1);
     CHECK(loaded.render_scale == 2.5f && loaded.aniso == 3);
     CHECK(loaded.draw_distance == 1.5f && loaded.view_distance == 4.f);
-    CHECK(loaded.minimap_improved == 0);
+    CHECK(loaded.minimap_improved == 0 && loaded.night_light == 50);
     CHECK(strcmp(loaded.aspect, "4:3") == 0);
     strcpy(loaded.aspect, "auto");
     CHECK(mm3_display_settings_commit(&loaded, error, sizeof error));

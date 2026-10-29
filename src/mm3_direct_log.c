@@ -17,7 +17,7 @@
 #include <wchar.h>
 #include "mm3_direct_log.h"
 
-enum { MM3_DIRECT_LOGS_KEPT = 5, MM3_OVERLAY_CHECK_MS = 30000 };
+enum { MM3_DIRECT_LOGS_KEPT = 5, MM3_OVERLAY_CHECK_MS = 30000, MM3_POWER_CHECK_MS = 30000 };
 
 /* play.ps1 and the benchmark harness hand the game a pipe or a file. */
 static int stderr_redirected(void)
@@ -100,6 +100,43 @@ static DWORD WINAPI report_overlay(LPVOID unused)
             GetModuleHandleW(L"gameoverlayrenderer64.dll") ? "loaded" : "not loaded");
     fflush(stderr);
     return 0;
+}
+
+/* A laptop on battery runs its processor and graphics slower (Windows'
+ * battery saver slower still), so a slow session's log says which. */
+static void report_power(int *last)
+{
+    SYSTEM_POWER_STATUS power;
+    char charge[16] = "";
+    int state;
+    if (!GetSystemPowerStatus(&power)) return;
+    state = (power.ACLineStatus == 0 ? 1 : power.ACLineStatus == 1 ? 0 : 2) | (power.SystemStatusFlag & 1) << 2;
+    if (state == *last) return;
+    *last = state;
+    if (power.BatteryLifePercent <= 100) snprintf(charge, sizeof charge, " (%u%%)", power.BatteryLifePercent);
+    if ((state & 3) == 1)
+        fprintf(stderr, "[MM3_POWER] on battery%s%s: the processor and graphics can run slower than on mains power\n",
+                charge, state & 4 ? ", battery saver on" : "");
+    else
+        fprintf(stderr, "[MM3_POWER] %s%s\n", (state & 3) ? "power source unknown" : "on mains power",
+                state & 4 ? ", battery saver on" : "");
+    fflush(stderr);
+}
+
+static DWORD WINAPI watch_power(LPVOID unused)
+{
+    int last = -1;
+    (void)unused;
+    for (;;) {
+        report_power(&last);
+        Sleep(MM3_POWER_CHECK_MS);
+    }
+}
+
+void mm3_power_watch(void)
+{
+    HANDLE thread = CreateThread(NULL, 0, watch_power, NULL, 0, NULL);
+    if (thread) CloseHandle(thread);
 }
 
 static void default_setting(const char *key, const char *value)

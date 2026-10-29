@@ -31,6 +31,10 @@ static inline float mm3_local_light_gain(uint32_t time_of_day)
  * Call once at startup, after stderr is set up. */
 void mm3_world_lighting_apply_gain(void);
 
+/* Night brightness (percent of the game's own night world light, 0..100),
+ * live: the F10 panel's Night brightness. Startup reads MM3_NIGHT_WORLD_LIGHT. */
+void mm3_world_lighting_set_night_light(int percent);
+
 /* RGB is returned as a packed native color. Alpha also carries material
  * information in this engine and must never change as part of illumination. */
 static inline uint32_t mm3_world_light_scale(uint32_t color, unsigned percent)

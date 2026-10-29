@@ -21,19 +21,27 @@ extern void sub_000DFE0E_original(void);
  * nothing at the far end, so a 50 m box lights the road from ~4 m to ~45 m.
  * A low pitch makes the box's centre plane meet the road about 18 m ahead for
  * every lamp height from 0.3 m to 1.1 m; the 6 m thickness keeps the road,
- * kerbs, other cars and walls inside the volume across hills and bumps. */
-#define CAR_BEAM_WIDTH 22.0f
+ * kerbs, other cars and walls inside the volume across hills and bumps.
+ * The light pass has no surface angle, and the composite multiplies the light
+ * by the albedo twice (4 x albedo x (base + albedo x light)), so a light
+ * tunnel tile takes about ten times the light of asphalt: a 22 m wide beam
+ * (+-33 degrees) lit the tunnel walls beside the car and the cars behind it
+ * pure white, which flashed as the camera moved (user, 10-27). 12 m keeps a
+ * low beam's +-20 degrees: both lanes ahead, walls only further on. */
+#define CAR_BEAM_WIDTH 12.0f
 #define CAR_BEAM_HEIGHT 6.0f
 #define CAR_BEAM_LENGTH 50.0f
 #define CAR_BEAM_PITCH 0.035f
 #define CAR_BEAM_GAIN 0.26f
 /* A low-energy ellipsoid fills the near field using the native smooth point
- * attenuation. It reaches from behind the bumper to 14 m ahead, follows the
- * road plane, and replaces the old overlapping pool and lamp-glow records. */
-#define CAR_POOL_WIDTH 10.0f
-#define CAR_POOL_HEIGHT 4.0f
-#define CAR_POOL_LENGTH 18.0f
-#define CAR_POOL_AHEAD 5.0f
+ * attenuation. It reaches from the lamps to 14 m ahead across the car's own
+ * lane, follows the road plane, and replaces the old overlapping pool and
+ * lamp-glow records. (It used to start 4 m behind the lamps and span 10 m:
+ * walls and kerbs beside the doors were lit as brightly as the road ahead.) */
+#define CAR_POOL_WIDTH 5.0f
+#define CAR_POOL_HEIGHT 2.5f
+#define CAR_POOL_LENGTH 14.0f
+#define CAR_POOL_AHEAD 7.0f
 #define CAR_POOL_DROP 0.45f
 #define CAR_POOL_GAIN 0.10f
 /* Sunlight overwhelms the rear lamps' illumination of nearby surfaces. Keep
@@ -47,6 +55,21 @@ extern void sub_000DFE0E_original(void);
 #define CAR_BRAKE_RADIUS_NIGHT 3.4f
 #define CAR_BRAKE_GAIN_DAY 0.04f
 #define CAR_BRAKE_GAIN_NIGHT 0.40f
+/* In the evening and at night a tail or brake lamp lights the road behind
+ * the car, not a cube around its lens: that cube (4.4 m for a tail lamp,
+ * 6.8 m for a brake lamp) reached every post, pole and wall within a couple
+ * of metres of the rear, which flashed saturated red as the car passed (user,
+ * 2026-10-27). The field is a low, lane-wide box along the car's rearward
+ * axis from the bumper back, lowered toward the road like the reversing
+ * field; daylight keeps the faint field at the lens. */
+#define CAR_REAR_WIDTH 2.6f
+#define CAR_REAR_HEIGHT 1.4f
+#define CAR_REAR_DROP 0.35f
+#define CAR_TAIL_LENGTH 3.0f
+#define CAR_TAIL_BEHIND 1.0f
+#define CAR_BRAKE_LENGTH 5.0f
+#define CAR_BRAKE_BEHIND 1.8f
+#define CAR_REAR_SHAPED_RADIUS 1.0f
 /* Turn signals: a small amber flash on the kerb and nearby cars at night,
  * barely any spill in daylight (their native lenses keep blinking). */
 #define CAR_SIGNAL_RADIUS_DAY 0.4f
@@ -336,6 +359,25 @@ static int car_light_heading(uint32_t owner, const float source[12], float out[3
         }
     }
     return 1;
+}
+
+/* A rear lamp faces rearward (its node is turned 180 degrees); with the car's
+ * HeadLightEnv axis known, exactly opposite that axis, so a toed-out lens
+ * still lights straight back. */
+static void car_light_rear_heading(uint32_t owner, const float source[12], float out[3])
+{
+    unsigned slot = car_axis_slot(owner), i;
+    out[0] = source[6]; out[1] = source[7]; out[2] = source[8];
+    if (!owner || !car_light_normalize(out)) return;
+    for (i = 0; i != CAR_AXIS_SLOTS; ++i) {
+        unsigned at = (slot + i) % CAR_AXIS_SLOTS;
+        if (!s_car_axis[at].owner) break;
+        if (s_car_axis[at].owner == owner) {
+            float back[3] = {-s_car_axis[at].forward[0], -s_car_axis[at].forward[1], -s_car_axis[at].forward[2]};
+            if (car_light_dot(back, out) > .5f) memcpy(out, back, sizeof back);
+            break;
+        }
+    }
 }
 
 /* The source's third row is vehicle forward and its second row is up. Build a
@@ -681,6 +723,40 @@ static void car_light_group_record(struct car_light_group *group, unsigned index
  * and a camera-distance fade evaluated per pass could leave a tail lamp lit in
  * one frame and dimmed in the next. Far and faint lights are left out by the
  * frame budget instead (mm3_light_queue.c), from one camera per frame. */
+/* Development A/B through the teleport pipe ("carfields <mask>", self-play
+ * with MM3_DEBUG_TELEPORT=1): which car fields are queued. Bit 0 front pools,
+ * 1 front beams, 2 tail and brake fields, 3 reversing fields, 4 the other
+ * lamp points, 5 the player's own car (clear: none of its fields). */
+static volatile long s_car_field_mask = -1;
+
+void mm3_car_lighting_field_mask(long mask)
+{
+    s_car_field_mask = mask;
+}
+
+static int car_field_on(const struct car_light_group *group, unsigned bit)
+{
+    long mask = s_car_field_mask;
+    return (mask & (1L << bit)) && (!group->priority || (mask & 32L));
+}
+
+/* Development A/B ("carshape <beam width> <pool width> <pool height> <pool
+ * length> <pool ahead>"): other front-field shapes for every car; 0 keeps
+ * the constant. */
+static volatile float s_car_shape[5];
+
+void mm3_car_lighting_shape(const float shape[5])
+{
+    unsigned i;
+    for (i = 0; i != 5; ++i) s_car_shape[i] = isfinite(shape[i]) && shape[i] > 0 ? shape[i] : 0;
+}
+
+static float car_shape(unsigned index, float fallback)
+{
+    float value = s_car_shape[index];
+    return value > 0 ? value : fallback;
+}
+
 static void car_light_group_draw(struct car_light_group *group, float radius)
 {
     float centre[12] = {0}, forward[3] = {0}, matrix[16], maximum = 0, total = 0;
@@ -703,32 +779,46 @@ static void car_light_group_draw(struct car_light_group *group, float radius)
         vertical = car_light_dot(forward, up);
         for (i = 0; i != 3; ++i) level[i] = forward[i] - vertical * up[i];
         if (!car_light_normalize(level)) return;
-        if (car_light_matrix(centre, level, 0, matrix)) {
+        if (car_field_on(group, 0) && car_light_matrix(centre, level, 0, matrix)) {
             for (i = 0; i != 3; ++i)
-                matrix[12 + i] += level[i] * CAR_POOL_AHEAD * reach - up[i] * CAR_POOL_DROP;
-            car_light_group_record(group, 0, matrix, CAR_POOL_WIDTH * reach, CAR_POOL_HEIGHT,
-                                    CAR_POOL_LENGTH * reach,
+                matrix[12 + i] += level[i] * car_shape(4, CAR_POOL_AHEAD) * reach - up[i] * CAR_POOL_DROP;
+            car_light_group_record(group, 0, matrix, car_shape(1, CAR_POOL_WIDTH) * reach,
+                                    car_shape(2, CAR_POOL_HEIGHT), car_shape(3, CAR_POOL_LENGTH) * reach,
                                     car_light_color(group->color, CAR_POOL_GAIN * maximum), 0);
         }
         /* Height keeps the road inside the beam over bumps; only its
          * footprint (width and throw) shortens in the evening. */
-        if (car_light_matrix(centre, forward, CAR_BEAM_PITCH, matrix))
-            car_light_group_record(group, 1, matrix, CAR_BEAM_WIDTH * reach, CAR_BEAM_HEIGHT,
+        if (car_field_on(group, 1) && car_light_matrix(centre, forward, CAR_BEAM_PITCH, matrix))
+            car_light_group_record(group, 1, matrix, car_shape(0, CAR_BEAM_WIDTH) * reach, CAR_BEAM_HEIGHT,
                                     CAR_BEAM_LENGTH * reach,
                                     car_light_color(group->color, CAR_BEAM_GAIN * maximum), 1);
+    } else if ((group->kind == 1 || group->kind == 2) && radius >= CAR_REAR_SHAPED_RADIUS) {
+        float up[3] = {centre[3], centre[4], centre[5]}, level[3], vertical;
+        float length = group->kind == 2 ? CAR_BRAKE_LENGTH : CAR_TAIL_LENGTH;
+        float behind = group->kind == 2 ? CAR_BRAKE_BEHIND : CAR_TAIL_BEHIND;
+        if (!car_light_normalize(up) || !car_light_normalize(forward)) return;
+        vertical = car_light_dot(forward, up);
+        for (i = 0; i != 3; ++i) level[i] = forward[i] - vertical * up[i];
+        if (!car_light_normalize(level)) return;
+        if (car_field_on(group, 2) && car_light_matrix(centre, level, 0, matrix)) {
+            for (i = 0; i != 3; ++i)
+                matrix[12 + i] += level[i] * behind * reach - up[i] * CAR_REAR_DROP;
+            car_light_group_record(group, 0, matrix, CAR_REAR_WIDTH * reach, CAR_REAR_HEIGHT,
+                                    length * reach, car_light_color(group->color, maximum), 0);
+        }
     } else if (group->kind == 3 && radius <= 0) {
         float up[3] = {centre[3], centre[4], centre[5]}, level[3], vertical;
         if (!car_light_normalize(up) || !car_light_normalize(forward)) return;
         vertical = car_light_dot(forward, up);
         for (i = 0; i != 3; ++i) level[i] = forward[i] - vertical * up[i];
         if (!car_light_normalize(level)) return;
-        if (car_light_matrix(centre, level, 0, matrix)) {
+        if (car_field_on(group, 3) && car_light_matrix(centre, level, 0, matrix)) {
             for (i = 0; i != 3; ++i)
                 matrix[12 + i] += level[i] * CAR_REVERSE_BEHIND * reach - up[i] * CAR_REVERSE_DROP;
             car_light_group_record(group, 0, matrix, CAR_REVERSE_WIDTH * reach, CAR_REVERSE_HEIGHT,
                                     CAR_REVERSE_LENGTH * reach, car_light_color(group->color, maximum), 0);
         }
-    } else {
+    } else if (car_field_on(group, 4)) {
         memset(matrix, 0, sizeof matrix);
         matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1;
         for (i = 0; i != 3; ++i) matrix[12 + i] = centre[9 + i];
@@ -893,12 +983,16 @@ void mm3_car_lighting_emit(uint32_t node, uint32_t mask, const float source[12])
     if (brightness > 1) brightness = 1;
     if (kind == 1) {
         int dark = mm3_car_lighting_dark_period(time_of_day);
-        car_light_submit(owner, node, kind, source, NULL, color,
+        float rear[3];
+        car_light_rear_heading(owner, source, rear);
+        car_light_submit(owner, node, kind, source, rear, color,
                           brightness * (dark ? CAR_TAIL_GAIN_NIGHT : CAR_TAIL_GAIN_DAY),
                           dark ? CAR_TAIL_RADIUS_NIGHT : CAR_TAIL_RADIUS_DAY);
     } else if (kind == 2) {
         int dark = mm3_car_lighting_dark_period(time_of_day);
-        car_light_submit(owner, node, kind, source, NULL, color,
+        float rear[3];
+        car_light_rear_heading(owner, source, rear);
+        car_light_submit(owner, node, kind, source, rear, color,
                           brightness * (dark ? CAR_BRAKE_GAIN_NIGHT : CAR_BRAKE_GAIN_DAY),
                           dark ? CAR_BRAKE_RADIUS_NIGHT : CAR_BRAKE_RADIUS_DAY);
     } else if (kind == 3) {
@@ -925,6 +1019,24 @@ static void car_light_hook(void)
     int day_reverse = kind == 3 && !mm3_car_lighting_dark_period(time_of_day);
     float source[12];
     memcpy(source, (const void *)XBOX_PTR(transform), sizeof source);
+    {
+        /* Diagnostic: a lamp frame at the car's own origin, aligned with its
+         * axes, is the car's local space rather than the world. Name each
+         * caller once. */
+        static uint32_t callers[8];
+        static unsigned ncallers;
+        uint32_t caller = MEM32(stack), i;
+        if (fabsf(source[9]) < 16.0f && fabsf(source[10]) < 6.0f && fabsf(source[11]) < 16.0f &&
+            fabsf(source[8]) > 0.999f && ncallers < 8) {
+            for (i = 0; i < ncallers && callers[i] != caller; ++i) {}
+            if (i == ncallers) {
+                callers[ncallers++] = caller;
+                fprintf(stderr, "[MM3_CARLIGHT] lamp kind %u of %08X arrives in the car's local space "
+                        "(%.2f %.2f %.2f) from %08X, frame %08X\n", (unsigned)kind, MEM32(node + 4),
+                        source[9], source[10], source[11], caller, transform);
+            }
+        }
+    }
     if (car_debug() && kind < 10) {
         uint32_t q = MEM32(0x003C5D8Cu), entry = q ? MEM32(q + 0x5810) : 0;
         ++s_dbg.calls[kind];

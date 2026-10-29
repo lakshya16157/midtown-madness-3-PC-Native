@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "recomp_types.h"
+#include "mm3_mod_flags.h"
 #include "mm3_circuit_races.h"
 
 /* Circuit races (tools/races) are Checkpoint races 20-29 of each city, after
@@ -227,6 +228,50 @@ void sub_001238B7(void)
     MEM32(frontend + FRONTEND_CHECKPOINT_RACES) = races;
     MEM32(slot) = race;
     MEM32(frontend + FRONTEND_CHECKPOINT_RACE) = race;
+}
+
+/* The main menu's profile box (sub_0010F9A3, a block per city from
+ * sub_0010F7E7) shows "Checkpoint: won/races". Races is the race list's count
+ * for (city, mode 3) (sub_001E0F69, the call returning to 0x10F994; city in
+ * EAX) and won the set bits of the city's 64-bit Checkpoint medal mask
+ * (sub_001E4F97, returning to 0x10F974: profile, city, mode on the stack; the
+ * mask at profile + 0x80 + (3 * city + 2) * 8, the low word first). The
+ * installed circuits are races 20-29 of that list, so with them switched off
+ * (MM3_EXTRA_CIRCUITS=0, Xbox gameplay) the box read "12/30" with no circuit
+ * to be seen. It leaves them out of both numbers then, as the Checkpoint list
+ * does. */
+#define PROFILE_CHECKPOINT_RACES_RETURN 0x0010F994u
+#define PROFILE_CHECKPOINT_WON_RETURN 0x0010F974u
+#define PROFILE_MEDALS 0x80u
+#define PROFILE_MODE_CHECKPOINT 3u
+
+extern void sub_001E0F69_original(void);
+extern void sub_001E4F97_original(void);
+
+void sub_001E0F69(void)
+{
+    uint32_t caller = MEM32(g_esp), city = g_eax, circuits;
+    sub_001E0F69_original();
+    if (caller != PROFILE_CHECKPOINT_RACES_RETURN || mm3_mod_extra_circuits() || city > 1) return;
+    circuits = circuit_count(city);
+    if (circuits && g_eax > RETAIL_UNLOCK_LIMIT && g_eax > circuits) g_eax -= circuits;
+}
+
+void sub_001E4F97(void)
+{
+    uint32_t caller = MEM32(g_esp), profile = MEM32(g_esp + 4u), city = MEM32(g_esp + 8u);
+    uint32_t mode = MEM32(g_esp + 12u), circuits, mask, saved;
+    if (caller != PROFILE_CHECKPOINT_WON_RETURN || mm3_mod_extra_circuits() || city > 1 ||
+        mode != PROFILE_MODE_CHECKPOINT || !(circuits = circuit_count(city)) ||
+        !guest_object(profile, PROFILE_MEDALS + 6u * 8u)) {
+        sub_001E4F97_original();
+        return;
+    }
+    mask = profile + PROFILE_MEDALS + (3u * city + 2u) * 8u;
+    saved = MEM32(mask);
+    MEM32(mask) = saved & ~(((1u << circuits) - 1u) << CIRCUIT_FIRST_RACE);
+    sub_001E4F97_original();
+    MEM32(mask) = saved;
 }
 
 /* The race picture strip (MmxRaceListNode, node in EBX) keeps the city's

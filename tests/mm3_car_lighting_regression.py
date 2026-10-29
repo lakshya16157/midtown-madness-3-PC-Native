@@ -206,8 +206,16 @@ static void time_of_day_checks(void)
                     night_color=kind==1?0xff220000u:kind==2?0xff3d0000u:0xff170000u;
                 }
                 assert(MEM32(entry(0)+0x4c)==(dark?night_color:day_color));
-                assert(MEMF(entry(0)+0x40)==diameter);
-                assert(MEMF(entry(0)+0x44)==diameter && MEMF(entry(0)+0x48)==diameter);
+                if((kind==1 || kind==2) && dark) {
+                    /* Evening and night: a low, lane-wide field on the road
+                     * behind the car, not a cube around the lens. */
+                    float reach=times[i]==2?MM3_EVENING_LIGHT_REACH:1.0f;
+                    assert(MEMF(entry(0)+0x40)==CAR_REAR_WIDTH*reach && MEMF(entry(0)+0x44)==CAR_REAR_HEIGHT);
+                    assert(MEMF(entry(0)+0x48)==(kind==1?CAR_TAIL_LENGTH:CAR_BRAKE_LENGTH)*reach);
+                } else {
+                    assert(MEMF(entry(0)+0x40)==diameter);
+                    assert(MEMF(entry(0)+0x44)==diameter && MEMF(entry(0)+0x48)==diameter);
+                }
             } else if(times[i]==2) {
                 uint32_t red=(MEM32(entry(0)+0x4c)>>16)&255u;
                 assert(red && red<((night_color>>16)&255u));
@@ -244,8 +252,14 @@ static void time_of_day_checks(void)
             mm3_car_lighting_emit(NODE,1u<<j,(const float *)XBOX_PTR(MATRIX));
             assert(MEM32(QUEUE+0x5810)==1 && !flares);
             assert(MEM32(entry(0)+0x4c)==color);
-            assert(MEMF(entry(0)+0x40)==diameter);
-            assert(MEMF(entry(0)+0x44)==diameter && MEMF(entry(0)+0x48)==diameter);
+            if(dark) {
+                float reach=sequence[i]==2?MM3_EVENING_LIGHT_REACH:1.0f;
+                assert(MEMF(entry(0)+0x40)==CAR_REAR_WIDTH*reach && MEMF(entry(0)+0x44)==CAR_REAR_HEIGHT);
+                assert(MEMF(entry(0)+0x48)==(j==1?CAR_TAIL_LENGTH:CAR_BRAKE_LENGTH)*reach);
+            } else {
+                assert(MEMF(entry(0)+0x40)==diameter);
+                assert(MEMF(entry(0)+0x44)==diameter && MEMF(entry(0)+0x48)==diameter);
+            }
             again(j,1u<<j);
             assert(MEM32(QUEUE+0x5810)==1 && MEM32(entry(0)+0x4c)==color);
             assert(MEM32(NODE+0x64)==0xffff0000u && MEMF(NODE+0x54)==.8f);
@@ -280,10 +294,15 @@ static void direction_checks(void)
         assert(MEM32(pool+0x50)==0 && MEM32(cone+0x50)==1 && flares==1);
         assert(MEMF(cone+0x24)<0);
         assert(MEMF(cone+0x20)*forward[0]+MEMF(cone+0x28)*forward[2]>.99f);
-        assert(MEMF(cone+0x40)==22 && MEMF(cone+0x44)==6 && MEMF(cone+0x48)==50);
-        assert(MEMF(pool+0x40)==10 && MEMF(pool+0x44)==4 && MEMF(pool+0x48)==18);
+        /* A low beam's spread (+-20 degrees at the spot's widest, a third of
+         * the way out), not +-33: wider lit the walls beside the car. */
+        assert(MEMF(cone+0x40)==12 && MEMF(cone+0x44)==6 && MEMF(cone+0x48)==50);
+        /* The near field runs from the lamps forward across the car's lane,
+         * not beside the doors. */
+        assert(MEMF(pool+0x40)==5 && MEMF(pool+0x44)==2.5f && MEMF(pool+0x48)==14);
+        assert(CAR_POOL_AHEAD-CAR_POOL_LENGTH/2>=0 && CAR_POOL_WIDTH/2<=2.5f);
         for(j=0;j<3;++j) {
-            assert(fabsf(MEMF(pool+0x30+j*4)-(source[9+j]+5*forward[j]-(j==1?.45f:0)))<.001f);
+            assert(fabsf(MEMF(pool+0x30+j*4)-(source[9+j]+7*forward[j]-(j==1?.45f:0)))<.001f);
             assert(fabsf(MEMF(pool+0x20+j*4)-forward[j])<.001f);
         }
         /* Both local records and the native visible lens are warm and dimmer
@@ -540,13 +559,13 @@ static void banked_pool_checks(void)
     run();assert(MEM32(QUEUE+0x5810)==2 && flares==1);pool=entry(0);
     for(i=0;i<3;++i) {
         delta[i]=MEMF(pool+0x30+i*4)-MEMF(MATRIX+0x24+i*4)+.45f*up[i];
-        assert(fabsf(delta[i]-5*forward[i])<.001f);
+        assert(fabsf(delta[i]-CAR_POOL_AHEAD*forward[i])<.001f);
         assert(fabsf(MEMF(pool+i*4)-right[i])<.001f);
         assert(fabsf(MEMF(pool+0x10+i*4)-up[i])<.001f);
         assert(fabsf(MEMF(pool+0x20+i*4)-forward[i])<.001f);
     }
     assert(fabsf(car_light_dot(delta,up))<.001f);
-    assert(fabsf(car_light_dot(delta,delta)-25)<.001f);
+    assert(fabsf(car_light_dot(delta,delta)-CAR_POOL_AHEAD*CAR_POOL_AHEAD)<.001f);
     memset(s_car_axis,0,sizeof s_car_axis);
 }
 static void crowded_queue_checks(void)
@@ -1123,7 +1142,17 @@ int main(void)
             uint32_t color=MEM32(entry(0)+0x4c);
             assert((color&255)==((color>>8)&255) && (color&255)==((color>>16)&255));
         }
-        assert(MEMF(entry(0)+0x40)==(kind==1?4.4f:kind==2?6.8f:3.6f));
+        assert(MEMF(entry(0)+0x40)==(kind==3?3.6f:CAR_REAR_WIDTH));
+        if(kind!=3) {
+            /* Night tail and brake lamps: a 1.4m-high field reaching back
+             * along the lamp's rearward facing from the bumper, lowered
+             * toward the road; posts beside the car stay outside it. */
+            float behind=kind==1?CAR_TAIL_BEHIND:CAR_BRAKE_BEHIND;
+            assert(MEMF(entry(0)+0x44)==CAR_REAR_HEIGHT);
+            assert(MEMF(entry(0)+0x48)==(kind==1?CAR_TAIL_LENGTH:CAR_BRAKE_LENGTH));
+            assert(fabsf(MEMF(entry(0)+0x30)-13)<1e-4f && fabsf(MEMF(entry(0)+0x34)-(.7f-CAR_REAR_DROP))<1e-4f);
+            assert(fabsf(MEMF(entry(0)+0x38)-(-8+behind))<1e-4f && fabsf(MEMF(entry(0)+0x28)-1)<1e-4f);
+        }
         if(kind==3) {
             /* A lane-wide field behind the car along the lamp's rearward
              * facing, not a 9m cube around the bumper. */

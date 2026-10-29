@@ -1,4 +1,5 @@
 """Compile the production vehicle-menu ordering hook and verify its guest ABI."""
+import os
 from pathlib import Path
 import re
 import shutil
@@ -27,7 +28,14 @@ def main():
             str(ROOT / "tests/mm3_car_order_contract.c"),
             "/Fo:" + str(folder / "contract.obj"), "/Fe:" + str(executable),
         ], check=True, cwd=folder)
-        subprocess.run([str(executable)], check=True, cwd=folder, timeout=20)
+        environment = {k: v for k, v in os.environ.items() if k not in ("MM3_SAME_CAR", "MM3_EXTRA_CARS")}
+        subprocess.run([str(executable)], check=True, cwd=folder, timeout=20, env=environment)
+        # The "Opponents drive your car" mod (MM3_SAME_CAR), read once per thread.
+        subprocess.run([str(executable), "same"], check=True, cwd=folder, timeout=20,
+                       env=dict(environment, MM3_SAME_CAR="1"))
+        # The installer's cars left out (MM3_EXTRA_CARS=0), also read once per thread.
+        subprocess.run([str(executable), "hidden"], check=True, cwd=folder, timeout=20,
+                       env=dict(environment, MM3_EXTRA_CARS="0"))
 
 
 if __name__ == "__main__":

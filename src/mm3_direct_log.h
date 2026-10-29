@@ -7,4 +7,8 @@
  * nothing when stderr is already redirected or MM3_DIRECT_LOG=0. */
 void mm3_direct_launch_log(void);
 
+/* Log the power source ([MM3_POWER]: mains or battery, battery saver) now
+ * and whenever it changes, checked every 30 s. */
+void mm3_power_watch(void);
+
 #endif

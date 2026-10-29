@@ -23,6 +23,7 @@ enum MM3LauncherOption {
      * and minimap (mm3_launcher_config_apply). */
     MM3_LAUNCH_GAMEPLAY,
     MM3_LAUNCH_QUIT,             /* the main menu's Sign In row becomes Quit */
+    MM3_LAUNCH_SAME_CAR,         /* race opponents drive the player's car */
     MM3_LAUNCH_OPTION_COUNT
 };
 
@@ -30,6 +31,9 @@ typedef struct MM3LauncherConfig {
     int option[MM3_LAUNCH_OPTION_COUNT];
     int controller_count; /* 1..4 USB controllers exposed to the game. */
     int fov_degrees; /* 0 = retail, otherwise 60..110 horizontal degrees. */
+    /* Gameplay mods, percent of the Xbox's (100); Xbox gameplay uses 100. */
+    int damage_percent; /* crash damage to every car, 0..400 */
+    int time_percent;   /* race and job time limits and time bonuses, 25..400 */
     int network_port;
     char peers[512];
     int keys[MM3_LAUNCHER_KEYS]; /* Win32 VK, zero = unbound. */

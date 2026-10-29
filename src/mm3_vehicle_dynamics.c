@@ -28,9 +28,16 @@
  * Drafting: a car close behind another, in its wake, has less air to push
  * and pulls a little harder: up to MM3_DRAFT_ACCEL m/s^2 (default 1.6) along
  * its direction of travel at 150 km/h and above, less at lower speed, in a
- * wake that fades from 10 to 30 m behind the car in front and widens with
- * distance. Players and AI opponents alike. The Xbox game has no slipstream:
- * only MM3_DRAFTING=1 turns it on.
+ * wake that widens with distance: from the car in front's centre, none closer
+ * than 6 m (the bumpers touch: no wake to sit in), rising to full at 8 m,
+ * fading from 10 to 30 m. It only adds to a car under power or holding its
+ * speed (its own pull along its way, the slipstream left out, at least
+ * -0.25 m/s^2 over the last 0.1 s), and stands down for a second after an
+ * impact. The pull is several times a car's air drag, so a car coasting or
+ * braking in a wake was towed: after a side swipe it stayed pressed against
+ * the back of the car in front (tester, Paris 06/02). Players and AI
+ * opponents alike. The Xbox game has no slipstream: only MM3_DRAFTING=1
+ * turns it on.
  *
  * Roll guard: some original cars rolled over in hard corners. Once a car on
  * its wheels leans past 20 degrees, the part of its roll rate that leans it
@@ -48,11 +55,14 @@ extern void sub_001D7441_original(void);
 
 #define CARS 32
 #define STALE_SECONDS 0.25
-#define DRAFT_NEAR 10.0f            /* full slipstream up to this far behind */
+#define DRAFT_CONTACT 6.0f          /* centres this close: the bumpers touch */
+#define DRAFT_FULL 8.0f             /* full slipstream from this far behind ... */
+#define DRAFT_NEAR 10.0f            /* ... to this far */
 #define DRAFT_FAR 30.0f             /* none beyond */
-#define DRAFT_MIN_GAP 1.5f
 #define DRAFT_SPEED 41.7f           /* m/s (150 km/h): full strength */
 #define DRAFT_MIN_SPEED 12.0f       /* m/s: none below about 43 km/h */
+#define DRAFT_POWER (-0.25f)        /* m/s^2: the car's own pull, coasting is less */
+#define ACCEL_SMOOTH 0.1f           /* s */
 #define ROLL_START 0.342f           /* sin 20 degrees */
 #define ROLL_FULL 0.707f            /* sin 45 degrees: strongest guard */
 #define ROLL_RESTORE_START 0.5f     /* sin 30 degrees: eased back from here */
@@ -69,6 +79,7 @@ typedef struct {
     uint32_t car, player;
     double seen, impact, roll_logged;
     float position[3], velocity[3];
+    float accel;                    /* own pull along its way, smoothed (m/s^2) */
     float draft_seconds, draft_gain;
     int has_velocity;
 } Car;
@@ -201,14 +212,15 @@ static float slipstream(const Car *self, const float direction[2], double now)
         dz = lead->position[2] - self->position[2];
         if (fabsf(lead->position[1] - self->position[1]) > 3.0f) continue;
         along = dx * direction[0] + dz * direction[1];
-        if (along < DRAFT_MIN_GAP || along > DRAFT_FAR) continue;
+        if (along <= DRAFT_CONTACT || along > DRAFT_FAR) continue;
         lateral = fabsf(dx * direction[1] - dz * direction[0]);
         width = 1.2f + along * 0.03f;
         if (lateral > width) continue;
         lead_speed = sqrtf(lead->velocity[0] * lead->velocity[0] + lead->velocity[2] * lead->velocity[2]);
         if (lead_speed < DRAFT_MIN_SPEED ||
             lead->velocity[0] * direction[0] + lead->velocity[2] * direction[1] < 0.85f * lead_speed) continue;
-        s = along <= DRAFT_NEAR ? 1.0f : (DRAFT_FAR - along) / (DRAFT_FAR - DRAFT_NEAR);
+        s = along < DRAFT_FULL ? (along - DRAFT_CONTACT) / (DRAFT_FULL - DRAFT_CONTACT)
+            : along <= DRAFT_NEAR ? 1.0f : (DRAFT_FAR - along) / (DRAFT_FAR - DRAFT_NEAR);
         s *= 1.0f - (lateral / width) * (lateral / width);
         if (s > best) best = s;
     }
@@ -218,7 +230,8 @@ static float slipstream(const Car *self, const float direction[2], double now)
 static void draft(Car *self, uint32_t body, float speed, const float direction[2], float dt, double now)
 {
     float strength, factor, dv;
-    if (speed < DRAFT_MIN_SPEED) return;
+    /* Coasting, braking or just hit: no tow from the car in front. */
+    if (speed < DRAFT_MIN_SPEED || !(self->accel >= DRAFT_POWER) || now - self->impact < IMPACT_HOLD) return;
     strength = slipstream(self, direction, now);
     if (strength <= 0.0f) return;
     factor = speed / DRAFT_SPEED;
@@ -323,13 +336,19 @@ void sub_001D7441(void)
     }
     now = now_seconds();
     self = car_slot(car, now);
-    if (self->has_velocity && now - self->seen < STALE_SECONDS) {
-        float ax = (velocity[0] - self->velocity[0]) / dt, az = (velocity[2] - self->velocity[2]) / dt;
-        if (ax * ax + az * az > IMPACT_ACCEL * IMPACT_ACCEL) self->impact = now;
-    }
     speed = sqrtf(velocity[0] * velocity[0] + velocity[2] * velocity[2]);
     direction[0] = speed > 0.1f ? velocity[0] / speed : 0.0f;
     direction[1] = speed > 0.1f ? velocity[2] / speed : 0.0f;
+    if (self->has_velocity && now - self->seen < STALE_SECONDS) {
+        /* Since the last step: the game's own forces and contacts only, the
+         * velocity was remembered after that step's slipstream. */
+        float ax = (velocity[0] - self->velocity[0]) / dt, az = (velocity[2] - self->velocity[2]) / dt;
+        float pull = ax * direction[0] + az * direction[1];
+        if (ax * ax + az * az > IMPACT_ACCEL * IMPACT_ACCEL) self->impact = now;
+        self->accel = isnan(self->accel) ? pull : self->accel + (pull - self->accel) * (1.0f - expf(-dt / ACCEL_SMOOTH));
+    } else {
+        self->accel = NAN;              /* not measured yet: no slipstream */
+    }
     for (i = 0; i < 3; ++i) self->position[i] = MEMF(body + 0xC8u + i * 4u);
     self->seen = now;
     if (drafting_enabled()) draft(self, body, speed, direction, dt, now);

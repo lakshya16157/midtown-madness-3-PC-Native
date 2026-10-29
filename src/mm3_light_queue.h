@@ -38,5 +38,13 @@ void mm3_light_queue_refused(unsigned beam);
  * car while its headlights are switched off in the evening or at night; the
  * usage report then says which drawn lights cover that point. */
 void mm3_light_queue_probe(const float point[3]);
+/* For the light volume watch (mm3_light_watch.c): turn on the per-frame
+ * record classes, the class of a record drawn this frame (1 car, 2 the
+ * driver's car), the consumer's frame number, and whether renderer profiling
+ * (Steam launches) is on. */
+void mm3_light_queue_watch_classes(int on);
+uint32_t mm3_light_queue_watch_class(uint32_t record);
+uint32_t mm3_light_queue_frame_number(void);
+int mm3_light_queue_reporting(void);
 
 #endif

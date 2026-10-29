@@ -318,15 +318,21 @@ static void time_of_day_visibility_checks(void)
         /* Tail/brake remain active with negligible daylight surface spill
          * while only front sources are masked. */
         if(period==2) {
-            /* Evening: the same lamps with a smaller, softer field. */
-            assert(MEMF(entry(1)+0x40)==CAR_TAIL_RADIUS_NIGHT*MM3_EVENING_LIGHT_REACH*2);
-            assert(MEMF(entry(2)+0x40)==CAR_BRAKE_RADIUS_NIGHT*MM3_EVENING_LIGHT_REACH*2);
+            /* Evening: the same lamps with a smaller, softer field: the
+             * lane-wide rear field, shortened. */
+            assert(MEMF(entry(1)+0x40)==CAR_REAR_WIDTH*MM3_EVENING_LIGHT_REACH);
+            assert(MEMF(entry(2)+0x40)==CAR_REAR_WIDTH*MM3_EVENING_LIGHT_REACH);
+            assert(MEMF(entry(1)+0x48)==CAR_TAIL_LENGTH*MM3_EVENING_LIGHT_REACH);
+            assert(MEMF(entry(2)+0x48)==CAR_BRAKE_LENGTH*MM3_EVENING_LIGHT_REACH);
             assert(MEM32(entry(1)+0x4c)==0xff220000u);
             assert(MEM32(entry(2)+0x4c)==0xff3d0000u);
             continue;
         }
-        assert(MEMF(entry(dark?1:0)+0x40)==(dark?4.4f:.7f));
-        assert(MEMF(entry(dark?2:1)+0x40)==(dark?6.8f:1.0f));
+        /* Night: the rear field behind the car; day: a faint cube at the lens. */
+        assert(MEMF(entry(dark?1:0)+0x40)==(dark?CAR_REAR_WIDTH:.7f));
+        assert(MEMF(entry(dark?2:1)+0x40)==(dark?CAR_REAR_WIDTH:1.0f));
+        assert(MEMF(entry(dark?1:0)+0x48)==(dark?CAR_TAIL_LENGTH:.7f));
+        assert(MEMF(entry(dark?2:1)+0x48)==(dark?CAR_BRAKE_LENGTH:1.0f));
         assert(MEM32(entry(dark?1:0)+0x4c)==(dark?0xff2d0000u:0xff030000u));
         assert(MEM32(entry(dark?2:1)+0x4c)==(dark?0xff520000u:0xff080000u));
     }

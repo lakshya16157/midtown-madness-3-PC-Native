@@ -42,6 +42,8 @@ void nv2a_d3d_sky_fog_ramp(uint32_t addr, uint32_t format, float row, float scal
     ++ramps; ramp_addr=addr; ramp_format=format;
     ramp_values[0]=row; ramp_values[1]=scale; ramp_values[2]=knee;
 }
+static unsigned holds;
+void nv2a_d3d_hold_frame(void) { ++holds; }
 static void feed(uint32_t subch,uint32_t method,uint32_t param) {
 DECODER
     ++ordinary; last_method=method; last_subch=subch;
@@ -97,7 +99,16 @@ int main(void) {
     feed(0,0x100,NV2A_HOST_TRIS_TAG); feed(0,0x2B4,1);
     for(n=0;n<18;++n) feed(0,0x100,word(1));
     assert(tris==1 && ordinary==5);
-    puts("PASS: production ordered fog packet payload/state, sky fog ramp packet, world triangle packet, incomplete/restarted/interrupted packets, subchannels, ordinary window methods and repeated packet bounds");
+    /* Holding the frame back is the tag alone; it cuts an incomplete packet
+     * short, and another subchannel's no-op is an ordinary command. */
+    assert(!holds);
+    feed(0,0x100,NV2A_HOST_HOLD_TAG); assert(holds==1 && calls==1029);
+    feed(0,0x100,NV2A_HOST_FOG_TAG); feed(0,0x100,word(1));
+    feed(0,0x100,NV2A_HOST_HOLD_TAG); assert(holds==2);
+    for(n=0;n<10;++n) feed(0,0x100,word(1)); assert(calls==1029);
+    packet(); assert(calls==1030 && holds==2);
+    feed(2,0x100,NV2A_HOST_HOLD_TAG); assert(holds==2 && ordinary==6 && last_subch==2);
+    puts("PASS: production ordered fog packet payload/state, sky fog ramp packet, world triangle packet, frame hold, incomplete/restarted/interrupted packets, subchannels, ordinary window methods and repeated packet bounds");
     return 0;
 }
 '''

@@ -190,12 +190,13 @@ function gameIsOnline() return 0 end
 function lobbyGetNumberOfPlayers() return 1 end
 function lobbyGetModel() return "lotus" end
 function getVehicleGroup() return 2 end
--- The catalog has performance groups 1-4 (none above, as the game returns
--- nothing for an empty group); each call hands out a new car of the group.
+-- The catalog has performance groups 0-4, 0 the fastest as in the game (the
+-- Koenigsegg's; none outside, as the game returns nothing for an empty group);
+-- each call hands out a new car of the group.
 car_counter = 0
 car_group = {}
 function getRandomVehicleFromGroup(group, pick)
-	if group == nil or group > 4 then return nil end
+	if group == nil or group < 0 or group > 4 then return nil end
 	car_counter = car_counter + 1
 	car_group["car" .. car_counter] = group
 	return "car" .. car_counter
@@ -324,15 +325,24 @@ for i = 2, getn(models), 1 do
 end
 assert(getRandomVehicleFromGroup ~= circuitVehicle and randomCarInGroup ~= circuitPick)
 -- The rival (VH-1) races an original car two groups faster than the
--- player's (group 2).
-assert(car_group[models[2]] == 4, "the rival's car " .. models[2] .. " is not from group 4")
+-- player's (group 2): the top group, 0.
+assert(car_group[models[2]] == 0, "the rival's car " .. models[2] .. " is not from group 0")
 assert(circuitOriginalCar(models[2]) == 1)
--- Already in the top group: the best car of the player's own group.
-assert(car_group[circuitPick(1, 4)] == 4)
+picks = 0
+for i = 1, getn(logs), 1 do
+	if strfind(logs[i], "circuit: car 1 " .. models[2] .. " (player's group 2)", 1, 1) then picks = picks + 1 end
+end
+assert(picks == 1, "the rival's pick is logged " .. picks .. " times")
+-- From a slow group two groups up; one below the top, the top group; already
+-- in the top group, the best car of the player's own group. Never a slower
+-- group (the rival drove a Mini against the player's group-1 car).
+assert(car_group[circuitPick(1, 4)] == 2)
+assert(car_group[circuitPick(1, 1)] == 0)
+assert(car_group[circuitPick(1, 0)] == 0)
 -- With the DLC and extra cars allowed the rival takes the faster group's best,
 -- whatever car it is.
 circuit_all_cars = 1
-assert(car_group[circuitPick(1, 2)] == 4 and car_group[circuitPick(1, 3)] == 4)
+assert(car_group[circuitPick(1, 2)] == 0 and car_group[circuitPick(1, 3)] == 1)
 circuit_all_cars = 0
 -- Opponents keep clear of the blocks with a 4 m margin, not retail's 10 m.
 assert(ai_variables["rc::m_avoidRadiusAdd"] == circuit_avoid_radius)
@@ -641,8 +651,20 @@ def check_prepare(prepare_module, circuits):
         assert "Scripts/logic_circuit.lua" in hd.namelist()
         # Opponents race the retail personalities: none are added.
         assert not [name for name in hd.namelist() if "mm3c" in name.lower()]
+        # The downloadable races' loading screens (dlc_loading.py), listed for
+        # src/mm3_dlc_races.c and deflated like the retail ones.
+        listed = [line for line in output["Data/mm3_dlc_loading.ini"].decode("ascii").splitlines()
+                  if line and not line.startswith("#")]
+        assert len(listed) == 200, len(listed)
+        for key in listed:
+            language, city, mode, number = key.split("/")
+            info = dvd.getinfo(f"LoadingScreens/{language}/{city}/{mode}/Loading{number}_mm3.tga")
+            assert info.compress_type == zipfile.ZIP_DEFLATED and info.file_size == 18 + 640 * 480 * 3, key
+        assert all(dvd.getinfo(name).compress_type == zipfile.ZIP_STORED
+                   for name in dvd.namelist() if name.startswith("Menu/Gfx/races/") and "_mm3" in name)
         assert hd.testzip() is None and dvd.testzip() is None
-    print("PASS: prepare.py adds every circuit race, its picture and logic_circuit.lua without extra cars")
+    print("PASS: prepare.py adds every circuit race, its picture and logic_circuit.lua without extra cars, "
+          "and the downloadable races' 200 loading screens")
 
 
 def main():

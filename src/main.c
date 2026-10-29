@@ -17,7 +17,6 @@
 #include "mm3_launcher.h"
 #include "mm3_crash_diagnostics.h"
 #include "mm3_world_lighting.h"
-#include "mm3_voice_fixes.h"
 #include "mm3_collision_profile.h"
 #include "mm3_direct_log.h"
 #include <xbox_host.h>
@@ -278,6 +277,26 @@ static const wchar_t *mm3_enter_game_directory(void)
     return NULL;
 }
 
+/* Car paint mirrors the screen copy as sharply as glass, so lamps showed on
+ * it as hard bright spots. A slightly rough finish (user, 10-29: "slightly
+ * increasing car-paint roughness, so the reflections are softer not just a
+ * bright blob") blurs that mirror over MM3_PAINT_SOFTNESS display pixels
+ * (0-32; 0 keeps the Xbox's sharp mirror, as the launcher's Original look). */
+#define MM3_PAINT_SOFTNESS 6.0f
+static float mm3_paint_softness(void)
+{
+    const char *setting = getenv("MM3_PAINT_SOFTNESS");
+    char *end = NULL;
+    float value;
+    if (!setting || !*setting) return MM3_PAINT_SOFTNESS;
+    value = strtof(setting, &end);
+    if (end == setting || *end || !(value >= 0.0f && value <= 32.0f)) {
+        fprintf(stderr, "[MM3_PAINT] invalid MM3_PAINT_SOFTNESS; expected 0..32, using %.0f\n", MM3_PAINT_SOFTNESS);
+        return MM3_PAINT_SOFTNESS;
+    }
+    return value;
+}
+
 int main(void)
 {
     void *xbe_data = NULL;
@@ -315,8 +334,8 @@ int main(void)
     xbox_FramebufferSetCloseHandler(mm3_close_game);
     nv2a_d3d_set_flare_depth_test(!getenv("MM3_MOD_FLARE_DEPTH") || strcmp(getenv("MM3_MOD_FLARE_DEPTH"), "0"));
     nv2a_d3d_set_night_glass(!getenv("MM3_NIGHT_GLASS") || strcmp(getenv("MM3_NIGHT_GLASS"), "0"));
+    nv2a_d3d_set_paint_softness(mm3_paint_softness());
     mm3_world_lighting_apply_gain();
-    mm3_voice_fixes_install();
     if (!getenv("MM3_MOD_SKY") || strcmp(getenv("MM3_MOD_SKY"), "0"))
         nv2a_d3d_set_bspline_blend(0x304u, 0x305u);
     SetConsoleCtrlHandler(mm3_console_control, TRUE);
@@ -325,6 +344,7 @@ int main(void)
 #endif
     puts("MM3 static recompilation " MM3_VERSION);
     fprintf(stderr, "[MM3_VERSION] Midtown Madness 3 PC %s, built %s %s\n", MM3_VERSION, __DATE__, __TIME__);
+    mm3_power_watch();
 
     mm3_display_settings_init();
 

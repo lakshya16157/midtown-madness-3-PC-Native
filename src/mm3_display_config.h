@@ -18,7 +18,11 @@ typedef struct MM3DisplaySettings {
     float draw_distance; /* Object detail/LOD distance; retains the legacy key. */
     float view_distance; /* City/building visibility; legacy configurations inherit draw_distance. */
     char monitor[32]; /* "primary", or the Windows name of the display to open on (\\.\DISPLAY2). */
+    int night_light; /* Night brightness: percent of the game's own night world light (Improved world lighting). */
 } MM3DisplaySettings;
+
+/* The Improved world lighting's default night world light, in percent. */
+#define MM3_NIGHT_LIGHT_DEFAULT 25
 
 void mm3_display_settings_defaults(MM3DisplaySettings *settings, const char *profile);
 /* Whether a monitor value can be saved: "primary" or \\.\ and a name. */

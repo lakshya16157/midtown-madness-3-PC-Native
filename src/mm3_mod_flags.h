@@ -31,5 +31,6 @@ MM3_MOD_FLAG(mm3_mod_extra_circuits, "MM3_EXTRA_CIRCUITS", 1)
 MM3_MOD_FLAG(mm3_mod_extra_cars, "MM3_EXTRA_CARS", 1)
 MM3_MOD_FLAG(mm3_mod_exhaust_triangles, "MM3_EXHAUST_TRIANGLES", 0)
 MM3_MOD_FLAG(mm3_mod_quit_button, "MM3_MENU_QUIT", 1)
+MM3_MOD_FLAG(mm3_mod_same_car, "MM3_SAME_CAR", 0)
 #undef MM3_MOD_FLAG
 #endif

@@ -53,22 +53,6 @@ def _load_circuits():
 circuits = _load_circuits()
 
 
-def _load_voice_fixes():
-    """voice_fixes.py (the retail disc's voice-language mix-ups), beside this tool."""
-    path = Path(__file__).resolve().parent / "voice_fixes.py"
-    if not path.is_file():
-        return None
-    spec = importlib.util.spec_from_file_location("mm3_voice_fixes", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-voice_fixes = _load_voice_fixes()
-VOICE_DIR = "Data/Shared/Audio/Voice"
-SPANISH_PARIS_FIXED = f"{VOICE_DIR}/Spanish/Paris_mm3.xwb"
-
-
 def default_config_path(directory: Path | None = None) -> Path:
     """Prefer machine-local settings without shipping model asset paths."""
     folder = Path(directory) if directory is not None else Path(__file__).resolve().parent
@@ -92,6 +76,7 @@ SPEEDOMETER_FILE = "Data/mm3_speedometers.ini"
 FACTORY_PHYSICS_FILE = "Data/mm3_factory_physics.ini"
 CIRCUITS_FILE = "Data/mm3_circuits.ini"
 DLC_ICONS_FILE = "Data/mm3_dlc_icons.ini"
+DLC_LOADING_FILE = "Data/mm3_dlc_loading.ini"
 ORIGINAL_SPEEDOMETERS = {
     "AudiTT": "Audi TT", "Avalanche": "Chevrolet Avalanche", "Avant": "Audi RS 6 Avant",
     "ChevySSR": "Chevrolet SSR", "Corvette": "Chevrolet Corvette", "Crossfire": "Chrysler Crossfire",
@@ -625,7 +610,10 @@ def append_zip(original: bytes, updates: dict[str, tuple[bytes, zipfile.ZipInfo]
             info = copy.copy(template)
             info.filename = name
             info.orig_filename = name
-            info.compress_type = zipfile.ZIP_STORED
+            # Stored unless asked otherwise (deflate only where retail deflates
+            # the same kind of file).
+            if info.compress_type != zipfile.ZIP_DEFLATED:
+                info.compress_type = zipfile.ZIP_STORED
             info.flag_bits = 0
             # Retail has NTFS metadata only in the central directory. Its asset
             # reader at 0x001BCD7E computes payload = local offset + 30 +
@@ -838,7 +826,11 @@ def build_plan(game_dir: Path, originals: dict[str, bytes], config: dict,
         for name, data in race_files.get(Path(relative).name, {}).items():
             if name.lower() in existing or any(key.casefold() == name.casefold() for key in updates):
                 raise ValueError(f"A circuit race would overwrite an existing asset: {name}")
-            updates[name] = (data, zipfile.ZipInfo(name, (2026, 10, 22, 0, 0, 0)))
+            info = zipfile.ZipInfo(name, (2026, 10, 22, 0, 0, 0))
+            if name.lower().endswith(".tga"):
+                # Loading screens, deflated as all 655 retail ones are (0.9 MB -> 0.4 MB).
+                info.compress_type = zipfile.ZIP_DEFLATED
+            updates[name] = (data, info)
         result = append_zip(baseline, updates)
         with zipfile.ZipFile(io.BytesIO(result)) as check:
             if len(check.namelist()) != len(set(n.lower() for n in check.namelist())) or check.testzip():
@@ -879,16 +871,9 @@ def build_plan(game_dir: Path, originals: dict[str, bytes], config: dict,
         if hasattr(circuits, "dlc_icons_ini"):
             output[DLC_ICONS_FILE] = circuits.dlc_icons_ini()
             counts["loose_files"] += 1
-    # Spanish Paris police in French instead of the retail Italian
-    # (voice_fixes.py; src/mm3_language.c opens the copy).
-    voice = game_dir / VOICE_DIR
-    if voice_fixes and all((voice / f"{lang}/Paris.{kind}").is_file()
-                           for lang in ("Spanish", "French") for kind in ("xwb", "xcp")):
-        fixed = voice_fixes.spanish_paris_police(
-            (voice / "Spanish/Paris.xwb").read_bytes(), (voice / "Spanish/Paris.xcp").read_bytes(),
-            (voice / "French/Paris.xwb").read_bytes(), (voice / "French/Paris.xcp").read_bytes())
-        if fixed:
-            output[SPANISH_PARIS_FIXED] = fixed
+        # And the loading screens race_entries made for them (none without Pillow).
+        if hasattr(circuits, "dlc_loading_ini"):
+            output[DLC_LOADING_FILE] = circuits.dlc_loading_ini(race_files.get("Data_dvd.zip", {}))
             counts["loose_files"] += 1
     return output, counts
 
@@ -946,7 +931,7 @@ def apply_plan(game_dir: Path, state: dict | None, originals: dict[str, bytes], 
                 atomic_write(target, data)
                 changed += 1
         for relative in owned - set(output):
-            if relative not in ARCHIVES:
+            if relative not in ARCHIVES and (game_dir / relative).exists():
                 rollback[relative] = (game_dir / relative).read_bytes()
                 (game_dir / relative).unlink()
         next_state = {"version": 1, "originals": {k: digest(v) for k, v in originals.items()}, "installed": {k: digest(v) for k, v in output.items()}, "config": config}

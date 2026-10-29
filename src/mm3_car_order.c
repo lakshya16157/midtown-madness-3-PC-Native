@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <time.h>
 #include "recomp_types.h"
 #include "mm3_mod_flags.h"
 
@@ -142,6 +143,82 @@ static int circuit_extras_allowed(void)
     return mm3_circuit_mode_on() && !(v && !strcmp(v, "0"));
 }
 
+/* "Opponents drive your car" (launcher Gameplay mods, MM3_SAME_CAR): every
+ * opponent pick returns the player's car. Only Checkpoint races (circuits
+ * included) pick opponents' cars; Career jobs name each car, so missions keep
+ * theirs. The player's car is the lobby's player 1 as lobbyGetModel finds it
+ * (sub_001F99C1: list at 0x407D38+0x380, record at node+8 with the player
+ * number at +0x149): catalog ID +0x1AC, else +0x1B0. For the pick every other
+ * catalog car is hidden (+0x28) and the player's shown, then each flag is put
+ * back. A pick for another class (a circuit rival's faster group) finds
+ * nothing, and the circuit script falls back to the player's class. Paris
+ * Checkpoint 06 re-rolls until the car is not a Firetruck or Freightliner,
+ * which cannot pass under its bridge: more than SAME_CAR_BURST picks within a
+ * second get the game's own picks, so such a loop ends. */
+#define LOBBY 0x00407D38u
+#define SAME_CAR_BURST 64u
+
+static uint32_t player_car(uint32_t start, uint32_t end)
+{
+    uint32_t head = MEM32(LOBBY + 0x380u), node, record = 0, cursor;
+    unsigned steps, slot;
+    if (!guest_range(head, 4u)) return 0;
+    for (node = MEM32(head), steps = 0; node != head && steps < 16u; node = MEM32(node), ++steps) {
+        if (!guest_range(node, 12u)) return 0;
+        if (guest_range(MEM32(node + 8u), 0x1B8u) && MEM8(MEM32(node + 8u) + 0x149u) == 1u) {
+            record = MEM32(node + 8u);
+            break;
+        }
+    }
+    if (!record) return 0;
+    for (slot = 0; slot < 2u; ++slot)
+        for (cursor = start; cursor < end; cursor += 4u)
+            if (MEM32(MEM32(cursor)) == MEM32(record + 0x1ACu + 4u * slot)) return MEM32(cursor);
+    return 0;
+}
+
+static int same_car_burst_over(void)
+{
+    static clock_t last;
+    static unsigned burst;
+    clock_t now = clock();
+    if (burst && now - last > CLOCKS_PER_SEC) burst = 0;
+    last = now;
+    return ++burst > SAME_CAR_BURST;
+}
+
+static int same_car_pick(uint32_t start, uint32_t end)
+{
+    static struct { uint32_t entry; uint8_t hidden; } changed[CATALOG_CARS];
+    static int logged, refused;
+    uint32_t mine = player_car(start, end), cursor;
+    unsigned count = 0, i;
+    if (!mine) return 0;
+    if (same_car_burst_over()) {
+        if (!refused) {
+            refused = 1;
+            fprintf(stderr, "[MM3_SAME_CAR] the race keeps refusing your car (Paris Checkpoint 06 with a "
+                            "Firetruck or Freightliner): its opponents get the game's own cars\n");
+        }
+        return 0;
+    }
+    for (cursor = start; cursor < end; cursor += 4u) {
+        uint32_t entry = MEM32(cursor);
+        uint8_t hide = entry != mine;
+        if (!MEM8(entry + 0x28u) == !hide) continue;
+        changed[count].entry = entry;
+        changed[count++].hidden = MEM8(entry + 0x28u);
+        MEM8(entry + 0x28u) = hide;
+    }
+    if (!logged) {
+        logged = 1;
+        fprintf(stderr, "[MM3_SAME_CAR] race opponents drive your car (catalog ID %u)\n", MEM32(mine));
+    }
+    sub_001DE012_original();
+    for (i = 0; i < count; ++i) MEM8(changed[i].entry + 0x28u) = changed[i].hidden;
+    return 1;
+}
+
 void sub_001DE012(void)
 {
     static uint32_t hidden[CATALOG_CARS];
@@ -149,7 +226,7 @@ void sub_001DE012(void)
     uint8_t xbox_class[CAR_CLASSES] = {0};
     uint32_t catalog = MEM32(VEHICLE_CATALOG), start, end, cursor;
     unsigned count = 0, i;
-    if (circuit_extras_allowed() || !guest_range(catalog, 0x24u)) {
+    if (!guest_range(catalog, 0x24u)) {
         sub_001DE012_original();
         return;
     }
@@ -170,6 +247,11 @@ void sub_001DE012(void)
             MEM32(entry + 0x30u) < CAR_CLASSES)
             xbox_class[MEM32(entry + 0x30u)] = 1;
     }
+    if (mm3_mod_same_car() && same_car_pick(start, end)) return;
+    if (circuit_extras_allowed()) {
+        sub_001DE012_original();
+        return;
+    }
     for (cursor = start; cursor < end; cursor += 4u) {
         uint32_t entry = MEM32(cursor), car_class = MEM32(entry + 0x30u);
         if (MEM32(entry) >= FIRST_EXTRA_CAR_ID && !MEM8(entry + 0x28u) &&
@@ -184,4 +266,53 @@ void sub_001DE012(void)
     }
     sub_001DE012_original();
     for (i = 0; i < count; ++i) MEM8(hidden[i] + 0x28u) = 0;
+}
+
+/* The main menu's profile box, "Cars: owned/total" (sub_0010F9A3). The total
+ * is the length of the menu's list (sub_001DEF6A -> sub_001DE752 above); the
+ * owned count, sub_001DE995 ([ESP+4] = the catalog, +8 begin, +0xC end;
+ * RET 4), walks every catalog car and counts each whose unlock requirements
+ * (+0x284) the profile meets. The installer's cars have none, so with them
+ * left out of the menu (MM3_EXTRA_CARS=0, the Original look and Xbox
+ * gameplay) the box read "Cars: 50/46". For that count they are moved past
+ * the end of the list, which is put back as it was afterwards. */
+extern void sub_001DE995_original(void);
+
+void sub_001DE995(void)
+{
+    static uint32_t saved[CATALOG_CARS];
+    uint32_t list = MEM32(g_esp + 4u), start, end, kept, moved;
+    unsigned count, i;
+    if (mm3_mod_extra_cars() || !guest_range(list, 16u)) {
+        sub_001DE995_original();
+        return;
+    }
+    start = MEM32(list + 8u);
+    end = MEM32(list + 12u);
+    if (end < start || (end - start) % 4u || end - start > 4u * CATALOG_CARS ||
+        !guest_range(start, end - start)) {
+        sub_001DE995_original();
+        return;
+    }
+    count = (end - start) / 4u;
+    for (i = 0; i < count; ++i) saved[i] = MEM32(start + 4u * i);
+    kept = start;
+    for (i = 0; i < count; ++i)
+        if (!guest_range(saved[i], 4u) || MEM32(saved[i]) < FIRST_EXTRA_CAR_ID) {
+            MEM32(kept) = saved[i];
+            kept += 4u;
+        }
+    if (kept == end) {
+        sub_001DE995_original();
+        return;
+    }
+    for (moved = kept, i = 0; i < count; ++i)
+        if (guest_range(saved[i], 4u) && MEM32(saved[i]) >= FIRST_EXTRA_CAR_ID) {
+            MEM32(moved) = saved[i];
+            moved += 4u;
+        }
+    MEM32(list + 12u) = kept;
+    sub_001DE995_original();
+    MEM32(list + 12u) = end;
+    for (i = 0; i < count; ++i) MEM32(start + 4u * i) = saved[i];
 }

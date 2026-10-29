@@ -14,6 +14,22 @@ The same operation uses the local pipe `\\.\pipe\MM3Teleport-<PID>`:
 Requests that cannot reach the player update within two seconds are cancelled.
 The panel distinguishes ground misses, stalled updates and unavailable cars.
 
+These lighting A/B commands act from the next frame on (the first two for
+every car): `carfields <mask>` queues only some car light fields (bit 0 front pools,
+1 front beams, 2 tail and brake fields, 3 reversing fields, 4 the other lamp
+points; with bit 5 clear the player's own car queues none; `-1` all), and
+`carshape <beam width> <pool width> <pool height> <pool length> <pool ahead>`
+tries other front-field sizes in metres (`0` keeps the built-in size).
+`cuthold <1|0|-1>` holds back the first frame after a camera cut (look
+left/right/back), shows it, or follows the setting (`MM3_CAMERA_CUT_HOLD`,
+on with the car lighting).
+`lightshape <source> <edge> <power> <white>` sets the light falloff's
+source size, edge and the light sum's white point
+(`nv2a_d3d_set_local_light_shape`; the reply gives the energy scale, 0 when
+refused), `lamptune <restored> <spill> <reach>` scales the restored lamps
+(tunnel and wall lamps), the tunnel uplighters' road pools and the lamp reach
+(1-2), and `nightlight <percent>` sets the night brightness as F10 does.
+
 ```powershell
 tools/powershell/Send-MM3Teleport.ps1 -ProcessId 12345
 tools/powershell/Send-MM3Teleport.ps1 -ProcessId 12345 -X -512.25 -Z 1001.125

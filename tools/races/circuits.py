@@ -15,6 +15,7 @@ circuits.json, which this module turns into race files. Circuits run without
 traffic, pedestrians or police.
 """
 import base64
+import importlib.util
 import io
 import json
 import math
@@ -355,6 +356,9 @@ def race_entries(hd, dvd, original_cars=()):
     # DLC's copies of races 1-10: src/mm3_dlc_races.c asks for <NN>_mm3.
     for key, icon in dlc_icons().items():
         dvd_entries[f"Menu/Gfx/races/{key}_mm3.cdds"] = base64.b64decode(icon)
+    # And their loading screens with a route map (dlc_loading.py), drawn from
+    # the retail screens and city maps in this archive.
+    dvd_entries.update(dlc_loading_screens(dvd))
     return {"Data_hd.zip": hd_entries, "Data_dvd.zip": dvd_entries}
 
 
@@ -364,6 +368,28 @@ DLC_ICONS = HERE / "dlc_icons.json"
 def dlc_icons():
     """{"<City>/<Mode>/<NN>": base64 CDDS} for the downloadable races 10-19."""
     return json.loads(DLC_ICONS.read_text()) if DLC_ICONS.exists() else {}
+
+
+def _dlc_loading():
+    path = HERE / "dlc_loading.py"
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("mm3_dlc_loading", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def dlc_loading_screens(dvd):
+    """{Data_dvd.zip name: TGA} of the downloadable races' loading screens."""
+    module = _dlc_loading()
+    return module.screens(dvd) if module else {}
+
+
+def dlc_loading_ini(dvd_entries):
+    """Data/mm3_dlc_loading.ini: which loading screens race_entries made."""
+    module = _dlc_loading()
+    return module.ini(dvd_entries) if module else b""
 
 
 def dlc_icons_ini():

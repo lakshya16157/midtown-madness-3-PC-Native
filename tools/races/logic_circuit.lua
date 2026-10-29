@@ -25,6 +25,9 @@ circuit_trace_tick = 0				-- Seconds of position lines (circuitTrace)
 -- (04_aggressive_*) and the best cars of the player's performance group. The
 -- rival (the first opponent) gets the best car of a faster group when there
 -- is one, so at least one opponent is much faster than the player's car.
+-- Performance groups count down to the fastest: 0 is the Koenigsegg's, 1 the
+-- Viper's, 3 the Mini's, 7 the trucks' (Cars/Tweak VEHICLECLASS; retail
+-- placePlayerVehicle gives groups above 3 the "normal" personalities).
 -- Opponents drive the DLC and extra cars too unless the launcher's Mods tab
 -- keeps them to the original cars (mm3AiAllCars, src/mm3_lua_natives.c; an
 -- older exe without it keeps the original cars).
@@ -92,9 +95,12 @@ end
 -- The rival: the best car two groups faster, else one group faster, else the
 -- best car of the player's own group.
 function circuitRivalCar(player_group)
-	local car = circuitGroupCar(player_group + 2, 1)
-	if car == nil or car == "" then
-		car = circuitGroupCar(player_group + 1, 1)
+	local car
+	if player_group >= 2 then
+		car = circuitGroupCar(player_group - 2, 1)
+	end
+	if (car == nil or car == "") and player_group >= 1 then
+		car = circuitGroupCar(player_group - 1, 1)
 	end
 	if car == nil or car == "" then
 		car = circuitVehicle(player_group, 1)
@@ -105,12 +111,14 @@ end
 function circuitPick(player_id, player_group)
 	local car
 	if player_id == 1 then
-		return strlower(circuitRivalCar(player_group))
+		car = strlower(circuitRivalCar(player_group))
+	else
+		car = circuit_retail_pick(player_id, player_group)
 	end
-	car = circuit_retail_pick(player_id, player_group)
 	if car == nil or car == "" then
 		car = "koenigsegg"
 	end
+	circuitLog("car " .. player_id .. " " .. car .. " (player's group " .. player_group .. ")")
 	return car
 end
 

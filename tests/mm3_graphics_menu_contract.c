@@ -32,6 +32,19 @@ int mm3_display_settings_commit(const MM3DisplaySettings *settings, char *messag
     snprintf(message, capacity, "Saved. Display changes applied.");
     return 1;
 }
+/* What the launcher fixes for the run (mm3_display_settings.c), as fixtures. */
+static int fixed_minimap, fixed_distance;
+const char *mm3_display_setting_fixed(MM3FixedSetting setting)
+{
+    if (setting == MM3_FIXED_MINIMAP && fixed_minimap) return "Fixture: Xbox gameplay keeps the stock minimap.";
+    if (setting == MM3_FIXED_DISTANCE && fixed_distance) return "Fixture: the distances are fixed.";
+    return NULL;
+}
+void mm3_display_settings_keep_fixed(MM3DisplaySettings *to, const MM3DisplaySettings *from)
+{
+    if (fixed_minimap) to->minimap_improved = from->minimap_improved;
+    if (fixed_distance) { to->draw_distance = from->draw_distance; to->view_distance = from->view_distance; }
+}
 static int circuit_mode = -1;
 static uint32_t circuit_city_screen, circuit_setup_screen;
 static unsigned circuit_name_blocks;
@@ -337,6 +350,35 @@ int main(void)
     assert(quits == 0);
     execute(GAME_QUIT);
     assert(quits == 1 && circuit_mode == 0 && commits == 4);
+    /* Settings the launcher fixes for the run (Xbox gameplay's minimap, the
+     * distances with their mod off) are marked, say why, and keep their value
+     * through their choices, Restore Defaults and the pause menu's minimap. */
+    fail_commit = 0;
+    fixed_minimap = fixed_distance = 1;
+    execute(GRAPHICS_DISCARD);
+    {
+        float distance = draft.draw_distance;
+        execute(choice_action(SETTING_DISTANCE, 4));
+        assert(draft.draw_distance == distance);
+        execute(choice_action(SETTING_MINIMAP, 1));
+        assert(draft.minimap_improved == saved_settings.minimap_improved);
+        get_native_label("SID_MM3_GRAPHICS_STATUS", label, sizeof label);
+        assert(!strcmp(label, "Fixture: Xbox gameplay keeps the stock minimap."));
+        get_native_label("SID_MM3_GRAPHICS_MINIMAP", label, sizeof label);
+        assert(!strcmp(label, "Minimap Style: Stock (Fixed)"));
+        get_native_label("SID_MM3_GRAPHICS_HELP_DISTANCE", label, sizeof label);
+        assert(!strcmp(label, "Fixture: the distances are fixed."));
+        get_native_label("SID_MM3_GRAPHICS_CHOICE_DISTANCE_4", label, sizeof label);
+        assert(!strcmp(label, "4x  (Fixed)"));
+        execute(GRAPHICS_DEFAULTS);
+        assert(draft.draw_distance == distance && draft.fps_limit == 60);
+    }
+    get_native_label("SID_MM3_GRAPHICS_HUD_MINIMAP_STOCK", label, sizeof label);
+    assert(!strcmp(label, "Minimap: Stock  (Selected)"));
+    get_native_label("SID_MM3_GRAPHICS_HUD_MINIMAP_IMPROVED", label, sizeof label);
+    assert(!strcmp(label, "Minimap: Improved  (Fixed)"));
+    execute(GRAPHICS_MINIMAP_STOCK);
+    assert(commits == 4);
     puts("Native graphics menu contract passed.");
     return 0;
 }

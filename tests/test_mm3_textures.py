@@ -118,6 +118,43 @@ class TexturesTest(unittest.TestCase):
             self.assertEqual(decoded.getpixel((2, 1)), (190, 70, 40, 0))
             self.assertEqual(decoded.getpixel((1, 1)), (100, 160, 210, 127))
 
+    def test_decode_round_trip(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'source.png'
+            rng = random.Random(5150)
+            for alpha in (False, True):
+                image = Image.new('RGBA', (64, 32))
+                image.putdata([tuple(rng.randrange(256) for _ in range(3)) +
+                               ((rng.randrange(256) if alpha else 255),)
+                               for _ in range(64 * 32)])
+                image.save(path)
+                dds = textures.image_to_dds(path)
+                self.assertEqual(textures.cdds_to_dds(textures.dds_to_cdds(dds)), dds)
+            image = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+            image.paste((255, 0, 0, 255), (8, 8, 24, 24))
+            image.save(path)
+            dds = textures.image_to_menu_dds(path)
+            self.assertEqual(textures.cdds_to_dds(textures.dds_to_cdds(dds)), dds)
+        with self.assertRaisesRegex(ValueError, 'Not a CDDS'):
+            textures.cdds_to_dds(b'DDS ' + bytes(124))
+
+    def test_decode_leaves_final_literal_unwritten(self):
+        # Retail's decoder reads no code for a block's last byte: a stream
+        # ending in a lone literal leaves it out (zero here).
+        books = textures._books()
+        bits = textures.Bits()
+        header = bytearray(128)
+        header[:4] = b'DDS '
+        struct.pack_into('<7I', header, 4, 124, 0x100F, 4, 4, 0, 0, 1)
+        struct.pack_into('<2I', header, 76, 32, 0x40)
+        struct.pack_into('<5I', header, 84, 0, 8, 0xE0, 0x1C, 0x03)
+        textures._encode_block(bytes(header), books['hdr'], bits)
+        for symbol in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16):
+            bits.write(*books['rgb'][symbol])
+        decoded = textures.cdds_to_dds(bits.finish())
+        self.assertEqual(decoded[:128], bytes(header))
+        self.assertEqual(decoded[128:], bytes(range(1, 16)) + b'\0')
+
     @unittest.skipUnless(os.environ.get('MM3_DECDDS_ORACLE'), 'Independent decoder not configured')
     def test_independent_decoder(self):
         oracle = ctypes.CDLL(os.environ['MM3_DECDDS_ORACLE'])

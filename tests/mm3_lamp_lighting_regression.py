@@ -94,7 +94,8 @@ static void reset(void)
     g_ecx=SOURCE;g_esp=STACK;g_fp_top=g_df=g_fp_cmp=0;
     g_fp_cc=0;g_fp_control_word=0x27f;
     memset(g_fp_stack,0,sizeof g_fp_stack);native_constants();
-    s_lamp_height=s_lamp_drop=0;
+    s_lamp_height=s_lamp_drop=s_lamp_locator_y=0;s_lamp_area=1.0f; /* lamp_area checks the default */
+    s_lamp_street_scale=1.0f; /* the street tint and fade checks; street_match checks the default */
     s_lamp_reach=LAMP_ADDED_MAX_REACH;s_lamp_frame_queue=s_lamp_frame_stamp=s_lamp_frame_count=0;
     s_lamp_frame_base=s_lamp_frame_capped=s_lamp_frame_seen=0;memset(s_lamp_distance,0,sizeof s_lamp_distance);
     s_queue=s_slots=s_allocation=0;s_capacity=MM3_LIGHT_QUEUE_RETAIL;
@@ -428,11 +429,11 @@ static void mount_reach(void)
     reset();MEMF(POSITION+4)=4;MEMF(SOURCE+0x4f)=2;MEM32(SOURCE+0x2b)=0x00ebe100;
     assert(produce()==1 && fabsf(MEMF(RECORD+0x40)-4.0f)<.01f);
     /* Ground-level (monument floodlights, bollards) and implausible mounts
-     * are not street lamps: the retail reach. */
+     * are not street lamps: the retail light, spread wider (soft_spread). */
     reset();MEMF(POSITION+4)=.5f;MEMF(SOURCE+0x4f)=2;MEM32(SOURCE+0x2b)=0x00ded57d;
-    assert(produce()==1 && fabsf(MEMF(RECORD+0x40)-4.0f)<.01f);
+    assert(produce()==1 && fabsf(MEMF(RECORD+0x40)-4.0f*LAMP_SOFT_SPREAD)<.01f);
     reset();MEMF(POSITION+4)=30;MEMF(SOURCE+0x4f)=2;MEM32(SOURCE+0x2b)=0x00ded57d;
-    assert(produce()==1 && fabsf(MEMF(RECORD+0x40)-4.0f)<.01f);
+    assert(produce()==1 && fabsf(MEMF(RECORD+0x40)-4.0f*LAMP_SOFT_SPREAD)<.01f);
     /* A tall lamp that already reaches the road is unchanged (13.05m). */
     reset();MEMF(POSITION+4)=6;MEMF(SOURCE+0x4f)=9;MEM32(SOURCE+0x2b)=0x00ffd57d;
     assert(produce()==1 && fabsf(MEMF(RECORD+0x40)-26.1f)<.01f);
@@ -524,18 +525,19 @@ static void restored(void)
     MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;before=s_lamp_restored_lit;
     assert(produce()==1 && !s_lamp_glow_only && MEM32(RECORD+0x50)==0);
     assert(s_lamp_restored_lit==before+1);
-    assert(fabsf(MEMF(RECORD+0x40)-16.0f)<.01f);
+    /* It spreads its light (lamp_spreads): 1.41x the reach at half the colour. */
+    assert(fabsf(MEMF(RECORD+0x40)-16.0f*LAMP_SOFT_SPREAD)<.01f);
     color=MEM32(RECORD+0x4c);
     assert(channel(color,16)==channel(color,8) && channel(color,8)==channel(color,0));
-    assert(!lamp_is_street(SOURCE));
-    MEM32(0x407c30)=2;assert(mm3_lamp_source_range(SOURCE)==8.0f);MEM32(0x407c30)=0;
+    assert(!lamp_is_street(SOURCE) && lamp_spreads(SOURCE));
+    MEM32(0x407c30)=2;assert(fabsf(mm3_lamp_source_range(SOURCE)-8.0f*LAMP_SOFT_SPREAD)<.001f);MEM32(0x407c30)=0;
     /* The same at ground level (a road light under 2m) and a cool-white
      * fluorescent; a downward 7m spot under a bridge. */
     reset();MEMF(POSITION+4)=.6f;MEMF(SOURCE+0x4f)=8;MEM32(SOURCE+0x2b)=0x00d2e6f5;
     MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;assert(produce()==1 && !s_lamp_glow_only);
     reset();MEMF(POSITION+4)=0;MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;MEM32(SOURCE+0x2b)=0x00ded57d;
     MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;assert(produce()==1 && MEM32(RECORD+0x50)==1);
-    assert(MEMF(RECORD+0x48)==7.0f);
+    assert(fabsf(MEMF(RECORD+0x48)-7.0f*LAMP_SOFT_SPREAD)<.001f);
     /* Far away it keeps only its glow, like an added street lamp. */
     {
         static const float far_eye[3]={12,5,-113};
@@ -556,22 +558,239 @@ static void restored(void)
     MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;assert(produce()==0);
     /* A tunnel uplighter (a lamp-coloured 7m spot aimed up the wall) keeps its
      * spot and also lights a pool of its hue down to the road: 1.75x its 5m
-     * mounting, at a 0x48 peak. Aimed down, sideways or coloured: no pool. */
+     * mounting, at a 0x24 peak. Aimed down, sideways or coloured: no pool. */
     reset();MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;MEM32(SOURCE+0x2b)=0x00ffca85;
     MEMF(DIRECTION+4)=1;MEM32(QUEUE+0x5414)=RECORD+0x100;MEM32(0x407c30)=3;
     assert(produce()==2 && MEM32(RECORD+0x50)==1 && MEM32(RECORD+0x150)==0);
-    assert(fabsf(MEMF(RECORD+0x140)-17.5f)<.01f && (MEM32(RECORD+0x14c)&0xFFFFFFu)==0x00483926u);
+    assert(fabsf(MEMF(RECORD+0x140)-17.5f)<.01f && (MEM32(RECORD+0x14c)&0xFFFFFFu)==0x00241D13u);
+    /* The two in three uplighters retail leaves dark light the same way. */
+    reset();MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;MEM32(SOURCE+0x2b)=0x00ffca85;
+    MEMF(DIRECTION+4)=1;MEM32(QUEUE+0x5414)=RECORD+0x100;MEM32(0x407c30)=3;
+    MEM8(SOURCE+8)=3;MEM32(STACK+32)=5;before=s_lamp_restored_lit;
+    assert(produce()==2 && MEM32(RECORD+0x50)==1 && MEM32(RECORD+0x150)==0);
+    assert(s_lamp_restored_lit==before+1);
     reset();MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;MEM32(SOURCE+0x2b)=0x00ffca85;
     MEMF(DIRECTION)=1;MEMF(DIRECTION+4)=0;MEM32(QUEUE+0x5414)=RECORD+0x100;assert(produce()==1);
     reset();MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;MEM32(SOURCE+0x2b)=0x000000ff;
     MEMF(DIRECTION+4)=1;MEM32(QUEUE+0x5414)=RECORD+0x100;assert(produce()==1);
     MEM32(0x407c30)=0;
-    printf("restored: thinned tunnel/wall/road lamps light at retail strength; signs, sideways spots, floods stay thinned; uplighters pool the road\n");fflush(stdout);
+    printf("restored: thinned tunnel/wall/road lamps and uplighters light again; signs, sideways spots, floods stay thinned; uplighters pool the road\n");fflush(stdout);
+}
+
+/* Restored lamps with no street mounting spread the same light wider: the
+ * Peripherique's double lamps (D326CD11: a 9 m FFCA85 point 2.11 m below
+ * its object, at the foot of the post in the central barrier) reach 1.41x
+ * further at half the colour, so their tail (colour x reach^2) and the road's
+ * light stay while the peak halves. Lanterns on short posts (mounted 1-2 m),
+ * pool spots, street lamps, signs and floodlights keep their light. */
+static void soft_spread(void)
+{
+    uint32_t native=lamp_color_gain(0x00ffca85u,38.0f/256.0f),tuned,plain;
+    reset();MEMF(POSITION)=.01f;MEMF(POSITION+4)=-2.11f;MEMF(POSITION+8)=-.22f;
+    MEMF(DIRECTION+4)=1;MEMF(SOURCE+0x4f)=9;MEM32(SOURCE+0x2b)=0x00ffca85;MEM8(SOURCE+0x11)=38;
+    lamp_set_mount(POSITION,DIRECTION);MEM32(0x407c30)=3;
+    assert(!lamp_is_street(SOURCE) && lamp_is_restored(SOURCE) && lamp_spreads(SOURCE));
+    assert(fabsf(mm3_lamp_source_range(SOURCE)-9.0f*LAMP_SOFT_SPREAD)<.001f);
+    tuned=lamp_source_color(SOURCE,native);
+    plain=lamp_color_gain(native,LAMP_ARCHITECTURE_GAIN*mm3_local_light_gain(3));
+    assert(tuned==lamp_color_gain(native,LAMP_ARCHITECTURE_GAIN*mm3_local_light_gain(3)/
+                                         (LAMP_SOFT_SPREAD*LAMP_SOFT_SPREAD)));
+    assert(channel(tuned,16)+1u>=channel(plain,16)/2u && channel(tuned,16)<=channel(plain,16)/2u+1u);
+    /* Through the native producer: 2 x 12.7 m, half the colour. */
+    reset();MEMF(POSITION)=.01f;MEMF(POSITION+4)=-2.11f;MEMF(POSITION+8)=-.22f;
+    MEMF(DIRECTION+4)=1;MEMF(SOURCE+0x4f)=9;MEM32(SOURCE+0x2b)=0x00ffca85;
+    MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;
+    assert(produce()==1 && MEM32(RECORD+0x50)==0 && fabsf(MEMF(RECORD+0x40)-18.0f*LAMP_SOFT_SPREAD)<.01f);
+    /* A lantern on a 1.7 m post: its street pool as before. */
+    MEMF(POSITION+4)=1.71f;lamp_set_mount(POSITION,DIRECTION);
+    assert(!lamp_spreads(SOURCE) && mm3_lamp_source_range(SOURCE)==9.0f);
+    assert(lamp_source_color(SOURCE,native)==lamp_color_gain(native,LAMP_ARCHITECTURE_GAIN*mm3_local_light_gain(3)));
+    /* A street lamp on a 5 m post, a pink sign and a 20 m throw: unchanged. */
+    MEMF(POSITION+4)=5;MEMF(DIRECTION+4)=-1;lamp_set_mount(POSITION,DIRECTION);
+    assert(lamp_is_street(SOURCE) && !lamp_spreads(SOURCE));
+    MEMF(POSITION+4)=-2.11f;lamp_set_mount(POSITION,DIRECTION);
+    MEM32(SOURCE+0x2b)=0x00ff96dc;assert(!lamp_spreads(SOURCE));
+    MEM32(SOURCE+0x2b)=0x00ffca85;MEMF(SOURCE+0x4f)=20;assert(!lamp_spreads(SOURCE));
+    /* A bulb (no reach of its own) casts no pool there either. */
+    MEMF(SOURCE+0x4f)=0;assert(!lamp_spreads(SOURCE) && mm3_lamp_source_range(SOURCE)==0.0f);
+    MEM32(0x407c30)=0;
+    printf("soft spread: lamps at the foot of their post, on walls and in tunnels light %.2fx as far at %.0f%% of the colour; street lamps, short-post lanterns, signs and floods unchanged\n",
+           LAMP_SOFT_SPREAD,100.0f/(LAMP_SOFT_SPREAD*LAMP_SOFT_SPREAD));fflush(stdout);
+}
+
+/* Every lamp-coloured, lamp-sized light reaches LAMP_AREA_REACH (1.3x)
+ * further by default and MM3_LAMP_REACH (1..2) tunes it: the 9m street lamp
+ * above, a tunnel ceiling light, an uplighter's road pool. A 50m floodlight
+ * keeps its reach. */
+static void lamp_area(void)
+{
+    float street, flood;
+    reset();MEMF(POSITION+4)=9;MEMF(SOURCE+0x4f)=10;MEM32(SOURCE+0x2b)=0x00ffaf48;
+    lamp_set_mount(POSITION,DIRECTION);
+    street=mm3_lamp_source_range(SOURCE);MEMF(SOURCE+0x4f)=50;flood=mm3_lamp_source_range(SOURCE);
+    assert(fabsf(street-15.75f)<.01f && flood==50);
+    s_lamp_area=0;_putenv_s("MM3_LAMP_REACH","");
+    MEMF(SOURCE+0x4f)=10;assert(fabsf(mm3_lamp_source_range(SOURCE)-15.75f*LAMP_AREA_REACH)<.01f);
+    MEMF(SOURCE+0x4f)=50;assert(mm3_lamp_source_range(SOURCE)==flood);
+    reset();s_lamp_area=0;MEMF(POSITION+4)=20;MEMF(SOURCE+0x4f)=8;MEM32(SOURCE+0x2b)=0x00ffffff;
+    MEM8(SOURCE+8)=2;MEM32(STACK+32)=5;
+    assert(produce()==1 && fabsf(MEMF(RECORD+0x40)-16.0f*LAMP_AREA_REACH*LAMP_SOFT_SPREAD)<.01f);
+    reset();s_lamp_area=0;MEMF(SOURCE+0x4f)=7;MEM8(SOURCE+0x53)=169;MEM32(SOURCE+0x2b)=0x00ffca85;
+    MEMF(DIRECTION+4)=1;MEM32(QUEUE+0x5414)=RECORD+0x100;MEM32(0x407c30)=3;
+    assert(produce()==2 && fabsf(MEMF(RECORD+0x140)-17.5f*LAMP_AREA_REACH)<.01f);
+    MEM32(0x407c30)=0;
+    reset();s_lamp_area=0;_putenv_s("MM3_LAMP_REACH","1.5");MEMF(POSITION+4)=20;MEMF(SOURCE+0x4f)=8;
+    MEM32(SOURCE+0x2b)=0x00ffffff;assert(fabsf(mm3_lamp_source_range(SOURCE)-12.0f*LAMP_SOFT_SPREAD)<.01f);
+    s_lamp_area=0;_putenv_s("MM3_LAMP_REACH","3");
+    assert(fabsf(mm3_lamp_source_range(SOURCE)-8.0f*LAMP_AREA_REACH*LAMP_SOFT_SPREAD)<.01f);
+    _putenv_s("MM3_LAMP_REACH","");s_lamp_area=1.0f;
+    printf("lamp area: street, tunnel and uplighter pools reach 1.3x further by default (MM3_LAMP_REACH 1..2), floodlights unchanged\n");fflush(stdout);
+}
+
+/* LocalObject.bin as loaded (OTF0 v7): "OTF0", version, type count, effect
+ * size, type record size, table size, (key, offset) pairs, then each type
+ * record (first byte: effects) followed by its 0x56-byte effects. */
+enum { TABLE=0x50000 };
+static uint32_t fixture_effect(unsigned type, unsigned index)
+{
+    return TABLE + MEM32(TABLE + 0x10 + type * 8 + 4) + 0x34 + index * 0x56;
+}
+
+static void fixture_table(const uint32_t colors[][4], const float ranges[][4], const unsigned counts[], unsigned types)
+{
+    uint32_t at = 0x10 + types * 8, type, index;
+    memcpy(memory + TABLE, "OTF0", 4);
+    MEM16(TABLE + 4) = 7; MEM16(TABLE + 6) = (uint16_t)types; MEM16(TABLE + 8) = 0x56; MEM16(TABLE + 10) = 0x34;
+    for (type = 0; type != types; ++type) {
+        MEM32(TABLE + 0x10 + type * 8) = 0x1000u + type;
+        MEM32(TABLE + 0x10 + type * 8 + 4) = at;
+        MEM8(TABLE + at) = (uint8_t)counts[type];
+        for (index = 0; index != counts[type]; ++index) {
+            uint32_t effect = TABLE + at + 0x34 + index * 0x56;
+            MEM32(effect + 0x2b) = colors[type][index];
+            MEMF(effect + 0x4f) = ranges[type][index];
+            MEM8(effect + 8) = 2; MEM8(effect + 0x11) = 255;
+            if (ranges[type][index] == 0.0f) { MEMF(effect + 0x49) = .3f; MEM8(effect + 0x4d) = 204; }
+            else MEM8(effect + 0x53) = 169;
+        }
+        at += 0x34 + counts[type] * 0x56;
+    }
+    MEM32(TABLE + 12) = at;
+}
+
+/* A glow-only bulb gets a pool only when its fixture has no lamp light of its
+ * own. Paris's lantern posts (FFCA85 bulb beside a 7m spot aimed at the road)
+ * kept a pool centred in the lantern: on a 5m post it lit the post from top
+ * to bottom, a bright line down every lamp post (user, 2026-10-27), while the
+ * road below stayed out of its 4.7m reach. */
+static void fixture_bulbs(void)
+{
+    static const uint32_t colors[4][4]={
+        {0x00ffca85,0x00ffca85},          /* lantern bulb + its 7m spot */
+        {0x00ffb432},                     /* a bulb alone */
+        {0x00805a3c,0x00ffca85},          /* a monument flood (40m) + bulb */
+        {0x00000000,0x00ffca85}};         /* an empty effect + bulb */
+    static const float ranges[4][4]={{0,7},{0},{40,0},{0,0}};
+    static const unsigned counts[4]={2,1,2,2};
+    float alone;
+    reset();fixture_table(colors,ranges,counts,4);
+    MEMF(POSITION+4)=5;lamp_set_mount(POSITION,DIRECTION);
+    assert(lamp_is_street(fixture_effect(0,0)));
+    assert(mm3_lamp_source_range(fixture_effect(0,0))==0.0f);
+    /* The fixture's own spot keeps its street treatment. */
+    assert(mm3_lamp_source_range(fixture_effect(0,1))>7.0f);
+    alone=mm3_lamp_source_range(fixture_effect(1,0));
+    assert(alone>=1.75f*5.0f-.001f);
+    /* Floodlights and empty effects are not a lamp's light: the bulb keeps its pool. */
+    assert(mm3_lamp_source_range(fixture_effect(2,1))==alone);
+    assert(mm3_lamp_source_range(fixture_effect(3,1))==alone);
+    /* The same bulb outside any fixture table (or with the table gone) keeps it. */
+    memcpy(memory+SOURCE,memory+fixture_effect(0,0),0x56);
+    assert(mm3_lamp_source_range(SOURCE)==alone);
+    memset(memory+TABLE,0,4);
+    assert(mm3_lamp_source_range(fixture_effect(0,0))==alone);
+    printf("fixture bulbs: a lantern bulb beside its own lamp light keeps only its glow; a bulb alone keeps its pool\n");fflush(stdout);
+}
+
+/* A lantern's pool spot (lamp-coloured, aimed down, set out from its post,
+ * in a fixture with a bulb) lights its pool at LAMP_STREET_POOL of the lamp
+ * colour instead of the authored 15%, and its pushed record moves out to
+ * LAMP_POOL_OFFSET from the post, so the post stands at the pool's dim edge.
+ * A spot inside a globe on the post's axis keeps the retail strength. */
+static void pool_spots(void)
+{
+    static const uint32_t colors[1][4]={{0x00ffca85,0x00ffca85}};
+    static const float ranges[1][4]={{0,7}};
+    static const unsigned counts[1]={2};
+    uint32_t spot,native,tuned;
+    float gain;
+    reset();fixture_table(colors,ranges,counts,1);
+    spot=fixture_effect(0,1);MEM8(spot+0x11)=38;
+    /* Paris E9002163: 0.3 m above the object's origin, 1.06 m out, aimed down. */
+    MEMF(POSITION)=0;MEMF(POSITION+4)=.3f;MEMF(POSITION+8)=-1.06f;
+    lamp_set_mount(POSITION,DIRECTION);
+    assert(lamp_is_pool_spot(spot) && !lamp_is_street(spot));
+    assert(mm3_lamp_source_range(spot)==7.0f);
+    MEM32(0x407c30)=3;
+    native=lamp_color_gain(0x00ffca85u,38.0f/256.0f);
+    gain=LAMP_STREET_POOL*256.0f/38.0f*mm3_local_light_gain(3);
+    tuned=lamp_source_color(spot,native);
+    assert(tuned==lamp_color_gain(native,gain));
+    assert(fabsf((float)channel(tuned,16)-255.0f*LAMP_STREET_POOL*mm3_local_light_gain(3))<3.0f);
+    /* The same spot on the post's axis (a globe lamp, Washington's 74606803
+     * 1.02 m up): retail strength. */
+    MEMF(POSITION+4)=1.02f;MEMF(POSITION+8)=0;lamp_set_mount(POSITION,DIRECTION);
+    assert(!lamp_is_pool_spot(spot) && !lamp_spreads(spot));
+    assert(lamp_source_color(spot,native)==lamp_color_gain(native,LAMP_ARCHITECTURE_GAIN*mm3_local_light_gain(3)));
+    /* Aimed sideways: no pool spot. */
+    MEMF(POSITION+4)=.3f;MEMF(POSITION+8)=-1.06f;MEMF(DIRECTION)=1;MEMF(DIRECTION+4)=0;lamp_set_mount(POSITION,DIRECTION);
+    assert(!lamp_is_pool_spot(spot));
+    MEMF(DIRECTION)=0;MEMF(DIRECTION+4)=-1;
+    MEM32(0x407c30)=0;
+    /* Placement: 1.06 m and 2.18 m out move to LAMP_POOL_OFFSET along their
+     * own direction at the same height; 4 m out and unknown objects stay. */
+    s_lamp_object[0]=100;s_lamp_object[1]=20;s_lamp_object[2]=50;s_lamp_object_known=1;
+    MEMF(RECORD+0x30)=100;MEMF(RECORD+0x34)=22.3f;MEMF(RECORD+0x38)=50-1.06f;
+    lamp_pool_spot_place(RECORD);
+    assert(fabsf(MEMF(RECORD+0x30)-100)<1e-4f && MEMF(RECORD+0x34)==22.3f);
+    assert(fabsf(MEMF(RECORD+0x38)-(50-LAMP_POOL_OFFSET))<1e-3f);
+    MEMF(RECORD+0x30)=100+2.18f*.6f;MEMF(RECORD+0x38)=50+2.18f*.8f;lamp_pool_spot_place(RECORD);
+    assert(fabsf(MEMF(RECORD+0x30)-(100+LAMP_POOL_OFFSET*.6f))<1e-3f && fabsf(MEMF(RECORD+0x38)-(50+LAMP_POOL_OFFSET*.8f))<1e-3f);
+    MEMF(RECORD+0x30)=104;MEMF(RECORD+0x38)=50;lamp_pool_spot_place(RECORD);
+    assert(MEMF(RECORD+0x30)==104 && MEMF(RECORD+0x38)==50);
+    s_lamp_object_known=0;MEMF(RECORD+0x30)=101;lamp_pool_spot_place(RECORD);assert(MEMF(RECORD+0x30)==101);
+    printf("pool spots: lantern pool spots light their pool at %.1f%% of the lamp colour %.1f m out from the post; globe lamps keep the retail strength\n",
+           100.0f*LAMP_STREET_POOL,LAMP_POOL_OFFSET);fflush(stdout);
+}
+
+/* The lamps beside the road matched to those in its middle (user, 10-29):
+ * street lamps at LAMP_STREET_DIM of their former strength, a lantern's pool
+ * spot at LAMP_STREET_POOL of the lamp colour, below its authored 15%. */
+static void street_match(void)
+{
+    static const uint32_t colors[1][4]={{0x00ffca85,0x00ffca85}};
+    static const float ranges[1][4]={{0,7}};
+    static const unsigned counts[1]={2};
+    uint32_t spot,native,tuned;
+    /* A white street lamp at full strength: 0.85 x 0.8 with its warm cast. */
+    reset();s_lamp_street_scale=LAMP_STREET_DIM;
+    MEMF(SOURCE+0x4f)=7;MEM32(SOURCE+0x2b)=0x00ffffffu;lamp_set_mount(POSITION,DIRECTION);MEM32(0x407c30)=3;
+    assert(lamp_is_street(SOURCE) && lamp_source_color(SOURCE,0x00ffffffu)==0x00ad8e68u);
+    /* Paris's lantern pool spot (intensity 38 of 256): 7.5% of FFCA85. */
+    reset();s_lamp_street_scale=LAMP_STREET_DIM;fixture_table(colors,ranges,counts,1);
+    spot=fixture_effect(0,1);MEM8(spot+0x11)=38;
+    MEMF(POSITION)=0;MEMF(POSITION+4)=.3f;MEMF(POSITION+8)=-1.06f;lamp_set_mount(POSITION,DIRECTION);
+    MEM32(0x407c30)=3;native=lamp_color_gain(0x00ffca85u,38.0f/256.0f);tuned=lamp_source_color(spot,native);
+    assert(lamp_is_pool_spot(spot) && channel(tuned,16)>=18 && channel(tuned,16)<=20 &&
+           channel(tuned,16)*2u<=channel(native,16)+1u);
+    MEM32(0x407c30)=0;s_lamp_street_scale=1.0f;
+    printf("street match: street lamps at %.0f%%, lantern pools at %.1f%% of the lamp colour, as the middle lamps light the road\n",
+           100.0f*LAMP_STREET_DIM,100.0f*LAMP_STREET_POOL);fflush(stdout);
 }
 
 int main(void)
 {
-    unsigned i,lights=0,fallbacks=0,dark=0,warm=0,colored=0,floodlights=0;
+    unsigned i,lights=0,fallbacks=0,dark=0,warm=0,colored=0,floodlights=0,spreads=0;
     float tiny,large;
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
     /* The default locator is 5m up: the 5.65m bulb pool grows to 1.75x that
@@ -676,6 +895,11 @@ int main(void)
     mount_reach();
     architecture();
     restored();
+    soft_spread();
+    lamp_area();
+    fixture_bulbs();
+    pool_spots();
+    street_match();
     queue_extension();
     adaptive_reach();
     direct_spot(0x0016945a);direct_spot(0x000CF5ED);direct_spot(0x12345678);
@@ -684,7 +908,7 @@ int main(void)
     /* All authored sources in both cities keep independent reach and tint.
      * Zero-radius bulbs become local sources; non-light effects stay dark. */
     for(i=0;i<sizeof retail/sizeof retail[0];i++) {
-        float before,after,size;
+        float before,after,size,spread;
         uint32_t original_color,tuned_color;
         unsigned shift,peak=0,minimum=255,street;
         int bulb;
@@ -692,11 +916,15 @@ int main(void)
         before=MEMF(SOURCE+0x4f);size=MEMF(SOURCE+0x49);
         original_color=MEM32(SOURCE+0x2b);
         bulb=before==0 && size>0 && MEM8(SOURCE+0x4d) && (original_color&0xffffff);
-        /* At ground level or on a wall (no street mount): exactly retail. */
+        /* At ground level or on a wall (no street mount): exactly retail, or
+         * the same light spread wider (lamp_spreads). */
+        spread=lamp_spreads(SOURCE) ? LAMP_SOFT_SPREAD : 1.0f;
+        if(spread>1.0f) spreads++;
         after=mm3_lamp_source_range(SOURCE);
-        assert(!lamp_is_street(SOURCE) && after==(before>0 ? before : 0.0f));
+        assert(!lamp_is_street(SOURCE) && after==(before>0 ? before*spread : 0.0f));
         if(original_color&0xffffff)
-            assert(lamp_source_color(SOURCE,original_color)==lamp_color_gain(original_color,LAMP_ARCHITECTURE_GAIN));
+            assert(lamp_source_color(SOURCE,original_color)==
+                   lamp_color_gain(original_color,LAMP_ARCHITECTURE_GAIN/(spread*spread)));
         /* On a 5m post lighting the road. */
         lamp_set_mount(POSITION,DIRECTION);
         street=lamp_is_street(SOURCE);
@@ -729,8 +957,8 @@ int main(void)
             lights++;
         } else {assert(after==0);dark++;}
     }
-    assert(lights==157 && dark==455 && fallbacks>25 && warm>0 && colored>0 && floodlights>0);
-    printf("PASS: %u city light descriptors (%u added local bulbs on street posts, %u authored fixtures kept retail as floodlights/signs), %u dark effects; fixed fixture warmth, monotone 256-step authored/queued fades, authored saturated hues, native source gates, source-sized reach, matched bounds, point/spot queues, traffic-signal tint and guest ABI\n",lights,fallbacks,floodlights,dark);
+    assert(lights==157 && dark==455 && fallbacks>25 && warm>0 && colored>0 && floodlights>0 && spreads>0);
+    printf("PASS: %u city light descriptors (%u added local bulbs on street posts, %u authored fixtures kept retail as floodlights/signs, %u spread wider off a street mount), %u dark effects; fixed fixture warmth, monotone 256-step authored/queued fades, authored saturated hues, native source gates, source-sized reach, matched bounds, point/spot queues, traffic-signal tint and guest ABI\n",lights,fallbacks,floodlights,spreads,dark);
     return 0;
 }
 '''

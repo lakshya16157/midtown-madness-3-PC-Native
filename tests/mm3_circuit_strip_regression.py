@@ -1,4 +1,6 @@
-"""Circuit pictures stay out of the Checkpoint race strip (src/mm3_circuit_races.c)."""
+"""Circuit pictures stay out of the Checkpoint race strip, and switched-off circuits out of the
+profile box's Checkpoint line (src/mm3_circuit_races.c)."""
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -19,7 +21,12 @@ def main():
                         str(ROOT / "tests/mm3_circuit_strip_contract.c"), str(ROOT / "src/mm3_circuit_races.c"),
                         "/Fo:" + str(folder) + "\\", "/Fe:" + str(executable)],
                        check=True, cwd=folder, stdout=subprocess.DEVNULL)
-        subprocess.run([str(executable)], check=True, cwd=folder)
+        # Ten Paris circuits installed, switched off (Xbox gameplay).
+        data = folder / "game_files" / "Data"
+        data.mkdir(parents=True)
+        (data / "mm3_circuits.ini").write_text("".join(f"1 {race} Circuit {race}\n" for race in range(20, 30)))
+        environment = dict(os.environ, MM3_EXTRA_CIRCUITS="0")
+        subprocess.run([str(executable)], check=True, cwd=folder, env=environment)
 
 
 if __name__ == "__main__":

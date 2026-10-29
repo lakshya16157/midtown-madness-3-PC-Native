@@ -27,9 +27,9 @@ enum {
     ID_CAPTURE, ID_UNBIND, ID_SOURCE, ID_BIND_LABEL, ID_PAD_STATUS, ID_PAD_PORT, ID_PAD_COUNT,
     ID_RESOLUTION, ID_MODE, ID_FPS, ID_VSYNC, ID_SCALE, ID_ASPECT, ID_MSAA,
     ID_ANISO, ID_DRAW, ID_VIEW, ID_SHOW_FPS, ID_MINIMAP, ID_FOV, ID_PORT, ID_PEERS,
-    ID_SCREEN, ID_ORIGINAL, ID_XBOX_GAMEPLAY,
+    ID_SCREEN, ID_ORIGINAL, ID_XBOX_GAMEPLAY, ID_DAMAGE, ID_TIME, ID_NIGHT,
     ID_HELP_TITLE, ID_HELP_VALUE, ID_HELP_BODY, ID_HELP_EFFECT, ID_REQUIRED,
-    ID_PAD_SUMMARY, ID_PAD_HINT,
+    ID_PAD_SUMMARY, ID_PAD_HINT, ID_TAB_BAR,
     ID_OPTION = 300,
     LAUNCHER_WIDTH = 1215, LAUNCHER_HEIGHT = 754,
     /* Settings, Controls, Visual + audio mods, Gameplay mods. */
@@ -46,8 +46,10 @@ enum { SCREEN_MAIN = 0, SCREEN_MISSING = 99, LAUNCHER_SCREENS = 16 };
 typedef struct Launcher {
     HWND window, tabs;
     HFONT font, heading, section;
+    HBRUSH accent, tab_idle;
     LauncherControl controls[160];
     int control_count, page, result, done, smoke, capture, capture_armed, group;
+    int page_shift;                 /* pixels page content moves down to clear the tab bar */
     WORD previous_pad[4];
     int pad_seen[4];
     int dualsense_count;
@@ -106,6 +108,7 @@ static HWND add(Launcher *ui, int page, const char *kind, const char *text,
 {
     if (page >= 0) y += 27; /* Leave the tab headers above page content. */
     x = (int)lroundf((float)x * ui->scale); y = (int)lroundf((float)y * ui->scale);
+    if (page >= 0) y += ui->page_shift;
     width = (int)lroundf((float)width * ui->scale); height = (int)lroundf((float)height * ui->scale);
     HWND child = CreateWindowExA(!strcmp(kind, "EDIT") ? WS_EX_CLIENTEDGE : 0,
         kind, text, WS_CHILD | (page == 0 || page < 0 ? WS_VISIBLE : 0) | style,
@@ -279,7 +282,7 @@ static void help_show(Launcher *ui, int id)
             "Hide the compass pins on the edge of the round minimap: the N letter and the east, south and west pins, which turn with the map. Off shows them, as on the Xbox.",
             "Changes the gameplay. Hide the game's yellow arrow at the top of the screen, which points toward the next checkpoint in races. Off shows it, as on the Xbox. With the route line on, the minimap still shows the way.",
             "Changes the gameplay. Draw the route to the next checkpoint or job target on the race map, like a navigation system, along the roads the course takes. Off shows the map without a drawn route, as on the Xbox.",
-            "Changes the gameplay. A car close behind another, in its wake, pulls a little harder: up to about 6 km/h more each second at high speed, fading over 30 m. Works for you and the AI opponents alike. Off (default): no slipstream, as in the original game.",
+            "Changes the gameplay. A car close behind another pulls a little harder on the throttle: up to about 6 km/h more each second at high speed. Never while touching the car in front or after a crash. You and the AI alike. Off (default): no slipstream, as in the original game.",
             "Changes the gameplay. Some original cars could roll over in hard corners. Once a car on its wheels leans past 20 degrees, its roll is damped and eased back; crashes, jumps and upside-down cars are left alone. Off (default): original handling.",
             "In circuit races the opponents may drive any installed car, DLC and extra cars included, and the rival takes the best car of a faster group than yours. Off keeps the opponents to the original cars. The original races always give the opponents the Xbox cars.",
             "Play with the visual and audio mods on this tab: better lighting, longer view distance, exhaust smoke, the in-game Graphics menu and more. The closest chase camera also sits a little farther back. Original look shows the Xbox visuals, camera, menus and HUD, with only the PC graphics and audio upgrades. Nothing on this tab changes the gameplay.",
@@ -290,7 +293,8 @@ static void help_show(Launcher *ui, int id)
             "Changes the gameplay. Small trees and lamp posts tip over and fall when a car hits them hard. Off: they react as on the Xbox.",
             "Cars breathe soft exhaust smoke from their own exhaust pipes: a light haze standing still, more of it and leaving the pipe faster the faster they go and the harder they accelerate. It drifts in the air, spreads and fades away.",
             "Play with the gameplay mods ticked on this tab. Xbox gameplay drives, races and progresses exactly as the Xbox game: no driving assists, falling trees, extra races or cars, unlocks, developer commands or route line, and the game's own race arrow and minimap.",
-            "Put Quit in the main menu, in place of Sign In (Xbox Live, which no longer exists). Quit closes the game, as closing its window does. Off shows Sign In, as on the Xbox."
+            "Put Quit in the main menu, in place of Sign In (Xbox Live, which no longer exists). Quit closes the game, as closing its window does. Off shows Sign In, as on the Xbox.",
+            "Changes the gameplay. In Checkpoint and circuit races every opponent drives the same car as you, whichever car you pick. Career jobs keep their own cars. Off: the opponents get the game's own cars."
         };
         int option = id - ID_OPTION, on = checked(ui, id), master = mm3_launcher_option_master(option);
         title = option_caption(option);
@@ -491,6 +495,36 @@ static void help_show(Launcher *ui, int id)
             body = "Drive, race and progress exactly as in the Xbox game: its physics and damage, its cars for you and the opponents, its races, its unlocks, its race arrow and its minimap. The PC port's fixes that restore Xbox behaviour stay on.";
             effect = "Every gameplay mod stays off. Your choices there are kept for when you choose Modded gameplay again.";
             break;
+        case ID_DAMAGE:
+            title = "Car damage";
+            selected = combo_value(control(ui, id));
+            body = "How much damage each crash does, to every car: yours, the opponents', the traffic's and the cars a job asks you to wreck. 100% is the Xbox game.";
+            effect = !checked(ui, ID_OPTION + MM3_LAUNCH_GAMEPLAY) ? "Xbox gameplay is selected, so crashes do the Xbox damage (100%). Choose Modded gameplay to change it." :
+                     selected == 0 ? "No car is ever damaged or wrecked, so jobs where you must wreck a car cannot be won." :
+                     selected < 100 ? "Cars take less damage: yours survives more crashes, and a car you must wreck needs more hits." :
+                     selected > 100 ? "Cars take more damage: yours wrecks sooner, and a car you must wreck goes down faster." :
+                     "Crashes do the Xbox damage.";
+            break;
+        case ID_NIGHT:
+            title = "Night brightness";
+            selected = combo_value(control(ui, id));
+            body = "How bright the city is at night where no lamp, headlight or window lights it: the share of the game's own night light. Street lamps, headlights and lit windows stay as they are. F10 changes it while you play.";
+            effect = !checked(ui, ID_OPTION + MM3_LAUNCH_IMPROVED) ? "The Original look is selected, so nights keep the game's own light." :
+                     !checked(ui, ID_OPTION + MM3_LAUNCH_WORLD_LIGHT) ? "Improved world lighting is off, so nights keep the game's own light. Tick it to use this choice." :
+                     selected >= 100 ? "Nights as bright as on the Xbox: lamps and headlights stand out less." :
+                     selected < MM3_NIGHT_LIGHT_DEFAULT ? "Darker nights: streets away from lamps are hard to see, lamps and headlights stand out more." :
+                     selected > MM3_NIGHT_LIGHT_DEFAULT ? "Brighter nights: more of the city shows away from lamps." :
+                     "The default: dark nights lit mostly by lamps, headlights and windows.";
+            break;
+        case ID_TIME:
+            title = "Time limits";
+            selected = combo_value(control(ui, id));
+            body = "Scale the time you race against: the time limit of Blitz races and timed Career jobs, and the time each delivery or checkpoint adds. 100% is the Xbox game. The race clock, time penalties and goals such as surviving a set time are unchanged.";
+            effect = !checked(ui, ID_OPTION + MM3_LAUNCH_GAMEPLAY) ? "Xbox gameplay is selected, so the Xbox time limits (100%) are used. Choose Modded gameplay to change them." :
+                     selected > 100 ? "More time: Blitz races and timed jobs are easier." :
+                     selected < 100 ? "Less time: Blitz races and timed jobs are harder, and some may not be possible." :
+                     "The Xbox time limits.";
+            break;
         case ID_REQUIRED:
             title = "Collision-cell safety repair"; snprintf(value, sizeof value, "Always on");
             body = "Repair decoded collision cells before the game's collision queries use them. This compatibility fix is required for reliable native gameplay.";
@@ -659,6 +693,12 @@ static void populate(Launcher *ui)
         combo_select(control(ui, ID_VIEW), (int)lroundf(s->view_distance * 1000.f));
     }
     combo_select(control(ui, ID_MINIMAP), s->minimap_improved);
+    combo_select(control(ui, ID_NIGHT), s->night_light);
+    if (combo_value(control(ui, ID_NIGHT)) != s->night_light) { /* a saved value not in the list stays chosen */
+        snprintf(text, sizeof text, "%d%%", s->night_light);
+        combo_item(control(ui, ID_NIGHT), text, s->night_light);
+        combo_select(control(ui, ID_NIGHT), s->night_light);
+    }
     set_checked(ui, ID_KEYBOARD, ui->config.option[MM3_LAUNCH_KEYBOARD]);
     combo_select(control(ui, ID_PAD_COUNT), ui->config.controller_count);
     for (int i = 1; i < MM3_LAUNCH_OPTION_COUNT; ++i)
@@ -667,6 +707,16 @@ static void populate(Launcher *ui)
     set_checked(ui, ID_XBOX_GAMEPLAY, !ui->config.option[MM3_LAUNCH_GAMEPLAY]);
     mods_enable(ui);
     snprintf(text, sizeof text, "%d", ui->config.fov_degrees); SetWindowTextA(control(ui, ID_FOV), text);
+    for (int i = 0; i < 2; ++i) { /* a saved value not in the list stays chosen */
+        HWND percent = control(ui, i ? ID_TIME : ID_DAMAGE);
+        int value = i ? ui->config.time_percent : ui->config.damage_percent;
+        combo_select(percent, value);
+        if (combo_value(percent) != value) {
+            snprintf(text, sizeof text, "%d%%", value);
+            combo_item(percent, text, value);
+            combo_select(percent, value);
+        }
+    }
     snprintf(text, sizeof text, "%d", ui->config.network_port); SetWindowTextA(control(ui, ID_PORT), text);
     SetWindowTextA(control(ui, ID_PEERS), ui->config.peers);
     bindings_refresh(ui);
@@ -709,8 +759,11 @@ static int read_controls(Launcher *ui, char *error, size_t capacity)
     s->draw_distance = (float)combo_value(control(ui, ID_DRAW)) / 1000.f;
     s->view_distance = (float)combo_value(control(ui, ID_VIEW)) / 1000.f;
     s->minimap_improved = combo_value(control(ui, ID_MINIMAP));
+    s->night_light = combo_value(control(ui, ID_NIGHT));
     ui->config.option[MM3_LAUNCH_KEYBOARD] = checked(ui, ID_KEYBOARD);
     ui->config.controller_count = combo_value(control(ui, ID_PAD_COUNT));
+    ui->config.damage_percent = combo_value(control(ui, ID_DAMAGE));
+    ui->config.time_percent = combo_value(control(ui, ID_TIME));
     for (int i = 1; i < MM3_LAUNCH_OPTION_COUNT; ++i)
         ui->config.option[i] = option_inverted(i) ? !checked(ui, ID_OPTION + i) : checked(ui, ID_OPTION + i);
     GetWindowTextA(control(ui, ID_PEERS), ui->config.peers, sizeof ui->config.peers);
@@ -863,10 +916,19 @@ static void look_controls(Launcher *ui)
         {560, 260, "Menus and HUD", NULL, {MM3_LAUNCH_LOADING, MM3_LAUNCH_GRAPHICS_MENU, MM3_LAUNCH_QUIT,
             MM3_LAUNCH_DLC_INFO, MM3_LAUNCH_NORTH_MARKER, 0}}
     };
+    static const int nights[] = {10, 15, 20, MM3_NIGHT_LIGHT_DEFAULT, 35, 50, 75, 100};
+    HWND c;
     check(ui, 2, ID_ORIGINAL, "Original look", 42, 92, 240);
     check(ui, 2, ID_OPTION + MM3_LAUNCH_IMPROVED, mm3_launcher_options[MM3_LAUNCH_IMPROVED].label, 300, 92, 250);
     label(ui, 2, "Both looks keep the PC's graphics and audio upgrades. Nothing here changes gameplay.", 42, 122, 774);
     option_columns(ui, 2, columns, (int)(sizeof columns / sizeof columns[0]));
+    c = combo(ui, 2, ID_NIGHT, "Night brightness", 300, 404, 250);
+    for (int i = 0; i < (int)(sizeof nights / sizeof nights[0]); ++i) {
+        char name[32];
+        snprintf(name, sizeof name, "%d%%%s", nights[i], nights[i] == MM3_NIGHT_LIGHT_DEFAULT ? " (default)" :
+                 nights[i] == 100 ? " (Xbox night)" : "");
+        combo_item(c, name, nights[i]);
+    }
     label(ui, 2, "Field of view: 0 = retail, or 60-110", 42, 546, 240);
     add(ui, 2, "EDIT", "0", ES_NUMBER | WS_TABSTOP, ID_FOV, 42, 570, 77, 26);
     label(ui, 2, "Preferences apply when Play starts the game. F10 opens display settings in game.", 145, 573, 680);
@@ -881,14 +943,30 @@ static void gameplay_controls(Launcher *ui)
         {42, 240, "Driving", "Developer tools", {MM3_LAUNCH_DRAFTING, MM3_LAUNCH_ROLL_GUARD, MM3_LAUNCH_TREES, -1,
             MM3_LAUNCH_DEV_TOOLS, MM3_LAUNCH_DEV_HUD, MM3_LAUNCH_DEBUG_MENU, MM3_LAUNCH_CAMERAS, MM3_LAUNCH_E3, 0}},
         {300, 250, "Races and cars", NULL, {MM3_LAUNCH_CIRCUITS, MM3_LAUNCH_EXTRA_CARS, MM3_LAUNCH_AI_ALL_CARS,
-            MM3_LAUNCH_UNLOCK, 0}},
+            MM3_LAUNCH_SAME_CAR, MM3_LAUNCH_UNLOCK, 0}},
         {560, 260, "Navigation", NULL, {MM3_LAUNCH_ROUTE_NAVIGATION, MM3_LAUNCH_RACE_ARROW, 0}}
     };
-    HWND fixed;
+    static const int damage[] = {0, 25, 50, 75, 100, 150, 200, 300}, time[] = {50, 75, 100, 125, 150, 200, 300};
+    HWND fixed, c;
     check(ui, 3, ID_XBOX_GAMEPLAY, "Xbox gameplay", 42, 92, 240);
     check(ui, 3, ID_OPTION + MM3_LAUNCH_GAMEPLAY, mm3_launcher_options[MM3_LAUNCH_GAMEPLAY].label, 300, 92, 250);
     label(ui, 3, "Xbox gameplay plays as the Xbox game did. Modded gameplay uses the mods ticked below.", 42, 122, 774);
     option_columns(ui, 3, columns, (int)(sizeof columns / sizeof columns[0]));
+    fixed = add(ui, 3, "STATIC", "Difficulty", 0, -1, 560, 270, 260, 26);
+    SendMessageA(fixed, WM_SETFONT, (WPARAM)ui->section, TRUE);
+    c = combo(ui, 3, ID_DAMAGE, "Car damage", 560, 302, 260);
+    for (int i = 0; i < (int)(sizeof damage / sizeof damage[0]); ++i) {
+        char name[32];
+        if (damage[i]) snprintf(name, sizeof name, "%d%%%s", damage[i], damage[i] == 100 ? " (Xbox)" : "");
+        else snprintf(name, sizeof name, "No damage");
+        combo_item(c, name, damage[i]);
+    }
+    c = combo(ui, 3, ID_TIME, "Time limits", 560, 362, 260);
+    for (int i = 0; i < (int)(sizeof time / sizeof time[0]); ++i) {
+        char name[32];
+        snprintf(name, sizeof name, "%d%%%s", time[i], time[i] == 100 ? " (Xbox)" : "");
+        combo_item(c, name, time[i]);
+    }
     fixed = check(ui, 3, ID_REQUIRED, "Collision repair (always on)", 560, 446, 260);
     SendMessageA(fixed, BM_SETCHECK, BST_CHECKED, 0); EnableWindow(fixed, FALSE);
     label(ui, 3, "The port's fixes that restore Xbox behaviour, such as car damage at 60 fps, are always on.", 42, 573, 774);
@@ -909,6 +987,9 @@ static void mods_enable(Launcher *ui)
     EnableWindow(control(ui, ID_DRAW), improved);
     EnableWindow(control(ui, ID_VIEW), improved);
     EnableWindow(control(ui, ID_MINIMAP), improved && modded);
+    EnableWindow(control(ui, ID_NIGHT), improved && checked(ui, ID_OPTION + MM3_LAUNCH_WORLD_LIGHT));
+    EnableWindow(control(ui, ID_DAMAGE), modded);
+    EnableWindow(control(ui, ID_TIME), modded);
 }
 
 static int pad_source(const XINPUT_GAMEPAD *pad)
@@ -1110,7 +1191,14 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         SendMessageA(title, WM_SETFONT, (WPARAM)ui->heading, TRUE);
         add(ui, -1, "STATIC", "Detecting controllers...", 0, ID_PAD_SUMMARY, 620, 23, 570, 24);
         label(ui, -1, "Choose your settings. The guide explains each value as you select or change it.", 25, 55, 1150);
-        ui->tabs = add(ui, -1, WC_TABCONTROLA, "", WS_TABSTOP, ID_TABS, 22, 85, 820, 550);
+        /* The classic tab control barely marks the open tab, so WM_DRAWITEM
+         * draws the headers: the open one solid blue with white bold text,
+         * the others grey, and a blue line joins it to its page. */
+        ui->accent = CreateSolidBrush(RGB(0, 103, 192));
+        ui->tab_idle = CreateSolidBrush(RGB(222, 225, 230));
+        ui->tabs = add(ui, -1, WC_TABCONTROLA, "", WS_TABSTOP | WS_CLIPSIBLINGS | TCS_OWNERDRAWFIXED | TCS_FIXEDWIDTH,
+                       ID_TABS, 22, 85, 820, 550);
+        TabCtrl_SetItemSize(ui->tabs, lroundf(196.f * ui->scale), lroundf(32.f * ui->scale));
         tab.mask = TCIF_TEXT;
         tab.pszText = "Settings"; TabCtrl_InsertItem(ui->tabs, 0, &tab);
         tab.pszText = "Controls"; TabCtrl_InsertItem(ui->tabs, 1, &tab);
@@ -1118,6 +1206,20 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         tab.pszText = "Gameplay mods"; TabCtrl_InsertItem(ui->tabs, 3, &tab);
         /* The tab is a sibling; put it behind its page controls. */
         SetWindowPos(ui->tabs, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        {
+            RECT header, pane;
+            HWND bar = add(ui, -1, "STATIC", "", 0, ID_TAB_BAR, 22, 85, 820, 3);
+            int thickness = lroundf(3.f * ui->scale) < 2 ? 2 : (int)lroundf(3.f * ui->scale);
+            TabCtrl_GetItemRect(ui->tabs, 1, &header);
+            GetWindowRect(ui->tabs, &pane);
+            MapWindowPoints(NULL, window, (POINT *)&pane, 2);
+            if (bar) MoveWindow(bar, pane.left, pane.top + header.bottom, pane.right - pane.left, thickness, FALSE);
+            /* Page content starts below the bar. The mods tabs' first row
+             * (y 92) began on it, and those controls, drawn over it, broke
+             * the line under the open tab (user, 10-29). */
+            ui->page_shift = pane.top + header.bottom + thickness - (int)lroundf(119.f * ui->scale);
+            if (ui->page_shift < 0) ui->page_shift = 0;
+        }
         settings_controls(ui); controls_controls(ui); look_controls(ui); gameplay_controls(ui);
         add(ui, -1, "STATIC", "", SS_ETCHEDVERT, -1, 855, 85, 2, 550);
         label(ui, -1, "SETTING GUIDE", 880, 103, 295);
@@ -1158,6 +1260,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             (LOWORD(wparam) >= ID_OPTION && LOWORD(wparam) < ID_OPTION + MM3_LAUNCH_OPTION_COUNT))) {
             int id = LOWORD(wparam);
             set_checked(ui, id, !checked(ui, id));
+            if (id == ID_OPTION + MM3_LAUNCH_WORLD_LIGHT) mods_enable(ui);   /* Night brightness */
             help_show(ui, id);
             return 0;
         }
@@ -1207,6 +1310,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         break;
     }
     case WM_CTLCOLORSTATIC:
+        if ((HWND)lparam == control(ui, ID_TAB_BAR) && ui->accent) return (LRESULT)ui->accent;
         if ((HWND)lparam == control(ui, ID_HELP_VALUE)) {
             SetTextColor((HDC)wparam, RGB(0, 90, 150));
             SetBkColor((HDC)wparam, GetSysColor(COLOR_BTNFACE));
@@ -1219,6 +1323,25 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         RECT box = draw->rcItem, text = draw->rcItem;
         int size = (int)lroundf(16.f * ui->scale);
         UINT flags = radio_choice((int)draw->CtlID) ? DFCS_BUTTONRADIO : DFCS_BUTTONCHECK;
+        if (draw->CtlType == ODT_TAB) {
+            int open = (int)draw->itemID == TabCtrl_GetCurSel(draw->hwndItem);
+            TCITEMA item = {0};
+            HFONT previous;
+            item.mask = TCIF_TEXT; item.pszText = caption; item.cchTextMax = sizeof caption;
+            caption[0] = 0;
+            TabCtrl_GetItem(draw->hwndItem, (int)draw->itemID, &item);
+            FillRect(draw->hDC, &draw->rcItem, open ? ui->accent : ui->tab_idle);
+            SetBkMode(draw->hDC, TRANSPARENT);
+            SetTextColor(draw->hDC, open ? RGB(255, 255, 255) : RGB(70, 70, 70));
+            previous = SelectObject(draw->hDC, open ? ui->section : ui->font);
+            DrawTextA(draw->hDC, caption, -1, &text, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+            SelectObject(draw->hDC, previous);
+            if (open && GetFocus() == draw->hwndItem && !(draw->itemState & ODS_NOFOCUSRECT)) {
+                InflateRect(&text, -(int)lroundf(4.f * ui->scale), -(int)lroundf(4.f * ui->scale));
+                DrawFocusRect(draw->hDC, &text);
+            }
+            return TRUE;
+        }
         if (draw->CtlType != ODT_BUTTON) break;
         FillRect(draw->hDC, &draw->rcItem, (HBRUSH)(COLOR_BTNFACE + 1));
         box.left += 2; box.right = box.left + size;
@@ -1363,6 +1486,7 @@ int mm3_launcher_run(void)
             if (!IsDialogMessageA(window, &message)) { TranslateMessage(&message); DispatchMessageA(&message); }
         }
         if (ui.font) DeleteObject(ui.font); if (ui.heading) DeleteObject(ui.heading); if (ui.section) DeleteObject(ui.section);
+        if (ui.accent) DeleteObject(ui.accent); if (ui.tab_idle) DeleteObject(ui.tab_idle);
         if (ui.smoke || !ui.result) return 0;
     } else if (!mm3_launcher_config_apply(&ui.config, warning, sizeof warning)) {
         fprintf(stderr, "[MM3_LAUNCHER] %s\n", warning); return 0;

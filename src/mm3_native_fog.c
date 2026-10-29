@@ -22,10 +22,20 @@ static RECOMP_TLS uint32_t s_native_fog_camera;
 static RECOMP_TLS int s_horizon_reported;
 static unsigned s_fog_packets, s_fog_made_space, s_fog_fallbacks;
 static uint64_t s_fog_window;
+/* Camera cuts: fog passes since the frame began, the last frame's camera
+ * rotation (rows of 3) and whether there is one. */
+static RECOMP_TLS unsigned s_cut_pass;
+static RECOMP_TLS int s_cut_have;
+static RECOMP_TLS float s_cut_rows[9];
+static unsigned s_cuts, s_cut_holds;
+static volatile long s_cut_override = -1;
 
 void mm3_native_fog_frame_begin(void)
 {
     s_native_fog_camera = 0;
+    /* A frame without a fog pass leaves nothing to compare with. */
+    if (!s_cut_pass) s_cut_have = 0;
+    s_cut_pass = 0;
 }
 
 static int fog_range(uint32_t address, uint32_t bytes)
@@ -84,6 +94,17 @@ static int fog_make_space(uint32_t device)
     return 1;
 }
 
+/* Room for `words` at PUT, asking the title for space when they do not fit
+ * before its threshold: the cursor, or 0. */
+static uint32_t host_room(uint32_t device, uint32_t words)
+{
+    uint32_t cursor = MEM32(device), limit = MEM32(device + 4u);
+    if (fog_room(cursor, limit, words)) return cursor;
+    if ((cursor & 3u) || !fog_range(cursor, 4u) || !fog_make_space(device)) return 0;
+    cursor = MEM32(device); limit = MEM32(device + 4u);
+    return fog_room(cursor, limit, words) ? cursor : 0;
+}
+
 static void fog_report(void)
 {
     uint64_t now = MM3_NATIVE_FOG_CLOCK();
@@ -100,29 +121,121 @@ static void fog_report(void)
  * of its fog pass, with or without native fog. */
 static void exhaust_send(void)
 {
-    uint32_t words[18], camera, device, cursor, limit, i;
+    uint32_t words[18], camera, device, cursor, i;
     if (!mm3_exhaust_enabled() || (g_ecx & 3u) || !fog_range(g_ecx, 16u)) return;
     camera = MEM32(g_ecx + 12u);
     device = MEM32(0x00351F48u);
     if ((camera & 3u) || (device & 3u) || !fog_range(device, 12u) || !mm3_exhaust_packet(camera, words))
         return;
-    cursor = MEM32(device); limit = MEM32(device + 4u);
-    if (!fog_room(cursor, limit, NV2A_HOST_TRIS_WORDS)) {
-        if ((cursor & 3u) || !fog_range(cursor, 4u) || !fog_make_space(device)) return;
-        cursor = MEM32(device); limit = MEM32(device + 4u);
-        if (!fog_room(cursor, limit, NV2A_HOST_TRIS_WORDS)) return;
-    }
+    if (!(cursor = host_room(device, NV2A_HOST_TRIS_WORDS))) return;
     MEM32(cursor) = NV2A_HOST_TRIS_HEADER;
     MEM32(cursor + 4u) = NV2A_HOST_TRIS_TAG;
     for (i = 0; i < 18u; ++i) MEM32(cursor + 8u + i * 4u) = words[i];
     MEM32(device) = cursor + NV2A_HOST_TRIS_WORDS * 4u;
 }
 
+/* Look left/right/back is a camera cut, and MM3 draws the first frame of the
+ * new view with lights and objects still chosen for the old one (light
+ * buffer about half as bright, a few hundred extra objects). With the car
+ * lighting's fields that frame flashes in tunnels; the next is right. The
+ * first fog pass of each frame compares its camera's rotation with the last
+ * frame's, and past 45 degrees (no camera turns that fast) asks the renderer
+ * to keep the frame off the screen (NV2A_HOST_HOLD_TAG): the old view stays
+ * up one refresh longer. Part of the car lighting; MM3_CAMERA_CUT_HOLD=0
+ * turns it off and the dev pipe's `cuthold` overrides both (cuts are still
+ * counted, and logged with MM3_CAMERA_CUT_LOG=1). */
+#define CUT_COSINE 0.70710678f
+
+void mm3_native_fog_cut_hold(long on)
+{
+    s_cut_override = on;
+}
+
+static int cut_hold_on(void)
+{
+    static RECOMP_TLS int setting = -1;
+    long override = s_cut_override;
+    if (override >= 0) return override != 0;
+    if (setting < 0) {
+        const char *value = getenv("MM3_CAMERA_CUT_HOLD");
+        setting = mm3_mod_car_lighting() && !(value && !strcmp(value, "0"));
+    }
+    return setting;
+}
+
+/* The camera's world-to-camera rotation, when it is one. */
+static int cut_rows(uint32_t camera, float rows[9])
+{
+    unsigned i, j, k;
+    for (i = 0; i < 9u; ++i) {
+        rows[i] = MEMF(camera + 0x1F24u + (i / 3u) * 16u + (i % 3u) * 4u);
+        if (!isfinite(rows[i])) return 0;
+    }
+    for (i = 0; i < 3u; ++i)
+        for (j = 0; j < 3u; ++j) {
+            float dot = 0.0f;
+            for (k = 0; k < 3u; ++k) dot += rows[i * 3u + k] * rows[j * 3u + k];
+            if (fabsf(dot - (i == j ? 1.0f : 0.0f)) > 0.01f) return 0;
+        }
+    return 1;
+}
+
+/* MM3_CAMERA_CUT_LOG=1 names every cut, held or not, with its QPC time (the
+ * clock of [ODD_FRAME]). */
+static int cut_log(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *value = getenv("MM3_CAMERA_CUT_LOG");
+        on = value && !strcmp(value, "1");
+    }
+    return on;
+}
+
+static double cut_qpc_ms(void)
+{
+    LARGE_INTEGER now, frequency;
+    return QueryPerformanceCounter(&now) && QueryPerformanceFrequency(&frequency) && frequency.QuadPart ?
+        (double)now.QuadPart * 1000.0 / (double)frequency.QuadPart : 0.0;
+}
+
+static void cut_send(void)
+{
+    uint32_t camera, device, cursor = 0, i;
+    float rows[9], trace = 0.0f, cosine;
+    int hold;
+    if ((g_ecx & 3u) || !fog_range(g_ecx, 16u)) { s_cut_have = 0; return; }
+    camera = MEM32(g_ecx + 12u);
+    if ((camera & 3u) || !fog_range(camera, 0x1F60u) || !cut_rows(camera, rows)) { s_cut_have = 0; return; }
+    for (i = 0; i < 9u; ++i) trace += rows[i] * s_cut_rows[i];
+    memcpy(s_cut_rows, rows, sizeof rows);
+    /* trace(old^T new) = 1 + 2 cos(angle between the two) */
+    cosine = (trace - 1.0f) * 0.5f;
+    if (!s_cut_have) { s_cut_have = 1; return; }
+    if (cosine >= CUT_COSINE) return;
+    ++s_cuts;
+    device = MEM32(0x00351F48u);
+    /* Never into a recorded push buffer (device+8 bit 2): it is replayed. */
+    hold = cut_hold_on() && !(device & 3u) && fog_range(device, 12u) && !(MEM8(device + 8u) & 4u) &&
+           (cursor = host_room(device, NV2A_HOST_HOLD_WORDS)) != 0;
+    if (hold) {
+        MEM32(cursor) = NV2A_HOST_HOLD_HEADER;
+        MEM32(cursor + 4u) = NV2A_HOST_HOLD_TAG;
+        MEM32(device) = cursor + NV2A_HOST_HOLD_WORDS * 4u;
+        ++s_cut_holds;
+    }
+    if (cut_log() || (hold && (s_cut_holds <= 3u || s_cut_holds % 100u == 0)))
+        fprintf(stderr, "[MM3_CUT] camera cut %u (%.0f degrees, qpc_ms=%.1f): %s\n", s_cuts,
+                acosf(fmaxf(cosine, -1.0f)) * 57.29578f, cut_qpc_ms(),
+                hold ? "its first frame is held back" : "shown");
+}
+
 void sub_000F8DCE(void)
 {
-    uint32_t camera, device, cursor, limit, texels = 0, format = 0, words;
+    uint32_t camera, device, cursor, texels = 0, format = 0, words;
     float depth_scale, row, far_clip, project_x, project_y, inverse_depth, start, end, plane[3];
     s_native_fog_camera = 0;
+    if (!s_cut_pass++) cut_send();
     exhaust_send();
     if (!mm3_mod_native_fog() || !nv2a_d3d_distance_fog_ready()) {
         sub_000F8DCE_original();
@@ -159,12 +272,7 @@ void sub_000F8DCE(void)
 
     /* Reserve and validate the complete packet before touching its cursor or
      * guest registers. Its no-op encoding preserves pushbuffer ordering. */
-    cursor = MEM32(device); limit = MEM32(device + 4u);
-    if (!fog_room(cursor, limit, words)) {
-        if ((cursor & 3u) || !fog_range(cursor, 4u) || !fog_make_space(device)) goto fallback;
-        cursor = MEM32(device); limit = MEM32(device + 4u);
-        if (!fog_room(cursor, limit, words)) goto fallback;
-    }
+    if (!(cursor = host_room(device, words))) goto fallback;
     if (texels) {
         MEM32(cursor) = NV2A_HOST_RAMP_HEADER;
         MEM32(cursor + 4u) = NV2A_HOST_RAMP_TAG;

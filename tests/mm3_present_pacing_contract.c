@@ -28,6 +28,7 @@ enum { PROF_PACE, PROF_WRITEBACK, PROF_PRESENT };
 static int s_prof_on, s_init_state, s_frame_bg_tex, s_frame_tag_window, s_wb_pending;
 /* Frame-local scene state read/reset by the actual flip implementation. */
 static int s_depth_hazed;
+static unsigned s_frame_scene_draws;
 static int64_t s_prof[3];
 static Surface *s_shown;
 static DWORD s_last_present, s_last_flip;
@@ -166,6 +167,10 @@ static int ensure_swap_backbuffer(void)
 static unsigned black_samples;
 static void black_frame_sample(Surface *image, const PresentConsts *pc)
 { CHECK(image == &surface && pc != NULL); black_samples++; }
+/* The CPU's picture after the last GPU flip gets black widescreen sides. */
+static unsigned black_sides;
+static void surface_black_sides(Surface *image)
+{ CHECK(image == &surface); black_sides++; }
 /* The screen-side statistics, read after each present that succeeded, with
  * the pacing wait when it came before that present. */
 static unsigned display_reports, display_guest_reports;
@@ -177,6 +182,13 @@ static void display_after_present(int guest_flip, int64_t pace_ticks)
     if (guest_flip) display_guest_reports++;
     display_pace = pace_ticks;
 }
+/* A flip the title held back: the detector's activity is dropped and the
+ * screen-side statistics are told the next present follows a planned repeat. */
+static int s_hold_next, s_held_last;
+static unsigned s_held_flips, held_marks;
+typedef struct { unsigned draws; } BfFrameActivity;
+static BfFrameActivity s_bf_frame;
+static void dstats_held(void) { event('H'); held_marks++; }
 
 #define getenv test_getenv
 #include "production_pacing.inc"
@@ -187,7 +199,8 @@ static void reset(void)
     memset(events, 0, sizeof(events)); event_count = 0;
     memset(s_prof, 0, sizeof(s_prof)); s_prof_on = 1;
     pace_calls = present_calls = csv_calls = scans = s_frame = 0;
-    texture_releases = view_releases = black_samples = 0;
+    texture_releases = view_releases = black_samples = black_sides = 0;
+    s_frame_scene_draws = 7;
     display_reports = display_guest_reports = 0; display_pace = -2;
     cpu_syncs = cpu_uploads = 0; cpu_write = s_wb_pending = 0;
     surface.gen = 1; surface.cpu_present_pending = 0;
@@ -203,6 +216,7 @@ static void reset(void)
     s_frame_csv_file = tmpfile(); CHECK(s_frame_csv_file != NULL);
     s_frame_csv_present = s_frame_csv_present_prev = s_frame_csv_present_interval = 0;
     s_cap_tex = NULL; s_cap_rtv = NULL; s_cap_w = s_cap_h = 0;
+    s_hold_next = s_held_last = 0; held_marks = 0; s_bf_frame.draws = 0;
 }
 
 static void successful_flip(const char *expected)
@@ -212,7 +226,7 @@ static void successful_flip(const char *expected)
     CHECK(pace_calls == 1 && present_calls == 1 && csv_calls == 1 && csv_ticks == 7);
     CHECK(s_prof[PROF_PACE] == 7 && s_prof[PROF_WRITEBACK] == 2);
     CHECK(s_frame == 1 && s_frame_tag_window == 1 && s_frame_bg_tex == 0);
-    CHECK(s_depth_hazed == 0);
+    CHECK(s_depth_hazed == 0 && s_frame_scene_draws == 0 && black_sides == 0);
     CHECK(black_samples == 1);
     CHECK(display_reports == (present_result == S_OK ? 1u : 0u) && display_guest_reports == display_reports);
     CHECK(!display_reports || display_pace == (after_policy ? -1 : 7));
@@ -276,6 +290,28 @@ static void flip_cases(void)
     CHECK(!events[0] && !pace_calls && !present_calls && !s_frame);
 }
 
+static void hold_cases(void)
+{
+    /* A held flip paces and finishes like any other but is not presented. */
+    reset(); s_bf_frame.draws = 9;
+    nv2a_d3d_hold_frame(); nv2a_d3d_flip(0x10000, 2560);
+    CHECK(strcmp(events, "BHWF") == 0 && pace_calls == 1 && present_calls == 0 && csv_calls == 1);
+    CHECK(held_marks == 1 && !black_samples && !display_reports && s_bf_frame.draws == 0);
+    CHECK(s_frame == 1 && s_shown == &surface && s_prof[PROF_PACE] == 7 && s_frame_scene_draws == 0);
+    /* The flip after a held one is shown even when asked to hold again... */
+    nv2a_d3d_hold_frame(); nv2a_d3d_flip(0x10000, 2560);
+    CHECK(present_calls == 1 && held_marks == 1 && black_samples == 1 && pace_calls == 2);
+    /* ... one request holds one flip, and holding works again after a shown one. */
+    nv2a_d3d_flip(0x10000, 2560);
+    CHECK(present_calls == 2 && held_marks == 1);
+    nv2a_d3d_hold_frame(); nv2a_d3d_flip(0x10000, 2560);
+    CHECK(present_calls == 2 && held_marks == 2 && pace_calls == 4 && s_frame == 4);
+    /* Nothing to show holds nothing, and the request is used up. */
+    reset(); surface_ok = scan_ok = 0;
+    nv2a_d3d_hold_frame(); nv2a_d3d_flip(0x10000, 2560);
+    CHECK(held_marks == 0 && !s_held_last && !s_hold_next && pace_calls == 1);
+}
+
 static void tick_cases(void)
 {
     reset(); cpu_scanout = 1;
@@ -328,9 +364,9 @@ static void idle_cpu_cases(void)
     CHECK(!surface.cpu_present_pending && !pace_calls && !csv_calls);
 
     reset(); overlay_ok = 0; cpu_write = 1; s_last_flip = test_now - 50;
-    nv2a_d3d_tick(); CHECK(!cpu_syncs && !cpu_uploads && !present_calls && cpu_write);
+    nv2a_d3d_tick(); CHECK(!cpu_syncs && !cpu_uploads && !present_calls && cpu_write && !black_sides);
     test_now++; nv2a_d3d_tick();
-    CHECK(cpu_syncs == 1 && cpu_uploads == 1 && present_calls == 1);
+    CHECK(cpu_syncs == 1 && cpu_uploads == 1 && present_calls == 1 && black_sides == 1);
     reset(); overlay_ok = 0; cpu_write = 1; s_last_present = test_now - 15;
     nv2a_d3d_tick(); CHECK(!cpu_syncs && !cpu_uploads && !present_calls && cpu_write);
 
@@ -353,7 +389,7 @@ static void idle_cpu_cases(void)
         CHECK(cpu_syncs == 2 && cpu_uploads == 1);
         CHECK(present_calls == failed_attempts + 1 && !surface.cpu_present_pending);
         test_now += 16; nv2a_d3d_tick();
-        CHECK(cpu_uploads == 1 && present_calls == failed_attempts + 1);
+        CHECK(cpu_uploads == 1 && present_calls == failed_attempts + 1 && black_sides == 1);
         CHECK(!pace_calls && !csv_calls && !s_frame && !scans);
         CHECK(!s_frame_csv_present && !s_frame_csv_present_prev);
         CHECK(s_prof[PROF_PACE] == 0);
@@ -432,9 +468,9 @@ int main(int argc, char **argv)
 {
     CHECK(argc == 2);
     after_policy = strcmp(argv[1], "after") == 0;
-    flip_cases(); tick_cases(); idle_cpu_cases(); csv_cases(); depth_haze_cases(); loading_cases();
+    flip_cases(); hold_cases(); tick_cases(); idle_cpu_cases(); csv_cases(); depth_haze_cases(); loading_cases();
     fclose(s_frame_csv_file);
-    printf("PASS: %s-present pacing; successful/failed/captured flips, missing resources/RTV failure, once-per-flip fallback, unpaced movie/idle CPU ticks, writeback ordering, failed/occluded display retries, guest-only CSV state, profiler accounting and guest-frame haze reset\n",
+    printf("PASS: %s-present pacing; successful/failed/captured/held flips, missing resources/RTV failure, once-per-flip fallback, unpaced movie/idle CPU ticks, writeback ordering, failed/occluded display retries, guest-only CSV state, profiler accounting and guest-frame haze reset\n",
            after_policy ? "after" : "before");
     return 0;
 }

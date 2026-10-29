@@ -76,6 +76,67 @@ static void check_fallback(void)
     g_ecx = horizon; g_esp = stack; sub_000F8750();
     assert(horizon_calls == 1 && g_esp == stack + 8);
 }
+/* The camera turned `yaw` radians about world up. */
+static void turn_camera(float yaw)
+{
+    float m[9];
+    unsigned i;
+    m[0] = cosf(yaw); m[1] = 0; m[2] = -sinf(yaw);
+    m[3] = 0; m[4] = 1; m[5] = 0;
+    m[6] = sinf(yaw); m[7] = 0; m[8] = cosf(yaw);
+    for (i = 0; i < 9; ++i) MEMF(camera + 0x1F24 + (i / 3) * 16 + (i % 3) * 4) = m[i];
+}
+/* A frame's first fog pass, the camera at `yaw`. */
+static void cut_frame(float yaw)
+{
+    mm3_native_fog_frame_begin();
+    setup(); MEM32(device + 4) = packet + 0x100;
+    turn_camera(yaw);
+    sub_000F8DCE();
+    assert(g_esp == stack + 16 && g_ecx == self);
+}
+/* Camera cuts put a hold packet ahead of the frame's fog pass, native or
+ * retail (whose own commands then follow at PUT). */
+static void cut_cases(int native)
+{
+    const uint32_t after = native ? 0x402C0100u : 0xA5A5A5A5u;
+    const float quarter = 1.5707964f;
+    s_cuts = s_cut_holds = 0;
+    /* Nothing to compare with yet, then a fast but continuous turn. */
+    cut_frame(0); assert(MEM32(packet) == after);
+    cut_frame(.7f); assert(MEM32(packet) == after);
+    /* Look left: the hold packet first, the title's PUT moved past it. */
+    cut_frame(.7f + quarter);
+    assert(MEM32(packet) == 0x40040100 && MEM32(packet + 4) == 0x58444C48 && MEM32(packet + 8) == after);
+    assert(MEM32(device) == packet + (native ? 56u : 8u) && s_cut_holds == 1 && fog_calls == (unsigned)!native);
+    /* Only a frame's first pass compares, and a frame without one forgets. */
+    setup(); MEM32(device + 4) = packet + 0x100; turn_camera(0);
+    sub_000F8DCE(); assert(MEM32(packet) == after);
+    mm3_native_fog_frame_begin();
+    cut_frame(0); assert(MEM32(packet) == after);
+    cut_frame(3.1415927f); assert(MEM32(packet) == 0x40040100 && s_cut_holds == 2 && s_cuts == 2);
+    /* No room before the threshold: ask the title for space, as the fog does. */
+    mm3_native_fog_frame_begin(); setup(); space_room = 1;
+    MEM32(device + 4) = packet + 4; turn_camera(0); sub_000F8DCE();
+    assert(space_calls == 1 && MEM32(space) == 0x40040100 && MEM32(packet) == 0xA5A5A5A5 && s_cut_holds == 3);
+    assert(g_esp == stack + 16 && g_ecx == self && fog_calls == (unsigned)!native);
+    /* Turned off (the dev pipe; MM3_CAMERA_CUT_HOLD=0 or no car lighting
+     * likewise): cuts are still counted, none is held. */
+    mm3_native_fog_cut_hold(0);
+    cut_frame(quarter); assert(MEM32(packet) == after && s_cut_holds == 3 && s_cuts == 4);
+    mm3_native_fog_cut_hold(-1);
+    cut_frame(0); assert(MEM32(packet) == 0x40040100 && s_cut_holds == 4 && s_cuts == 5);
+    /* Never into a push buffer the title is recording (device+8 bit 2): it
+     * is replayed later. */
+    mm3_native_fog_frame_begin(); setup(); MEM32(device + 4) = packet + 0x100; MEM32(device + 8) = 4;
+    turn_camera(quarter); sub_000F8DCE();
+    assert(MEM32(packet) == after && s_cut_holds == 4 && s_cuts == 6);
+    /* Rows that are not a rotation compare nothing. */
+    mm3_native_fog_frame_begin(); setup(); MEM32(device + 4) = packet + 0x100;
+    turn_camera(0); MEMF(camera + 0x1F24) = 2; sub_000F8DCE();
+    assert(MEM32(packet) == after && !s_cut_have);
+    cut_frame(quarter); assert(MEM32(packet) == after && s_cuts == 6);
+}
 int main(int argc, char **argv)
 {
     unsigned i;
@@ -85,7 +146,7 @@ int main(int argc, char **argv)
     assert(arena); g_xbox_mem_offset = (ptrdiff_t)arena;
     commit(0x10000, 0x60000); commit(0x351000, 0x2000); commit(0x80010000, 0x1000);
     setup();
-    if (!strcmp(argv[1], "0")) { check_fallback(); assert(!space_calls); goto done; }
+    if (!strcmp(argv[1], "0")) { check_fallback(); assert(!space_calls); cut_cases(0); goto done; }
     sub_000F8DCE();
     check_packet(packet);
     assert(!space_calls);
@@ -197,8 +258,9 @@ int main(int argc, char **argv)
     test_clock += 1;
     setup(); sub_000F8DCE();
     assert(s_fog_window == test_clock && s_fog_packets == 1 && !s_fog_made_space && !s_fog_fallbacks);
+    cut_cases(1);
 done:
     assert(VirtualFree(arena, 0, MEM_RELEASE));
-    puts("PASS native fog ordered packet, sky fog ramp ahead of it, camera projection, title push-buffer space instead of a retail fog frame, fallback, horizon ownership, high RAM alias, 30 s report and guest ABI");
+    puts("PASS native fog ordered packet, sky fog ramp ahead of it, camera projection, title push-buffer space instead of a retail fog frame, fallback, horizon ownership, high RAM alias, 30 s report, camera-cut hold packet and guest ABI");
     return 0;
 }

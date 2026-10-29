@@ -192,8 +192,26 @@ static void start_draft(void)
     strcpy(status, "Choose a setting, then select an exact value. Apply saves your settings.");
 }
 
+/* Why the launcher fixes this setting for the run (as the F10 panel greys
+ * it), or NULL. */
+static const char *setting_fixed(unsigned setting)
+{
+    switch (setting) {
+    case SETTING_ASPECT: return mm3_display_setting_fixed(MM3_FIXED_ASPECT);
+    case SETTING_DISTANCE:
+    case SETTING_VIEW_DISTANCE: return mm3_display_setting_fixed(MM3_FIXED_DISTANCE);
+    case SETTING_MINIMAP: return mm3_display_setting_fixed(MM3_FIXED_MINIMAP);
+    default: return NULL;
+    }
+}
+
 static void select_choice(unsigned setting, unsigned choice)
 {
+    const char *fixed = setting_fixed(setting);
+    if (fixed) {
+        snprintf(status, sizeof status, "%s", fixed);
+        return;
+    }
     switch (setting) {
     case SETTING_RESOLUTION:
         draft.window_width = resolutions[choice][0];
@@ -261,7 +279,8 @@ static void choice_label(unsigned setting, unsigned choice, char *label, size_t 
     case SETTING_MINIMAP: snprintf(value, sizeof value, "%s", choice ? "Improved" : "Stock"); break;
     default: value[0] = 0; break;
     }
-    snprintf(label, capacity, "%s%s", value, choice_selected(setting, choice) ? "  (Selected)" : "");
+    snprintf(label, capacity, "%s%s", value, choice_selected(setting, choice) ? "  (Selected)" :
+             setting_fixed(setting) ? "  (Fixed)" : "");
 }
 
 static void run_action(unsigned action)
@@ -279,6 +298,10 @@ static void run_action(unsigned action)
      * so the F10 panel and an old graphics draft cannot overwrite each other. */
     if (action == GRAPHICS_MINIMAP_STOCK || action == GRAPHICS_MINIMAP_IMPROVED) {
         MM3DisplaySettings current;
+        if (setting_fixed(SETTING_MINIMAP)) {
+            snprintf(status, sizeof status, "%s", setting_fixed(SETTING_MINIMAP));
+            return;
+        }
         mm3_display_settings_get(&current);
         current.minimap_improved = action == GRAPHICS_MINIMAP_IMPROVED;
         if (mm3_display_settings_commit(&current, status, sizeof status)) {
@@ -297,10 +320,14 @@ static void run_action(unsigned action)
         return;
     }
     switch (action) {
-    case GRAPHICS_DEFAULTS:
+    case GRAPHICS_DEFAULTS: {
+        MM3DisplaySettings current;
+        mm3_display_settings_get(&current);
         mm3_display_settings_defaults(&draft, getenv("MM3_PERFORMANCE_PROFILE"));
+        mm3_display_settings_keep_fixed(&draft, &current);
         strcpy(status, "Defaults selected. Apply saves your settings.");
         return;
+    }
     case GRAPHICS_APPLY:
         if (!mm3_display_settings_commit(&draft, status, sizeof status)) {
             fprintf(stderr, "[MM3_GRAPHICS_MENU] save failed: %s\n", status);
@@ -351,8 +378,10 @@ const char *mm3_graphics_menu_label(const char *key)
         MM3DisplaySettings current;
         int improved = !strcmp(field, "HUD_MINIMAP_IMPROVED");
         mm3_display_settings_get(&current);
+        if (setting_fixed(SETTING_MINIMAP)) current.minimap_improved = 0;   /* what the game shows */
         snprintf(label, sizeof label, "Minimap: %s%s", improved ? "Improved" : "Stock",
-                 current.minimap_improved == improved ? "  (Selected)" : "");
+                 current.minimap_improved == improved ? "  (Selected)" :
+                 setting_fixed(SETTING_MINIMAP) ? "  (Fixed)" : "");
         return label;
     }
     if (!draft_ready) start_draft();
@@ -383,7 +412,8 @@ const char *mm3_graphics_menu_label(const char *key)
             "Show the city and buildings farther away. Object detail has its own distance. Restart required."
         };
         for (setting = 0; setting < GRAPHICS_SETTING_COUNT; ++setting)
-            if (!strcmp(field + 5, setting_keys[setting])) return help[setting];
+            if (!strcmp(field + 5, setting_keys[setting]))
+                return setting_fixed(setting) ? setting_fixed(setting) : help[setting];
         if (!strcmp(field + 5, "APPLY")) return status;
         if (!strcmp(field + 5, "DEFAULTS")) return "Restore recommended defaults. Apply Settings saves them.";
         if (!strcmp(field + 5, "ADVANCED")) return "Aspect ratio, anti-aliasing, texture filtering, building view, object detail and minimap style.";
@@ -425,9 +455,16 @@ const char *mm3_graphics_menu_label(const char *key)
         else snprintf(label, sizeof label, "Texture Filtering: %dx", draft.aniso);
     }
     else if (!strcmp(field, "DISTANCE")) snprintf(label, sizeof label, "Object Detail Distance: %.3gx", draft.draw_distance);
-    else if (!strcmp(field, "MINIMAP")) snprintf(label, sizeof label, "Minimap Style: %s", draft.minimap_improved ? "Improved" : "Stock");
+    else if (!strcmp(field, "MINIMAP"))
+        snprintf(label, sizeof label, "Minimap Style: %s",
+                 draft.minimap_improved && !setting_fixed(SETTING_MINIMAP) ? "Improved" : "Stock");
     else if (!strcmp(field, "VIEW_DISTANCE")) snprintf(label, sizeof label, "Building View Distance: %.3gx", draft.view_distance);
     else return NULL;
+    for (setting = 0; setting < GRAPHICS_SETTING_COUNT; ++setting)
+        if (!strcmp(field, setting_keys[setting]) && setting_fixed(setting)) {
+            size_t used = strlen(label);
+            snprintf(label + used, sizeof label - used, " (Fixed)");
+        }
     return label;
 }
 

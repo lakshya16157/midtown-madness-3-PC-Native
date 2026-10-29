@@ -6,6 +6,16 @@
 #include "recomp_types.h"
 #include "mm3_debug_teleport.h"
 #include "mm3_stress_debug.h"
+#include "mm3_car_lighting.h"
+
+/* mm3_native_fog.c: hold the first frame after a camera cut (1), show it
+ * (0), or follow the setting (-1). */
+void mm3_native_fog_cut_hold(long on);
+/* nv2a_d3d11.c: the light falloff's shape and the sum's white point. */
+float nv2a_d3d_set_local_light_shape(float source, float edge, float power, float white);
+/* mm3_lamp_lighting.c and mm3_world_lighting.c: lamp tuning, night light. */
+void mm3_lamp_lighting_tune(float restored, float spill, float reach);
+void mm3_world_lighting_set_night_light(int percent);
 
 /* PAL XBE: player update 2203E5; primary player manager 3C5CDC+54+D8.
  * Player+19C is the vehicle interface (vtable 383768), whose +8 is the car.
@@ -247,6 +257,8 @@ static DWORD WINAPI pipe_thread(void *unused)
             char command[128] = {0}, reply[8192], extra;
             DWORD bytes;
             float xyz[3];
+            long field_mask;
+            float shape[5];
             if (ReadFile(pipe, command, sizeof(command) - 1, &bytes, NULL)) {
                 command[bytes] = 0;
                 xyz[1] = 0;
@@ -257,6 +269,28 @@ static DWORD WINAPI pipe_thread(void *unused)
                 } else if ((fields == 2 || (fields == 3 && isfinite(heading))) &&
                     isfinite(xyz[0]) && isfinite(xyz[2])) {
                     request_teleport(xyz, fields == 3 ? heading : NAN, reply, sizeof(reply));
+                } else if (sscanf(command, "carshape %f %f %f %f %f %c", &shape[0], &shape[1], &shape[2],
+                                  &shape[3], &shape[4], &extra) == 5) {
+                    mm3_car_lighting_shape(shape);
+                    snprintf(reply, sizeof(reply), "{\"carshape\":[%g,%g,%g,%g,%g]}",
+                             shape[0], shape[1], shape[2], shape[3], shape[4]);
+                } else if (sscanf(command, "carfields %li %c", &field_mask, &extra) == 1) {
+                    mm3_car_lighting_field_mask(field_mask);
+                    snprintf(reply, sizeof(reply), "{\"carfields\":%ld}", field_mask);
+                } else if (sscanf(command, "lightshape %f %f %f %f %c", &shape[0], &shape[1], &shape[2],
+                                  &shape[3], &extra) == 4) {
+                    float scale = nv2a_d3d_set_local_light_shape(shape[0], shape[1], shape[2], shape[3]);
+                    snprintf(reply, sizeof(reply), "{\"lightshape\":[%g,%g,%g,%g],\"scale\":%g}",
+                             shape[0], shape[1], shape[2], shape[3], scale);
+                } else if (sscanf(command, "lamptune %f %f %f %c", &shape[0], &shape[1], &shape[2], &extra) == 3) {
+                    mm3_lamp_lighting_tune(shape[0], shape[1], shape[2]);
+                    snprintf(reply, sizeof(reply), "{\"lamptune\":[%g,%g,%g]}", shape[0], shape[1], shape[2]);
+                } else if (sscanf(command, "nightlight %li %c", &field_mask, &extra) == 1) {
+                    mm3_world_lighting_set_night_light((int)field_mask);
+                    snprintf(reply, sizeof(reply), "{\"nightlight\":%ld}", field_mask);
+                } else if (sscanf(command, "cuthold %li %c", &field_mask, &extra) == 1) {
+                    mm3_native_fog_cut_hold(field_mask);
+                    snprintf(reply, sizeof(reply), "{\"cuthold\":%ld}", field_mask);
                 } else if (strcmp(command, "cars") == 0) {
                     uint32_t primary = primary_player();
                     size_t n = (size_t)snprintf(reply, sizeof(reply), "{\"cars\":[");

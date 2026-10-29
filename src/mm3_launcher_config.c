@@ -47,7 +47,8 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"MM3_FALLING_TREES", "Trees fall over when hit", 1},
     {"MM3_EXHAUST_TRIANGLES", "Exhaust smoke", 0},
     {"MM3_GAMEPLAY_MODS", "Modded gameplay", 0},
-    {"MM3_MENU_QUIT", "Quit in the main menu", 1}
+    {"MM3_MENU_QUIT", "Quit in the main menu", 1},
+    {"MM3_SAME_CAR", "Opponents drive your car", 0}
 };
 
 typedef struct { int option; const char *value; } MM3ForcedOption;
@@ -69,7 +70,7 @@ static const MM3ForcedOption xbox_gameplay[] = {
     {MM3_LAUNCH_CIRCUITS, "0"}, {MM3_LAUNCH_EXTRA_CARS, "0"}, {MM3_LAUNCH_AI_ALL_CARS, "0"},
     {MM3_LAUNCH_UNLOCK, "0"}, {MM3_LAUNCH_ROUTE_NAVIGATION, "0"}, {MM3_LAUNCH_RACE_ARROW, "1"},
     {MM3_LAUNCH_DEV_TOOLS, "0"}, {MM3_LAUNCH_DEV_HUD, "0"}, {MM3_LAUNCH_DEBUG_MENU, "0"},
-    {MM3_LAUNCH_CAMERAS, "0"}, {MM3_LAUNCH_E3, "0"}
+    {MM3_LAUNCH_CAMERAS, "0"}, {MM3_LAUNCH_E3, "0"}, {MM3_LAUNCH_SAME_CAR, "0"}
 };
 
 /* The launcher saves every option, so a changed default would never reach a
@@ -168,6 +169,7 @@ void mm3_launcher_config_defaults(MM3LauncherConfig *config)
     for (int i = 0; i < MM3_LAUNCHER_PAD_INPUTS; ++i) config->pad[i] = bindings.pad[i];
     config->controller_count = 1;
     config->network_port = 3075;
+    config->damage_percent = config->time_percent = 100;
 }
 
 int mm3_launcher_config_valid(const MM3LauncherConfig *config)
@@ -175,6 +177,8 @@ int mm3_launcher_config_valid(const MM3LauncherConfig *config)
     if (!config || config->controller_count < 1 || config->controller_count > 4 ||
         (config->fov_degrees != 0 &&
         (config->fov_degrees < 60 || config->fov_degrees > 110)) ||
+        config->damage_percent < 0 || config->damage_percent > 400 ||
+        config->time_percent < 25 || config->time_percent > 400 ||
         config->network_port < 1 || config->network_port > 65535 ||
         !memchr(config->peers, 0, sizeof config->peers) || !peers_valid(config->peers)) return 0;
     for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i)
@@ -216,6 +220,14 @@ int mm3_launcher_config_assign(MM3LauncherConfig *config, const char *key, const
         if (!*value) number = 0;
         else if (!integer(value, 0, 110, &number) || (number && number < 60)) return 0;
         config->fov_degrees = number; return 1;
+    }
+    if (!strcmp(key, "MM3_DAMAGE_PERCENT")) {
+        if (!integer(value, 0, 400, &number)) return 0;
+        config->damage_percent = number; return 1;
+    }
+    if (!strcmp(key, "MM3_TIME_PERCENT")) {
+        if (!integer(value, 25, 400, &number)) return 0;
+        config->time_percent = number; return 1;
     }
     if (!strcmp(key, "RECOMP_USB_PADS")) {
         if (!integer(value, 1, 4, &number)) return 0;
@@ -353,6 +365,8 @@ int mm3_launcher_config_save(const MM3LauncherConfig *config, char *error, size_
                 SETTINGS_REVISION) < 0) failed = 1;
     for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i)
         if (fprintf(file, "%s=%d\n", mm3_launcher_options[i].key, config->option[i]) < 0) failed = 1;
+    if (fprintf(file, "MM3_DAMAGE_PERCENT=%d\nMM3_TIME_PERCENT=%d\n", config->damage_percent, config->time_percent) < 0)
+        failed = 1;
     if (fprintf(file, "RECOMP_USB_PADS=%d\nMM3_FOV_DEGREES=%d\nRECOMP_NET_PORT=%d\nRECOMP_NET_PEERS=%s\n"
                 "RECOMP_KEYMAP=%s\nMM3_DRIVE_KEYMAP=%s\nRECOMP_PADMAP=%s\n",
                 config->controller_count, config->fov_degrees, config->network_port, config->peers, keys, drive, pad) < 0) failed = 1;
@@ -369,7 +383,8 @@ int mm3_launcher_config_save(const MM3LauncherConfig *config, char *error, size_
 int mm3_launcher_config_startup(MM3LauncherConfig *config, char *error, size_t capacity)
 {
     static const char *const extra[] = {"RECOMP_USB_PADS", "MM3_FOV_DEGREES", "RECOMP_NET_PORT", "RECOMP_NET_PEERS",
-                                       "RECOMP_KEYMAP", "MM3_DRIVE_KEYMAP", "RECOMP_PADMAP"};
+                                       "RECOMP_KEYMAP", "MM3_DRIVE_KEYMAP", "RECOMP_PADMAP",
+                                       "MM3_DAMAGE_PERCENT", "MM3_TIME_PERCENT"};
     int loaded;
     mm3_launcher_config_defaults(config);
     loaded = mm3_launcher_config_load(config, error, capacity);
@@ -413,6 +428,10 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
      * explicitly supplied RECOMP_USB_NDP (and the default two-port hub). */
     snprintf(number, sizeof number, "%d", config->controller_count); SET("RECOMP_USB_PADS", number);
     snprintf(number, sizeof number, "%d", config->fov_degrees); SET("MM3_FOV_DEGREES", number);
+    snprintf(number, sizeof number, "%d", config->option[MM3_LAUNCH_GAMEPLAY] ? config->damage_percent : 100);
+    SET("MM3_DAMAGE_PERCENT", number);
+    snprintf(number, sizeof number, "%d", config->option[MM3_LAUNCH_GAMEPLAY] ? config->time_percent : 100);
+    SET("MM3_TIME_PERCENT", number);
     snprintf(number, sizeof number, "%d", config->network_port); SET("RECOMP_NET_PORT", number);
     SET("RECOMP_NET_PEERS", config->peers);
     format_map(keys, sizeof keys, config->keys, MM3_LAUNCHER_KEYS, mm3_launcher_key_names, 0);
@@ -424,6 +443,7 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
             SET(mm3_launcher_options[original_look[i].option].key, original_look[i].value);
         SET("MM3_GLOW_LIFT", "0");         /* lamp glows at their retail positions */
         SET("MM3_NIGHT_GLASS", "0");       /* night glass keeps the daylight screen copy */
+        SET("MM3_PAINT_SOFTNESS", "0");    /* car paint mirrors it sharply */
     }
     if (!config->option[MM3_LAUNCH_GAMEPLAY])
         for (size_t i = 0; i < sizeof xbox_gameplay / sizeof xbox_gameplay[0]; ++i)

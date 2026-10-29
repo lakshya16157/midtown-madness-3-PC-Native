@@ -70,6 +70,31 @@ static int damage_job(void)
     return MEMF(0x003C0328u) != 1.0f || MEMF(0x003C0330u) != 1.0f;
 }
 
+/* MM3_DAMAGE_TRACE=1: every contact and every damage step of a car with an
+ * impulse in its record, numbered by game frame, with the damage factor
+ * (+0x24) in force: shows when a job's script changes a factor relative to
+ * the hit (diagnostics; at most 4000 lines). */
+static unsigned trace_lines;
+static int damage_trace(void)
+{
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *v = getenv("MM3_DAMAGE_TRACE");
+        enabled = v && !strcmp(v, "1");
+    }
+    return enabled && trace_lines < 4000u;
+}
+
+static uint32_t game_frame(void);
+static unsigned trace_frame(void)
+{
+    static uint32_t last;
+    static unsigned count;
+    uint32_t frame = game_frame();
+    if (frame != last) { last = frame; ++count; }
+    return count;
+}
+
 static int frame_fix_enabled(void)
 {
     static int enabled = -1;
@@ -108,6 +133,11 @@ void sub_00021DCF(void)
                 (double)(now - first) / CLOCKS_PER_SEC, record, MEMF(g_esp + 4u),
                 MEMF(record + 0x1A4u), MEMF(record + 0x1A8u));
     }
+    if (damage_trace() && guest_object(record) && MEMF(record + 0x1A4u) > 0.0f) {
+        ++trace_lines;
+        fprintf(stderr, "[MM3_DAMAGE_TRACE] frame %u contact car %08X impulse %.1f scale %.2f\n",
+                trace_frame(), record, MEMF(record + 0x1A4u), MEMF(g_esp + 4u));
+    }
     sub_00021DCF_original();
 }
 
@@ -119,10 +149,30 @@ static uint32_t game_frame(void)
     return frame >= 0x10000u && frame < 0x84000000u ? MEM32(frame + 0x28u) | 1u : 0u;
 }
 
+/* A hit: its impulse and the car's damage factor when it was found (+0x24 of
+ * the component, where playerSetDamageFactor puts it: sub_00218A58). A hit
+ * applied in a later game frame keeps that factor. The Xbox applies a hit
+ * within its own frame, before the job's script can react to the contact,
+ * and Washington 05/01 (Stefano's madness) does react: whenever the player
+ * hits Stefano, eventCar drops his factor from 0.16 to 0.0001 for 0.2 s.
+ * Applied at the dropped factor, a player's hit kept only what its own game
+ * frame applied (none of it when found in a console frame's later game
+ * frame), while Stefano's own hits on Michael's limo, which the script
+ * leaves alone, counted in full. */
+typedef struct { float impulse, factor; } Hit;
+
+/* The stronger hit: the larger impulse times factor, on a tie the larger
+ * impulse. */
+static Hit stronger(Hit a, Hit b)
+{
+    float sa = a.impulse * a.factor, sb = b.impulse * b.factor;
+    return sa > sb || (sa == sb && a.impulse >= b.impulse) ? a : b;
+}
+
 /* Each car's console frame: the game frame of its last step (frame); the
  * physics steps of the console frame (steps) and of the game frame
  * (frame_steps); which game frame of the console frame this is (part, 0 the
- * first); the largest impulse of the current game frame (now); what the
+ * first); the strongest hit of the current game frame (now); what the
  * console frame applies after its first game frame (found); what its later
  * game frames found (later), and what the previous console frame's later
  * frames left for this one (left); of those, what was already there at
@@ -131,7 +181,7 @@ static uint32_t game_frame(void)
 static struct {
     uint32_t record, frame;
     int steps, frame_steps, part;
-    float now, found, later, left, later_first, left_first;
+    Hit now, found, later, left, later_first, left_first;
 } s_car[CARS];
 
 static unsigned car_slot(uint32_t record)
@@ -153,16 +203,17 @@ static unsigned car_slot(uint32_t record)
  * alone, and every frame at 30 fps or slower is its own console frame). */
 static void car_new_frame(unsigned slot, uint32_t frame)
 {
+    static const Hit none = { 0.0f, 0.0f };
     int n = s_car[slot].frame_steps;
     s_car[slot].frame = frame;
     if (!n) return;                                 /* a new car: its first frame */
-    if (s_car[slot].part == 0) s_car[slot].found = fmaxf(s_car[slot].left, s_car[slot].now);
-    else s_car[slot].later = fmaxf(s_car[slot].later, s_car[slot].now);
+    if (s_car[slot].part == 0) s_car[slot].found = stronger(s_car[slot].left, s_car[slot].now);
+    else s_car[slot].later = stronger(s_car[slot].later, s_car[slot].now);
     if (s_car[slot].steps >= CONSOLE_STEPS ||
         s_car[slot].steps + n - CONSOLE_STEPS > CONSOLE_STEPS - s_car[slot].steps) {
         s_car[slot].left = s_car[slot].later;
         s_car[slot].left_first = s_car[slot].later_first;
-        s_car[slot].later = s_car[slot].found = s_car[slot].later_first = 0.0f;
+        s_car[slot].later = s_car[slot].found = s_car[slot].later_first = none;
         s_car[slot].steps = 0;
         s_car[slot].part = 0;
     } else {
@@ -170,7 +221,24 @@ static void car_new_frame(unsigned slot, uint32_t frame)
     }
     s_car[slot].frame = frame;
     s_car[slot].frame_steps = 0;
-    s_car[slot].now = 0.0f;
+    s_car[slot].now = none;
+}
+
+/* "Car damage" (launcher Gameplay mods, MM3_DAMAGE_PERCENT; 100 = the Xbox).
+ * A hit adds its share times the car's damage factor (+0x8718 of the
+ * component, 1.0 for the Audi TT) times 0.0287 to the nearest damage zone,
+ * so that factor, scaled for the step and put back, scales every crash's
+ * damage to every car; the game's own cap on each zone still applies. */
+static float damage_scale(void)
+{
+    static float scale = -1.0f;
+    if (scale < 0.0f) {
+        const char *v = getenv("MM3_DAMAGE_PERCENT");
+        int percent = v && *v ? atoi(v) : 100;
+        scale = percent >= 0 && percent <= 1000 ? (float)percent / 100.0f : 1.0f;
+        if (scale != 1.0f) fprintf(stderr, "[MM3_DAMAGE] car damage x%.2f (launcher Gameplay mods)\n", scale);
+    }
+    return scale;
 }
 
 /* The damage step, as the game runs it: v = impulse * the part's factor *
@@ -182,24 +250,30 @@ static void damage_step(uint32_t component, uint32_t record)
 {
     static unsigned lines;
     static clock_t first;
-    float impulse = MEMF(record + 0x1A4u), v;
+    float impulse = MEMF(record + 0x1A4u), v, scale = damage_scale(), factor = 0.0f;
     if (lines < HIT_LOG_LINES && damage_job()) {
         v = impulse * MEMF(component + 0x24u) * MEMF(record + 0x14u) * 1230.0f;
         if (v > 800.0f && v < 1.0e12f) {
             clock_t now = clock();
             if (!lines++) first = now;
-            fprintf(stderr, "[MM3_DAMAGE] hit %.3f car %08X impulse %.1f -> %.0f, part damage +%.1f%%\n",
-                    (double)(now - first) / CLOCKS_PER_SEC, record, impulse, v,
-                    100.0f * ((v < 30000.0f ? v : 30000.0f) - 800.0f) / 29200.0f);
+            fprintf(stderr, "[MM3_DAMAGE] hit %.3f car %08X impulse %.1f factor %.4f -> %.0f, part damage +%.1f%%\n",
+                    (double)(now - first) / CLOCKS_PER_SEC, record, impulse, MEMF(component + 0x24u), v,
+                    100.0f * scale * ((v < 30000.0f ? v : 30000.0f) - 800.0f) / 29200.0f);
         }
     }
+    if (scale != 1.0f) {
+        factor = MEMF(component + 0x8718u);
+        MEMF(component + 0x8718u) = factor * scale;
+    }
     sub_001CDB6C_original();
+    if (scale != 1.0f) MEMF(component + 0x8718u) = factor;
 }
 
 void sub_001CDB6C(void)
 {
     uint32_t component = g_edx, body, record, frame;
-    float impulse, seen;
+    float impulse, factor;
+    Hit hit, seen;
     unsigned slot;
     if (!guest_object(component) || !guest_object(body = MEM32(component + 0x3Cu)) ||
         !guest_object(record = MEM32(body + 4u))) {
@@ -220,21 +294,32 @@ void sub_001CDB6C(void)
     if (s_car[slot].frame != frame) car_new_frame(slot, frame);
     ++s_car[slot].steps;
     ++s_car[slot].frame_steps;
-    s_car[slot].now = fmaxf(s_car[slot].now, impulse);
+    factor = MEMF(component + 0x24u);
+    hit.impulse = impulse;
+    hit.factor = factor;
+    s_car[slot].now = stronger(s_car[slot].now, hit);
     /* A later game frame's hit already there at its first step was found
      * before that frame's steps: the Xbox would find it before the next
      * console frame's first step. */
     if (s_car[slot].part != 0 && s_car[slot].frame_steps == 1)
-        s_car[slot].later_first = fmaxf(s_car[slot].later_first, impulse);
+        s_car[slot].later_first = stronger(s_car[slot].later_first, hit);
     /* The console frame's first step sees what the game shows and what the
      * last console frame left from before a frame's steps; the rest of its
      * first game frame everything the last console frame left; its later game
      * frames what the first one found. */
     if (s_car[slot].part == 0)
-        seen = fmaxf(impulse, s_car[slot].frame_steps == 1 ? s_car[slot].left_first : s_car[slot].left);
+        seen = stronger(hit, s_car[slot].frame_steps == 1 ? s_car[slot].left_first : s_car[slot].left);
     else
         seen = s_car[slot].found;
-    MEMF(record + 0x1A4u) = seen;
+    if (damage_trace() && (impulse > 0.0f || seen.impulse > 0.0f)) {
+        ++trace_lines;
+        fprintf(stderr, "[MM3_DAMAGE_TRACE] frame %u part %d step %d car %08X raw %.1f factor %.4f "
+                "applies %.1f at %.4f\n", trace_frame(), s_car[slot].part, s_car[slot].frame_steps, record,
+                impulse, factor, seen.impulse, seen.factor);
+    }
+    MEMF(record + 0x1A4u) = seen.impulse;
+    MEMF(component + 0x24u) = seen.factor;
     damage_step(component, record);
     MEMF(record + 0x1A4u) = impulse;
+    MEMF(component + 0x24u) = factor;
 }

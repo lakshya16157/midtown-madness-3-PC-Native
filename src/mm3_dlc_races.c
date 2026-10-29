@@ -147,59 +147,127 @@ static int number(const char *text, const char *end_text, unsigned *value, const
 extern void sub_002430FD_original(void);
 #define ICON_NAME_RETURN 0x00103F59u
 #define ICON_EXTENSION 0x0039CA6Cu   /* ".tga" */
-#define DLC_ICONS_MAX 64
-static char s_icons[DLC_ICONS_MAX][32];
-static unsigned s_icon_count;
-static int s_icons_loaded;
+#define DLC_LIST_MAX 256
+typedef struct {
+    const char *path;
+    char keys[DLC_LIST_MAX][40];
+    unsigned count;
+    int loaded;
+} DlcList;
+static DlcList s_icons = {"game_files/Data/mm3_dlc_icons.ini"};
 
-static void icons_load(void)
+static int listed(DlcList *list, const char *key)
 {
     char line[96];
     FILE *file;
-    s_icons_loaded = 1;
-    if (!(file = fopen("game_files/Data/mm3_dlc_icons.ini", "rb"))) return;
-    while (fgets(line, sizeof line, file) && s_icon_count < DLC_ICONS_MAX) {
-        size_t length = strcspn(line, "\r\n");
-        line[length] = 0;
-        if (line[0] && line[0] != '#' && length < sizeof s_icons[0])
-            memcpy(s_icons[s_icon_count++], line, length + 1);
+    unsigned i;
+    if (!list->loaded) {
+        list->loaded = 1;
+        if ((file = fopen(list->path, "rb")) != NULL) {
+            while (fgets(line, sizeof line, file) && list->count < DLC_LIST_MAX) {
+                size_t length = strcspn(line, "\r\n");
+                line[length] = 0;
+                if (line[0] && line[0] != '#' && length < sizeof list->keys[0])
+                    memcpy(list->keys[list->count++], line, length + 1);
+            }
+            fclose(file);
+        }
     }
-    fclose(file);
+    for (i = 0; i < list->count; ++i)
+        if (!strcmp(list->keys[i], key)) return 1;
+    return 0;
 }
 
-static int icon_listed(const char *key)
+/* Finish the name with "_mm3.tga" instead of the ".tga" it was given
+ * (sub_002430FD: [esp+4] the string, [esp+8] the text to append; RET 8). */
+static void append_mm3_tga(uint32_t entry)
 {
-    unsigned i;
-    if (!s_icons_loaded) icons_load();
-    for (i = 0; i < s_icon_count; ++i)
-        if (!strcmp(s_icons[i], key)) return 1;
-    return 0;
+    static const char suffix[] = "_mm3.tga";
+    uint32_t text = (entry - 64u) & ~3u, i;
+    for (i = 0; i < sizeof suffix; ++i) MEM8(text + i) = (uint8_t)suffix[i];
+    g_esp = text;
+    PUSH32(g_esp, text);
+    PUSH32(g_esp, MEM32(entry + 4u));
+    PUSH32(g_esp, MEM32(entry));
+    sub_002430FD_original();
+    g_esp = entry + 12u;
+}
+
+/* Loading screens. Before a race loads, sub_001E8184 writes its screen's
+ * name, "+LoadingScreens/<Language>/<City>/<Mode>/Loading" + its file
+ * number, to an output stream at [esp+4] and finishes it with ".tga"
+ * (0x3AFFB4), returning to 0x1E82AC. The stream's first member points to
+ * its buffer (vtable 0x384FD8), whose write (sub_00018CA9) appends to a
+ * std::string at +4. Retail has no screen for the downloadable races (files
+ * 10-19), so the game showed the car's picture. When the installer made the
+ * race one from the retail screens and the city map
+ * (tools/races/dlc_loading.py; listed in Data/mm3_dlc_loading.ini), finish
+ * the name with "_mm3.tga". */
+#define LOADING_NAME_RETURN 0x001E82ACu
+#define LOADING_EXTENSION 0x003AFFB4u   /* ".tga" */
+#define LOADING_STREAM_BUFFER 0x00384FD8u
+static DlcList s_loading = {"game_files/Data/mm3_dlc_loading.ini"};
+
+/* An MSVC std::string's text: in place below 16 characters, else at [+4]. */
+static int std_string(uint32_t object, char *out, size_t size)
+{
+    uint32_t length, text, i;
+    if (object < 0x10000u || object >= 0x08000000u - 0x1Cu) return 0;
+    length = MEM32(object + 0x14u);
+    text = MEM32(object + 0x18u) < 16u ? object + 4u : MEM32(object + 4u);
+    if (length >= size || text < 0x10000u || text >= 0x08000000u - size) return 0;
+    for (i = 0; i < length; ++i) out[i] = (char)MEM8(text + i);
+    out[length] = 0;
+    return 1;
+}
+
+static int stream_text(uint32_t stream, char *out, size_t size)
+{
+    uint32_t buffer;
+    if (stream < 0x10000u || stream >= 0x08000000u - 4u) return 0;
+    buffer = MEM32(stream);
+    if (buffer < 0x10000u || buffer >= 0x08000000u - 0x20u || MEM32(buffer) != LOADING_STREAM_BUFFER) return 0;
+    return std_string(buffer + 4u, out, size);
+}
+
+static int loading_listed(const char *name)
+{
+    static const char prefix[] = "+LoadingScreens/";
+    char key[48];
+    const char *number = strrchr(name, '/');
+    size_t head;
+    /* "<Language>/<City>/<Mode>/Loading<NN>" -> "<Language>/<City>/<Mode>/<NN>" */
+    if (strncmp(name, prefix, sizeof prefix - 1) || !number || strncmp(number, "/Loading", 8) ||
+        strlen(number + 8) != 2)
+        return 0;
+    head = (size_t)(number + 1 - (name + sizeof prefix - 1));
+    if (head + 3 > sizeof key) return 0;
+    memcpy(key, name + sizeof prefix - 1, head);
+    memcpy(key + head, number + 8, 3);
+    return listed(&s_loading, key);
 }
 
 void sub_002430FD(void)
 {
-    uint32_t entry = g_esp, text, i;
-    char name[48];
+    uint32_t entry = g_esp, i;
+    char name[96];
     if (MEM32(entry) == ICON_NAME_RETURN && MEM32(entry + 8u) == ICON_EXTENSION && mm3_mod_dlc_race_info()) {
         uint32_t buffer = MEM32(g_ebp - 0x2Cu);
-        if (buffer >= 0x10000u && buffer < 0x08000000u - sizeof name) {
-            for (i = 0; i < sizeof name - 1 && (name[i] = (char)MEM8(buffer + i)) != 0; ++i) {}
+        if (buffer >= 0x10000u && buffer < 0x08000000u - 48u) {
+            for (i = 0; i < 47u && (name[i] = (char)MEM8(buffer + i)) != 0; ++i) {}
             name[i] = 0;
             /* "Races/<City>/<Mode>/<NN>": NN 10-19 are the downloadable races. */
-            if (i < sizeof name - 1 && !strncmp(name, "Races/", 6) && i > 9 && name[i - 2] == '1' &&
-                name[i - 3] == '/' && icon_listed(name + 6)) {
-                static const char suffix[] = "_mm3.tga";
-                text = (entry - 64u) & ~3u;
-                for (i = 0; i < sizeof suffix; ++i) MEM8(text + i) = (uint8_t)suffix[i];
-                g_esp = text;
-                PUSH32(g_esp, text);
-                PUSH32(g_esp, MEM32(entry + 4u));
-                PUSH32(g_esp, ICON_NAME_RETURN);
-                sub_002430FD_original();   /* RET 8 */
-                g_esp = entry + 12u;
+            if (i < 47u && !strncmp(name, "Races/", 6) && i > 9 && name[i - 2] == '1' &&
+                name[i - 3] == '/' && listed(&s_icons, name + 6)) {
+                append_mm3_tga(entry);
                 return;
             }
         }
+    }
+    if (MEM32(entry) == LOADING_NAME_RETURN && MEM32(entry + 8u) == LOADING_EXTENSION &&
+        mm3_mod_dlc_race_info() && stream_text(MEM32(entry + 4u), name, sizeof name) && loading_listed(name)) {
+        append_mm3_tga(entry);
+        return;
     }
     sub_002430FD_original();
 }

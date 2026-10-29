@@ -58,18 +58,28 @@ static void move(unsigned k, float dt)
     MEMF(body(k) + 0xD0) += MEMF(body(k) + 0x28) * dt;
 }
 
-static float draft_gain(float dt, float gap, float lateral)
+/* The follower's speed gained from the slipstream in 1 s, its own pull
+ * (`own` m/s^2: engine, drag and brakes, before each step) left out. */
+static float draft_gain_own(float dt, float gap, float lateral, float own)
 {
     float start = 40.0f, t;
+    Sleep(300);                                        /* the last run's cars go stale */
     make_car(0, 0.0f, 0.0f, 0.0f, start);              /* follower */
     make_car(1, lateral, gap, 0.0f, start);            /* car in front */
     for (t = 0.0f; t < 1.0f - dt * 0.5f; t += dt) {
-        step(1, dt); step(0, dt);
+        step(1, dt);
+        MEMF(body(0) + 0x28) += own * dt;
+        step(0, dt);
         MEMF(body(1) + 0x28) = start;                  /* the leader holds its speed */
         move(0, dt); move(1, dt);
     }
     assert(MEMF(body(1) + 0x28) == start);
-    return MEMF(body(0) + 0x28) - start;
+    return MEMF(body(0) + 0x28) - start - own * (float)(int)(1.0f / dt + 0.5f) * dt;
+}
+
+static float draft_gain(float dt, float gap, float lateral)
+{
+    return draft_gain_own(dt, gap, lateral, 0.0f);
 }
 
 /* A car leaning `degrees` to its left (right side up) about +z, rolling
@@ -97,30 +107,57 @@ static float roll_after(float dt, float seconds)
 
 int main(int argc, char **argv)
 {
-    float g60, g30, side, far_gain, w, yaw;
+    float g60, g30, side, far_gain, contact, near_gain, coast, power, hit, w, yaw;
+    int t;
     uint32_t b;
     g_xbox_mem_offset = (ptrdiff_t)memory;
     if (argc > 1 && !strcmp(argv[1], "off")) {
         /* Unset, as without the launcher: the Xbox game's handling. */
         _putenv_s("MM3_DRAFTING", "");
         _putenv_s("MM3_ROLL_GUARD", "");
-        assert(draft_gain(1.0f / 60.0f, 8.0f, 0.0f) == 0.0f);
+        assert(draft_gain(1.0f / 60.0f, 9.0f, 0.0f) == 0.0f);
         assert(roll_after(1.0f / 60.0f, 0.5f) == 2.0f);
         puts("PASS vehicle dynamics off by default: no MM3_DRAFTING / MM3_ROLL_GUARD leaves every car as is");
         return 0;
     }
     _putenv_s("MM3_DRAFTING", "1");
     _putenv_s("MM3_ROLL_GUARD", "1");
-    /* In the wake 8 m behind at 144 km/h: about 1.6 * (40 / 41.7)^2 m/s in 1 s. */
-    g60 = draft_gain(1.0f / 60.0f, 8.0f, 0.0f);
-    g30 = draft_gain(1.0f / 30.0f, 8.0f, 0.0f);
+    /* In the wake 9 m behind at 144 km/h: about 1.6 * (40 / 41.7)^2 m/s in 1 s. */
+    g60 = draft_gain(1.0f / 60.0f, 9.0f, 0.0f);
+    g30 = draft_gain(1.0f / 30.0f, 9.0f, 0.0f);
     assert(g60 > 1.3f && g60 < 1.7f);
     assert(fabsf(g60 - g30) < 0.05f * g60);
-    side = draft_gain(1.0f / 60.0f, 8.0f, 2.5f);        /* beside the wake */
+    side = draft_gain(1.0f / 60.0f, 9.0f, 2.5f);        /* beside the wake */
     far_gain = draft_gain(1.0f / 60.0f, 35.0f, 0.0f);   /* too far behind */
     assert(side == 0.0f && far_gain == 0.0f);
     assert(draft_gain(1.0f / 60.0f, 20.0f, 0.0f) < 0.6f * g60);   /* fading with distance */
-    printf("PASS drafting: +%.2f m/s per second at 60 fps, +%.2f at 30 fps, none beside or 35 m back\n", g60, g30);
+    /* Bumper to bumper (centres 5 m apart): no wake to sit in, so nothing
+     * presses the car into the one in front; 7 m: part of it. */
+    contact = draft_gain(1.0f / 60.0f, 5.0f, 0.0f);
+    near_gain = draft_gain(1.0f / 60.0f, 7.0f, 0.0f);
+    assert(contact == 0.0f);
+    assert(near_gain > 0.05f && near_gain < 0.6f * g60);
+    /* Lifted off (drag and engine braking, -0.8 m/s^2) or braking: no tow,
+     * which kept a coasting car pressed against the car in front. Under
+     * power (+1 m/s^2) the full slipstream. */
+    coast = draft_gain_own(1.0f / 60.0f, 9.0f, 0.0f, -0.8f);
+    power = draft_gain_own(1.0f / 60.0f, 9.0f, 0.0f, 1.0f);
+    assert(fabsf(coast) < 0.02f);
+    assert(fabsf(draft_gain_own(1.0f / 60.0f, 9.0f, 0.0f, -6.0f)) < 0.02f);
+    assert(power > 1.2f && power < 1.7f);
+    assert(fabsf(draft_gain_own(1.0f / 30.0f, 9.0f, 0.0f, -0.8f)) < 0.02f);
+    /* Just hit (a sudden 4 m/s sideways change): no slipstream for a second. */
+    make_car(4, 0.0f, 0.0f, 0.0f, 40.0f);
+    make_car(5, 0.0f, 9.0f, 0.0f, 40.0f);
+    for (t = 0; t < 3; ++t) { step(5, 1.0f / 60.0f); step(4, 1.0f / 60.0f); }
+    assert(MEMF(body(4) + 0x28) > 40.0f);              /* drafting by then */
+    MEMF(body(4) + 0x20) = 4.0f;
+    hit = MEMF(body(4) + 0x28);
+    for (t = 0; t < 3; ++t) { step(5, 1.0f / 60.0f); step(4, 1.0f / 60.0f); }
+    assert(MEMF(body(4) + 0x28) == hit);
+    printf("PASS drafting: +%.2f m/s per second at 60 fps, +%.2f at 30 fps, %.2f 7 m back, none touching, "
+           "beside, 35 m back, coasting (%.3f), braking or just hit; %.2f under power\n",
+           g60, g30, near_gain, coast, power);
 
     /* Roll guard: the lean stops growing, only about the forward axis, and the
      * momentum still gives the angular velocity. */

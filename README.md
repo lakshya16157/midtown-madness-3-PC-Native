@@ -12,12 +12,15 @@ own copy of the Xbox game.
 1. **Run MM3-Setup.exe.** Windows may say "Windows protected your PC" because the file is
    not code-signed: choose **More info**, then **Run anyway**.
 2. **Pick your game image**: a disc image of your own Midtown Madness 3 Xbox disc (`.iso`
-   or `.xiso`). The Europe/Australia and USA releases both work.
+   or `.xiso`). The Europe/Australia and USA releases both work. See
+   [Ownership, disc images and DLC](#ownership-disc-images-and-dlc) for where to get one.
 3. **Choose options** (you can change them later by running Setup again):
    - **Add extra cars**: nine community cars (see [credits](#extra-car-credits)).
    - **Add game improvements** (on by default): sharper image defaults. Untick it to start
      with the plain Xbox picture settings.
-   - **Official DLC** (optional): point Setup at a DLC ZIP or folder you are entitled to use.
+   - **Official DLC** (optional): point Setup at the DLC ZIP or folder
+     ([download link below](#ownership-disc-images-and-dlc)) if you are entitled to use it.
+     It adds 14 cars and 40 Blitz and Checkpoint races.
 4. Click **Install**, then **Play now**. Later, start the game with
    **Play Midtown Madness 3.cmd** in the install folder.
 
@@ -30,7 +33,7 @@ frozen.
 The launcher opens before the game. Its two mods tabs each start with a choice:
 
 - **Visual + audio mods**: the **Original look** (the Xbox visuals, camera, menus and HUD) or the
-  **Improved look** (default), with the visual mods below, each with its own switch.
+  **Improved look** (default), with the visual mods below, most with their own switch.
   Nothing on this tab changes the gameplay.
 - **Gameplay mods**: **Xbox gameplay** (default) plays exactly as the Xbox game: its
   physics and damage, its cars for you and the opponents, its races and unlocks, its race
@@ -48,13 +51,15 @@ Spanish voices in Spanish.
 |---|---|
 | Longer view distance | 20 extra circuit races (Washington DC and Paris) |
 | Car headlight beams and glowing tail lights | [Extra cars](#extra-cars-and-car-workshop), editable in Car Workshop |
-| Better street lamps, tunnels included | Circuit opponents in DLC and extra cars |
-| Better night lighting | Trees fall over when hit |
+| Better street lamps that light more of the street, tunnels included | Circuit opponents in DLC and extra cars |
+| Better night lighting: lights add up and fade as real light does, and lit cars keep their colour | Trees fall over when hit |
 | Lamp flares hidden behind buildings | Slipstream drafting (off by default) |
-| Names and pictures for the DLC races | Rollover assist (off by default) |
+| Names, pictures and loading-screen route maps for the DLC races | Rollover assist (off by default) |
 | In-game Graphics Settings menu | Route line on the map, race arrow hidden |
 | Exhaust smoke from each car's own pipes (off by default) | Improved minimap, which shows more of the map at speed |
-| Quit in the main menu, minimap compass pins hidden | Unlock all vehicles, developer tools (off by default) |
+| Quit in the main menu, minimap compass pins hidden | Opponents drive your car (off by default) |
+| Softer car paint reflections | Car damage and time limits, from no damage to 3x and from half to 3x the time (Xbox values by default) |
+| | Unlock all vehicles, developer tools (off by default) |
 
 ## Graphics settings
 
@@ -67,10 +72,13 @@ Spanish voices in Spanish.
 | Minimap style | Launcher **Settings** | Xbox minimap | Xbox, or improved with Modded gameplay |
 | Widescreen HUD, smooth skyline, depth fog, field of view | Launcher **Visual + audio mods** | Yes | Yes |
 | Lighting and the other visual mods | Launcher **Visual + audio mods** | Off | Each on or off |
+| Night brightness | Launcher **Visual + audio mods** and **F10** | Xbox night | Darker to brighter, with Better night lighting |
 
 While playing:
 
 - **F10** opens the settings window with either look. Changes that need a restart say so.
+  Settings the launcher fixes for this run (for example the Xbox view distance in the
+  Original look) are greyed out, with the reason.
 - With the **Improved look**, **Graphics Settings** is also in the main menu (between Options
   and Profiles) and in the pause menu, so you can change them with the controller.
 - **F11** or **Alt+Enter** switches fullscreen on and off.
@@ -134,6 +142,15 @@ players, is in [docs/MULTIPLAYER.md](docs/MULTIPLAYER.md).
 
 Your saves are kept when you run Setup again. To uninstall, delete the install folder.
 
+## Official known issues
+
+These come from the original Xbox game. They are kept so the game plays and sounds as it
+does on the Xbox.
+
+- **Paris police radio speaks Italian when the game is in Spanish:** the Spanish disc has
+  no recording of the Paris police radio and plays the Italian one instead. Every other
+  language has its own, and no Spanish recording exists.
+
 ## Support me
 
 If you enjoy this project, you can support me on Revolut:
@@ -161,10 +178,24 @@ pack's original readme is saved next to the game in `Extra cars - credits.txt`.
 
 ## Ownership, disc images and DLC
 
-You must own the original Xbox game. Make the disc image from your own disc where your
-local law allows it, and use only DLC you are entitled to. Setup does not include or
-download the game or its DLC. The full notes, with the image and DLC sources the
-maintainer tested, are in [DEVELOPERS.md](DEVELOPERS.md#ownership-disc-images-and-dlc).
+**You need a legal copy of Midtown Madness 3:** you must own the original Xbox game, and use
+only DLC you are entitled to. The best way is to make the disc image from your own disc,
+where your local law allows it. Setup does not include or download the game or its DLC.
+
+These are the game image and DLC Setup was tested with. Download them only if you own a
+legal copy of the game and your local law allows it:
+
+- **Game image** (Europe/Australia, in English, French, German, Spanish and Italian):
+  [Internet Archive](https://archive.org/details/midtown-madness-3-europe-australia-en-fr-de-es-it)
+  (open **Download options** on the page).
+- **Official DLC** (four car packs with 14 cars, two race packs with 40 Blitz and Checkpoint
+  races): [MidtownMadness3DLC.zip from Digiex](https://download.digiex.net/Consoles/Xbox/DLC/MidtownMadness3DLC.zip)
+  ([about the pack](https://digiex.net/threads/xbox-offline-xbox-live-downloadable-content-dlc-installers.675/)).
+  The same pack is also on [Xbox-Scene](https://www.xbox-scene.info/files/file/167-midtown-madness-3/).
+  Select the ZIP in Setup; do not run the Xbox installer inside it.
+
+A link being online does not give you the right to use it. The full notes are in
+[DEVELOPERS.md](DEVELOPERS.md#ownership-disc-images-and-dlc).
 
 ## Credits and developers
 

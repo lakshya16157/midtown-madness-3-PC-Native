@@ -10,12 +10,56 @@
 #include "mm3_display_settings.h"
 #include "mm3_display_settings_ids.h"
 #include "mm3_frame_limit.h"
+#include "mm3_world_lighting.h"
+
+/* Night brightness choices, percent of the game's own night world light. */
+static const int night_lights[] = {10, 15, 20, MM3_NIGHT_LIGHT_DEFAULT, 35, 50, 75, 100};
 
 /* The native menu runs on the title thread; F10 runs on the window thread.
  * Keep snapshots and commits synchronized across both entry points. */
 static MM3DisplaySettings s_current, s_boot;
+/* What the settings file holds: a fixed setting saves this value, not the
+ * one the launcher forced for this run. */
+static MM3DisplaySettings s_stored;
 static HWND s_dialog;
 static SRWLOCK s_settings_lock = SRWLOCK_INIT;
+
+static int launcher_off(const char *key)
+{
+    const char *value = getenv(key);
+    return value && !strcmp(value, "0");
+}
+
+const char *mm3_display_setting_fixed(MM3FixedSetting setting)
+{
+    switch (setting) {
+    case MM3_FIXED_ASPECT:
+        return launcher_off("MM3_MOD_WIDESCREEN") ?
+            "Widescreen view and HUD is off in the launcher, so the game uses 4:3." : NULL;
+    case MM3_FIXED_DISTANCE:
+        if (launcher_off("MM3_IMPROVED")) return "The launcher's Original look uses the Xbox distances.";
+        return launcher_off("MM3_MOD_DRAW_DISTANCE") ?
+            "Longer view distance is off in the launcher, so both distances are 1x." : NULL;
+    case MM3_FIXED_MINIMAP:
+        if (launcher_off("MM3_IMPROVED")) return "The launcher's Original look keeps the stock minimap.";
+        return launcher_off("MM3_GAMEPLAY_MODS") ? "The launcher's Xbox gameplay keeps the stock minimap." : NULL;
+    case MM3_FIXED_NIGHT_LIGHT:
+        return launcher_off("MM3_MOD_WORLD_LIGHTING") ?
+            "Improved world lighting is off in the launcher, so nights keep the game's own light." : NULL;
+    }
+    return NULL;
+}
+
+void mm3_display_settings_keep_fixed(MM3DisplaySettings *to, const MM3DisplaySettings *from)
+{
+    if (mm3_display_setting_fixed(MM3_FIXED_ASPECT)) strcpy(to->aspect, from->aspect);
+    if (mm3_display_setting_fixed(MM3_FIXED_DISTANCE)) {
+        to->draw_distance = from->draw_distance;
+        to->view_distance = from->view_distance;
+    }
+    if (mm3_display_setting_fixed(MM3_FIXED_MINIMAP)) to->minimap_improved = from->minimap_improved;
+    if (mm3_display_setting_fixed(MM3_FIXED_NIGHT_LIGHT)) to->night_light = from->night_light;
+}
 
 int mm3_minimap_improved(void)
 {
@@ -62,17 +106,25 @@ void mm3_display_settings_get(MM3DisplaySettings *settings)
     }
 }
 
-int mm3_display_settings_commit(const MM3DisplaySettings *settings,
+int mm3_display_settings_commit(const MM3DisplaySettings *requested,
                                char *status, size_t capacity)
 {
     int mode_applied;
     char changes[256] = "";
+    MM3DisplaySettings live, stored;
+    const MM3DisplaySettings *settings = &live;
     AcquireSRWLockExclusive(&s_settings_lock);
-    if (!mm3_display_settings_save(settings, status, capacity)) {
+    live = *requested;
+    mm3_display_settings_keep_fixed(&live, &s_current);
+    stored = live;
+    mm3_display_settings_keep_fixed(&stored, &s_stored);
+    if (!mm3_display_settings_save(&stored, status, capacity)) {
         ReleaseSRWLockExclusive(&s_settings_lock);
         return 0;
     }
-    s_current = *settings;
+    s_stored = stored;
+    s_current = live;
+    mm3_world_lighting_set_night_light(settings->night_light);
     nv2a_d3d_set_present_options(settings->vsync, settings->fps_limit);
     nv2a_d3d_set_render_scale(settings->render_scale);
     nv2a_d3d_set_display_aspect(display_aspect(settings->aspect));
@@ -169,7 +221,7 @@ static void populate(HWND dialog, const MM3DisplaySettings *settings)
     static const int ids[] = { IDC_DISPLAY_RESOLUTION, IDC_DISPLAY_MODE,
         IDC_DISPLAY_FPS, IDC_DISPLAY_SCALE, IDC_DISPLAY_ASPECT,
         IDC_DISPLAY_MSAA, IDC_DISPLAY_ANISO, IDC_DISPLAY_DISTANCE, IDC_DISPLAY_MINIMAP,
-        IDC_DISPLAY_VIEW_DISTANCE };
+        IDC_DISPLAY_VIEW_DISTANCE, IDC_DISPLAY_NIGHT_LIGHT };
     static const int resolutions[][2] = { {800,600}, {1024,768}, {1280,720},
         {1280,800}, {1366,768}, {1536,960}, {1600,900}, {1920,1080},
         {1920,1200}, {2560,1440}, {2560,1600}, {3840,2160} };
@@ -242,8 +294,26 @@ static void populate(HWND dialog, const MM3DisplaySettings *settings)
     CheckDlgButton(dialog, IDC_DISPLAY_SHOW_FPS, settings->show_fps ? BST_CHECKED : BST_UNCHECKED);
     combo_add(dialog, IDC_DISPLAY_MINIMAP, "Stock", 0);
     combo_add(dialog, IDC_DISPLAY_MINIMAP, "Improved", 1);
-    combo_select(dialog, IDC_DISPLAY_MINIMAP, settings->minimap_improved);
+    combo_select(dialog, IDC_DISPLAY_MINIMAP,
+                 settings->minimap_improved && !mm3_display_setting_fixed(MM3_FIXED_MINIMAP));
+    for (i = 0; i < sizeof night_lights / sizeof night_lights[0]; ++i) {
+        snprintf(label, sizeof label, night_lights[i] == MM3_NIGHT_LIGHT_DEFAULT ? "%d%% (default)" :
+                 night_lights[i] == 100 ? "%d%% (Xbox night)" : "%d%%", night_lights[i]);
+        combo_add(dialog, IDC_DISPLAY_NIGHT_LIGHT, label, night_lights[i]);
+    }
+    combo_select(dialog, IDC_DISPLAY_NIGHT_LIGHT, settings->night_light);
+    if (combo_value(dialog, IDC_DISPLAY_NIGHT_LIGHT) == CB_ERR) {
+        snprintf(label, sizeof label, "%d%%", settings->night_light);
+        combo_add(dialog, IDC_DISPLAY_NIGHT_LIGHT, label, settings->night_light);
+        combo_select(dialog, IDC_DISPLAY_NIGHT_LIGHT, settings->night_light);
+    }
     EnableWindow(GetDlgItem(dialog, IDC_DISPLAY_RESOLUTION), !settings->fullscreen);
+    /* Greyed as in the launcher, for the mode it started the game in. */
+    EnableWindow(GetDlgItem(dialog, IDC_DISPLAY_ASPECT), !mm3_display_setting_fixed(MM3_FIXED_ASPECT));
+    EnableWindow(GetDlgItem(dialog, IDC_DISPLAY_DISTANCE), !mm3_display_setting_fixed(MM3_FIXED_DISTANCE));
+    EnableWindow(GetDlgItem(dialog, IDC_DISPLAY_VIEW_DISTANCE), !mm3_display_setting_fixed(MM3_FIXED_DISTANCE));
+    EnableWindow(GetDlgItem(dialog, IDC_DISPLAY_MINIMAP), !mm3_display_setting_fixed(MM3_FIXED_MINIMAP));
+    EnableWindow(GetDlgItem(dialog, IDC_DISPLAY_NIGHT_LIGHT), !mm3_display_setting_fixed(MM3_FIXED_NIGHT_LIGHT));
 }
 
 static int read_controls(HWND dialog, MM3DisplaySettings *settings)
@@ -272,16 +342,27 @@ static int read_controls(HWND dialog, MM3DisplaySettings *settings)
     settings->aniso = (int)combo_value(dialog, IDC_DISPLAY_ANISO);
     settings->draw_distance = combo_float(dialog, IDC_DISPLAY_DISTANCE);
     settings->view_distance = combo_float(dialog, IDC_DISPLAY_VIEW_DISTANCE);
+    settings->night_light = (int)combo_value(dialog, IDC_DISPLAY_NIGHT_LIGHT);
     return 1;
 }
 
 static void update_status(HWND dialog, int saved)
 {
+    static const MM3FixedSetting fixed[] = {MM3_FIXED_ASPECT, MM3_FIXED_DISTANCE, MM3_FIXED_MINIMAP,
+                                            MM3_FIXED_NIGHT_LIGHT};
     MM3DisplaySettings pending;
-    char text[384] = "", changes[256] = "";
+    char text[384] = "", changes[256] = "", why[384] = "";
+    unsigned i;
     if (!read_controls(dialog, &pending)) {
         SetDlgItemTextA(dialog, IDC_DISPLAY_STATUS, "Enter a maximum FPS from 1 to 60.");
         return;
+    }
+    for (i = 0; i < sizeof fixed / sizeof fixed[0]; ++i) {
+        const char *reason = mm3_display_setting_fixed(fixed[i]);
+        if (reason && strlen(why) + strlen(reason) + 2 < sizeof why) {
+            if (*why) strcat(why, " ");
+            strcat(why, reason);
+        }
     }
 #define CHANGED(test, label) if (test) { if (*changes) strcat(changes, ", "); strcat(changes, label); }
     CHANGED(pending.msaa != s_boot.msaa, "anti-aliasing");
@@ -291,6 +372,8 @@ static void update_status(HWND dialog, int saved)
 #undef CHANGED
     if (*changes)
         snprintf(text, sizeof text, "%sRestart the game to apply: %s.", saved ? "Saved. " : "", changes);
+    else if (*why)
+        snprintf(text, sizeof text, "%sGreyed out: %s", saved ? "Saved. " : "", why);
     else
         snprintf(text, sizeof text, "%sNo restart required.", saved ? "Saved. Display changes applied. " : "");
     SetDlgItemTextA(dialog, IDC_DISPLAY_STATUS, text);
@@ -353,8 +436,10 @@ static INT_PTR CALLBACK display_dialog(HWND dialog, UINT message, WPARAM wparam,
             apply(dialog);
             return TRUE;
         case IDC_DISPLAY_DEFAULTS: {
-            MM3DisplaySettings defaults;
+            MM3DisplaySettings defaults, current;
             mm3_display_settings_defaults(&defaults, getenv("MM3_PERFORMANCE_PROFILE"));
+            mm3_display_settings_get(&current);
+            mm3_display_settings_keep_fixed(&defaults, &current);
             populate(dialog, &defaults);
             update_status(dialog, 0);
             return TRUE;
@@ -407,6 +492,9 @@ void mm3_display_settings_init(void)
     int loaded = mm3_display_settings_startup(&s_current, warning, sizeof warning);
     if (!loaded || *warning) fprintf(stderr, "[MM3_DISPLAY] %s\n", warning);
     s_boot = s_current;
+    /* The file alone, without the values the launcher forced for this run. */
+    mm3_display_settings_defaults(&s_stored, getenv("MM3_PERFORMANCE_PROFILE"));
+    if (!mm3_display_settings_load(&s_stored, NULL, 0)) s_stored = s_current;
     xbox_FramebufferSetDisplayMode(s_current.window_width, s_current.window_height, s_current.fullscreen);
     xbox_FramebufferSetShowFPS(s_current.show_fps);
     nv2a_d3d_set_present_options(s_current.vsync, s_current.fps_limit);

@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "recomp_types.h"
+#include "mm3_mod_flags.h"
 #include "mm3_lua_natives.h"
 
 /* Lua functions this port adds for its own race scripts.
@@ -16,8 +17,9 @@
  * which nothing calls (mm3_runtime_entries.c maps them):
  *
  *   mm3AiAllCars()  1 when circuit opponents may drive the DLC and extra cars
- *                   (launcher Mods, MM3_AI_ALL_CARS, default 1), else 0
- *                   (tools/races/logic_circuit.lua). */
+ *                   (launcher Mods, MM3_AI_ALL_CARS, default 1, or
+ *                   MM3_SAME_CAR: they drive the player's car, whichever it
+ *                   is), else 0 (tools/races/logic_circuit.lua). */
 extern void sub_0020646F_original(void);
 extern void sub_000125EA(void);
 extern void sub_002150BC(void);
@@ -49,7 +51,7 @@ static void lua_return_number(double value)
 void mm3_lua_ai_all_cars(void)
 {
     uint32_t ecx = g_ecx, edx = g_edx;
-    lua_return_number(option("MM3_AI_ALL_CARS", 1));
+    lua_return_number(option("MM3_AI_ALL_CARS", 1) || mm3_mod_same_car());
     g_ecx = ecx; g_edx = edx;
     g_esp += 4;   /* ret */
 }

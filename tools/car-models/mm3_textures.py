@@ -67,21 +67,20 @@ def _encode_block(data: bytes, book: dict, bits: Bits):
         bits.write(*book[symbol])
 
 
-def dds_to_cdds(dds: bytes) -> bytes:
-    if len(dds) < 128 or dds[:4] != b'DDS ' or struct.unpack_from('<I', dds, 4)[0] != 124:
-        raise ValueError('Expected a standard 128-byte DDS header')
-    fourcc = dds[84:88]
+def _payload(header: bytes) -> tuple[str, int]:
+    """The pixel codebook and payload size a 128-byte DDS header describes."""
+    fourcc = header[84:88]
     name = {b'DXT1': 'dxt1', b'DXT2': 'dxt23', b'DXT3': 'dxt23',
             b'DXT4': 'dxt45', b'DXT5': 'dxt45'}.get(fourcc, 'rgb')
-    if name == 'rgb' and struct.unpack_from('<I', dds, 80)[0] & 4:
+    if name == 'rgb' and struct.unpack_from('<I', header, 80)[0] & 4:
         raise ValueError('Unsupported DDS FourCC')
-    height, width = struct.unpack_from('<2I', dds, 12)
-    mips = struct.unpack_from('<I', dds, 28)[0] or 1
+    height, width = struct.unpack_from('<2I', header, 12)
+    mips = struct.unpack_from('<I', header, 28)[0] or 1
     if not (1 <= height <= 4096 and 1 <= width <= 4096 and 1 <= mips <= max(width, height).bit_length()):
         raise ValueError('Invalid DDS dimensions or mip count')
-    if struct.unpack_from('<I', dds, 112)[0]:
+    if struct.unpack_from('<I', header, 112)[0]:
         raise ValueError('Only 2D DDS textures are supported')
-    bpp = struct.unpack_from('<I', dds, 88)[0]
+    bpp = struct.unpack_from('<I', header, 88)[0]
     if name == 'rgb' and bpp not in (8, 16, 24, 32):
         raise ValueError('Unsupported DDS pixel size')
     expected = 0
@@ -89,6 +88,13 @@ def dds_to_cdds(dds: bytes) -> bytes:
         w, h = max(1, width >> mip), max(1, height >> mip)
         expected += (w * h * bpp // 8 if name == 'rgb' else
                      ((w + 3) // 4) * ((h + 3) // 4) * (8 if name == 'dxt1' else 16))
+    return name, expected
+
+
+def dds_to_cdds(dds: bytes) -> bytes:
+    if len(dds) < 128 or dds[:4] != b'DDS ' or struct.unpack_from('<I', dds, 4)[0] != 124:
+        raise ValueError('Expected a standard 128-byte DDS header')
+    name, expected = _payload(dds)
     if len(dds) != 128 + expected:
         raise ValueError('DDS pixel payload does not match its dimensions and mip count')
     books, bits = _books(), Bits()
@@ -98,6 +104,73 @@ def dds_to_cdds(dds: bytes) -> bytes:
     if result[:4] != struct.pack('<I', 0x990F44C8):
         raise ValueError('DDS header does not produce the required CDDS signature')
     return result
+
+
+SHORT_CODE = 10     # codes up to this long decode with one table lookup
+
+
+def _decoder(book: dict):
+    fast = [None] * (1 << SHORT_CODE)
+    slow = {}
+    for symbol, (code, length) in book.items():
+        if length <= SHORT_CODE:
+            first = code << (SHORT_CODE - length)
+            for index in range(first, first + (1 << (SHORT_CODE - length))):
+                fast[index] = (symbol, length)
+        else:
+            slow[(length, code)] = symbol
+    return fast, slow, max(length for _, length in book.values())
+
+
+def _decode_block(stream: bytes, position: int, book: dict, size: int) -> tuple[bytes, int]:
+    """As retail's decoder: it reads no code for a block's final byte, so only
+    a back-reference reaching the end writes it. A stream ending in a lone
+    literal (Paris's map, 713 retail textures) leaves that byte unwritten:
+    zero here, whatever the buffer held in the game and in decdds."""
+    fast, slow, longest = _decoder(book)
+    out = bytearray()
+    while len(out) < size - 1:
+        start = position >> 3
+        if start + 5 > len(stream):
+            raise ValueError('CDDS stream ends early')
+        window = int.from_bytes(stream[start:start + 5], 'big') << (position & 7)
+        entry = fast[(window >> (40 - SHORT_CODE)) & ((1 << SHORT_CODE) - 1)]
+        if entry is None:
+            for length in range(SHORT_CODE + 1, longest + 1):
+                symbol = slow.get((length, (window >> (40 - length)) & ((1 << length) - 1)))
+                if symbol is not None:
+                    entry = (symbol, length)
+                    break
+            else:
+                raise ValueError('Invalid CDDS code')
+        symbol, length = entry
+        position += length
+        if symbol < 0x100:
+            out.append(symbol)
+        else:
+            distance, count = ((symbol - 0x100) >> 3) + 1, ((symbol - 0x100) & 7) + 2
+            if distance > len(out):
+                raise ValueError('CDDS back-reference before the start')
+            for _ in range(min(count, size - len(out))):
+                out.append(out[-distance])
+    return bytes(out) + bytes(size - len(out)), position
+
+
+def cdds_to_dds(cdds: bytes) -> bytes:
+    """The DDS a CDDS holds (dds_to_cdds backwards), for reading the game's own
+    textures, such as the city maps Menu/Gfx/Maps/<n>.cdds."""
+    if len(cdds) < 8 or len(cdds) % 4 or cdds[:4] != struct.pack('<I', 0x990F44C8):
+        raise ValueError('Not a CDDS texture')
+    # Bits run from the top of each little-endian 32-bit word.
+    words = len(cdds) // 4
+    stream = struct.pack(f'>{words}I', *struct.unpack(f'<{words}I', cdds)) + bytes(8)
+    books = _books()
+    header, position = _decode_block(stream, 0, books['hdr'], 128)
+    if header[:4] != b'DDS ' or struct.unpack_from('<I', header, 4)[0] != 124:
+        raise ValueError('CDDS header is not a DDS header')
+    name, expected = _payload(header)
+    pixels, _ = _decode_block(stream, position, books[name], expected)
+    return header + pixels
 
 
 def image_to_dds(path: Path, *, max_size: int = 1024) -> bytes:

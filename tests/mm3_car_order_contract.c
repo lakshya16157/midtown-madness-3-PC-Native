@@ -8,8 +8,9 @@ ptrdiff_t g_xbox_mem_offset;
 RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp;
 RECOMP_TLS uint32_t g_ebx, g_esi, g_edi, g_ebp, g_seh_ebp, g_fs_base;
 
-/* Guest memory up to the vehicle catalog pointer at 0x3C5C94. */
-static unsigned char memory[0x3C6000], expected[0x3C6000];
+/* Guest memory up to the vehicle catalog pointer at 0x3C5C94 and the lobby
+ * at 0x407D38. */
+static unsigned char memory[0x409000], expected[0x409000];
 static const uint32_t catalog = 0x10000, pointers = 0x10100;
 static const uint32_t cache = 0x10200, output = 0x10300, results = 0x10400;
 static const uint32_t stack = 0x1E000;
@@ -93,6 +94,20 @@ void sub_001DE012_original(void)
     g_esp += 4u;
 }
 
+/* Retail owned-car count of the profile box: every car of the list counts
+ * (none has unlock requirements here). */
+void sub_001DE995_original(void)
+{
+    uint32_t list = MEM32(g_esp + 4u), cursor;
+    unsigned owned = 0;
+    assert(list == catalog && MEM32(g_esp) == 0x0010F9F0u);
+    ++original_calls;
+    for (cursor = MEM32(list + 8u); cursor != MEM32(list + 12u); cursor += 4u) ++owned;
+    g_eax = owned;
+    g_ecx = 0xA1B2C3D4u;
+    g_esp += 8u;
+}
+
 static void setup(void)
 {
     unsigned i;
@@ -152,6 +167,40 @@ static void run_case(const uint32_t *menu_ids, unsigned count)
     assert(memcmp(memory, expected, sizeof memory) == 0);
 }
 
+/* "Cars: owned/total": the owned count, with the catalog exactly as before
+ * once it returns. */
+static unsigned owned_cars(void)
+{
+    MEM32(stack) = 0x0010F9F0u;
+    MEM32(stack + 4u) = catalog;
+    memcpy(expected, memory, sizeof memory);
+    g_esp = stack;
+    original_calls = 0;
+    sub_001DE995();
+    assert(original_calls == 1 && g_esp == stack + 8u && g_ecx == 0xA1B2C3D4u);
+    assert(memcmp(memory, expected, sizeof memory) == 0);
+    return g_eax;
+}
+
+/* MM3_EXTRA_CARS=0 (Original look, Xbox gameplay): the installer's cars are
+ * left out of the menu, and out of the owned count, so the profile box never
+ * reads more cars owned than there are ("Cars: 50/46"). */
+static void hidden_extras(void)
+{
+    static const uint32_t shown[] = {106, 18, 667, 12, 203, 206, 214, 201, 211};
+    setup();
+    sub_001DE752();
+    check_ids(cache, shown, sizeof shown / sizeof shown[0]);
+    check_ids(results, shown, sizeof shown / sizeof shown[0]);
+    assert(MEM32(catalog + 0x1Cu) == cache + sizeof shown && MEM32(output + 8u) == results + sizeof shown);
+    setup();
+    assert(owned_cars() == sizeof ids / sizeof ids[0] - 4u);
+    MEM32(catalog + 12u) = MEM32(catalog + 8u);
+    assert(owned_cars() == 0);
+    puts("PASS hidden extras: menu list and owned count both leave the installer's cars out, "
+         "catalog order restored");
+}
+
 /* The best car of a class for a race opponent. The catalog, its flags
  * included, is exactly as before once the pick returns. */
 static uint32_t best_car(uint32_t car_class)
@@ -170,7 +219,58 @@ static uint32_t best_car(uint32_t car_class)
     return picked;
 }
 
-int main(void)
+/* The lobby's players (sub_001F99C1): list head, then player 2, then
+ * player 1 with the catalog IDs of the car chosen (+0x1AC) and its fallback
+ * (+0x1B0). */
+static void lobby(uint32_t id, uint32_t fallback, uint8_t player)
+{
+    const uint32_t head = 0x15000u, second = 0x15010u, first = 0x15020u;
+    const uint32_t other = 0x15100u, record = 0x15300u;
+    MEM32(LOBBY + 0x380u) = head;
+    MEM32(head) = second; MEM32(second) = first; MEM32(first) = head;
+    MEM32(second + 8u) = other; MEM32(first + 8u) = record;
+    MEM8(other + 0x149u) = 2u; MEM32(other + 0x1ACu) = 211u;
+    MEM8(record + 0x149u) = player;
+    MEM32(record + 0x1ACu) = id; MEM32(record + 0x1B0u) = fallback;
+}
+
+static void wait_past_burst(void)
+{
+    clock_t start = clock();
+    while (clock() - start <= CLOCKS_PER_SEC + CLOCKS_PER_SEC / 10) {}
+}
+
+/* MM3_SAME_CAR=1: every opponent drives the player's car, whatever it is;
+ * the catalog is exactly as before after each pick (best_car). */
+static void same_car(void)
+{
+    unsigned i;
+    setup();
+    assert(best_car(1) == 203);                     /* no lobby yet: the game's own pick */
+    lobby(12, 0, 1);
+    for (i = 0; i < 7; ++i) assert(best_car(1) == 12);
+    assert(best_car(2) == 0);                       /* a faster class has none: the circuit falls back */
+    lobby(9004, 0, 1);
+    assert(best_car(1) == 9004);                    /* an installer car too */
+    lobby(666, 0, 1);
+    assert(best_car(1) == 666);                     /* a car hidden from picks, its flag put back */
+    lobby(12345, 214, 1);
+    assert(best_car(1) == 214);                     /* the record's fallback ID */
+    lobby(12, 0, 3);
+    assert(best_car(1) == 203);                     /* no player 1: the game's own pick */
+    /* A script that keeps refusing the car (Paris Checkpoint 06 with a
+     * Firetruck) gets the game's own picks after 64 in a second. */
+    wait_past_burst();
+    lobby(12, 0, 1);
+    for (i = 0; i < SAME_CAR_BURST; ++i) assert(best_car(1) == 12);
+    assert(best_car(1) == 203 && best_car(1) == 203);
+    wait_past_burst();
+    assert(best_car(1) == 12);
+    puts("PASS same car: opponents drive player 1's car (lobby record, fallback ID, hidden or installer "
+         "car), nothing for another class, game's own pick without a player 1 or after a refusing burst");
+}
+
+int main(int argc, char **argv)
 {
     static const uint32_t all[] = {106, 18, 667, 12, 203, 206, 214,
                                   9014, 201, 9004, 9005, 211, 9999};
@@ -179,6 +279,14 @@ int main(void)
     static const uint32_t previous_cache[] = {9004, 12, 211, 106, 206};
     static const uint32_t cached_order[] = {12, 106, 206, 9004, 211};
     unsigned i;
+    if (argc > 1 && !strcmp(argv[1], "same")) {
+        same_car();
+        return 0;
+    }
+    if (argc > 1 && !strcmp(argv[1], "hidden")) {
+        hidden_extras();
+        return 0;
+    }
     assert(!_putenv_s("MM3_AI_ALL_CARS", ""));
     setup();
     run_case(all, sizeof all / sizeof all[0]);
@@ -230,6 +338,9 @@ int main(void)
     MEM32(entry_for_id(9014) + 0x30u) = 4;
     MEM32(entry_for_id(666) + 0x30u) = 4;
     assert(best_car(3) == 9999 && best_car(4) == 9014 && best_car(1) == 203);
+    /* With the installer's cars in the menu every car counts as owned. */
+    setup();
+    assert(owned_cars() == sizeof ids / sizeof ids[0]);
     /* No catalog yet: the retail handler alone decides. */
     MEM32(VEHICLE_CATALOG) = 0;
     assert(best_car(1) == 0);

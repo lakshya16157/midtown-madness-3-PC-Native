@@ -15,7 +15,7 @@
 ptrdiff_t g_xbox_mem_offset;
 RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi, g_edi;
 static unsigned char memory[0x400000];
-static float seen_scale, seen_impulse[64];
+static float seen_scale, seen_impulse[64], seen_hit_factor[64], seen_factor;
 static unsigned damage_calls;
 static const uint32_t frame = 0x30000, component = 0x21000, body = 0x22000, record = 0x20000,
                       other = 0x23000, other_body = 0x24000, other_record = 0x25000, stack = 0xFF00;
@@ -24,7 +24,9 @@ void sub_00021DCF_original(void) { seen_scale = MEMF(g_esp + 4); g_esp += 8; }
 void sub_001CDB6C_original(void)
 {
     uint32_t rec = MEM32(MEM32(g_edx + 0x3C) + 4);
-    seen_impulse[damage_calls++ % 64] = MEMF(rec + 0x1A4);
+    seen_impulse[damage_calls % 64] = MEMF(rec + 0x1A4);
+    seen_hit_factor[damage_calls++ % 64] = MEMF(g_edx + 0x24);  /* playerSetDamageFactor's */
+    seen_factor = MEMF(g_edx + 0x8718);              /* the car's damage factor */
 }
 void sub_00021DCF(void);
 void sub_001CDB6C(void);
@@ -34,12 +36,20 @@ static float step(uint32_t comp, float impulse)
 {
     uint32_t rec = MEM32(MEM32(comp + 0x3C) + 4);
     unsigned before = damage_calls;
+    float factor = MEMF(comp + 0x24);
     MEMF(rec + 0x1A4) = impulse;
     g_edx = comp;
     sub_001CDB6C();
     assert(damage_calls == before + 1);
     assert(MEMF(rec + 0x1A4) == impulse);           /* the record keeps its real value */
+    assert(MEMF(comp + 0x24) == factor);            /* and the car its factor */
     return seen_impulse[before % 64];
+}
+
+/* The playerSetDamageFactor factor the last damage step used. */
+static float last_factor(void)
+{
+    return seen_hit_factor[(damage_calls - 1) % 64];
 }
 
 /* The end of a game frame: the frame timer adds the frame's ticks to its
@@ -53,11 +63,25 @@ static void end_frame(float fps)
 int main(int argc, char **argv)
 {
     int off = argc > 1 && !strcmp(argv[1], "off");
+    const char *percent = argc > 2 && !strcmp(argv[1], "percent") ? argv[2] : NULL;
     int i;
     g_xbox_mem_offset = (ptrdiff_t)memory;
     if (off) _putenv_s("MM3_DAMAGE_FRAME_FIX", "0");
     MEM32(component + 0x3C) = body; MEM32(body + 4) = record;
     MEM32(other + 0x3C) = other_body; MEM32(other_body + 4) = other_record;
+    MEMF(component + 0x8718) = MEMF(other + 0x8718) = 1.25f;
+    if (percent) {
+        /* Launcher car damage: the damage step sees the car's factor scaled,
+         * and the car keeps its own factor afterwards. */
+        float scale = (float)atoi(percent) / 100.0f;
+        _putenv_s("MM3_DAMAGE_PERCENT", percent);
+        MEM32(0x3C5C90) = frame;
+        end_frame(60);
+        step(component, 900);
+        assert(seen_factor == 1.25f * scale && MEMF(component + 0x8718) == 1.25f);
+        printf("PASS car damage %s%%: each crash's damage scaled for every car, its own factor kept\n", percent);
+        return 0;
+    }
     MEM32(0x3C5C90) = frame;
     MEMF(0x3C0328) = 50.0f; MEMF(0x3C0330) = 1.0f;          /* a wreck job */
     /* The contact scaler passes the job's scale through unchanged. */
@@ -164,6 +188,37 @@ int main(int argc, char **argv)
     assert(step(other, 0) == 0 && step(component, 0) == 200);
     assert(step(other, 0) == 0 && step(component, 0) == 200);
     end_frame(60);
+    /* Washington 05/01: the job's script drops the hit car's factor to 0.0001
+     * between game frames, once it hears of the contact. A hit keeps the
+     * factor it was found with: three times at 0.16, as on the Xbox, not once
+     * at 0.16 and twice at 0.0001. */
+    MEMF(component + 0x24) = 0.16f;
+    assert(step(component, 0) == 0 && step(component, 900) == 900 && last_factor() == 0.16f);
+    end_frame(60);
+    MEMF(component + 0x24) = 0.0001f;                      /* the script reacts */
+    assert(step(component, 0) == 900 && last_factor() == 0.16f);
+    assert(step(component, 0) == 900 && last_factor() == 0.16f);
+    end_frame(60);
+    MEMF(component + 0x24) = 0.16f;                        /* 0.2 s later */
+    assert(step(component, 0) == 0 && step(component, 0) == 0);
+    end_frame(60);
+    /* Found in a console frame's second game frame: applied in the next one
+     * at the factor it was found with, though the script dropped it since. */
+    assert(step(component, 0) == 0 && step(component, 700) == 0);
+    end_frame(60);
+    MEMF(component + 0x24) = 0.0001f;
+    assert(step(component, 0) == 0 && step(component, 0) == 700 && last_factor() == 0.16f);
+    end_frame(60);
+    assert(step(component, 0) == 700 && last_factor() == 0.16f);
+    assert(step(component, 0) == 700 && last_factor() == 0.16f);
+    end_frame(60);
+    /* A hit found while the factor is down counts at that factor. */
+    assert(step(component, 0) == 0 && step(component, 500) == 500 && last_factor() == 0.0001f);
+    end_frame(60);
+    assert(step(component, 0) == 500 && last_factor() == 0.0001f);
+    assert(step(component, 0) == 500 && last_factor() == 0.0001f);
+    end_frame(60);
+    MEMF(component + 0x24) = 0.0f;
     /* 30 fps: four steps a frame, every frame its own console frame, exactly
      * the game's own behaviour. */
     assert(step(component, 0) == 0 && step(component, 800) == 800);
@@ -191,6 +246,7 @@ int main(int argc, char **argv)
     end_frame(60);
     assert(step(component, 0) == 0 && step(component, 0) == 0);
     end_frame(60);
+    assert(seen_factor == 1.25f);                   /* no launcher scale: the car's own factor */
     /* Many cars at once, each in its own console frame. */
     for (i = 0; i < 300; ++i) {
         uint32_t comp = 0x100000 + (uint32_t)i * 0x100, rec = 0x200000 + (uint32_t)i * 0x400;
@@ -209,7 +265,7 @@ int main(int argc, char **argv)
          "applied three times as on the Xbox, a later frame's find moves to the next console frame, a "
          "hit found before a frame's steps four times wherever it falls, a "
          "steady contact is applied three times a console frame, a larger find takes over, cars apart "
-         "(300 at once), "
+         "(300 at once), a hit keeps the damage factor it was found with when the job's script drops it, "
          "frames told apart by the game's frame clock, record restored; 30 fps and slower keep the game's "
          "own frames, 45 fps frames stand alone; ordinary races and ambulance jobs alike");
     return 0;

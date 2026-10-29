@@ -173,6 +173,30 @@ static RECT child_bounds(HWND window, int id)
     return bounds;
 }
 
+/* The blue line under the tab headers: no control of any tab may cover it.
+ * The mods tabs' first row (Original/Improved, Xbox/Modded) began on it and,
+ * drawn over it, broke the line under the open tab (user, 10-29). */
+static void select_page(HWND window, int page);
+static void tab_bar_clear(HWND window)
+{
+    HWND bar = GetDlgItem(window, ID_TAB_BAR), tabs = GetDlgItem(window, ID_TABS);
+    RECT line = child_bounds(window, ID_TAB_BAR), other, overlap;
+    CHECK(bar && IsWindowVisible(bar) && line.right - line.left > 400 && line.bottom > line.top);
+    for (int page = 0; page < 4; ++page) {
+        select_page(window, page);
+        for (HWND child = GetWindow(window, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+            if (child == bar || child == tabs || !IsWindowVisible(child)) continue;
+            CHECK(GetWindowRect(child, &other));
+            MapWindowPoints(NULL, window, (POINT *)&other, 2);
+            if (IntersectRect(&overlap, &line, &other))
+                fprintf(stderr, "tab %d: control %d covers the tab bar (%ld-%ld, %ld-%ld)\n", page,
+                        GetDlgCtrlID(child), other.left, other.right, other.top, other.bottom);
+            CHECK(!IntersectRect(&overlap, &line, &other));
+        }
+    }
+    select_page(window, 0);
+}
+
 static void text_fits(HWND window, int id)
 {
     HWND child = GetDlgItem(window, id);
@@ -684,6 +708,7 @@ static DWORD WINAPI exercise(void *unused)
     HWND play = GetDlgItem(window, IDOK); RECT footer;
     GetWindowRect(play, &footer);
     CHECK(footer.bottom <= bounds.bottom && footer.top >= bounds.top && IsWindowVisible(play));
+    tab_bar_clear(window);
     controller_detection(window, "controls-detected");
     contextual_help(window);
     select_page(window, 1);

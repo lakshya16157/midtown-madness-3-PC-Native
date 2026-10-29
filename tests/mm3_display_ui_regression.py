@@ -29,6 +29,8 @@ def main():
                        if not key.startswith(("MM3_", "RECOMP_")) or key == "MM3_UI_CAPTURE"}
         subprocess.run([str(executable), str(folder / "settings.ini")],
                        check=True, cwd=folder, env=environment, timeout=40)
+        subprocess.run([str(executable), str(folder / "fixed.ini"), "fixed"],
+                       check=True, cwd=folder, env=environment, timeout=40)
 
 
 if __name__ == "__main__":
