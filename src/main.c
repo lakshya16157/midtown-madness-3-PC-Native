@@ -19,6 +19,7 @@
 #include "mm3_world_lighting.h"
 #include "mm3_collision_profile.h"
 #include "mm3_direct_log.h"
+#include "mm3_cheat_keys.h"
 #include <xbox_host.h>
 #include <xinput_xbox.h>
 #include <video/fb_present.h>
@@ -347,6 +348,7 @@ int main(void)
     mm3_power_watch();
 
     mm3_display_settings_init();
+    mm3_cheat_keys_start();
 
     const char *profile_error = mm3_apply_performance_defaults(getenv("MM3_PERFORMANCE_PROFILE"));
     if (profile_error) {

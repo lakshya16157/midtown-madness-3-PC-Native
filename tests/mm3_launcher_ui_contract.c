@@ -27,6 +27,16 @@ static DWORD WINAPI fake_xinput_get_state(DWORD port, XINPUT_STATE *state)
 #define XInputGetState fake_xinput_get_state
 #define GetRawInputDeviceList fake_raw_input_device_list
 #define GetRawInputDeviceInfoA fake_raw_input_device_info
+/* The update button, aimed at a local stand-in for GitHub; the question is
+ * answered by the test and Setup is only recorded, never started. */
+static char s_update_api[256];
+static int s_update_answer, s_update_asked, s_update_opened;
+static wchar_t s_update_setup[600];
+#define MM3_VERSION "2.1"
+#define MM3_UPDATE_API_URL s_update_api
+#define MM3_UPDATE_TRUSTED ""
+#define MM3_UPDATE_ASK(window, text) (++s_update_asked, s_update_answer)
+#define MM3_UPDATE_OPEN(setup, folder) (++s_update_opened, wcsncpy(s_update_setup, (setup), 599), 1)
 #include "../src/mm3_launcher.c"
 #undef XInputGetState
 #undef GetRawInputDeviceList
@@ -480,7 +490,7 @@ static void contextual_help(HWND window)
         ID_MSAA, ID_ANISO, ID_DRAW, ID_VIEW, ID_MINIMAP};
     static const int controls[] = {ID_KEYBOARD, ID_PAD_COUNT, ID_GROUP, ID_BINDINGS,
         ID_SOURCE, ID_PAD_PORT, ID_CAPTURE, ID_UNBIND};
-    static const int buttons[] = {ID_DEFAULTS, IDOK, IDCANCEL};
+    static const int buttons[] = {ID_DEFAULTS, ID_UPDATE, IDOK, IDCANCEL};
     HelpText text, previous;
     char page_titles[LAUNCHER_PAGES][256];
     for (int page = 0; page < LAUNCHER_PAGES; ++page) {
@@ -763,6 +773,111 @@ static DWORD WINAPI exercise(void *unused)
     SendMessageA(window, WM_COMMAND, s_play ? IDOK : IDCANCEL, 0);
     return 0;
 }
+static int s_update_run;   /* 0: answers; 1: Cancel during a slow check; 2: download and open Setup */
+static const char *s_update_port;
+
+static void update_api_for(const char *scenario)
+{
+    snprintf(s_update_api, sizeof s_update_api, "http://127.0.0.1:%s/%s/latest", s_update_port, scenario);
+}
+
+static void update_wait_status(HWND window, const char *wanted)
+{
+    DWORD start = GetTickCount();
+    char status[512];
+    for (;;) {
+        GetDlgItemTextA(window, ID_STATUS, status, sizeof status);
+        if (strstr(status, wanted)) return;
+        if (GetTickCount() - start > 15000) { fprintf(stderr, "update status was \"%s\", wanted \"%s\"\n", status, wanted); CHECK(0); }
+        Sleep(20);
+    }
+}
+
+static void update_click(HWND window)
+{
+    CHECK(IsWindowEnabled(GetDlgItem(window, ID_UPDATE)));
+    SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_UPDATE, BN_CLICKED), (LPARAM)GetDlgItem(window, ID_UPDATE));
+}
+
+static DWORD WINAPI update_exercise(void *unused)
+{
+    (void)unused;
+    HWND window = wait_launcher();
+    ignore_pointer(window);
+    HWND button = GetDlgItem(window, ID_UPDATE), play = GetDlgItem(window, IDOK), defaults = GetDlgItem(window, ID_DEFAULTS);
+    RECT b, p, d;
+    GetWindowRect(button, &b); GetWindowRect(play, &p); GetWindowRect(defaults, &d);
+    CHECK(IsWindowVisible(button) && b.left >= d.right && b.right <= p.left && b.top == p.top && b.bottom == p.bottom);
+    if (s_update_run == 0) {
+        update_api_for("same");
+        update_click(window);
+        update_wait_status(window, "latest version (2.1)");
+        CHECK(s_update_asked == 0);
+        /* No connection: a plain message, and the button works again. */
+        snprintf(s_update_api, sizeof s_update_api, "http://127.0.0.1:1/newer/latest");
+        update_click(window);
+        update_wait_status(window, "Could not reach GitHub");
+        update_api_for("nosum");
+        update_click(window);
+        update_wait_status(window, "not attached");
+        /* A newer release, declined. */
+        s_update_answer = 0;
+        update_api_for("newer");
+        update_click(window);
+        update_wait_status(window, "Version 99.0 is available");
+        CHECK(s_update_asked == 1 && s_update_opened == 0);
+        /* A newer release whose download does not match its checksum: nothing opens. */
+        s_update_answer = 1;
+        update_api_for("badsum");
+        update_click(window);
+        update_wait_status(window, "does not match the release's checksum");
+        CHECK(s_update_asked == 2 && s_update_opened == 0 && IsWindowEnabled(button));
+        /* The button's explanation. */
+        focus_control(window, ID_UPDATE);
+        CHECK(help_contains(window, "Check for updates") && help_contains(window, "GitHub"));
+        SendMessageA(window, WM_COMMAND, IDCANCEL, 0);
+    } else if (s_update_run == 1) {
+        char status[512];
+        update_api_for("slow");
+        update_click(window);
+        Sleep(200);
+        CHECK(!IsWindowEnabled(button));
+        SendMessageA(window, WM_COMMAND, IDOK, 0);       /* Play waits for the update step */
+        GetDlgItemTextA(window, ID_STATUS, status, sizeof status);
+        CHECK(strstr(status, "Wait for the update"));
+        SendMessageA(window, WM_COMMAND, IDCANCEL, 0);   /* Cancel stops it, then closes */
+        GetDlgItemTextA(window, ID_STATUS, status, sizeof status);
+        CHECK(strstr(status, "Stopping"));
+        CHECK(IsWindow(window));
+    } else {
+        s_update_answer = 1;
+        update_api_for("newer");
+        update_click(window);   /* asks, downloads, opens Setup and closes: nothing more to do here */
+    }
+    return 0;
+}
+
+static void update_runs(const char *port, const char *folder)
+{
+    wchar_t expected[700];
+    HANDLE thread, file;
+    LARGE_INTEGER size;
+    s_update_port = port;
+    CHECK(!_putenv_s("MM3_LAUNCHER", "1")); CHECK(!_putenv_s("MM3_LAUNCHER_SMOKE", ""));
+    for (s_update_run = 0; s_update_run < 3; ++s_update_run) {
+        s_update_opened = 0; s_update_setup[0] = 0;
+        thread = CreateThread(NULL, 0, update_exercise, NULL, 0, NULL); CHECK(thread);
+        CHECK(!mm3_launcher_run());
+        CHECK(WaitForSingleObject(thread, 10000) == WAIT_OBJECT_0); CloseHandle(thread);
+        if (s_update_run < 2) CHECK(s_update_opened == 0);
+    }
+    /* The last run: Setup was downloaded to updates\ beside this program and then opened. */
+    swprintf(expected, sizeof expected / sizeof expected[0], L"%hs\\updates\\MM3-Setup.exe", folder);
+    CHECK(s_update_opened == 1 && !_wcsicmp(s_update_setup, expected));
+    file = CreateFileW(expected, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    CHECK(file != INVALID_HANDLE_VALUE && GetFileSizeEx(file, &size) && size.QuadPart == 3000000);
+    CloseHandle(file);
+}
 static void smaller_layout(void)
 {
     Launcher ui;
@@ -833,7 +948,7 @@ int main(int argc, char **argv)
     HANDLE thread;
     MM3LauncherConfig config;
     MM3DisplaySettings display;
-    CHECK(argc == 2);
+    CHECK(argc == 3);   /* the folder, and the update stand-in's port */
     dualsense_detection_contract();
     snprintf(display_path, sizeof display_path, "%s/display.ini", argv[1]);
     snprintf(launcher_path, sizeof launcher_path, "%s/launcher.ini", argv[1]);
@@ -883,6 +998,7 @@ int main(int argc, char **argv)
     CHECK(!mm3_launcher_run());
     smaller_layout();
     DeleteFileA(display_path); DeleteFileA(launcher_path);
-    puts("PASS launcher UI: deterministic XInput detection (zero/one/four and sparse ports), DualSense/Edge HID filtering and hotplug, live buttons/triggers/sticks, unplug/reconnect, persistent summary, stable idle text, normal/720p controller/help layout, contextual explanations and live values, keyboard capture/reserved keys, pad mapping, Cancel isolation, Play persistence, defaults, explicit USB overrides and bypass bootstrap");
+    update_runs(argv[2], argv[1]);
+    puts("PASS launcher UI: deterministic XInput detection (zero/one/four and sparse ports), DualSense/Edge HID filtering and hotplug, live buttons/triggers/sticks, unplug/reconnect, persistent summary, stable idle text, normal/720p controller/help layout, contextual explanations and live values, keyboard capture/reserved keys, pad mapping, Cancel isolation, Play persistence, defaults, explicit USB overrides and bypass bootstrap, Check for updates (latest, offline, declined, bad checksum, Cancel during a check, download then Setup opened)");
     return 0;
 }

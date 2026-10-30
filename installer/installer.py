@@ -17,6 +17,7 @@ import argparse
 import collections
 import contextlib
 import copy
+import glob
 import hashlib
 import hmac
 import importlib.util
@@ -32,6 +33,9 @@ import subprocess
 import sys
 import tempfile
 import threading
+import typing
+import urllib.error
+import urllib.request
 import zipfile
 import zlib
 from pathlib import Path
@@ -40,8 +44,13 @@ from pathlib import Path
 # PyInstaller see and include them (it only analyses this file's own imports).
 _PAYLOAD_STDLIB = (argparse, collections, copy, hashlib, math, re, struct, tempfile, zipfile, zlib)
 
-VERSION = "2.0"
+VERSION = "2.1"
 TITLE = "Midtown Madness 3 - Setup"
+# "Check for updates" asks GitHub for the newest release and downloads the MM3-Setup.exe attached to it.
+RELEASES_API = "https://api.github.com/repos/lakshya16157/midtown-madness-3-PC-Native/releases/latest"
+RELEASES_PAGE = "https://github.com/lakshya16157/midtown-madness-3-PC-Native/releases/latest"
+RELEASE_ASSET_PREFIX = "https://github.com/lakshya16157/midtown-madness-3-PC-Native/releases/download/"
+SETUP_ASSET = "MM3-Setup.exe"
 # The car toolkit is in the project repository (it needs Python), not in the install.
 CAR_WORKSHOP_URL = "https://github.com/lakshya16157/midtown-madness-3-PC-Native/tree/main/tools/car-mods"
 CAR_WORKSHOP_TEXT = (
@@ -624,6 +633,15 @@ def install(iso_path, dest, extra_cars: bool, improvements: bool, log, progress,
     return dest
 
 
+def saved_options(dest: Path) -> dict:
+    """The choices an earlier Setup made for the install in `dest` ({} if there is none)."""
+    try:
+        options = json.loads((Path(dest) / "setup-options.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return options if isinstance(options, dict) else {}
+
+
 def game_running() -> bool:
     shown = subprocess.run(["tasklist", "/fi", f"imagename eq {GAME_EXE}", "/nh"], capture_output=True,
                            text=True, creationflags=subprocess.CREATE_NO_WINDOW).stdout
@@ -646,10 +664,160 @@ def launch_game(dest: Path) -> None:
                          creationflags=subprocess.CREATE_NO_WINDOW)
 
 
+# ----------------------------------------------------------------------------- self-update
+
+class Update(typing.NamedTuple):
+    version: str
+    url: str
+    size: int
+    sha256_url: str
+    notes: str
+    page: str
+
+
+def version_key(text: str):
+    """Sort key for version names: 2.0 < 2.0.1 < 2.1, and a beta sorts before its final
+    ("2.0 beta 2", "v2.0-beta.1" < "2.0"). None when the text holds no number."""
+    match = re.match(r"v?(\d+(?:\.\d+)*)(.*)$", text.strip().lower())
+    if not match:
+        return None
+    numbers = [int(part) for part in match.group(1).split(".")]
+    while len(numbers) > 1 and numbers[-1] == 0:
+        numbers.pop()
+    pre = re.search(r"(alpha|beta|pre|rc)\D*(\d*)", match.group(2))
+    rank = {"alpha": 0, "beta": 1, "pre": 1, "rc": 2}[pre.group(1)] if pre else 3
+    return tuple(numbers), rank, int(pre.group(2) or 0) if pre else 0
+
+
+def http_get(url: str, accept: str = "*/*"):
+    request = urllib.request.Request(url, headers={"User-Agent": f"MM3-Setup/{VERSION}", "Accept": accept})
+    try:
+        return urllib.request.urlopen(request, timeout=20)
+    except urllib.error.HTTPError as error:
+        error.close()
+        if error.code in (403, 429):
+            raise InstallError("GitHub is limiting requests from this connection. Try again in a while.")
+        if error.code == 404:
+            raise InstallError("No Setup release was found on GitHub.")
+        raise InstallError(f"GitHub answered with error {error.code}.")
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        raise InstallError("Could not reach GitHub. Check your internet connection and try again.") from error
+
+
+def check_for_update(api_url: str = RELEASES_API, current: str = VERSION) -> Update | None:
+    """The newest published release if it is newer than `current`, else None.
+    The pre-releases are not offered (GitHub's "latest" skips them). The files must come from this
+    project's own releases; only a test pointing `api_url` at a local fake release may use others."""
+    trusted = RELEASE_ASSET_PREFIX if api_url == RELEASES_API else ""
+    with http_get(api_url, "application/vnd.github+json") as response:
+        try:
+            release = json.loads(response.read(2_000_000))
+            tag = str(release["tag_name"])
+            assets = {a["name"]: a for a in release["assets"]}
+        except (ValueError, KeyError, TypeError):
+            raise InstallError("GitHub's answer could not be understood.")
+    latest, mine = version_key(tag), version_key(current)
+    if latest is None or mine is None:
+        raise InstallError(f"Cannot compare version {tag!r} with {current!r}.")
+    if latest <= mine:
+        return None
+    setup, checksum = assets.get(SETUP_ASSET), assets.get(SETUP_ASSET + ".sha256")
+    if not setup or not checksum:
+        raise InstallError(f"Version {tag.lstrip('v')} is published, but its Setup is not attached to the "
+                           "release yet. Try again later.")
+    urls = (setup["browser_download_url"], checksum["browser_download_url"])
+    if not all(isinstance(url, str) and url.startswith(trusted) for url in urls):
+        raise InstallError("The release points to a download outside the project, so it was not used.")
+    return Update(tag.lstrip("v"), urls[0], int(setup.get("size") or 0), urls[1],
+                  str(release.get("body") or "").strip(), str(release.get("html_url") or RELEASES_PAGE))
+
+
+def download_update(update: Update, target: Path, progress) -> None:
+    """Fetch the new Setup into `target`, refusing anything that does not match the release's
+    published SHA-256 (and size). `target` is removed again if anything goes wrong."""
+    with http_get(update.sha256_url) as response:
+        words = response.read(4096).decode("ascii", "replace").split()
+    expected = words[0].lower() if words else ""
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise InstallError("The release's checksum file is not valid, so the update was not used.")
+    if update.size and free_bytes(target.parent) < update.size * 2:
+        raise InstallError(f"Not enough disk space next to Setup: about {update.size * 2 / 1e6:.0f} MB needed.")
+    digest, done = hashlib.sha256(), 0
+    try:
+        with http_get(update.url) as response, open(target, "wb") as out:
+            total = update.size or int(response.headers.get("Content-Length") or 0)
+            while chunk := response.read(1 << 20):
+                out.write(chunk)
+                digest.update(chunk)
+                done += len(chunk)
+                progress(done / total if total else 0.0,
+                         f"Downloading Setup {update.version}... {done / 1e6:.0f}" +
+                         (f" / {total / 1e6:.0f} MB" if total else " MB"))
+        if update.size and done != update.size:
+            raise InstallError("The download is incomplete. Check your connection and try again.")
+        if digest.hexdigest() != expected:
+            raise InstallError("The download does not match the release's checksum, so it was discarded.")
+        with open(target, "rb") as check:
+            if check.read(2) != b"MZ":
+                raise InstallError("The download is not a Windows program, so it was discarded.")
+    except BaseException as error:
+        target.unlink(missing_ok=True)
+        if isinstance(error, OSError):
+            raise InstallError(f"Could not save the update: {error.strerror or error}") from error
+        raise
+
+
+def apply_update(new_file: Path, current: Path) -> None:
+    """Put `new_file` in place of the program `current`, even though it is running: Windows will
+    not overwrite or delete a running .exe but does let it be renamed, so the old file steps
+    aside as "<name>.<pid>.old" (cleanup_old_versions removes it on a later start)."""
+    old = current.with_name(f"{current.name}.{os.getpid()}.old")
+    try:
+        os.replace(current, old)
+    except OSError as error:
+        raise InstallError(f"Setup cannot replace itself in {current.parent} ({error.strerror or error}). "
+                           f"Download the new version by hand from {RELEASES_PAGE}") from error
+    try:
+        os.replace(new_file, current)
+    except OSError as error:
+        with contextlib.suppress(OSError):
+            os.replace(old, current)
+        raise InstallError(f"Could not put the new Setup in place: {error.strerror or error}") from error
+
+
+def cleanup_old_versions(current: Path) -> None:
+    """Remove what an earlier update left beside Setup (best effort: it may still be running)."""
+    leftovers = list(current.parent.glob(glob.escape(current.name) + ".*.old"))
+    leftovers.append(current.with_name(current.name + ".download"))
+    for path in leftovers:
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+
+
+def relaunch(current: Path, args: list[str]) -> None:
+    """Start `current` again, detached from this process. A PyInstaller one-file program that starts
+    itself must say it is a fresh launch, or the new copy would reuse this copy's temporary files."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("_PYI") and key != "_MEIPASS2"}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    subprocess.Popen([str(current), *args], cwd=current.parent, env=env, close_fds=True,
+                     creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+
+
+def restart_args(argv: list[str]) -> list[str]:
+    """What to start the new Setup with: the same options, but never straight into an install."""
+    skip = {"--install-now", "--update", "--check-update", "--relaunch"}
+    return [arg for arg in argv if arg not in skip]
+
+
+def self_update_possible() -> bool:
+    """Only the packed MM3-Setup.exe can replace itself; from source `sys.executable` is Python."""
+    return FROZEN
+
+
 # ----------------------------------------------------------------------------- GUI
 
 def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements: bool = True,
-            install_now: bool = False, dlc: str = "") -> int:
+            install_now: bool = False, dlc: str = "", update_api: str = RELEASES_API) -> int:
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
 
@@ -757,7 +925,10 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
     frame.bind("<Configure>", lambda event: status.configure(wraplength=max(200, event.width - 40)))
 
     buttons = ttk.Frame(frame)
-    buttons.grid(row=13, column=0, sticky="e", padx=18)
+    buttons.grid(row=13, column=0, sticky="we", padx=18)
+    update_button = ttk.Button(buttons, text="Check for updates", width=18)
+    update_button.pack(side="left")
+    tk.Label(buttons, text=f"Version {VERSION}", font=body, fg=grey).pack(side="left", padx=(8, 0))
     play = ttk.Button(buttons, text="Play now")
     install_button = ttk.Button(buttons, text="Install", width=14, state="disabled")
     install_button.pack(side="right")
@@ -769,7 +940,7 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
     def set_controls(enabled: bool):
         st = "normal" if enabled else "disabled"
         for widget in (iso_entry, browse, change, cars_check, improvements_check,
-                       dlc_entry, dlc_zip, dlc_folder):
+                       dlc_entry, dlc_zip, dlc_folder, update_button):
             widget.configure(state=st)
         if cars:
             cars_details.configure(state=st)
@@ -843,6 +1014,61 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
         except (InstallError, OSError) as error:
             messagebox.showerror(TITLE, f"Could not start the game: {error}")
 
+    def check_update():
+        """The "Check for updates" button: ask GitHub, and on a yes download and swap in the new Setup."""
+        state["busy"] = True
+        set_controls(False)
+        install_button.configure(state="disabled")
+        bar["value"] = 0
+        status.configure(text="Checking for updates...", fg=grey)
+
+        def work():
+            try:
+                events.put(("update", check_for_update(update_api)))
+            except InstallError as error:
+                events.put(("update_failed", str(error)))
+            except Exception as error:
+                events.put(("update_failed", f"Unexpected problem: {type(error).__name__}: {error}"))
+        threading.Thread(target=work, daemon=True).start()
+
+    def update_finished(text: str, colour: str):
+        state["busy"] = False
+        bar["value"] = 0
+        status.configure(text=text, fg=colour)
+        set_controls(True)
+        install_button.configure(state="normal" if state["iso_ok"] else "disabled")
+
+    def offer_update(update: Update):
+        if not self_update_possible():
+            if messagebox.askyesno(TITLE, f"Version {update.version} is available (this is {VERSION}).\n\n"
+                                   "This copy is not the packed MM3-Setup.exe, so it cannot update itself. "
+                                   "Open the download page?"):
+                import webbrowser
+                webbrowser.open(update.page)
+            return update_finished(f"Version {update.version} is available.", grey)
+        notes = update.notes if len(update.notes) <= 700 else update.notes[:700].rstrip() + "..."
+        size = f" ({update.size / 1e6:.0f} MB)" if update.size else ""
+        if not messagebox.askyesno(TITLE, f"Version {update.version} is available (this is {VERSION}).\n\n"
+                                   + (notes + "\n\n" if notes else "")
+                                   + f"Download it{size} and update Setup now?\n"
+                                   "Your installed game and saved games are not touched."):
+            return update_finished(f"Version {update.version} is available. Press Check for updates to get it.", grey)
+        current = Path(sys.executable).resolve()
+        target = current.with_name(current.name + ".download")
+
+        def work():
+            try:
+                download_update(update, target,
+                                lambda f, text: events.put(("progress", f, text)))
+                apply_update(target, current)
+                events.put(("update_ready", str(current)))
+            except InstallError as error:
+                events.put(("update_failed", str(error)))
+            except Exception as error:
+                target.unlink(missing_ok=True)
+                events.put(("update_failed", f"Unexpected problem: {type(error).__name__}: {error}"))
+        threading.Thread(target=work, daemon=True).start()
+
     def poll():
         try:
             while True:
@@ -875,12 +1101,29 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
                     status.configure(text=event[1], fg=red)
                     set_controls(True)
                     install_button.configure(state="normal" if state["iso_ok"] else "disabled")
+                elif kind == "update":
+                    if event[1] is None:
+                        update_finished(f"You have the latest version ({VERSION}).", green)
+                    else:
+                        offer_update(event[1])
+                elif kind == "update_failed":
+                    update_finished(event[1], red)
+                elif kind == "update_ready":
+                    status.configure(text="Updated. Restarting Setup...", fg=green)
+                    try:
+                        relaunch(Path(event[1]), restart_args(sys.argv[1:]))
+                    except OSError as error:
+                        update_finished(f"Setup was updated but could not restart ({error.strerror or error}). "
+                                        "Start it again by hand.", green)
+                        return
+                    root.destroy()
+                    return
         except queue.Empty:
             pass
         root.after(100, poll)
 
     def on_close():
-        if state["busy"] and not messagebox.askyesno(TITLE, "Installation is still running. Quit anyway?"):
+        if state["busy"] and not messagebox.askyesno(TITLE, "Setup is still working. Quit anyway?"):
             return
         root.destroy()
 
@@ -888,12 +1131,16 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
     dlc_zip.configure(command=pick_dlc_zip)
     dlc_folder.configure(command=pick_dlc_folder)
     change.configure(command=pick_dest)
+    update_button.configure(command=check_update)
     install_button.configure(command=start_install)
     iso_var.trace_add("write", lambda *_: root.after(350, validate))
     cars_var.trace_add("write", refresh_cars_colour)
     refresh_cars_colour()
     root.protocol("WM_DELETE_WINDOW", on_close)
     root.after(100, poll)
+    if FROZEN:  # what an earlier update left behind; the old copy may still be closing, so twice
+        for delay in (500, 6000):
+            root.after(delay, lambda: cleanup_old_versions(Path(sys.executable).resolve()))
     if iso:
         iso_var.set(iso)
     root.mainloop()
@@ -912,11 +1159,22 @@ def main(argv=None) -> int:
     parser.add_argument("--no-improvements", action="store_true", help="skip the game improvements (default: on)")
     parser.add_argument("--install-now", action="store_true", help="open the window and start at once (needs --iso)")
     parser.add_argument("--log-file", type=Path, help="also write progress to this file (with --cli)")
+    parser.add_argument("--check-update", action="store_true",
+                        help="say whether a newer Setup is published on GitHub, then exit")
+    parser.add_argument("--update", action="store_true",
+                        help="download and install the newer Setup if there is one, then exit")
+    parser.add_argument("--relaunch", action="store_true", help="with --update: start the new Setup afterwards")
+    parser.add_argument("--update-api", default=RELEASES_API, help=argparse.SUPPRESS)  # tests: a local fake release
     args = parser.parse_args(argv)
-    if not args.cli:
-        return run_gui(args.dest, args.iso or "", args.cars, not args.no_improvements, args.install_now,
-                       str(args.dlc) if args.dlc else "")
-    if not args.iso:
+    headless = args.cli or args.check_update or args.update
+    if not headless:
+        # Over an existing install the window starts with what was chosen last time, so installing
+        # again (to update the game) does not take the extra cars away by default.
+        saved = saved_options(args.dest)
+        return run_gui(args.dest, args.iso or "", args.cars or saved.get("extra_cars") is True,
+                       not args.no_improvements and saved.get("game_improvements") is not False,
+                       args.install_now, str(args.dlc) if args.dlc else "", args.update_api)
+    if args.cli and not args.iso:
         parser.error("--cli needs --iso")
     log_stream = open(args.log_file, "w", encoding="utf-8", buffering=1) if args.log_file else None
 
@@ -925,6 +1183,37 @@ def main(argv=None) -> int:
             log_stream.write(line + "\n")
         elif sys.stdout:
             print(line, flush=True)
+
+    if args.check_update or args.update:
+        try:
+            update = check_for_update(args.update_api)
+            if update is None:
+                log(f"Setup {VERSION} is the latest version.")
+                return 0
+            log(f"Setup {update.version} is available (this is {VERSION}).")
+            if args.update:
+                if not self_update_possible():
+                    raise InstallError("Only the packed MM3-Setup.exe can update itself.")
+                current = Path(sys.executable).resolve()
+                target = current.with_name(current.name + ".download")
+                last = [-1]
+
+                def download_progress(fraction, text):
+                    if int(fraction * 10) != last[0]:
+                        last[0] = int(fraction * 10)
+                        log(text)
+                download_update(update, target, download_progress)
+                apply_update(target, current)
+                log(f"Updated {current.name} to {update.version}.")
+                if args.relaunch:
+                    relaunch(current, restart_args(argv if argv is not None else sys.argv[1:]))
+            return 0
+        except InstallError as error:
+            log(f"ERROR: {error}")
+            return 1
+        finally:
+            if log_stream:
+                log_stream.close()
 
     last = [-1]
 

@@ -122,5 +122,16 @@ int main(void)
     assert(won(0x0010F90Du, 0, 2) == 0 && won(0x0011F12Bu, 0, 3) == 17 && won(0x0010F974u, 1, 3) == 0);
     puts("PASS profile box: switched-off circuits left out of the Checkpoint line (races and wins), "
          "other callers and cities unchanged");
+
+    /* After a Checkpoint race (sub_0011F0E5): outside the Circuit mode
+     * "Next race" stops at race 19; in it the circuits follow each other. */
+    assert(races(0x0011F162u, 0) == 20 && races(0x0011F1FAu, 0) == 20);
+    assert(races(0x0011F1FAu, 1) == 30);   /* no Washington circuits installed here */
+    mm3_circuit_set_mode(1);
+    assert(races(0x0011F162u, 0) == 30 && races(0x0011F1FAu, 0) == 30);
+    mm3_circuit_set_mode(0);
+    list_count = 20;                        /* no DLC: retail 10 + ten circuits */
+    assert(races(0x0011F1FAu, 0) == 10);
+    puts("PASS next race: outside the Circuit mode Checkpoint 19 is the last race; circuits follow each other in it");
     return 0;
 }

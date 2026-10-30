@@ -48,7 +48,9 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"MM3_EXHAUST_TRIANGLES", "Exhaust smoke", 0},
     {"MM3_GAMEPLAY_MODS", "Modded gameplay", 0},
     {"MM3_MENU_QUIT", "Quit in the main menu", 1},
-    {"MM3_SAME_CAR", "Opponents drive your car", 0}
+    {"MM3_SAME_CAR", "Opponents drive your car", 0},
+    {"MM3_FREE_CAMERA", "Free camera", 1},
+    {"MM3_CHEAT_CODES", "Typed cheat codes", 1}
 };
 
 typedef struct { int option; const char *value; } MM3ForcedOption;
@@ -70,7 +72,8 @@ static const MM3ForcedOption xbox_gameplay[] = {
     {MM3_LAUNCH_CIRCUITS, "0"}, {MM3_LAUNCH_EXTRA_CARS, "0"}, {MM3_LAUNCH_AI_ALL_CARS, "0"},
     {MM3_LAUNCH_UNLOCK, "0"}, {MM3_LAUNCH_ROUTE_NAVIGATION, "0"}, {MM3_LAUNCH_RACE_ARROW, "1"},
     {MM3_LAUNCH_DEV_TOOLS, "0"}, {MM3_LAUNCH_DEV_HUD, "0"}, {MM3_LAUNCH_DEBUG_MENU, "0"},
-    {MM3_LAUNCH_CAMERAS, "0"}, {MM3_LAUNCH_E3, "0"}, {MM3_LAUNCH_SAME_CAR, "0"}
+    {MM3_LAUNCH_CAMERAS, "0"}, {MM3_LAUNCH_E3, "0"}, {MM3_LAUNCH_SAME_CAR, "0"},
+    {MM3_LAUNCH_FREE_CAMERA, "0"}, {MM3_LAUNCH_CHEAT_CODES, "0"}
 };
 
 /* The launcher saves every option, so a changed default would never reach a
@@ -87,6 +90,17 @@ int mm3_launcher_option_master(int option)
     for (size_t i = 0; i < sizeof xbox_gameplay / sizeof xbox_gameplay[0]; ++i)
         if (xbox_gameplay[i].option == option) return MM3_LAUNCH_GAMEPLAY;
     return -1;
+}
+const int mm3_launcher_camera_keys[MM3_LAUNCHER_CAMERA_KEYS] = {
+    0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x2D, 0x2E, 0x24, 0x23, 0x21, 0x22
+};
+const char *const mm3_launcher_camera_key_names[MM3_LAUNCHER_CAMERA_KEYS] = {
+    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "Insert", "Delete", "Home", "End", "Page Up", "Page Down"
+};
+static int camera_key_valid(int vk)
+{
+    for (int i = 0; i < MM3_LAUNCHER_CAMERA_KEYS; ++i) if (mm3_launcher_camera_keys[i] == vk) return 1;
+    return 0;
 }
 const char *const mm3_launcher_key_names[MM3_LAUNCHER_KEYS] = {
     "A", "B", "X", "Y", "WHITE", "BLACK", "LT", "RT", "START", "BACK",
@@ -169,7 +183,9 @@ void mm3_launcher_config_defaults(MM3LauncherConfig *config)
     for (int i = 0; i < MM3_LAUNCHER_PAD_INPUTS; ++i) config->pad[i] = bindings.pad[i];
     config->controller_count = 1;
     config->network_port = 3075;
-    config->damage_percent = config->time_percent = 100;
+    config->damage_percent = config->own_damage_percent = config->time_percent = 100;
+    config->ai_level = 5;
+    config->free_camera_key = 0x77;   /* F8 */
 }
 
 int mm3_launcher_config_valid(const MM3LauncherConfig *config)
@@ -178,7 +194,9 @@ int mm3_launcher_config_valid(const MM3LauncherConfig *config)
         (config->fov_degrees != 0 &&
         (config->fov_degrees < 60 || config->fov_degrees > 110)) ||
         config->damage_percent < 0 || config->damage_percent > 400 ||
+        config->own_damage_percent < 0 || config->own_damage_percent > 400 ||
         config->time_percent < 25 || config->time_percent > 400 ||
+        config->ai_level < 0 || config->ai_level > 9 || !camera_key_valid(config->free_camera_key) ||
         config->network_port < 1 || config->network_port > 65535 ||
         !memchr(config->peers, 0, sizeof config->peers) || !peers_valid(config->peers)) return 0;
     for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i)
@@ -224,6 +242,18 @@ int mm3_launcher_config_assign(MM3LauncherConfig *config, const char *key, const
     if (!strcmp(key, "MM3_DAMAGE_PERCENT")) {
         if (!integer(value, 0, 400, &number)) return 0;
         config->damage_percent = number; return 1;
+    }
+    if (!strcmp(key, "MM3_OWN_DAMAGE_PERCENT")) {
+        if (!integer(value, 0, 400, &number)) return 0;
+        config->own_damage_percent = number; return 1;
+    }
+    if (!strcmp(key, "MM3_AI_LEVEL")) {
+        if (!integer(value, 0, 9, &number)) return 0;
+        config->ai_level = number; return 1;
+    }
+    if (!strcmp(key, "MM3_FREE_CAMERA_KEY")) {
+        if (!integer(value, 1, 255, &number) || !camera_key_valid(number)) return 0;
+        config->free_camera_key = number; return 1;
     }
     if (!strcmp(key, "MM3_TIME_PERCENT")) {
         if (!integer(value, 25, 400, &number)) return 0;
@@ -365,7 +395,10 @@ int mm3_launcher_config_save(const MM3LauncherConfig *config, char *error, size_
                 SETTINGS_REVISION) < 0) failed = 1;
     for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i)
         if (fprintf(file, "%s=%d\n", mm3_launcher_options[i].key, config->option[i]) < 0) failed = 1;
-    if (fprintf(file, "MM3_DAMAGE_PERCENT=%d\nMM3_TIME_PERCENT=%d\n", config->damage_percent, config->time_percent) < 0)
+    if (fprintf(file, "MM3_DAMAGE_PERCENT=%d\nMM3_OWN_DAMAGE_PERCENT=%d\nMM3_TIME_PERCENT=%d\n",
+                config->damage_percent, config->own_damage_percent, config->time_percent) < 0)
+        failed = 1;
+    if (fprintf(file, "MM3_AI_LEVEL=%d\nMM3_FREE_CAMERA_KEY=%d\n", config->ai_level, config->free_camera_key) < 0)
         failed = 1;
     if (fprintf(file, "RECOMP_USB_PADS=%d\nMM3_FOV_DEGREES=%d\nRECOMP_NET_PORT=%d\nRECOMP_NET_PEERS=%s\n"
                 "RECOMP_KEYMAP=%s\nMM3_DRIVE_KEYMAP=%s\nRECOMP_PADMAP=%s\n",
@@ -384,7 +417,8 @@ int mm3_launcher_config_startup(MM3LauncherConfig *config, char *error, size_t c
 {
     static const char *const extra[] = {"RECOMP_USB_PADS", "MM3_FOV_DEGREES", "RECOMP_NET_PORT", "RECOMP_NET_PEERS",
                                        "RECOMP_KEYMAP", "MM3_DRIVE_KEYMAP", "RECOMP_PADMAP",
-                                       "MM3_DAMAGE_PERCENT", "MM3_TIME_PERCENT"};
+                                       "MM3_DAMAGE_PERCENT", "MM3_OWN_DAMAGE_PERCENT", "MM3_TIME_PERCENT",
+                                       "MM3_AI_LEVEL", "MM3_FREE_CAMERA_KEY"};
     int loaded;
     mm3_launcher_config_defaults(config);
     loaded = mm3_launcher_config_load(config, error, capacity);
@@ -430,6 +464,11 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
     snprintf(number, sizeof number, "%d", config->fov_degrees); SET("MM3_FOV_DEGREES", number);
     snprintf(number, sizeof number, "%d", config->option[MM3_LAUNCH_GAMEPLAY] ? config->damage_percent : 100);
     SET("MM3_DAMAGE_PERCENT", number);
+    snprintf(number, sizeof number, "%d", config->option[MM3_LAUNCH_GAMEPLAY] ? config->own_damage_percent : 100);
+    SET("MM3_OWN_DAMAGE_PERCENT", number);
+    snprintf(number, sizeof number, "%d", config->option[MM3_LAUNCH_GAMEPLAY] ? config->ai_level : 5);
+    SET("MM3_AI_LEVEL", number);
+    snprintf(number, sizeof number, "%d", config->free_camera_key); SET("MM3_FREE_CAMERA_KEY", number);
     snprintf(number, sizeof number, "%d", config->option[MM3_LAUNCH_GAMEPLAY] ? config->time_percent : 100);
     SET("MM3_TIME_PERCENT", number);
     snprintf(number, sizeof number, "%d", config->network_port); SET("RECOMP_NET_PORT", number);

@@ -292,6 +292,15 @@ void sub_0025968E(void)
     int race = camera_setup && MEM32(g_ebp + 4) == 0x00210E1Eu;
     int menu = camera_setup && MEM32(g_ebp + 4) == 0x000E51EEu;
     int patch = !menu && fabsf(aspect - 4.0f / 3.0f) < 1e-4f && fabsf(wide - aspect) > 1e-4f;
+    /* renderSetFov derives fovy from the aspect the camera last stored. A
+     * shape left over from an earlier window (resized, or still sizing while
+     * the race loaded) is neither 4:3 nor the current one: without this the
+     * whole race kept the narrowed Vert- view, 25% zoomed in, with the
+     * checkpoint arrow pushed off the top of the screen. The constructor's
+     * square placeholder (1.0) is not a display shape and stays alone. */
+    int stale = race && isfinite(aspect) && aspect >= 0.5f && aspect <= 4.0f &&
+        fabsf(aspect - 1.0f) >= 1e-4f && fabsf(aspect - 4.0f / 3.0f) >= 1e-4f &&
+        fabsf(aspect - wide) >= 1e-4f;
     if (menu) {
         memset(s_display_cameras, 0, sizeof s_display_cameras);
         s_display_camera_next = 0;
@@ -315,6 +324,8 @@ void sub_0025968E(void)
     if (patch && MEM32(g_esp) == 0x000F4AF5u &&
         fabsf(MEMF(g_ebp + 0xC) - 4.0f / 3.0f) < 1e-4f)
         MEMF(g_ebp + 0xC) = wide;
+    if (stale)
+        MEMF(g_esp + 0xC) = MEMF(g_ebp + 0xC) = wide;
     /* The race camera (0x210D6F, calling the setup with return 0x210E1E)
      * derives fovy from a horizontal field of view and that stored aspect:
      * fovy = 2 atan(tan(hfov / 2) / aspect). With the stored aspect widened
@@ -329,7 +340,7 @@ void sub_0025968E(void)
          * it is the name tags over cars, positioned through this camera. */
         nv2a_d3d_set_hud_start(50.0f, 320.0f, 178.0f, 448.0f);
         nv2a_d3d_set_edge_hud(1);
-        if (fabsf(aspect - 4.0f / 3.0f) < 1e-4f || fabsf(aspect - wide) < 1e-4f)
+        if (fabsf(aspect - 4.0f / 3.0f) < 1e-4f || fabsf(aspect - wide) < 1e-4f || stale)
             remember_display_camera(g_esi);
     }
     else if (MEM32(g_esp) == 0x000F4AF5u && MEM32(g_ebp + 4) == 0x000E51EEu)
@@ -345,9 +356,9 @@ void sub_0025968E(void)
                                      MEMF(g_esp + 0xC));
             MEMF(g_esp + 8) = fovy;
             MEMF(g_ebp + 8) = fovy;
-        } else if (fabsf(aspect - 4.0f / 3.0f) < 1e-4f || fabsf(aspect - wide) < 1e-4f) {
-            /* Undo the native horizontal-to-vertical conversion against its
-             * old stored aspect. Wider windows keep vertical coverage;
+        } else if (fabsf(aspect - 4.0f / 3.0f) < 1e-4f || fabsf(aspect - wide) < 1e-4f || stale) {
+            /* Undo the native horizontal-to-vertical conversion against the
+             * stored aspect it used. Wider windows keep vertical coverage;
              * taller windows keep horizontal coverage and reveal more sky. */
             float fovy = 2.0f * atanf(tanf(MEMF(g_esp + 8) * 0.5f) * aspect /
                                      fminf(wide, 4.0f / 3.0f));

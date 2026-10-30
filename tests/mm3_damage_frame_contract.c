@@ -14,11 +14,12 @@
 
 ptrdiff_t g_xbox_mem_offset;
 RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi, g_edi;
-static unsigned char memory[0x400000];
+static unsigned char memory[0x410000];   /* up to the game settings at 0x407C18 */
 static float seen_scale, seen_impulse[64], seen_hit_factor[64], seen_factor;
 static unsigned damage_calls;
 static const uint32_t frame = 0x30000, component = 0x21000, body = 0x22000, record = 0x20000,
-                      other = 0x23000, other_body = 0x24000, other_record = 0x25000, stack = 0xFF00;
+                      other = 0x23000, other_body = 0x24000, other_record = 0x25000, stack = 0xFF00,
+                      manager = 0x31000, slot = 0x32000, player = 0x33000, vehicle = 0x34000;
 
 void sub_00021DCF_original(void) { seen_scale = MEMF(g_esp + 4); g_esp += 8; }
 void sub_001CDB6C_original(void)
@@ -64,6 +65,7 @@ int main(int argc, char **argv)
 {
     int off = argc > 1 && !strcmp(argv[1], "off");
     const char *percent = argc > 2 && !strcmp(argv[1], "percent") ? argv[2] : NULL;
+    const char *own = argc > 2 && !strcmp(argv[1], "own") ? argv[2] : NULL;
     int i;
     g_xbox_mem_offset = (ptrdiff_t)memory;
     if (off) _putenv_s("MM3_DAMAGE_FRAME_FIX", "0");
@@ -80,6 +82,27 @@ int main(int argc, char **argv)
         step(component, 900);
         assert(seen_factor == 1.25f * scale && MEMF(component + 0x8718) == 1.25f);
         printf("PASS car damage %s%%: each crash's damage scaled for every car, its own factor kept\n", percent);
+        return 0;
+    }
+    if (own) {
+        /* Your car's damage: the primary player's car (player manager
+         * 0x3C5CDC +0x54 -> +0xD8 player -> +0x19C vehicle -> +8 car) gets
+         * the factor once more, on top of Car damage; other cars do not. */
+        float scale = (float)atoi(own) / 100.0f;
+        _putenv_s("MM3_DAMAGE_PERCENT", "200");
+        _putenv_s("MM3_OWN_DAMAGE_PERCENT", own);
+        MEM32(0x3C5CDC) = manager; MEM32(manager + 0x54) = slot; MEM32(slot + 0xD8) = player;
+        MEM32(player + 0x19C) = vehicle; MEM32(vehicle) = 0x383768; MEM32(vehicle + 8) = component;
+        MEM32(0x3C5C90) = frame;
+        end_frame(60);
+        step(component, 900);
+        assert(seen_factor == 1.25f * 2.0f * scale && MEMF(component + 0x8718) == 1.25f);
+        step(other, 900);
+        assert(seen_factor == 1.25f * 2.0f && MEMF(other + 0x8718) == 1.25f);
+        MEM32(vehicle) = 0x383000;                    /* not a vehicle interface: no player car */
+        step(component, 900);
+        assert(seen_factor == 1.25f * 2.0f);
+        printf("PASS your car's damage %s%%: only the player's car, on top of car damage 200%%\n", own);
         return 0;
     }
     MEM32(0x3C5C90) = frame;

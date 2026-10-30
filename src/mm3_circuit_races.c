@@ -239,9 +239,16 @@ void sub_001238B7(void)
  * installed circuits are races 20-29 of that list, so with them switched off
  * (MM3_EXTRA_CIRCUITS=0, Xbox gameplay) the box read "12/30" with no circuit
  * to be seen. It leaves them out of both numbers then, as the Checkpoint list
- * does. */
+ * does.
+ * After a Checkpoint race, sub_0011F0E5 offers "Next race" while race + 1 is
+ * below the same count (the calls returning to 0x11F162, its unlock limit,
+ * and 0x11F1FA), so finishing race 19 outside the Circuit mode started
+ * circuit 20. Outside the Circuit mode that count leaves the circuits out
+ * too. */
 #define PROFILE_CHECKPOINT_RACES_RETURN 0x0010F994u
 #define PROFILE_CHECKPOINT_WON_RETURN 0x0010F974u
+#define NEXT_RACE_LIMIT_RETURN 0x0011F162u
+#define NEXT_RACE_COUNT_RETURN 0x0011F1FAu
 #define PROFILE_MEDALS 0x80u
 #define PROFILE_MODE_CHECKPOINT 3u
 
@@ -251,8 +258,10 @@ extern void sub_001E4F97_original(void);
 void sub_001E0F69(void)
 {
     uint32_t caller = MEM32(g_esp), city = g_eax, circuits;
+    int profile_box = caller == PROFILE_CHECKPOINT_RACES_RETURN && !mm3_mod_extra_circuits();
+    int next_race = (caller == NEXT_RACE_LIMIT_RETURN || caller == NEXT_RACE_COUNT_RETURN) && !circuit_mode;
     sub_001E0F69_original();
-    if (caller != PROFILE_CHECKPOINT_RACES_RETURN || mm3_mod_extra_circuits() || city > 1) return;
+    if (!(profile_box || next_race) || city > 1) return;
     circuits = circuit_count(city);
     if (circuits && g_eax > RETAIL_UNLOCK_LIMIT && g_eax > circuits) g_eax -= circuits;
 }

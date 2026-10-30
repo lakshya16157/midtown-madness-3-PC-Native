@@ -23,6 +23,15 @@ own copy of the Xbox game.
      It adds 14 cars and 40 Blitz and Checkpoint races.
 4. Click **Install**, then **Play now**. Later, start the game with
    **Play Midtown Madness 3.cmd** in the install folder.
+5. **Updates:** click **Check for updates** at the bottom left of Setup. If a newer release
+   is published, Setup downloads it (checking it against the release's checksum), replaces
+   itself and restarts. Then pick your image and click **Install** again to put the new game
+   in your existing install; your saves and DLC stay, and the extra cars and improvements
+   boxes start as you left them. (Setup 2.1 and later have the button; with an older Setup,
+   download the latest release by hand once.) The game's own launcher window, the one you
+   see before the game starts, has the same **Check for updates** button: it downloads the
+   new Setup (checked the same way) into an `updates` folder in the install, closes, and
+   opens that Setup for your install folder, ready for you to pick your image and install.
 
 You need Windows 10 or 11 (64-bit), a Direct3D 11 graphics card and about 6 GB of free
 disk space. The first start shows the intro movies for about 3½ minutes; the game has not
@@ -59,6 +68,9 @@ Spanish voices in Spanish.
 | Exhaust smoke from each car's own pipes (off by default) | Improved minimap, which shows more of the map at speed |
 | Quit in the main menu, minimap compass pins hidden | Opponents drive your car (off by default) |
 | Softer car paint reflections | Car damage and time limits, from no damage to 3x and from half to 3x the time (Xbox values by default) |
+| | Your car's damage, on top of car damage: invulnerable to 3x (Xbox by default) |
+| | Opponents' difficulty 0 to 9 (5 = Xbox by default) |
+| | Free camera on a key of your choice, typed cheat codes (both on with Modded gameplay) |
 | | Unlock all vehicles, developer tools (off by default) |
 
 ## Graphics settings
@@ -82,6 +94,17 @@ While playing:
 - With the **Improved look**, **Graphics Settings** is also in the main menu (between Options
   and Profiles) and in the pause menu, so you can change them with the controller.
 - **F11** or **Alt+Enter** switches fullscreen on and off.
+- With **Modded gameplay** and **Free camera** ticked (Gameplay mods tab, where you can also
+  pick its key), **F8** in a race frees the camera: **W/A/S/D** or the left stick fly, **Q/E**
+  or the triggers go down and up, the arrow keys, the right stick or the mouse with its right
+  button held look around, **Shift**/**RB** is faster and **Ctrl**/**LB** slower. Your car
+  gets no input while the camera flies, and the camera stays within 400 m of it (the city
+  only loads around your car). **F8** again goes back to the game's camera.
+- **Opponents' difficulty** (Gameplay mods tab) sets how hard race opponents drive: **5** is
+  the Xbox game; above 5 they accelerate harder, brake later and harder, take corners a little
+  faster and stop holding back in the early races; below 5 they are slower. With **Typed cheat
+  codes** ticked you can also change it while playing: type **howhardcanitbe** and a digit,
+  **0** to **9**; a Windows chime confirms it.
 
 ## Extra cars and Car Workshop
 
@@ -129,8 +152,8 @@ players, is in [docs/MULTIPLAYER.md](docs/MULTIPLAYER.md).
 
 ## Problems?
 
-- **Which version do I have?** The launcher's title shows it. Update to the latest release
-  first.
+- **Which version do I have?** The launcher's title shows it, and Setup shows its own
+  version next to **Check for updates**. Update to the latest release first.
 - **A race doesn't finish:** in circuit races, checkpoints count only in order. If you miss
   one, the game tells you which, and you need to go back for it.
 - **A save from a real Xbox says it is damaged:** run

@@ -241,6 +241,38 @@ static float damage_scale(void)
     return scale;
 }
 
+/* "Your car's damage" (MM3_OWN_DAMAGE_PERCENT; 100 = the Xbox): the same
+ * factor once more, for the player's own car only, on top of Car damage.
+ * The damage step's component is the car (+0x3C simulation, its +4 the
+ * body); the player's is [[[[0x3C5CDC]+0x54]+0xD8]+0x19C]+8, the vehicle
+ * interface (vtable 0x383768) of the primary player, and in split screen
+ * (0x407C20 == 1) the second player's beside it at +0x58. */
+static float own_damage_scale(void)
+{
+    static float scale = -1.0f;
+    if (scale < 0.0f) {
+        const char *v = getenv("MM3_OWN_DAMAGE_PERCENT");
+        int percent = v && *v ? atoi(v) : 100;
+        scale = percent >= 0 && percent <= 1000 ? (float)percent / 100.0f : 1.0f;
+        if (scale != 1.0f) fprintf(stderr, "[MM3_DAMAGE] your car's damage x%.2f (launcher Gameplay mods)\n", scale);
+    }
+    return scale;
+}
+
+static int own_car(uint32_t car)
+{
+    uint32_t manager = MEM32(0x003C5CDCu), slot, i;
+    if (!guest_object(manager)) return 0;
+    for (i = 0; i < (MEM32(0x00407C20u) == 1u ? 2u : 1u); ++i) {
+        uint32_t player, vehicle;
+        if (!guest_object(slot = MEM32(manager + 0x54u + i * 4u)) ||
+            !guest_object(player = MEM32(slot + 0xD8u)) ||
+            !guest_object(vehicle = MEM32(player + 0x19Cu)) || MEM32(vehicle) != 0x00383768u) continue;
+        if (MEM32(vehicle + 8u) == car) return 1;
+    }
+    return 0;
+}
+
 /* The damage step, as the game runs it: v = impulse * the part's factor *
  * the car's factor (playerSetDamageFactor) * 1230, nothing below 800, and
  * (min(v, 30000) - 800) / 29200 of the part's damage, at most all of it.
@@ -251,6 +283,7 @@ static void damage_step(uint32_t component, uint32_t record)
     static unsigned lines;
     static clock_t first;
     float impulse = MEMF(record + 0x1A4u), v, scale = damage_scale(), factor = 0.0f;
+    if (own_damage_scale() != 1.0f && own_car(component)) scale *= own_damage_scale();
     if (lines < HIT_LOG_LINES && damage_job()) {
         v = impulse * MEMF(component + 0x24u) * MEMF(record + 0x14u) * 1230.0f;
         if (v > 800.0f && v < 1.0e12f) {

@@ -1,7 +1,11 @@
-"""Disc reuse and local official DLC imports preserve existing game data."""
+"""Disc reuse and local official DLC imports preserve existing game data; Setup updates itself safely."""
+import hashlib
+import http.server
 import importlib.util
+import json
 from pathlib import Path
 import struct
+import threading
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -209,6 +213,173 @@ class DiscReuseTest(unittest.TestCase):
                                     ("Data", "name:stream"), ("Data", "trailing.")):
                 with self.subTest(name=name), self.assertRaises(setup.InstallError):
                     setup.safe_target(Path(scratch), directory, name)
+
+
+class FakeGitHub:
+    """A local stand-in for GitHub's "latest release" API and its download links."""
+
+    def __init__(self, tag, setup_bytes=b"MZ" + bytes(5000), with_checksum=True, checksum=None,
+                 listed_size=None, body="Fixes a crash."):
+        self.files = {"/releases/download/MM3-Setup.exe": setup_bytes}
+        digest = checksum or hashlib.sha256(setup_bytes).hexdigest()
+        if with_checksum:
+            self.files["/releases/download/MM3-Setup.exe.sha256"] = f"{digest}  MM3-Setup.exe\r\n".encode()
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
+        base = f"http://127.0.0.1:{self.server.server_port}"
+        assets = [{"name": "MM3-Setup.exe", "size": listed_size if listed_size is not None else len(setup_bytes),
+                   "browser_download_url": base + "/releases/download/MM3-Setup.exe"}]
+        if with_checksum:
+            assets.append({"name": "MM3-Setup.exe.sha256", "size": 81,
+                           "browser_download_url": base + "/releases/download/MM3-Setup.exe.sha256"})
+        self.files["/latest"] = json.dumps({"tag_name": tag, "body": body, "html_url": base + "/page",
+                                            "assets": assets}).encode()
+        self.api = base + "/latest"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def _handler(self):
+        files = self.files
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                data = files.get(self.path)
+                self.send_response(200 if data is not None else 404)
+                self.send_header("Content-Length", str(len(data or b"")))
+                self.end_headers()
+                self.wfile.write(data or b"")
+
+            def log_message(self, *args):
+                pass
+        return Handler
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class VersionOrderTest(unittest.TestCase):
+    def test_newer_versions_sort_higher_and_betas_sort_before_their_final(self):
+        order = ["2.0 beta 0", "v2.0-beta.1", "2.0 beta 2", "2.0", "v2.0.1", "2.1", "2.10", "3"]
+        keys = [setup.version_key(name) for name in order]
+        self.assertEqual(keys, sorted(keys))
+        self.assertEqual(len(set(keys)), len(keys))
+        self.assertEqual(setup.version_key("v2.0"), setup.version_key("2.0.0"))
+        self.assertIsNone(setup.version_key("latest"))
+
+
+class UpdateCheckTest(unittest.TestCase):
+    def check(self, tag, **options):
+        server = FakeGitHub(tag, **options)
+        self.addCleanup(server.close)
+        return server, setup.check_for_update(server.api, current="2.0")
+
+    def test_no_update_when_the_latest_release_is_not_newer(self):
+        for tag in ("v2.0", "v1.7", "v2.0-beta.2"):
+            with self.subTest(tag=tag):
+                self.assertIsNone(self.check(tag)[1])
+
+    def test_reports_a_newer_release_with_its_files_and_notes(self):
+        _, update = self.check("v2.1")
+        self.assertEqual((update.version, update.size, update.notes), ("2.1", 5002, "Fixes a crash."))
+        self.assertTrue(update.url.endswith("/MM3-Setup.exe"))
+        self.assertTrue(update.sha256_url.endswith("/MM3-Setup.exe.sha256"))
+
+    def test_a_release_without_its_setup_or_checksum_is_not_offered(self):
+        with self.assertRaises(setup.InstallError):
+            self.check("v2.1", with_checksum=False)
+
+    def test_downloads_must_come_from_this_projects_releases(self):
+        server = FakeGitHub("v2.1")
+        self.addCleanup(server.close)
+        with patch.object(setup, "RELEASES_API", server.api), self.assertRaises(setup.InstallError):
+            setup.check_for_update(server.api, current="2.0")  # the real API's files must be on github.com
+
+    def test_offline_or_broken_answers_are_friendly_errors(self):
+        with self.assertRaises(setup.InstallError):
+            setup.check_for_update("http://127.0.0.1:9/latest", current="2.0")
+        server = FakeGitHub("v2.1")
+        self.addCleanup(server.close)
+        server.files["/latest"] = b"not json"
+        with self.assertRaises(setup.InstallError):
+            setup.check_for_update(server.api, current="2.0")
+        with self.assertRaises(setup.InstallError):
+            setup.check_for_update(server.api.replace("/latest", "/missing"), current="2.0")
+
+
+class UpdateDownloadTest(unittest.TestCase):
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(self.scratch.cleanup)
+        self.target = Path(self.scratch.name) / "MM3-Setup.exe.download"
+
+    def fetch(self, **options):
+        server = FakeGitHub("v2.1", **options)
+        self.addCleanup(server.close)
+        update = setup.check_for_update(server.api, current="2.0")
+        steps = []
+        setup.download_update(update, self.target, lambda fraction, text: steps.append(fraction))
+        return steps
+
+    def test_saves_a_download_that_matches_the_published_checksum(self):
+        payload = b"MZ" + bytes(range(256)) * 9000
+        steps = self.fetch(setup_bytes=payload)
+        self.assertEqual(self.target.read_bytes(), payload)
+        self.assertAlmostEqual(steps[-1], 1.0)
+
+    def test_discards_a_download_with_the_wrong_checksum_size_or_type(self):
+        for name, options in (("checksum", {"checksum": "0" * 64}), ("size", {"listed_size": 9999}),
+                              ("type", {"setup_bytes": b"<html>not a program</html>"}),
+                              ("checksum file", {"checksum": "zz"})):
+            with self.subTest(name), self.assertRaises(setup.InstallError):
+                self.fetch(**options)
+            self.assertFalse(self.target.exists())
+
+
+class SavedOptionsTest(unittest.TestCase):
+    def test_reads_what_the_last_setup_chose_and_ignores_anything_else(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            folder = Path(scratch)
+            self.assertEqual(setup.saved_options(folder), {})
+            (folder / "setup-options.json").write_text('{"extra_cars": true, "game_improvements": false}')
+            self.assertEqual(setup.saved_options(folder), {"extra_cars": True, "game_improvements": False})
+            for broken in ("not json", "[1, 2]", ""):
+                (folder / "setup-options.json").write_text(broken)
+                self.assertEqual(setup.saved_options(folder), {})
+
+
+class UpdateSwapTest(unittest.TestCase):
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(self.scratch.cleanup)
+        self.dir = Path(self.scratch.name)
+        self.current, self.new = self.dir / "MM3-Setup.exe", self.dir / "MM3-Setup.exe.download"
+        self.current.write_bytes(b"old")
+        self.new.write_bytes(b"new")
+
+    def test_new_file_takes_the_name_and_the_old_one_is_cleaned_up_later(self):
+        setup.apply_update(self.new, self.current)
+        self.assertEqual(self.current.read_bytes(), b"new")
+        self.assertFalse(self.new.exists())
+        (old,) = self.dir.glob("MM3-Setup.exe.*.old")
+        self.assertEqual(old.read_bytes(), b"old")
+        setup.cleanup_old_versions(self.current)
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["MM3-Setup.exe"])
+
+    def test_puts_the_old_file_back_if_the_new_one_cannot_be_moved(self):
+        real_replace = setup.os.replace
+        calls = []
+
+        def replace(source, target):
+            calls.append(source)
+            if len(calls) == 2:
+                raise PermissionError(13, "denied")
+            return real_replace(source, target)
+        with patch.object(setup.os, "replace", replace), self.assertRaises(setup.InstallError):
+            setup.apply_update(self.new, self.current)
+        self.assertEqual(self.current.read_bytes(), b"old")
+
+    def test_restart_keeps_the_options_but_never_goes_straight_to_an_install(self):
+        self.assertEqual(setup.restart_args(["--dest", "D:/MM3", "--install-now", "--update", "--relaunch"]),
+                         ["--dest", "D:/MM3"])
 
 
 if __name__ == "__main__":

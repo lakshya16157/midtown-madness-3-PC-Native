@@ -125,6 +125,10 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_002430FD)
 # Slipstream drafting and the roll guard on every car's integrate step
 # (src/mm3_vehicle_dynamics.c).
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001D7441)
+# F8 free camera: the race view's world-to-camera matrix (src/mm3_free_camera.c).
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001EA16C)
+# howhardcanitbe0..9: the race opponents' Normal driving state (src/mm3_ai_difficulty.c).
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0014194C)
 # Lua natives this port adds to sub_0020646F's list (src/mm3_lua_natives.c).
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0020646F)
 # Screen-widget draws skip links to destroyed widgets, and a destroyed menu
@@ -150,8 +154,12 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0011C194)
 # Circuit mode lists only the circuit races, with their own picture strip;
 # Checkpoint lists the rest.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001238B7 sub_00103BE1 sub_001038D0)
-# The profile box's Checkpoint line leaves switched-off circuits out.
+# The profile box's Checkpoint line and the post-race "Next race" leave
+# circuits out outside the Circuit mode.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001E0F69 sub_001E4F97)
+# [MM3_POLICE] names why a city's police pool stays empty: the AI setup and
+# the police fill (src/mm3_police_log.c; car creation steps by seam).
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00158291 sub_001507DA)
 # Back from a circuit race the menu returns to the Circuit screens.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00120A9A)
 # Race script errors are printed to the log as well.
@@ -237,6 +245,10 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_glow_capacity_seam.cmake")
 list(APPEND MM3_SEAM_FUNCTIONS sub_0022C86A)
 include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_tree_contact_seam.cmake")
 list(APPEND MM3_SEAM_FUNCTIONS sub_0015CD35 sub_0015B9AB)
+include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_score_tables_seam.cmake")
+list(APPEND MM3_SEAM_FUNCTIONS sub_001E8A7A sub_001E9060)
+include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_police_create_seam.cmake")
+list(APPEND MM3_SEAM_FUNCTIONS sub_0015070A ${MM3_POLICE_FACTORY_OWNERS})
 if(MM3_NATIVE_FENCE_WAIT)
     list(APPEND MM3_SEAM_FUNCTIONS sub_00344640)
     include("${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_fence_wait_seam.cmake")
@@ -443,6 +455,19 @@ foreach(distance_input IN LISTS distance_owners)
             mm3_add_tree_geometry(distance_content ${tree_geometry_owner})
         endif()
     endforeach()
+    foreach(score_owner sub_001E8A7A sub_001E9060)
+        if(owner_${score_owner} STREQUAL distance_input)
+            mm3_fix_score_tables(distance_content ${score_owner})
+        endif()
+    endforeach()
+    if(owner_sub_0015070A STREQUAL distance_input)
+        mm3_add_police_create_steps(distance_content)
+    endif()
+    foreach(police_owner IN LISTS MM3_POLICE_FACTORY_OWNERS)
+        if(owner_${police_owner} STREQUAL distance_input)
+            mm3_add_police_factory_notes(distance_content ${police_owner})
+        endif()
+    endforeach()
     set(distance_cache OFF)
     if(MM3_GEN_REGISTER_CACHE)
         string(FIND "${distance_content}" "#define RECOMP_GENERATED_CODE" distance_generated)
@@ -493,6 +518,7 @@ add_executable(${PROJECT_NAME}
     src/mm3_native_fog.c
     src/mm3_launcher.c
     src/mm3_launcher_config.c
+    src/mm3_update.c
     src/mm3_pedestrian_compat.c
     src/mm3_display_config.c
     src/mm3_display_settings.c
@@ -540,6 +566,11 @@ add_executable(${PROJECT_NAME}
  src/mm3_map_pins.c
  src/mm3_language.c
  src/mm3_vehicle_dynamics.c
+ src/mm3_cheat_keys.c
+ src/mm3_free_camera.c
+ src/mm3_ai_difficulty.c
+ src/mm3_police_log.c
+ src/mm3_score_tables.c
  src/mm3_lua_natives.c
  src/mm3_ui_guard.c
  src/mm3_heap_guard.c
@@ -595,11 +626,11 @@ set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_L
 set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_LAUNCHER_NETWORK=1)
 # The release this build belongs to: the launcher's title and the first log
 # line show it, so a report says which version it came from.
-set(MM3_VERSION "2.0")
+set(MM3_VERSION "2.1")
 set_property(SOURCE src/mm3_launcher.c src/main.c APPEND PROPERTY COMPILE_DEFINITIONS
     "MM3_VERSION=\"${MM3_VERSION}\"")
 if(WIN32)
-    target_link_libraries(${PROJECT_NAME} PRIVATE comctl32 xinput)
+    target_link_libraries(${PROJECT_NAME} PRIVATE comctl32 xinput winhttp bcrypt shell32)
 endif()
 
 # MM3's CRT uses NtAllocateVirtualMemory reserve requests as heap-backed

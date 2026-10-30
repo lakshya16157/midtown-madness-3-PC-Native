@@ -3,14 +3,25 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from mm3_update_regression import serve   # a local stand-in for GitHub's releases
 
 
 def main():
     if not shutil.which("cl"):
         raise SystemExit("Run scripts/enter-env.ps1 first so cl.exe is available.")
+    server = serve()
+    try:
+        run(server.server_port)
+    finally:
+        server.shutdown()
+
+
+def run(port):
     with tempfile.TemporaryDirectory(prefix="mm3-launcher-") as temporary:
         folder = Path(temporary)
         common = ["cl", "/nologo", "/W4", "/WX", "/Od", "/std:c11", "/utf-8",
@@ -27,10 +38,13 @@ def main():
         subprocess.run(common + ["/DMM3_LAUNCHER_AUDIO=1", "/DMM3_LAUNCHER_NETWORK=1",
             str(ROOT / "tests/mm3_launcher_ui_contract.c"),
             str(ROOT / "src/mm3_launcher_config.c"), str(ROOT / "src/mm3_display_config.c"),
-            "/Fe:" + str(ui), "/link", "user32.lib", "gdi32.lib", "comctl32.lib", "xinput.lib"],
+            str(ROOT / "src/mm3_update.c"),
+            "/Fe:" + str(ui), "/link", "user32.lib", "gdi32.lib", "comctl32.lib", "xinput.lib",
+            "shell32.lib", "winhttp.lib", "bcrypt.lib"],
             check=True, cwd=folder)
-        subprocess.run([str(ui), str(folder)], check=True, cwd=folder,
-                       env=environment, timeout=40)
+        environment = {key: value for key, value in environment.items() if not key.lower().endswith("_proxy")}
+        subprocess.run([str(ui), str(folder), str(port)], check=True, cwd=folder,
+                       env=environment, timeout=90)
 
 
 if __name__ == "__main__":

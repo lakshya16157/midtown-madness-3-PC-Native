@@ -6,6 +6,7 @@
 #include "recomp_types.h"
 #include "mm3_debug_teleport.h"
 #include "mm3_stress_debug.h"
+#include "mm3_police_log.h"
 #include "mm3_car_lighting.h"
 
 /* mm3_native_fog.c: hold the first frame after a camera cut (1), show it
@@ -177,6 +178,7 @@ void sub_002203E5(void)
             isfinite(MEMF(body + 0xCC)) && isfinite(MEMF(body + 0xD0));
         InterlockedExchange(&keyboard_sampled, (LONG)GetTickCount());
         InterlockedExchange(&keyboard_active, active);
+        if (active) mm3_police_log_tick(body);
     }
     if (enabled) sample_car(g_ecx);
     if (enabled && g_ecx == primary) {

@@ -24,6 +24,8 @@ enum MM3LauncherOption {
     MM3_LAUNCH_GAMEPLAY,
     MM3_LAUNCH_QUIT,             /* the main menu's Sign In row becomes Quit */
     MM3_LAUNCH_SAME_CAR,         /* race opponents drive the player's car */
+    MM3_LAUNCH_FREE_CAMERA,      /* a key in a race flies the view away from the car */
+    MM3_LAUNCH_CHEAT_CODES,      /* typed howhardcanitbe0..9 sets the opponents' difficulty */
     MM3_LAUNCH_OPTION_COUNT
 };
 
@@ -33,7 +35,10 @@ typedef struct MM3LauncherConfig {
     int fov_degrees; /* 0 = retail, otherwise 60..110 horizontal degrees. */
     /* Gameplay mods, percent of the Xbox's (100); Xbox gameplay uses 100. */
     int damage_percent; /* crash damage to every car, 0..400 */
+    int own_damage_percent; /* and again to the player's own car, 0..400 */
     int time_percent;   /* race and job time limits and time bonuses, 25..400 */
+    int ai_level;       /* race opponents' difficulty, 0..9 (5 = the Xbox) */
+    int free_camera_key; /* Win32 VK of the free camera key, one of mm3_launcher_camera_keys */
     int network_port;
     char peers[512];
     int keys[MM3_LAUNCHER_KEYS]; /* Win32 VK, zero = unbound. */
@@ -68,5 +73,9 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
  * for the gameplay mods (Xbox gameplay sets them as on the Xbox), or -1 for
  * an option that is always the player's choice. */
 int mm3_launcher_option_master(int option);
+/* The keys the free camera can use: F1-F8 and the editing block. */
+enum { MM3_LAUNCHER_CAMERA_KEYS = 14 };
+extern const int mm3_launcher_camera_keys[MM3_LAUNCHER_CAMERA_KEYS];
+extern const char *const mm3_launcher_camera_key_names[MM3_LAUNCHER_CAMERA_KEYS];
 
 #endif

@@ -37,6 +37,28 @@ your image, destination and optional content, then:
    executable would invalidate the native build's code hash. DLC is separate from
    the community cars and is never downloaded or bundled by Setup.
 
+6. **Check for updates** (bottom left of the window): asks GitHub for the newest *stable*
+   release (pre-releases are skipped) and, if its version is newer than `VERSION` in
+   `installer.py`, offers to download `MM3-Setup.exe` from it. The download must come from
+   this repository's own release files, must match the release's `MM3-Setup.exe.sha256` and
+   its listed size, and must be a Windows program; otherwise it is discarded. Windows will not
+   overwrite a running .exe but lets it be renamed, so the running Setup steps aside as
+   `MM3-Setup.exe.<pid>.old`, the new file takes its name, Setup restarts itself (with the same
+   command-line options, never straight into an install) and the `.old` file is removed on the
+   next start. If the swap fails (a folder Setup cannot write to), the old file is put back.
+   Nothing is installed or changed in the game folder by an update; run Setup again over the
+   install (it skips extraction and refreshes `mm3_recomp.exe`, the cars and the launcher).
+   It only works in the packed exe; from source it offers the release page instead.
+   Started over an existing install (`--dest`, or beside it), Setup's window begins with that
+   install's saved choices (`setup-options.json`: extra cars, improvements), so installing again
+   to update does not take the extra cars away.
+   The game's launcher has the same button (`src/mm3_update.c`, WinHTTP + BCrypt, same
+   rules and the same release files): it saves the new Setup as `updates\MM3-Setup.exe` in the
+   install folder, closes without starting the game and runs it with `--dest <install folder>`.
+   Releases must therefore attach `MM3-Setup.exe` **and** `MM3-Setup.exe.sha256`
+   (`<hex>  MM3-Setup.exe`), and bump `VERSION` before building, or Setup would keep offering
+   the same release.
+
 Players must already own the original Xbox game and supply lawfully obtained game
 and DLC files. Owning a disc does not automatically authorize third-party downloads
 or redistribution. The [main README](../README.md#ownership-disc-images-and-dlc) explains
@@ -84,6 +106,11 @@ Rebuild whenever you rebuild the game.
 ```text
 MM3-Setup.exe --cli --iso <image> [--dlc <zip-or-folder>] [--cars] [--no-improvements] [--dest <dir>] [--log-file <file>]
 MM3-Setup.exe --iso <image> --cars --install-now      (opens the window and starts at once)
+```
+
+```text
+MM3-Setup.exe --check-update [--log-file <file>]      (says whether a newer release exists)
+MM3-Setup.exe --update [--relaunch] [--log-file <file>]   (downloads it and replaces Setup; --relaunch restarts it)
 ```
 
 `--cli` installs without a window. Without `--cli`, `--iso`, `--dlc`, `--cars` and `--no-improvements`

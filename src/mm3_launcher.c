@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <commctrl.h>
+#include <shellapi.h>
 #include <xinput.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -11,6 +12,22 @@
 #include "mm3_launcher_config.h"
 #include "mm3_display_config.h"
 #include "mm3_controller_detection.h"
+#include "mm3_update.h"
+
+/* The update button's outside world, replaceable by the UI contract test. */
+#ifndef MM3_UPDATE_API_URL
+#define MM3_UPDATE_API_URL MM3_UPDATE_API
+#endif
+#ifndef MM3_UPDATE_TRUSTED
+#define MM3_UPDATE_TRUSTED MM3_UPDATE_TRUSTED_PREFIX
+#endif
+#ifndef MM3_UPDATE_ASK
+#define MM3_UPDATE_ASK(window, text) \
+    (MessageBoxA(window, text, "Midtown Madness 3", MB_YESNO | MB_ICONQUESTION) == IDYES)
+#endif
+#ifndef MM3_UPDATE_OPEN
+#define MM3_UPDATE_OPEN(setup, folder) update_open_setup(setup, folder)
+#endif
 
 #ifndef MM3_LAUNCHER_AUDIO
 #define MM3_LAUNCHER_AUDIO 0
@@ -27,14 +44,28 @@ enum {
     ID_CAPTURE, ID_UNBIND, ID_SOURCE, ID_BIND_LABEL, ID_PAD_STATUS, ID_PAD_PORT, ID_PAD_COUNT,
     ID_RESOLUTION, ID_MODE, ID_FPS, ID_VSYNC, ID_SCALE, ID_ASPECT, ID_MSAA,
     ID_ANISO, ID_DRAW, ID_VIEW, ID_SHOW_FPS, ID_MINIMAP, ID_FOV, ID_PORT, ID_PEERS,
-    ID_SCREEN, ID_ORIGINAL, ID_XBOX_GAMEPLAY, ID_DAMAGE, ID_TIME, ID_NIGHT,
+    ID_SCREEN, ID_ORIGINAL, ID_XBOX_GAMEPLAY, ID_DAMAGE, ID_TIME, ID_NIGHT, ID_UPDATE,
     ID_HELP_TITLE, ID_HELP_VALUE, ID_HELP_BODY, ID_HELP_EFFECT, ID_REQUIRED,
-    ID_PAD_SUMMARY, ID_PAD_HINT, ID_TAB_BAR,
+    ID_PAD_SUMMARY, ID_PAD_HINT, ID_TAB_BAR, ID_OWN_DAMAGE, ID_AI_LEVEL, ID_CAMERA_KEY,
     ID_OPTION = 300,
     LAUNCHER_WIDTH = 1215, LAUNCHER_HEIGHT = 754,
     /* Settings, Controls, Visual + audio mods, Gameplay mods. */
     LAUNCHER_PAGES = 4
 };
+/* Messages from the update worker thread to the window. */
+enum { WM_UPDATE_DONE = WM_APP + 1, WM_UPDATE_PROGRESS };
+/* One "Check for updates" step on its own thread: the check, then (if the
+ * player agrees) the download. The thread touches nothing but this block and
+ * posts it back; the window frees it. */
+typedef struct UpdateJob {
+    HWND window;
+    volatile LONG cancel;
+    int download, result;       /* result: what mm3_update_check/download returned */
+    unsigned long long reported;
+    MM3Update update;
+    wchar_t target[2 * MAX_PATH];
+    char message[512];
+} UpdateJob;
 typedef struct LauncherControl { HWND window; int page; } LauncherControl;
 /* A connected display, for the Screen choice. number is the N of \\.\DISPLAYN,
  * which is usually the number Windows shows when it identifies displays. */
@@ -60,6 +91,9 @@ typedef struct Launcher {
     MM3DisplaySettings display;
     LauncherScreen screens[LAUNCHER_SCREENS];
     int screen_count;
+    UpdateJob *update_job;          /* the step in flight, if any */
+    int close_after_update;         /* Cancel or Close was pressed while it ran */
+    MM3Update update_found;
 } Launcher;
 
 static const char *const drive_labels[MM3_LAUNCHER_DRIVE_KEYS] = {
@@ -294,7 +328,9 @@ static void help_show(Launcher *ui, int id)
             "Cars breathe soft exhaust smoke from their own exhaust pipes: a light haze standing still, more of it and leaving the pipe faster the faster they go and the harder they accelerate. It drifts in the air, spreads and fades away.",
             "Play with the gameplay mods ticked on this tab. Xbox gameplay drives, races and progresses exactly as the Xbox game: no driving assists, falling trees, extra races or cars, unlocks, developer commands or route line, and the game's own race arrow and minimap.",
             "Put Quit in the main menu, in place of Sign In (Xbox Live, which no longer exists). Quit closes the game, as closing its window does. Off shows Sign In, as on the Xbox.",
-            "Changes the gameplay. In Checkpoint and circuit races every opponent drives the same car as you, whichever car you pick. Career jobs keep their own cars. Off: the opponents get the game's own cars."
+            "Changes the gameplay. In Checkpoint and circuit races every opponent drives the same car as you, whichever car you pick. Career jobs keep their own cars. Off: the opponents get the game's own cars.",
+            "In a race, the Free camera key flies the view away from your car: W/A/S/D or the left stick move, Q/E or the triggers go down and up, the arrows, right stick or mouse with its right button look. Shift/RB faster, Ctrl/LB slower. Your car gets no input meanwhile.",
+            "Changes the gameplay. While playing, type howhardcanitbe and a digit, 0 to 9, to change the Opponents' difficulty until you quit; a chime confirms it. Off: typing does nothing more than press the keys' controller buttons."
         };
         int option = id - ID_OPTION, on = checked(ui, id), master = mm3_launcher_option_master(option);
         title = option_caption(option);
@@ -505,6 +541,32 @@ static void help_show(Launcher *ui, int id)
                      selected > 100 ? "Cars take more damage: yours wrecks sooner, and a car you must wreck goes down faster." :
                      "Crashes do the Xbox damage.";
             break;
+        case ID_OWN_DAMAGE:
+            title = "Your car's damage";
+            selected = combo_value(control(ui, id));
+            body = "How much damage your own car takes, on top of Car damage. Only your car: the opponents, traffic and the cars a job asks you to wreck keep Car damage. 100% is the Xbox game.";
+            effect = !checked(ui, ID_OPTION + MM3_LAUNCH_GAMEPLAY) ? "Xbox gameplay is selected, so your car takes the Xbox damage (100%). Choose Modded gameplay to change it." :
+                     selected == 0 ? "Your car is never damaged or wrecked, whatever it hits." :
+                     selected < 100 ? "Your car takes less damage and survives more crashes." :
+                     selected > 100 ? "Your car takes more damage and wrecks sooner." :
+                     "Your car takes the same damage as every other car.";
+            break;
+        case ID_AI_LEVEL:
+            title = "Opponents' difficulty";
+            selected = combo_value(control(ui, id));
+            body = "How hard the race opponents drive, 0 to 9; 5 is the Xbox game. Higher: they accelerate and brake harder, brake later, corner a little faster and no longer wait for you in the first races. Lower: slower and more careful. Police and traffic are unchanged.";
+            effect = !checked(ui, ID_OPTION + MM3_LAUNCH_GAMEPLAY) ? "Xbox gameplay is selected, so the opponents drive as on the Xbox (5). Choose Modded gameplay to change it." :
+                     selected > 5 ? "Harder races: opponents are quicker everywhere. At 8 and 9 they may overshoot some corners." :
+                     selected < 5 ? "Easier races: opponents are slower and give you more room." :
+                     "The opponents drive as on the Xbox.";
+            break;
+        case ID_CAMERA_KEY:
+            title = "Free camera key";
+            body = "The key that turns the free camera on and off during a race. The camera stays within 400 m of your car, where the city is loaded.";
+            effect = !checked(ui, ID_OPTION + MM3_LAUNCH_GAMEPLAY) ? "Xbox gameplay is selected, so there is no free camera. Choose Modded gameplay to use it." :
+                     !checked(ui, ID_OPTION + MM3_LAUNCH_FREE_CAMERA) ? "The free camera is off. Tick Free camera to use this key." :
+                     "Choose a key you have not bound to a controller button on the Controls tab.";
+            break;
         case ID_NIGHT:
             title = "Night brightness";
             selected = combo_value(control(ui, id));
@@ -539,6 +601,11 @@ static void help_show(Launcher *ui, int id)
             title = "Ready to play"; value[0] = 0;
             body = "Play validates and saves every tab, then launches the game with these preferences. Changing a control here does not alter a game that is already running.";
             effect = "Hover over, focus or change any setting to see its current value and what it does. In-game Graphics Settings are available with F10.";
+            break;
+        case ID_UPDATE:
+            title = "Check for updates"; value[0] = 0;
+            body = "Ask GitHub whether a newer version of Midtown Madness 3 PC has been published. If there is one, the launcher offers to download its Setup, checks the download against the release's checksum, closes and opens Setup so you can install it.";
+            effect = "Nothing is changed until you choose to download and then install in Setup. Your saved games, DLC and settings stay. It needs an internet connection.";
             break;
         case IDCANCEL:
             title = "Cancel"; value[0] = 0;
@@ -707,9 +774,11 @@ static void populate(Launcher *ui)
     set_checked(ui, ID_XBOX_GAMEPLAY, !ui->config.option[MM3_LAUNCH_GAMEPLAY]);
     mods_enable(ui);
     snprintf(text, sizeof text, "%d", ui->config.fov_degrees); SetWindowTextA(control(ui, ID_FOV), text);
-    for (int i = 0; i < 2; ++i) { /* a saved value not in the list stays chosen */
-        HWND percent = control(ui, i ? ID_TIME : ID_DAMAGE);
-        int value = i ? ui->config.time_percent : ui->config.damage_percent;
+    combo_select(control(ui, ID_AI_LEVEL), ui->config.ai_level);
+    combo_select(control(ui, ID_CAMERA_KEY), ui->config.free_camera_key);
+    for (int i = 0; i < 3; ++i) { /* a saved value not in the list stays chosen */
+        HWND percent = control(ui, i == 2 ? ID_TIME : i ? ID_OWN_DAMAGE : ID_DAMAGE);
+        int value = i == 2 ? ui->config.time_percent : i ? ui->config.own_damage_percent : ui->config.damage_percent;
         combo_select(percent, value);
         if (combo_value(percent) != value) {
             snprintf(text, sizeof text, "%d%%", value);
@@ -763,7 +832,10 @@ static int read_controls(Launcher *ui, char *error, size_t capacity)
     ui->config.option[MM3_LAUNCH_KEYBOARD] = checked(ui, ID_KEYBOARD);
     ui->config.controller_count = combo_value(control(ui, ID_PAD_COUNT));
     ui->config.damage_percent = combo_value(control(ui, ID_DAMAGE));
+    ui->config.own_damage_percent = combo_value(control(ui, ID_OWN_DAMAGE));
     ui->config.time_percent = combo_value(control(ui, ID_TIME));
+    ui->config.ai_level = combo_value(control(ui, ID_AI_LEVEL));
+    ui->config.free_camera_key = combo_value(control(ui, ID_CAMERA_KEY));
     for (int i = 1; i < MM3_LAUNCH_OPTION_COUNT; ++i)
         ui->config.option[i] = option_inverted(i) ? !checked(ui, ID_OPTION + i) : checked(ui, ID_OPTION + i);
     GetWindowTextA(control(ui, ID_PEERS), ui->config.peers, sizeof ui->config.peers);
@@ -952,22 +1024,46 @@ static void gameplay_controls(Launcher *ui)
     check(ui, 3, ID_OPTION + MM3_LAUNCH_GAMEPLAY, mm3_launcher_options[MM3_LAUNCH_GAMEPLAY].label, 300, 92, 250);
     label(ui, 3, "Xbox gameplay plays as the Xbox game did. Modded gameplay uses the mods ticked below.", 42, 122, 774);
     option_columns(ui, 3, columns, (int)(sizeof columns / sizeof columns[0]));
+    fixed = add(ui, 3, "STATIC", "Free camera and codes", 0, -1, 300, 384, 250, 26);
+    SendMessageA(fixed, WM_SETFONT, (WPARAM)ui->section, TRUE);
+    check(ui, 3, ID_OPTION + MM3_LAUNCH_FREE_CAMERA, option_caption(MM3_LAUNCH_FREE_CAMERA), 300, 416, 250);
+    c = combo(ui, 3, ID_CAMERA_KEY, "Free camera key", 300, 448, 250);
+    for (int i = 0; i < MM3_LAUNCHER_CAMERA_KEYS; ++i) {
+        char name[32];
+        snprintf(name, sizeof name, "%s%s", mm3_launcher_camera_key_names[i],
+                 mm3_launcher_camera_keys[i] == 0x77 ? " (default)" : "");
+        combo_item(c, name, mm3_launcher_camera_keys[i]);
+    }
+    check(ui, 3, ID_OPTION + MM3_LAUNCH_CHEAT_CODES, option_caption(MM3_LAUNCH_CHEAT_CODES), 300, 512, 250);
     fixed = add(ui, 3, "STATIC", "Difficulty", 0, -1, 560, 270, 260, 26);
     SendMessageA(fixed, WM_SETFONT, (WPARAM)ui->section, TRUE);
-    c = combo(ui, 3, ID_DAMAGE, "Car damage", 560, 302, 260);
+    c = combo(ui, 3, ID_DAMAGE, "Car damage", 560, 300, 260);
     for (int i = 0; i < (int)(sizeof damage / sizeof damage[0]); ++i) {
         char name[32];
         if (damage[i]) snprintf(name, sizeof name, "%d%%%s", damage[i], damage[i] == 100 ? " (Xbox)" : "");
         else snprintf(name, sizeof name, "No damage");
         combo_item(c, name, damage[i]);
     }
-    c = combo(ui, 3, ID_TIME, "Time limits", 560, 362, 260);
+    c = combo(ui, 3, ID_OWN_DAMAGE, "Your car's damage", 560, 356, 260);
+    for (int i = 0; i < (int)(sizeof damage / sizeof damage[0]); ++i) {
+        char name[32];
+        if (damage[i]) snprintf(name, sizeof name, "%d%%%s", damage[i], damage[i] == 100 ? " (Xbox)" : "");
+        else snprintf(name, sizeof name, "Invulnerable");
+        combo_item(c, name, damage[i]);
+    }
+    c = combo(ui, 3, ID_TIME, "Time limits", 560, 412, 260);
     for (int i = 0; i < (int)(sizeof time / sizeof time[0]); ++i) {
         char name[32];
         snprintf(name, sizeof name, "%d%%%s", time[i], time[i] == 100 ? " (Xbox)" : "");
         combo_item(c, name, time[i]);
     }
-    fixed = check(ui, 3, ID_REQUIRED, "Collision repair (always on)", 560, 446, 260);
+    c = combo(ui, 3, ID_AI_LEVEL, "Opponents' difficulty", 560, 468, 260);
+    for (int i = 0; i <= 9; ++i) {
+        char name[32];
+        snprintf(name, sizeof name, "%d%s", i, i == 0 ? " (easiest)" : i == 5 ? " (Xbox)" : i == 9 ? " (hardest)" : "");
+        combo_item(c, name, i);
+    }
+    fixed = check(ui, 3, ID_REQUIRED, "Collision repair (always on)", 560, 532, 260);
     SendMessageA(fixed, BM_SETCHECK, BST_CHECKED, 0); EnableWindow(fixed, FALSE);
     label(ui, 3, "The port's fixes that restore Xbox behaviour, such as car damage at 60 fps, are always on.", 42, 573, 774);
 }
@@ -989,7 +1085,10 @@ static void mods_enable(Launcher *ui)
     EnableWindow(control(ui, ID_MINIMAP), improved && modded);
     EnableWindow(control(ui, ID_NIGHT), improved && checked(ui, ID_OPTION + MM3_LAUNCH_WORLD_LIGHT));
     EnableWindow(control(ui, ID_DAMAGE), modded);
+    EnableWindow(control(ui, ID_OWN_DAMAGE), modded);
     EnableWindow(control(ui, ID_TIME), modded);
+    EnableWindow(control(ui, ID_AI_LEVEL), modded);
+    EnableWindow(control(ui, ID_CAMERA_KEY), modded && checked(ui, ID_OPTION + MM3_LAUNCH_FREE_CAMERA));
 }
 
 static int pad_source(const XINPUT_GAMEPAD *pad)
@@ -1170,6 +1269,137 @@ static void poll_pads(Launcher *ui)
     status_text(control(ui, ID_PAD_HINT), hint);
 }
 
+/* ---- Check for updates ------------------------------------------------- */
+
+static int update_progress(void *context, unsigned long long done, unsigned long long total)
+{
+    UpdateJob *job = (UpdateJob *)context;
+    if (job->cancel) return 0;
+    if (done - job->reported >= (256u << 10) || (total && done >= total)) {
+        job->reported = done;
+        PostMessageA(job->window, WM_UPDATE_PROGRESS, (WPARAM)(done >> 10), (LPARAM)(total >> 10));
+    }
+    return 1;
+}
+
+static DWORD WINAPI update_thread(LPVOID parameter)
+{
+    UpdateJob *job = (UpdateJob *)parameter;
+    job->message[0] = 0;
+    if (job->download)
+        job->result = mm3_update_download(&job->update, job->target, update_progress, job,
+                                          job->message, sizeof job->message);
+    else
+        job->result = mm3_update_check(MM3_UPDATE_API_URL, MM3_VERSION, MM3_UPDATE_TRUSTED, &job->update,
+                                       job->message, sizeof job->message);
+    if (!PostMessageA(job->window, WM_UPDATE_DONE, 0, (LPARAM)job)) free(job);   /* the window is gone */
+    return 0;
+}
+
+/* Where the downloaded Setup goes (updates\ beside the game) and the folder it
+ * should install into: the one this game runs from. */
+static int update_paths(wchar_t *setup, size_t setup_size, wchar_t *folder, size_t folder_size)
+{
+    wchar_t *slash;
+    DWORD length = GetModuleFileNameW(NULL, folder, (DWORD)folder_size);
+    if (!length || length >= folder_size) return 0;
+    slash = wcsrchr(folder, L'\\');
+    if (!slash) return 0;
+    *slash = 0;
+    return _snwprintf(setup, setup_size, L"%ls\\updates\\MM3-Setup.exe", folder) > 0;
+}
+
+static int update_open_setup(const wchar_t *setup, const wchar_t *folder)
+{
+    wchar_t arguments[2 * MAX_PATH + 16];
+    _snwprintf(arguments, sizeof arguments / sizeof arguments[0], L"--dest \"%ls\"", folder);
+    arguments[sizeof arguments / sizeof arguments[0] - 1] = 0;
+    return (INT_PTR)ShellExecuteW(NULL, L"open", setup, arguments, folder, SW_SHOWNORMAL) > 32;
+}
+
+static void update_status(Launcher *ui, const char *text)
+{ SetWindowTextA(control(ui, ID_STATUS), text); }
+
+static void update_start(Launcher *ui, int download)
+{
+    UpdateJob *job = (UpdateJob *)calloc(1, sizeof *job);
+    wchar_t folder[2 * MAX_PATH];
+    if (!job) { update_status(ui, "Not enough memory to check for updates."); return; }
+    job->window = ui->window;
+    job->download = download;
+    if (download) {
+        job->update = ui->update_found;
+        if (!update_paths(job->target, sizeof job->target / sizeof job->target[0], folder, sizeof folder / sizeof folder[0])) {
+            free(job);
+            update_status(ui, "Cannot tell where the game is installed, so the update cannot be saved.");
+            return;
+        }
+    }
+    ui->update_job = job;
+    EnableWindow(control(ui, ID_UPDATE), FALSE);
+    update_status(ui, download ? "Downloading the new Setup..." : "Checking for updates...");
+    {
+        HANDLE thread = CreateThread(NULL, 0, update_thread, job, 0, NULL);
+        if (!thread) {
+            ui->update_job = NULL; free(job);
+            EnableWindow(control(ui, ID_UPDATE), TRUE);
+            update_status(ui, "Could not start the update check.");
+            return;
+        }
+        CloseHandle(thread);
+    }
+}
+
+/* The step finished (or was stopped): the check's answer, or the downloaded Setup. */
+static void update_done(Launcher *ui, UpdateJob *job)
+{
+    char text[640];
+    wchar_t setup[2 * MAX_PATH], folder[2 * MAX_PATH];
+    if (ui->update_job == job) ui->update_job = NULL;
+    EnableWindow(control(ui, ID_UPDATE), TRUE);
+    if (ui->close_after_update) { free(job); DestroyWindow(ui->window); return; }
+    if (job->download) {
+        if (job->result != 1) update_status(ui, job->message);
+        else if (!update_paths(setup, sizeof setup / sizeof setup[0], folder, sizeof folder / sizeof folder[0]) ||
+                 !MM3_UPDATE_OPEN(setup, folder))
+            update_status(ui, "Setup was downloaded to the updates folder beside the game, but could not be opened. "
+                              "Open MM3-Setup.exe there yourself.");
+        else {
+            /* Setup replaces this game's files, so the game must not start or stay open. */
+            ui->result = 0;
+            DestroyWindow(ui->window);
+        }
+    } else if (job->result < 0) {
+        update_status(ui, job->message);
+    } else if (job->result == 0) {
+        snprintf(text, sizeof text, "You have the latest version (%s).", MM3_VERSION);
+        update_status(ui, text);
+    } else {
+        ui->update_found = job->update;
+        snprintf(text, sizeof text,
+                 "Version %s is available (this is %s).\n\nDownload its Setup now? When it is ready, this window "
+                 "closes and Setup opens: choose your game image there and press Install to update. "
+                 "Your saved games and DLC stay.", job->update.version, MM3_VERSION);
+        if (MM3_UPDATE_ASK(ui->window, text)) update_start(ui, 1);
+        else {
+            snprintf(text, sizeof text, "Version %s is available. Press Check for updates to download it.",
+                     job->update.version);
+            update_status(ui, text);
+        }
+    }
+    free(job);
+}
+
+/* Cancel and Close while an update step runs: ask it to stop, close when it has. */
+static int update_defer_close(Launcher *ui)
+{
+    if (!ui->update_job) return 0;
+    InterlockedExchange(&ui->update_job->cancel, 1);
+    ui->close_after_update = 1;
+    update_status(ui, "Stopping the update...");
+    return 1;
+}
+
 static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
 {
     Launcher *ui = (Launcher *)GetWindowLongPtrA(window, GWLP_USERDATA);
@@ -1232,6 +1462,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         add(ui, -1, "STATIC", "Keyboard: Tab to move, Enter to activate. Controller: D-pad moves, A selects, LB/RB changes tab, Start plays.",
             0, ID_STATUS, 25, 644, 1165, 45);
         add(ui, -1, "BUTTON", "Restore defaults", BS_PUSHBUTTON | WS_TABSTOP, ID_DEFAULTS, 25, 699, 155, 34);
+        add(ui, -1, "BUTTON", "Check for updates", BS_PUSHBUTTON | WS_TABSTOP, ID_UPDATE, 195, 699, 175, 34);
         add(ui, -1, "BUTTON", "Play", BS_DEFPUSHBUTTON | WS_TABSTOP, IDOK, 933, 699, 122, 34);
         add(ui, -1, "BUTTON", "Cancel", BS_PUSHBUTTON | WS_TABSTOP, IDCANCEL, 1068, 699, 122, 34);
         populate(ui); page_show(ui, 0);
@@ -1260,7 +1491,8 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             (LOWORD(wparam) >= ID_OPTION && LOWORD(wparam) < ID_OPTION + MM3_LAUNCH_OPTION_COUNT))) {
             int id = LOWORD(wparam);
             set_checked(ui, id, !checked(ui, id));
-            if (id == ID_OPTION + MM3_LAUNCH_WORLD_LIGHT) mods_enable(ui);   /* Night brightness */
+            if (id == ID_OPTION + MM3_LAUNCH_WORLD_LIGHT || id == ID_OPTION + MM3_LAUNCH_FREE_CAMERA)
+                mods_enable(ui);   /* Night brightness, the free camera key */
             help_show(ui, id);
             return 0;
         }
@@ -1269,11 +1501,15 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             help_show(ui, LOWORD(wparam));
         switch (LOWORD(wparam)) {
         case IDOK:
+            if (ui->update_job) { update_status(ui, "Wait for the update to finish, or press Cancel."); return 0; }
             if (!ui->capture && apply(ui)) { ui->result = 1; game_window_follow(); DestroyWindow(window); }
             return 0;
         case IDCANCEL:
             if (ui->capture) { ui->capture = 0; SetWindowTextA(control(ui, ID_STATUS), "Capture cancelled."); help_show(ui, ID_CAPTURE); }
-            else DestroyWindow(window);
+            else if (!update_defer_close(ui)) DestroyWindow(window);
+            return 0;
+        case ID_UPDATE:
+            if (!ui->update_job) update_start(ui, 0);
             return 0;
         case ID_DEFAULTS:
             mm3_launcher_config_defaults(&ui->config);
@@ -1385,7 +1621,21 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         ui->device_poll_time = 0;
         poll_pads(ui);
         return 0;
-    case WM_CLOSE: DestroyWindow(window); return 0;
+    case WM_UPDATE_PROGRESS:
+        if (ui->update_job && ui->update_job->download && !ui->close_after_update) {
+            char text[160];
+            snprintf(text, sizeof text, "Downloading Setup %s... %u%s", ui->update_found.version,
+                     (unsigned)((wparam + 512) >> 10), lparam ? "" : " MB");
+            if (lparam) snprintf(text + strlen(text), sizeof text - strlen(text), " / %u MB", (unsigned)((lparam + 512) >> 10));
+            update_status(ui, text);
+        }
+        return 0;
+    case WM_UPDATE_DONE:
+        update_done(ui, (UpdateJob *)lparam);
+        return 0;
+    case WM_CLOSE:
+        if (!update_defer_close(ui)) DestroyWindow(window);
+        return 0;
     case WM_DESTROY:
         KillTimer(window, 1); KillTimer(window, 2);
         ui->done = 1;

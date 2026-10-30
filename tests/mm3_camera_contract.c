@@ -144,15 +144,19 @@ static void projection_contract(float override) {
     unsigned a, pass, k;
     for (a = 0; a < sizeof aspects / sizeof aspects[0]; ++a) {
         display_aspect = aspects[a];
-        for (pass = 0; pass < 3; ++pass) {
-            float input_aspect = pass == 0 ? 4.0f / 3.0f : (pass == 1 ? display_aspect : 1.0f);
+        /* Pass 3: the camera still holds a shape from an earlier window
+         * (resized, or sizing while the race loaded) when renderSetFov runs. */
+        float stale = fabsf(display_aspect - 1.6f) < 1e-4f ? 16.0f / 9.0f : 1.6f;
+        for (pass = 0; pass < 4; ++pass) {
+            float input_aspect = pass == 0 ? 4.0f / 3.0f : pass == 1 ? display_aspect : pass == 2 ? 1.0f : stale;
             for (k = 0; k < sizeof callers / sizeof callers[0]; ++k) {
                 float input_fovy = vertical(65.0f, input_aspect);
-                float final_aspect = k == 1 ? 4.0f / 3.0f : pass == 2 ? 1.0f : display_aspect;
-                float expected_fovy = input_fovy;
                 int race = k == 0;
+                float final_aspect = k == 1 ? 4.0f / 3.0f : pass == 2 ? 1.0f :
+                    pass == 3 && !race ? stale : display_aspect;
+                float expected_fovy = input_fovy;
                 if (race && override) expected_fovy = vertical(override, final_aspect);
-                else if (race && pass < 2) expected_fovy = vertical(65.0f, fminf(display_aspect, 4.0f / 3.0f));
+                else if (race && pass != 2) expected_fovy = vertical(65.0f, fminf(display_aspect, 4.0f / 3.0f));
                 reset_call(); hud_calls = edge_calls = 0;
                 MEM32(stack) = callers[k];
                 MEMF(stack + 4) = input_fovy; MEMF(stack + 8) = input_aspect;
@@ -171,6 +175,10 @@ static void projection_contract(float override) {
                             1.0f / MEMF(camera + 0x1EE4));
                 assert(hud_calls == (unsigned)race);
                 assert(edge_calls == (unsigned)(race || k == 1));
+                /* A race camera on a display shape is kept current through
+                 * later window changes (the menu caller retires it again). */
+                if (race) assert((display_camera_slot(camera) >= 0) ==
+                                 (pass != 2 || fabsf(display_aspect - 1.0f) < 1e-4f));
                 if (edge_calls) assert(edge_value == race);
             }
         }

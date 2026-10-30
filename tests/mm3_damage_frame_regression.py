@@ -19,7 +19,8 @@ def main():
                         str(ROOT / "tests/mm3_damage_frame_contract.c"), str(ROOT / "src/mm3_damage_diagnostics.c"),
                         "/Fo:" + str(folder) + "\\", "/Fe:" + str(executable)],
                        check=True, cwd=folder, stdout=subprocess.DEVNULL)
-        for mode in (["on"], ["off"], ["percent", "200"], ["percent", "0"], ["percent", "50"]):
+        for mode in (["on"], ["off"], ["percent", "200"], ["percent", "0"], ["percent", "50"],
+                     ["own", "0"], ["own", "50"], ["own", "300"]):
             subprocess.run([str(executable), *mode], check=True, cwd=folder)
 
 
