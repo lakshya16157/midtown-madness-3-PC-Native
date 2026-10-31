@@ -1,6 +1,7 @@
-/* Keyboard cheats (src/mm3_cheat_keys.c), the F8 free camera
- * (src/mm3_free_camera.c) and howhardcanitbe0..9 (src/mm3_ai_difficulty.c),
- * against the game's own view matrix builder and a race AI's update. */
+/* The F8 free camera and the camera F2 flies while it holds the race
+ * (src/mm3_cheat_keys.c, src/mm3_free_camera.c) and the opponents'
+ * difficulty (src/mm3_ai_difficulty.c), against the game's own view matrix
+ * builder and a race AI's update. */
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
@@ -17,11 +18,14 @@ static unsigned char memory[0x410000];
 static const uint32_t k_manager = 0x31000, k_camera = 0x32000, k_out = 0x33000, k_stack = 0xFF00,
                       k_ai = 0x40000, k_personality = 0x41000, k_vehicle = 0x42000, k_car = 0x43000, k_state = 0x44000,
                       k_player = 0x45000, k_player_vehicle = 0x46000;
-static int held[256], blocked;
+static int held[256], blocked, frozen;
 static float seen[5];
 
 int xbox_FramebufferKeyDown(int vk) { return vk >= 0 && vk < 256 && held[vk]; }
 void xbox_InputSetBlocked(int value) { blocked = value; }
+void mm3_photo_take(void) {}                   /* photo mode has its own contract */
+void nv2a_d3d_set_hud_hidden(int hidden) { (void)hidden; }
+int mm3_pause_frozen(void) { return frozen; }  /* F2 holding the race */
 DWORD WINAPI test_XInputGetState(DWORD port, XINPUT_STATE *s) { (void)port; (void)s; return ERROR_DEVICE_NOT_CONNECTED; }
 
 /* sub_001EA16C as the game runs it: [R^T 0; -P R^T 1] from camera+0x10. */
@@ -114,6 +118,40 @@ static void camera_contract(float hand)
            "flight stays within range, F8 again is the game's view and input\n", hand > 0 ? "left-handed" : "mirrored");
 }
 
+/* F2: the camera comes loose with the hold, the mouse looks without a button
+ * (only with the game window in front), and it lands when the race runs. */
+static void hold_contract(void)
+{
+    float game[16], m[16], p0[3], p[3];
+    pose(0.3f, 0.0f, 1.0f);
+    draw(game);
+    assert(!InterlockedCompareExchange(&s_active, 0, 0) && !blocked);
+    frozen = 1; draw(m);
+    assert(InterlockedCompareExchange(&s_active, 0, 0) && blocked && s_from_hold && same(m, game));
+    eye(m, p0);
+    held['W'] = 1; Sleep(50); draw(m); held['W'] = 0;
+    eye(m, p);
+    assert(fabsf(p[0] - p0[0]) + fabsf(p[2] - p0[2]) > 0.5f);   /* W flies while held */
+    press_f8(); draw(m);                                        /* the key puts it down for this hold */
+    assert(!InterlockedCompareExchange(&s_active, 0, 0) && !blocked && same(m, game));
+    draw(m);
+    assert(!InterlockedCompareExchange(&s_active, 0, 0));
+    press_f8(); draw(m);                                        /* and up again */
+    assert(InterlockedCompareExchange(&s_active, 0, 0) && s_from_hold);
+    frozen = 0; draw(m);                                        /* the race runs: back on the car */
+    assert(!InterlockedCompareExchange(&s_active, 0, 0) && !blocked && same(m, game));
+    frozen = 1; draw(m);                                        /* the next hold flies again */
+    assert(InterlockedCompareExchange(&s_active, 0, 0));
+    frozen = 0; draw(m);
+    assert(!InterlockedCompareExchange(&s_active, 0, 0) && !blocked);
+    press_f8(); draw(m); frozen = 1; draw(m); frozen = 0; draw(m);
+    assert(InterlockedCompareExchange(&s_active, 0, 0) && !s_from_hold);   /* F8's own flight stays */
+    press_f8(); draw(m);
+    assert(!InterlockedCompareExchange(&s_active, 0, 0) && !blocked);
+    puts("PASS F2 hold: the camera comes loose at the game's view, W flies, the free camera key puts it down "
+         "for the hold, it lands when the race runs, an F8 flight outlives the hold");
+}
+
 static void watchdog_contract(void)
 {
     float m[16];
@@ -129,10 +167,7 @@ static void watchdog_contract(void)
     puts("PASS free camera: no race view for 1.5 s gives the input back; presses away from a race are dropped");
 }
 
-static void type(const char *text)
-{
-    for (; *text; ++text) typed(*text >= 'a' && *text <= 'z' ? (char)(*text - 32) : *text);
-}
+static void level(const char *value) { _putenv_s("MM3_AI_LEVEL", value); }
 
 static void step_ai(void)
 {
@@ -153,9 +188,10 @@ static void ai_contract(void)
     MEM32(k_player_vehicle) = 0x383768; MEM32(k_player_vehicle + 8) = 0x47000;
     MEMF(0x47000 + 0x90) = 1.0f;
 
-    assert(mm3_cheat_ai_level() == 5);
-    type("howhardcanitbe"); type("x9"); assert(mm3_cheat_ai_level() == 5);
-    type("xxhowhardcanitbe9"); assert(mm3_cheat_ai_level() == 9);
+    level(""); assert(mm3_cheat_ai_level() == 5);
+    level("x"); assert(mm3_cheat_ai_level() == 5);
+    level("10"); assert(mm3_cheat_ai_level() == 5);
+    level("9"); assert(mm3_cheat_ai_level() == 9);
     step_ai();
     assert(fabsf(seen[0] - 22.0f * 1.2f) < 1e-4f && fabsf(seen[1] - 22.0f * 1.1f * 1.1f) < 1e-3f);
     assert(fabsf(seen[2] - 44.0f) < 1e-3f && fabsf(seen[3] - 1.0f) < 1e-6f && fabsf(seen[4] - 1.0f) < 1e-6f);
@@ -166,19 +202,20 @@ static void ai_contract(void)
     MEMF(k_car + 0x90) = 1.25f;                    /* the race script boosts this opponent */
     step_ai();
     assert(fabsf(MEMF(k_car + 0x90) - 1.25f * 1.4f) < 1e-5f);
-    type("howhardcanitbe5"); step_ai();
+    level("5"); step_ai();
     assert(fabsf(MEMF(k_car + 0x90) - 1.25f) < 1e-5f && fabsf(MEMF(k_car + 0x94) - 1.0f) < 1e-5f);
     assert(seen[0] == 22.0f && seen[3] == 0.5f);
-    type("howhardcanitbe0"); step_ai();
+    level("0"); step_ai();
     assert(fabsf(seen[0] - 22.0f * 0.7f) < 1e-4f && fabsf(seen[2] - 32.0f) < 1e-3f && seen[3] < 0.5f);
     assert(fabsf(MEMF(k_car + 0x90) - 1.25f * 0.6f) < 1e-5f);
     MEM32(k_vehicle + 8) = 0x47000;                /* an AI driving the player's car */
-    type("howhardcanitbe9"); step_ai();
+    level("9"); step_ai();
     assert(MEMF(0x47000 + 0x90) == 1.0f);
     MEM32(k_ai) = 0x37F000;                        /* not a race car's AI: police, traffic */
     step_ai();
     assert(seen[0] == 22.0f && MEMF(0x47000 + 0x90) == 1.0f);
-    puts("PASS howhardcanitbeN: typed digit sets the level; above 5 later braking, faster corners, no holding back, "
+    level("");
+    puts("PASS opponents' difficulty: MM3_AI_LEVEL sets the level; above 5 later braking, faster corners, no holding back, "
          "engine and brakes on top of the scripts' own factors; 5 restores; 0 slower; police and your car untouched");
 }
 
@@ -189,6 +226,7 @@ int main(void)
     MEM32(0x3C5CDC) = k_manager; MEM32(k_manager + 0x54) = k_camera;
     camera_contract(1.0f);
     camera_contract(-1.0f);
+    hold_contract();
     watchdog_contract();
     ai_contract();
     return 0;

@@ -207,6 +207,104 @@ class DiscReuseTest(unittest.TestCase):
             (game / "media/movie.wmv").write_bytes(b"")
             self.assertFalse(setup.game_files_ready(game, Path("disc.iso")))
 
+    @staticmethod
+    def fake_disc(entries, fail_on=None):
+        """A disc image of (directory, name, size) files; extracting one writes b"disc <name>"."""
+        class Iso:
+            def __init__(self, path):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def walk(self):
+                return [(directory, SimpleNamespace(name=name, size=size)) for directory, name, size in entries]
+
+            def extract(self, entry, target):
+                Path(target).write_bytes(b"disc " + entry.name.encode())
+                if entry.name == fail_on:
+                    raise OSError("the image could not be read")
+
+        return SimpleNamespace(CODE_SHA256="expected", code_sha256=lambda _: "expected", Xiso=Iso)
+
+    DISC = [("", "default.xbe", 10), ("Data", "Data_hd.zip", 100),
+            ("Data/Shared/Cars/washingtonpolice_lod1", "body.cmp", 9),
+            ("Data/Shared/Cars/WashingtonPolice", "body.cmp", 9), ("media", "movie.wmv", 10)]
+
+    def lost_police_model_install(self, root):
+        """An install that lost the Washington police LOD model and has an empty video."""
+        game = root / "game_files"
+        for name, data in (("default.xbe", b"valid xbe"), ("Data/Data_hd.zip", b"modified car data"),
+                           ("Data/Shared/Cars/WashingtonPolice/body.cmp", b"normalised"),
+                           ("media/movie.wmv", b""), ("UDATA/4d53002a/save.bin", b"my save"),
+                           ("TDATA/4d53002a/$C/4d53002a00000005/contentmeta.xbx", b"dlc")):
+            (game / name).parent.mkdir(parents=True, exist_ok=True)
+            (game / name).write_bytes(data)
+        return game
+
+    def test_restores_only_the_missing_disc_files_and_keeps_everything_else(self):
+        ed = self.fake_disc(self.DISC)
+        lines = []
+        with tempfile.TemporaryDirectory() as scratch, patch.object(setup, "extract_disc", return_value=ed):
+            root = Path(scratch)
+            game = self.lost_police_model_install(root)
+            self.assertFalse(setup.game_files_ready(game, Path("disc.iso")))
+            self.assertEqual(setup.restore_missing_files(Path("disc.iso"), root, lines.append,
+                                                         lambda *_: None), 2)
+            self.assertEqual((game / "Data/Shared/Cars/washingtonpolice_lod1/body.cmp").read_bytes(),
+                             b"disc body.cmp")
+            self.assertEqual((game / "media/movie.wmv").read_bytes(), b"disc movie.wmv")
+            for name, data in (("default.xbe", b"valid xbe"), ("Data/Data_hd.zip", b"modified car data"),
+                               ("Data/Shared/Cars/WashingtonPolice/body.cmp", b"normalised"),
+                               ("UDATA/4d53002a/save.bin", b"my save"),
+                               ("TDATA/4d53002a/$C/4d53002a00000005/contentmeta.xbx", b"dlc")):
+                self.assertEqual((game / name).read_bytes(), data, name)
+            self.assertEqual(list(game.rglob("*.restoring")), [])
+            self.assertTrue(setup.game_files_ready(game, Path("disc.iso")))
+            self.assertIn("washingtonpolice_lod1/body.cmp", lines[0])
+            # Nothing is missing any more: a second run changes nothing.
+            self.assertEqual(setup.restore_missing_files(Path("disc.iso"), root, lines.append,
+                                                         lambda *_: None), 0)
+
+    def test_setup_repairs_an_incomplete_install_instead_of_asking_to_delete_it(self):
+        ed = self.fake_disc(self.DISC)
+        with tempfile.TemporaryDirectory() as scratch, patch.object(setup, "extract_disc", return_value=ed):
+            root = Path(scratch)
+            game = self.lost_police_model_install(root)
+            with patch.object(setup, "check_iso", return_value=(True, "")), \
+                    patch.object(setup, "install_game_exe"), patch.object(setup, "report_dlc", return_value=[]), \
+                    patch.object(setup, "apply_cars"), patch.object(setup, "write_launcher"):
+                setup.install(Path("disc.iso"), root, False, True, lambda _: None, lambda *_: None)
+            self.assertTrue((game / "Data/Shared/Cars/washingtonpolice_lod1/body.cmp").is_file())
+            self.assertEqual((game / "UDATA/4d53002a/save.bin").read_bytes(), b"my save")
+
+    def test_only_this_games_folder_is_repaired_and_a_stopped_restore_leaves_no_half_file(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            game = self.lost_police_model_install(root)
+
+            def files():
+                return sorted(p.relative_to(game).as_posix() for p in game.rglob("*") if p.is_file())
+
+            before = files()
+            other = SimpleNamespace(**{**vars(self.fake_disc(self.DISC)), "code_sha256": lambda _: "other game"})
+            with patch.object(setup, "extract_disc", return_value=other), self.assertRaises(setup.InstallError):
+                setup.restore_missing_files(Path("disc.iso"), root, lambda _: None, lambda *_: None)
+            self.assertEqual(files(), before)
+            broken = self.fake_disc(self.DISC, fail_on="body.cmp")
+            with patch.object(setup, "extract_disc", return_value=broken), self.assertRaises(OSError):
+                setup.restore_missing_files(Path("disc.iso"), root, lambda _: None, lambda *_: None)
+            self.assertEqual(files(), before)        # no half-written body.cmp or .restoring file
+            (game / "media/movie.wmv").write_bytes(b"video")
+            (game / "Data/Shared/Cars/washingtonpolice_lod1").mkdir(parents=True, exist_ok=True)
+            (game / "Data/Shared/Cars/washingtonpolice_lod1/body.cmp").mkdir()
+            with patch.object(setup, "extract_disc", return_value=self.fake_disc(self.DISC)), \
+                    self.assertRaises(setup.InstallError):
+                setup.restore_missing_files(Path("disc.iso"), root, lambda _: None, lambda *_: None)
+
     def test_image_filenames_cannot_escape_destination(self):
         with tempfile.TemporaryDirectory() as scratch:
             for directory, name in (("../outside", "file"), ("Data", "/outside"),

@@ -18334,7 +18334,7 @@ index 0000000..ba782e5
 +#endif /* NV2A_BLACK_FRAME_LOGIC_ONLY */
 +#endif /* NV2A_BLACK_FRAME_H */
 diff --git a/src/video/nv2a_d3d11.c b/src/video/nv2a_d3d11.c
-index b9f3fa2..9c08320 100644
+index b9f3fa2..6de3ecc 100644
 --- a/src/video/nv2a_d3d11.c
 +++ b/src/video/nv2a_d3d11.c
 @@ -19,9 +19,10 @@
@@ -18739,7 +18739,7 @@ index b9f3fa2..9c08320 100644
  }
  
  /* Internal resolution relative to the guest's: s_scale vertically, and
-@@ -187,7 +455,76 @@ static UINT s_msaa = 4, s_aniso = 16;
+@@ -187,7 +455,87 @@ static UINT s_msaa = 4, s_aniso = 16;
   * reached from a race out of the race HUD placement path. */
  static volatile LONG s_edge_hud;
  static uint32_t s_frame_bg_tex;     /* this frame's background image; reset at flip */
@@ -18785,6 +18785,17 @@ index b9f3fa2..9c08320 100644
 +    s_hud_seen = 0;
 +}
 +
++/* Photo mode's hide-HUD key: while set, a race frame skips its flat 2D HUD
++ * draws (the minimap and everything the title draws after it, routes and the
++ * name tags over cars). Full-screen passes, menus and loading screens are
++ * never skipped. */
++static volatile LONG s_hud_hidden;
++
++void nv2a_d3d_set_hud_hidden(int hidden)
++{
++    InterlockedExchange(&s_hud_hidden, hidden != 0);
++}
++
 +void nv2a_d3d_set_map_texture_query(int (*query)(uint32_t texture_addr))
 +{
 +    s_map_texture_query = query;
@@ -18816,7 +18827,7 @@ index b9f3fa2..9c08320 100644
  
  /* Name tags over cars (world-anchored 2D) are the first 2D a race frame
   * draws, ahead of the HUD; the title names the HUD's first element by its
-@@ -200,6 +537,17 @@ static float s_hud_start[4];
+@@ -200,6 +548,17 @@ static float s_hud_start[4];
  static uint32_t s_hud_tex[32];
  static int s_hud_tex_n;
  
@@ -18834,7 +18845,7 @@ index b9f3fa2..9c08320 100644
  void nv2a_d3d_set_hud_start(float x0, float y0, float x1, float y1)
  {
      s_hud_start[0] = x0; s_hud_start[1] = y0; s_hud_start[2] = x1; s_hud_start[3] = y1;
-@@ -225,18 +573,21 @@ static int world_tag_draw(float lo, float hi, float ylo, float yhi, uint32_t tex
+@@ -225,18 +584,21 @@ static int world_tag_draw(float lo, float hi, float ylo, float yhi, uint32_t tex
  
  void nv2a_d3d_set_edge_hud(int on)
  {
@@ -18859,7 +18870,7 @@ index b9f3fa2..9c08320 100644
      s_zview_remap[1] = knee;
      s_zview_remap[0] = scale;            /* views rebuild on the next depth bind */
  }
-@@ -246,21 +597,33 @@ static int nv2a_d3d_hud_active(void)
+@@ -246,21 +608,33 @@ static int nv2a_d3d_hud_active(void)
      return !s_frame_bg_tex && InterlockedCompareExchange(&s_edge_hud, 0, 0) != 0;
  }
  
@@ -18897,7 +18908,7 @@ index b9f3fa2..9c08320 100644
      if (e && sscanf(e, "%f:%f", &w, &h) == 2 && h > 0 && w > 0) return clamp_aspect(w / h);
      if (e && sscanf(e, "%f", &w) == 1 && w > 0) return clamp_aspect(w);
      return 0;
-@@ -288,7 +651,7 @@ float nv2a_d3d_display_aspect(void)
+@@ -288,7 +662,7 @@ float nv2a_d3d_display_aspect(void)
      {
          /* No window yet (sizing it): the monitor it will open on. */
          MONITORINFO mi = { sizeof mi };
@@ -18906,7 +18917,7 @@ index b9f3fa2..9c08320 100644
              mi.rcMonitor.bottom > mi.rcMonitor.top)
              return clamp_aspect((float)(mi.rcMonitor.right - mi.rcMonitor.left) /
                                  (float)(mi.rcMonitor.bottom - mi.rcMonitor.top));
-@@ -309,6 +672,10 @@ static ID3D11PixelShader  *s_y16_ps[2];      /* [msaa] */
+@@ -309,6 +683,10 @@ static ID3D11PixelShader  *s_y16_ps[2];      /* [msaa] */
  static ID3D11PixelShader  *s_y16d_ps[2];     /* [msaa], from a depth buffer */
  /* s_raw: the vertex-data ring ub_vs reads (raw view s_raw_srv) */
  static ID3D11Buffer *s_raw, *s_ib, *s_cb_ub, *s_cb_prog, *s_cb_vconst, *s_cb_ps, *s_cb_present, *s_cb_clear;
@@ -18917,7 +18928,7 @@ index b9f3fa2..9c08320 100644
  static ID3D11ShaderResourceView *s_raw_srv;
  static UINT s_raw_pos, s_ib_pos;
  static int s_raw_nooverwrite;
-@@ -319,6 +686,160 @@ static ID3D11BlendState *s_blend_opaque;
+@@ -319,6 +697,160 @@ static ID3D11BlendState *s_blend_opaque;
  static ID3D11RasterizerState *s_rs_plain;
  static ID3D11DepthStencilState *s_ds_off;
  
@@ -19078,7 +19089,7 @@ index b9f3fa2..9c08320 100644
  static void fail(const char *what, HRESULT hr)
  {
      fprintf(stderr, "[D3D11] %s failed: 0x%08lX\n", what, (unsigned long)hr);
-@@ -346,24 +867,7 @@ static uint32_t phys(uint32_t va)
+@@ -346,24 +878,7 @@ static uint32_t phys(uint32_t va)
      return va >= CONTIG_BASE ? va - CONTIG_BASE : va;
  }
  
@@ -19104,7 +19115,7 @@ index b9f3fa2..9c08320 100644
  
  /* ---------------------------------------------------------------- shaders */
  
-@@ -454,7 +958,9 @@ static const char s_hlsl[] =
+@@ -454,7 +969,9 @@ static const char s_hlsl[] =
  "      else if (mac == 10u) mr = A >= B ? A : B;\n"
  "      else if (mac == 11u) mr = A < B ? 1.0 : 0.0;\n"
  "      else if (mac == 12u) mr = A >= B ? 1.0 : 0.0;\n"
@@ -19115,7 +19126,7 @@ index b9f3fa2..9c08320 100644
  "      float x = Cc.x;\n"
  "      if (ilu == 2u) ir = (x == 0.0 ? asfloat(0x7F800000u) : 1.0 / x).xxxx;\n"
  "      else if (ilu == 3u) { float f = 1.0 / x; float af = clamp(abs(f), 5.42101e-20, 1.884467e19);\n"
-@@ -492,8 +998,10 @@ static const char s_hlsl[] =
+@@ -492,8 +1009,10 @@ static const char s_hlsl[] =
  "    d0 = fetch(3, vid); d1 = fetch(4, vid);\n"
  "    t0 = fetch(9, vid); t1 = fetch(10, vid); t2 = fetch(11, vid); t3 = fetch(12, vid);\n"
  "  }\n"
@@ -19127,7 +19138,7 @@ index b9f3fa2..9c08320 100644
  /* The NV2A rasterises with 4-bit sub-pixel precision, truncating (xemu
   * roundScreenCoords), so the Xbox D3D screen offset 0.53125 puts a
   * full-target quad's left/top edge exactly on the centre of pixel 0, and the
-@@ -503,8 +1011,18 @@ static const char s_hlsl[] =
+@@ -503,8 +1022,18 @@ static const char s_hlsl[] =
   * water. A coordinate that truncates to that first centre is placed on the
   * target edge, as the hardware covers it; everything else is unchanged. */
  "  float py = P.y;\n"
@@ -19148,7 +19159,7 @@ index b9f3fa2..9c08320 100644
  "  /* NV2A clamps raster w away from zero and infinity (xemu clampAwayZeroInf),\n"
  "   * keeping its sign so geometry behind the eye still clips. oPos is screen\n"
  "   * space after the D3D epilogue's divide; multiplying back by w gives the\n"
-@@ -519,6 +1037,47 @@ static const char s_hlsl[] =
+@@ -519,6 +1048,47 @@ static const char s_hlsl[] =
  "  o.t0 = t0; o.t1 = t1; o.t2 = t2; o.t3 = t3;\n"
  "  return o;\n"
  "}\n"
@@ -19196,7 +19207,7 @@ index b9f3fa2..9c08320 100644
  /* SPEC: a variant specialised to one combiner configuration. The control
   * words below become constants (SPEC_DECL) so the compiler folds the
   * interpreter away; the cbuffer keeps its layout under other names. */
-@@ -540,6 +1099,11 @@ static const char s_hlsl[] =
+@@ -540,6 +1110,11 @@ static const char s_hlsl[] =
  "  float4 fog_color;\n"
  "  float4 bump_mat[4]; float4 bump_lum[4];\n"
  "  float4 zp0; float4 zp1;\n"
@@ -19208,7 +19219,7 @@ index b9f3fa2..9c08320 100644
  "};\n"
  "#ifdef SPEC\n"
  "#undef c_icw\n#undef a_icw\n#undef c_ocw\n#undef a_ocw\n#undef fin0\n#undef fin1\n#undef rc_control\n"
-@@ -549,6 +1113,7 @@ static const char s_hlsl[] =
+@@ -549,6 +1124,7 @@ static const char s_hlsl[] =
  "#endif\n"
  "Texture2D T2D0:register(t0); Texture2D T2D1:register(t1); Texture2D T2D2:register(t2); Texture2D T2D3:register(t3);\n"
  "TextureCube TC0:register(t4); TextureCube TC1:register(t5); TextureCube TC2:register(t6); TextureCube TC3:register(t7);\n"
@@ -19216,7 +19227,7 @@ index b9f3fa2..9c08320 100644
  "SamplerState S0:register(s0); SamplerState S1:register(s1); SamplerState S2:register(s2); SamplerState S3:register(s3);\n"
  "uint U8(uint4 a[2], uint s) { return a[s >> 2][s & 3]; }\n"
  "float map_in(float x, uint b) {\n"
-@@ -578,10 +1143,35 @@ static const char s_hlsl[] =
+@@ -578,10 +1154,35 @@ static const char s_hlsl[] =
  "  if (m == 3) return (x >= 128.0 ? x - 256.0 : x) / 127.0;\n"
  "  return c;\n"
  "}\n"
@@ -19252,7 +19263,7 @@ index b9f3fa2..9c08320 100644
  /* A point-sampled tap at a fixed spot of an upscaled render target (light
   * flares test their visibility with three such taps of the frame's
   * alpha). On the NV2A it reads one guest pixel; here that pixel is a block
-@@ -609,7 +1199,18 @@ static const char s_hlsl[] =
+@@ -609,7 +1210,18 @@ static const char s_hlsl[] =
  "  if (n == 0) return TC0.Sample(S0, d); if (n == 1) return TC1.Sample(S1, d);\n"
  "  if (n == 2) return TC2.Sample(S2, d); return TC3.Sample(S3, d);\n"
  "}\n"
@@ -19271,7 +19282,7 @@ index b9f3fa2..9c08320 100644
  "  float4 tc[4] = { i.t0, i.t1, i.t2, i.t3 };\n"
  "  float4 T[4] = { float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1), float4(0,0,0,1) }; float dots[4] = { 0, 0, 0, 0 };\n"
  "  [unroll] for (uint n = 0; n < 4; n++) {\n"
-@@ -618,11 +1219,19 @@ static const char s_hlsl[] =
+@@ -618,11 +1230,19 @@ static const char s_hlsl[] =
  "    uint dm = n ? (dot_map >> ((n - 1) * 4)) & 7 : 0;\n"
  "    float4 c = tc[n]; float4 t = float4(0, 0, 0, 1);\n"
  "    float q = c.w != 0.0 ? c.w : 1.0;\n"
@@ -19293,7 +19304,7 @@ index b9f3fa2..9c08320 100644
  "    else if (mode == 3) t = sampc(n, c.xyz);\n"
  "    else if (mode == 4) t = saturate(c);\n"
  "    else if (mode == 5) {\n"
-@@ -648,7 +1257,7 @@ static const char s_hlsl[] =
+@@ -648,7 +1268,7 @@ static const char s_hlsl[] =
  "        float3 E = mode == 12 ? float3(tc[1].w, tc[2].w, tc[3].w) : float3(0, 0, 1);\n"
  "        N = 2.0 * N * dot(N, E) / max(dot(N, N), 1e-20) - E;\n"
  "      }\n"
@@ -19302,7 +19313,7 @@ index b9f3fa2..9c08320 100644
  "    } else if (mode == 15) t = samp2(n, T[inp].ar);\n"
  "    else if (mode == 16) t = samp2(n, T[inp].gb);\n"
  "    if (mode != 0 && mode != 4 && mode != 5 && mode != 10 && mode != 17) {\n"
-@@ -657,6 +1266,72 @@ static const char s_hlsl[] =
+@@ -657,6 +1277,72 @@ static const char s_hlsl[] =
  "    }\n"
  "    T[n] = t;\n"
  "  }\n"
@@ -19375,7 +19386,7 @@ index b9f3fa2..9c08320 100644
  "  float4 R[16];\n"
  "  [unroll] for (uint k = 0; k < 16; k++) R[k] = float4(0, 0, 0, 0);\n"
  "  R[3] = float4(fog_color.rgb, i.fog.x); R[4] = i.d0; R[5] = i.d1;\n"
-@@ -721,6 +1396,11 @@ static const char s_hlsl[] =
+@@ -721,6 +1407,11 @@ static const char s_hlsl[] =
  "    } else o = R[12];\n"
  "  }\n"
  "  o = saturate(o);\n"
@@ -19387,7 +19398,7 @@ index b9f3fa2..9c08320 100644
  "  cov = 0xFFFFFFFFu;\n"
  /* Alpha test. On a multisampled target an inequality test becomes sample
   * coverage across the one-pixel band around its threshold (e = signed
-@@ -751,18 +1431,33 @@ static const char s_hlsl[] =
+@@ -751,18 +1442,33 @@ static const char s_hlsl[] =
   * 24-bit fixed point -- linear precision, unlike z/w, so distant decals and
   * foliage do not fight. Polygon offset is applied here as xemu does: the
   * rasteriser's depth bias never reaches a shader-written depth. zp0 = offset
@@ -19423,7 +19434,7 @@ index b9f3fa2..9c08320 100644
  "Texture2D SrcTex : register(t0); Texture2D OvlTex : register(t1); SamplerState LinS : register(s0);\n"
  "struct PO { float4 pos:SV_Position; float2 uv:TEXCOORD0; };\n"
  "PO present_vs(uint id : SV_VertexID) {\n"
-@@ -780,8 +1475,10 @@ static const char s_hlsl[] =
+@@ -780,8 +1486,10 @@ static const char s_hlsl[] =
  "  float4 c = SrcTex.Sample(LinS, i.uv);\n"
  "  if (ovl_flags.x) {\n"
  "    float2 g = i.uv * src_size.xy;\n"
@@ -19436,7 +19447,7 @@ index b9f3fa2..9c08320 100644
  "    if (all(d >= 0) && all(d < ovl_out.zw)) {\n"
  "      bool show = true;\n"
  "      if (ovl_flags.y) {\n"
-@@ -793,6 +1490,16 @@ static const char s_hlsl[] =
+@@ -793,6 +1501,16 @@ static const char s_hlsl[] =
  "      if (show) c = OvlTex.Sample(LinS, (ovl_walk.xy + d * ovl_walk.zw) / ovl_in.xy);\n"
  "    }\n"
  "  }\n"
@@ -19453,7 +19464,7 @@ index b9f3fa2..9c08320 100644
  "  return force_alpha.x >= 0 ? float4(c.rgb, force_alpha.x) : c;\n"
  "}\n"
  "cbuffer CC : register(b0) { float4 ccol; float4 cz; };\n"
-@@ -822,17 +1529,36 @@ static const char s_hlsl[] =
+@@ -822,17 +1540,36 @@ static const char s_hlsl[] =
   * rounding splits between the two (moire in the fog). Both texels hold
   * z[23:8]. ponytail: the low word (z[7:0]:stencil) is not readable this way;
   * keep it for even texels if a title ever reads stencil through Y16.
@@ -19495,7 +19506,7 @@ index b9f3fa2..9c08320 100644
  "  return float4(y, y, y, 1);\n"
  "}\n";
  
-@@ -847,6 +1573,12 @@ typedef struct {
+@@ -847,6 +1584,12 @@ typedef struct {
      float fog_color[4];
      float bump_mat[4][4], bump_lum[4][4];
      float zp0[4], zp1[4];
@@ -19508,7 +19519,7 @@ index b9f3fa2..9c08320 100644
  } PSConsts;
  
  typedef struct {
-@@ -856,7 +1588,7 @@ typedef struct {
+@@ -856,7 +1599,7 @@ typedef struct {
      float map[4];                /* 2/w, 2/h, 1/zmax, squeeze */
      uint32_t fogi[4];
      float fogf[4];
@@ -19517,7 +19528,7 @@ index b9f3fa2..9c08320 100644
  } UbConsts;
  
  typedef struct {
-@@ -864,16 +1596,18 @@ typedef struct {
+@@ -864,16 +1607,18 @@ typedef struct {
      float ovl_out[4], ovl_walk[4], ovl_in[4];
      uint32_t ovl_flags[4];
      float force_alpha[4];
@@ -19539,7 +19550,7 @@ index b9f3fa2..9c08320 100644
      if (FAILED(hr)) {
          fprintf(stderr, "[D3D11] shader %s: %s\n", entry,
                  err ? (const char *)ID3D10Blob_GetBufferPointer(err) : "?");
-@@ -883,6 +1617,11 @@ static ID3DBlob *compile_def(const char *entry, const char *target, const D3D_SH
+@@ -883,6 +1628,11 @@ static ID3DBlob *compile_def(const char *entry, const char *target, const D3D_SH
      return SUCCEEDED(hr) ? code : NULL;
  }
  
@@ -19551,7 +19562,7 @@ index b9f3fa2..9c08320 100644
  static ID3DBlob *compile(const char *entry, const char *target)
  {
      return compile_def(entry, target, NULL);
-@@ -903,10 +1642,14 @@ typedef struct {
+@@ -903,10 +1653,14 @@ typedef struct {
      uint32_t tex_info[4][3];
  } PsKey;
  
@@ -19567,7 +19578,7 @@ index b9f3fa2..9c08320 100644
  } PsSpec;
  
  #define PS_SPEC_SLOTS 4096          /* power of two */
-@@ -914,9 +1657,162 @@ typedef struct {
+@@ -914,9 +1668,162 @@ typedef struct {
  static PsSpec *s_spec;
  static PsSpec *s_spec_q[PS_SPEC_QUEUE];
  static unsigned s_spec_head, s_spec_tail;  /* guarded by s_spec_cs */
@@ -19730,7 +19741,7 @@ index b9f3fa2..9c08320 100644
  
  static DWORD WINAPI spec_worker(LPVOID arg)
  {
-@@ -926,12 +1822,19 @@ static DWORD WINAPI spec_worker(LPVOID arg)
+@@ -926,12 +1833,19 @@ static DWORD WINAPI spec_worker(LPVOID arg)
          const PsKey *k;
          char decl[2048];
          ID3DBlob *b;
@@ -19754,7 +19765,7 @@ index b9f3fa2..9c08320 100644
          LeaveCriticalSection(&s_spec_cs);
          k = &e->key;
          snprintf(decl, sizeof decl,
-@@ -965,45 +1868,87 @@ static DWORD WINAPI spec_worker(LPVOID arg)
+@@ -965,45 +1879,87 @@ static DWORD WINAPI spec_worker(LPVOID arg)
          m[1].Name = "SPEC_DECL"; m[1].Definition = decl;
          m[2].Name = flat ? "FLATQ" : NULL; m[2].Definition = flat ? "nointerpolation" : NULL;
          m[3].Name = NULL; m[3].Definition = NULL;
@@ -19865,7 +19876,7 @@ index b9f3fa2..9c08320 100644
      memset(&k, 0, sizeof k);
      memcpy(k.c_icw, pc->c_icw, sizeof k.c_icw);
      memcpy(k.a_icw, pc->a_icw, sizeof k.a_icw);
-@@ -1017,23 +1962,7 @@ static ID3D11PixelShader *spec_ps(const PSConsts *pc, uint32_t variant)
+@@ -1017,23 +1973,7 @@ static ID3D11PixelShader *spec_ps(const PSConsts *pc, uint32_t variant)
          k.tex_info[i][0] = pc->tex_info[i][0]; k.tex_info[i][1] = pc->tex_info[i][1];
          k.tex_info[i][2] = pc->tex_info[i][2];
      }
@@ -19890,7 +19901,7 @@ index b9f3fa2..9c08320 100644
  }
  
  static ID3D11Buffer *make_buffer(UINT bytes, UINT bind)
-@@ -1050,38 +1979,124 @@ static ID3D11Buffer *make_buffer(UINT bytes, UINT bind)
+@@ -1050,34 +1990,120 @@ static ID3D11Buffer *make_buffer(UINT bytes, UINT bind)
      return b;
  }
  
@@ -19961,10 +19972,6 @@ index b9f3fa2..9c08320 100644
 -    if (getenv("RECOMP_D3D_DEBUG"))
 -        flags |= D3D11_CREATE_DEVICE_DEBUG;
 -    {
--        /* The high-performance GPU, not the default adapter: on a hybrid
--         * machine the default is the integrated one that drives the
--         * display, and rendering there left a discrete GPU idle while each
--         * frame took a hundred milliseconds. */
 +static int upload_program_constants(const uint32_t program[NV_VSH_SLOTS][4])
 +{
 +    if (s_uploaded_program_valid && s_uploaded_program_buffer == s_cb_prog &&
@@ -20032,14 +20039,10 @@ index b9f3fa2..9c08320 100644
 +    if (getenv("RECOMP_D3D_DEBUG"))
 +        flags |= D3D11_CREATE_DEVICE_DEBUG;
 +    {
-+        /* The high-performance GPU, not the default adapter: on a hybrid
-+         * machine the default is the integrated one that drives the
-+         * display, and rendering there left a discrete GPU idle while each
-+         * frame took a hundred milliseconds. */
-         IDXGIFactory6 *fac = NULL;
-         IDXGIAdapter1 *ad = NULL;
-         if (SUCCEEDED(CreateDXGIFactory1(&IID_IDXGIFactory6, (void **)&fac))) {
-@@ -1121,6 +2136,18 @@ int nv2a_d3d_init(void)
+         /* The high-performance GPU, not the default adapter: on a hybrid
+          * machine the default is the integrated one that drives the
+          * display, and rendering there left a discrete GPU idle while each
+@@ -1121,6 +2147,18 @@ int nv2a_d3d_init(void)
          }
      }
      MAKE("ub_vs", "vs_5_0", VertexShader, &s_ub_vs)
@@ -20058,7 +20061,7 @@ index b9f3fa2..9c08320 100644
      MAKE("present_vs", "vs_5_0", VertexShader, &s_present_vs)
      MAKE("present_ps", "ps_5_0", PixelShader, &s_present_ps)
      MAKE("clear_vs", "vs_5_0", VertexShader, &s_clear_vs)
-@@ -1169,11 +2196,13 @@ int nv2a_d3d_init(void)
+@@ -1169,11 +2207,13 @@ int nv2a_d3d_init(void)
      }
      s_ib = make_buffer(IB_BYTES, D3D11_BIND_INDEX_BUFFER);
      s_cb_ub = make_buffer(sizeof(UbConsts), D3D11_BIND_CONSTANT_BUFFER);
@@ -20073,7 +20076,7 @@ index b9f3fa2..9c08320 100644
      if (!s_raw_srv || !s_ib || !s_cb_ub || !s_cb_prog || !s_cb_vconst || !s_cb_ps || !s_cb_present || !s_cb_clear) {
          fail("buffer creation", E_FAIL);
          return 0;
-@@ -1217,6 +2246,10 @@ int nv2a_d3d_init(void)
+@@ -1217,6 +2257,10 @@ int nv2a_d3d_init(void)
          if (qc && qd) break;
      }
      if (s_msaa < 1) s_msaa = 1;
@@ -20084,7 +20087,7 @@ index b9f3fa2..9c08320 100644
      s_init_state = 1;
      fprintf(stderr, "[D3D11] renderer ready: %ux%u internal, display aspect %.3f, %ux MSAA, %ux AF\n",
              (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
-@@ -1230,6 +2263,40 @@ int nv2a_d3d_active(void)
+@@ -1230,6 +2274,40 @@ int nv2a_d3d_active(void)
      return s_init_state > 0;
  }
  
@@ -20125,7 +20128,7 @@ index b9f3fa2..9c08320 100644
  /* --------------------------------------------------------------- surfaces */
  
  typedef struct {
-@@ -1237,6 +2304,7 @@ typedef struct {
+@@ -1237,6 +2315,7 @@ typedef struct {
      uint32_t color_fmt;             /* SURFACE_FORMAT colour code */
      float sx, sy;                   /* host pixels per guest pixel */
      int swizzled;
@@ -20133,7 +20136,7 @@ index b9f3fa2..9c08320 100644
      ID3D11Texture2D *tex;           /* single-sample; what srv reads */
      ID3D11Texture2D *ms;            /* MSAA target rtv draws into, or NULL */
      int ms_dirty;                   /* ms drawn since the last resolve */
-@@ -1255,9 +2323,21 @@ typedef struct {
+@@ -1255,9 +2334,21 @@ typedef struct {
      ID3D11RenderTargetView *rtv;
      ID3D11ShaderResourceView *srv;
      uint8_t *shadow;                /* guest bytes as of the last sync */
@@ -20156,7 +20159,7 @@ index b9f3fa2..9c08320 100644
  } Surface;
  
  typedef struct {
-@@ -1269,10 +2349,17 @@ typedef struct {
+@@ -1269,10 +2360,17 @@ typedef struct {
      ID3D11ShaderResourceView *y16_srv;
      ID3D11RenderTargetView *y16_rtv;
      uint32_t zf, w, h;                      /* zeta format code, guest size last bound with */
@@ -20175,7 +20178,7 @@ index b9f3fa2..9c08320 100644
  #define MAX_SURFACES 32
  #define MAX_DEPTHS 16
  static Surface s_surf[MAX_SURFACES];
-@@ -1283,6 +2370,7 @@ static Surface *s_cur_rt;
+@@ -1283,6 +2381,7 @@ static Surface *s_cur_rt;
  static uint32_t s_aa_x = 1, s_aa_y = 1;
  static Depth *s_cur_ds;
  
@@ -20183,7 +20186,7 @@ index b9f3fa2..9c08320 100644
  static uint32_t surface_color_bpp(uint32_t fmt)
  {
      switch (fmt & 0xF) {
-@@ -1350,49 +2438,58 @@ static void unbind_targets(void)
+@@ -1350,49 +2449,58 @@ static void unbind_targets(void)
  
  static void unbind_textures(void)
  {
@@ -20259,7 +20262,7 @@ index b9f3fa2..9c08320 100644
  }
  
  static void blit(ID3D11ShaderResourceView *srv, ID3D11RenderTargetView *rtv,
-@@ -1412,14 +2509,38 @@ static void guest_span(const Surface *s, float *x0, float *x1)
+@@ -1412,14 +2520,38 @@ static void guest_span(const Surface *s, float *x0, float *x1)
      *x1 = (1.0f + f) * 0.5f;
  }
  
@@ -20301,7 +20304,7 @@ index b9f3fa2..9c08320 100644
          uint32_t *dst = out + (size_t)y * s->w;
          if (s->bpp == 4) {
              memcpy(dst, row, (size_t)s->w * 4);
-@@ -1454,6 +2575,8 @@ static ID3D11ShaderResourceView *s_up_srv[2];
+@@ -1454,6 +2586,8 @@ static ID3D11ShaderResourceView *s_up_srv[2];
  static UINT s_up_w[2], s_up_h[2];
  static uint32_t *s_up_pixels, *s_mask_pixels;
  static size_t s_up_cap, s_mask_cap;
@@ -20310,7 +20313,7 @@ index b9f3fa2..9c08320 100644
  
  /* slot 0: image, slot 1: change mask */
  static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT w, UINT h)
-@@ -1465,10 +2588,12 @@ static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT
+@@ -1465,10 +2599,12 @@ static ID3D11ShaderResourceView *upload_slot(int k, const uint32_t *pixels, UINT
          s_up_tex[k] = make_texture(w, h, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM,
                                     D3D11_BIND_SHADER_RESOURCE, 0);
          if (!s_up_tex[k]) return NULL;
@@ -20325,7 +20328,7 @@ index b9f3fa2..9c08320 100644
      ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)s_up_tex[k], 0,
                                            NULL, pixels, w * 4, 0);
      return s_up_srv[k];
-@@ -1489,6 +2614,172 @@ static uint32_t *scratch_pixels(size_t count)
+@@ -1489,6 +2625,172 @@ static uint32_t *scratch_pixels(size_t count)
      return s_up_pixels;
  }
  
@@ -20498,7 +20501,7 @@ index b9f3fa2..9c08320 100644
  /* Guest memory is the authority for what the CPU writes. A shadow copy of
   * each surface's guest bytes says which pixels the CPU changed since the last
   * look; only those replace what the GPU drew. A loading screen drawn by the
-@@ -1496,71 +2787,146 @@ static uint32_t *scratch_pixels(size_t count)
+@@ -1496,71 +2798,146 @@ static uint32_t *scratch_pixels(size_t count)
  static void surface_sync_impl(Surface *s, int force)
  {
      uint32_t rowb = s->w * s->bpp, y, x, x0 = 0xFFFFFFFFu, x1 = 0, y0 = 0xFFFFFFFFu, y1 = 0;
@@ -20699,7 +20702,7 @@ index b9f3fa2..9c08320 100644
  }
  
  static void surface_sync(Surface *s, int force)
-@@ -1572,8 +2938,11 @@ static void surface_sync(Surface *s, int force)
+@@ -1572,8 +2949,11 @@ static void surface_sync(Surface *s, int force)
      if (s_prof_on > 0) s_prof[PROF_SYNC] += qpc() - t0;
  }
  
@@ -20711,7 +20714,7 @@ index b9f3fa2..9c08320 100644
      if (s_cur_rt == s) unbind_targets();
      if (s->srv) ID3D11ShaderResourceView_Release(s->srv);
      if (s->rtv) ID3D11RenderTargetView_Release(s->rtv);
-@@ -1588,6 +2957,7 @@ static void surface_release(Surface *s)
+@@ -1588,6 +2968,7 @@ static void surface_release(Surface *s)
      if (s->chain) ID3D11Texture2D_Release(s->chain);
      if (s->tex) ID3D11Texture2D_Release(s->tex);
      free(s->shadow);
@@ -20719,7 +20722,7 @@ index b9f3fa2..9c08320 100644
      memset(s, 0, sizeof *s);
  }
  
-@@ -1635,11 +3005,20 @@ static Surface *surface_get(uint32_t va, uint32_t pitch, uint32_t fmt,
+@@ -1635,11 +3016,20 @@ static Surface *surface_get(uint32_t va, uint32_t pitch, uint32_t fmt,
      } else {
          for (i = 0; i < MAX_SURFACES && !victim; i++)
              if (!s_surf[i].tex) victim = &s_surf[i];
@@ -20743,7 +20746,7 @@ index b9f3fa2..9c08320 100644
      surface_release(victim);
      s = victim;
      s->phys = p; s->va = va; s->pitch = pitch; s->bpp = bpp;
-@@ -1699,6 +3078,41 @@ static Depth *depth_find(uint32_t p)
+@@ -1699,6 +3089,41 @@ static Depth *depth_find(uint32_t p)
      return best;
  }
  
@@ -20785,7 +20788,7 @@ index b9f3fa2..9c08320 100644
  static Depth *depth_get(uint32_t va, uint32_t iw, uint32_t ih, UINT samples)
  {
      uint32_t p = phys(va);
-@@ -1784,8 +3198,12 @@ static int bind_targets(const NvD3DState *st, int want_depth, Surface **out,
+@@ -1784,8 +3209,12 @@ static int bind_targets(const NvD3DState *st, int want_depth, Surface **out,
          return 0;
      if (s && d && (d->iw != s->iw || d->ih != s->ih))
          d = NULL;
@@ -20800,7 +20803,7 @@ index b9f3fa2..9c08320 100644
      if (s != s_cur_rt || d != s_cur_ds) {
          ID3D11RenderTargetView *rtv = s ? s->rtv : NULL;
          unbind_textures();
-@@ -1901,11 +3319,20 @@ static void yuv_pair(const uint8_t *g, int uyvy, uint32_t out[2])
+@@ -1901,11 +3330,20 @@ static void yuv_pair(const uint8_t *g, int uyvy, uint32_t out[2])
  }
  
  typedef struct TexEntry {
@@ -20823,7 +20826,7 @@ index b9f3fa2..9c08320 100644
      ID3D11ShaderResourceView *srv;
      struct TexEntry *next;
  } TexEntry;
-@@ -1918,48 +3345,240 @@ static size_t s_tex_bytes, s_tex_count;
+@@ -1918,48 +3356,240 @@ static size_t s_tex_bytes, s_tex_count;
  /* Where each level/face lives, and the span to hash. */
  typedef struct {
      int kind, bpp, levels, faces;
@@ -21071,7 +21074,7 @@ index b9f3fa2..9c08320 100644
          for (by = 0; by < bh; by++)
              for (bx = 0; bx < bw; bx++) {
                  d3d8_dxt_decode_block(src + ((size_t)by * bw + bx) * L->bpp, t->color, px);
-@@ -1969,6 +3588,11 @@ static void decode_level(const NvD3DTexture *t, const TexLayout *L, const uint8_
+@@ -1969,6 +3599,11 @@ static void decode_level(const NvD3DTexture *t, const TexLayout *L, const uint8_
              }
          return;
      }
@@ -21083,7 +21086,7 @@ index b9f3fa2..9c08320 100644
      if (L->kind == K_LIN) {
          for (y = 0; y < h; y++) {
              const uint8_t *row = src + (size_t)y * t->pitch;
-@@ -2004,6 +3628,7 @@ static void tex_free(TexEntry *e)
+@@ -2004,6 +3639,7 @@ static void tex_free(TexEntry *e)
  {
      if (e->srv) ID3D11ShaderResourceView_Release(e->srv);
      if (e->tex) ID3D11Texture2D_Release(e->tex);
@@ -21091,7 +21094,7 @@ index b9f3fa2..9c08320 100644
      s_tex_bytes -= e->bytes;
      s_tex_count--;
      free(e);
-@@ -2023,12 +3648,15 @@ static void tex_evict(void)
+@@ -2023,12 +3659,15 @@ static void tex_evict(void)
          {
              TexEntry *e = *best;
              *best = e->next;
@@ -21108,7 +21111,7 @@ index b9f3fa2..9c08320 100644
  static void halve_bgra(const uint32_t *src, uint32_t w, uint32_t h, uint32_t *dst)
  {
      uint32_t nw = w > 1 ? w / 2 : 1, nh = h > 1 ? h / 2 : 1, x, y, c;
-@@ -2057,46 +3685,229 @@ static int host_levels(const TexLayout *L, const NvD3DTexture *t)
+@@ -2057,46 +3696,229 @@ static int host_levels(const TexLayout *L, const NvD3DTexture *t)
      return n > L->levels ? n : L->levels;
  }
  
@@ -21353,7 +21356,7 @@ index b9f3fa2..9c08320 100644
          if (L.faces == 6) {
              sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
              sd.TextureCube.MipLevels = (UINT)hl;
-@@ -2104,71 +3915,102 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
+@@ -2104,71 +3926,102 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t)
              sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
              sd.Texture2D.MipLevels = (UINT)hl;
          }
@@ -21488,7 +21491,7 @@ index b9f3fa2..9c08320 100644
  /* -------------------------------------------------------- state objects */
  
  typedef struct { uint64_t key; void *obj; } StateSlot;
-@@ -2231,12 +4073,12 @@ static D3D11_BLEND_OP blend_op(uint32_t e)
+@@ -2231,12 +4084,12 @@ static D3D11_BLEND_OP blend_op(uint32_t e)
      }
  }
  
@@ -21504,7 +21507,7 @@ index b9f3fa2..9c08320 100644
      void **slot = state_slot(s_blend_cache, key);
      if (!*slot) {
          D3D11_BLEND_DESC d;
-@@ -2244,7 +4086,9 @@ static ID3D11BlendState *blend_state(int enable, uint32_t sf, uint32_t df,
+@@ -2244,7 +4097,9 @@ static ID3D11BlendState *blend_state(int enable, uint32_t sf, uint32_t df,
          memset(&d, 0, sizeof d);
          r->BlendEnable = enable ? TRUE : FALSE;
          r->SrcBlend = blend_factor(sf, 0);
@@ -21515,7 +21518,7 @@ index b9f3fa2..9c08320 100644
          r->SrcBlendAlpha = blend_factor(sf, 1);
          r->DestBlendAlpha = blend_factor(df, 1);
          r->BlendOp = r->BlendOpAlpha = blend_op(eq);
-@@ -2254,6 +4098,12 @@ static ID3D11BlendState *blend_state(int enable, uint32_t sf, uint32_t df,
+@@ -2254,6 +4109,12 @@ static ID3D11BlendState *blend_state(int enable, uint32_t sf, uint32_t df,
      return (ID3D11BlendState *)*slot;
  }
  
@@ -21528,7 +21531,7 @@ index b9f3fa2..9c08320 100644
  static D3D11_COMPARISON_FUNC cmp(uint32_t f)
  {
      switch (f) {
-@@ -2282,6 +4132,15 @@ static D3D11_STENCIL_OP sop(uint32_t o)
+@@ -2282,6 +4143,15 @@ static D3D11_STENCIL_OP sop(uint32_t o)
      }
  }
  
@@ -21544,7 +21547,7 @@ index b9f3fa2..9c08320 100644
  static ID3D11DepthStencilState *ds_state(int zt, uint32_t zf, int zw, int st,
                                           uint32_t sf, uint32_t rmask, uint32_t wmask,
                                           uint32_t fail_, uint32_t zfail, uint32_t zpass)
-@@ -2346,12 +4205,29 @@ static D3D11_TEXTURE_ADDRESS_MODE addr_mode(uint32_t m)
+@@ -2346,12 +4216,29 @@ static D3D11_TEXTURE_ADDRESS_MODE addr_mode(uint32_t m)
      }
  }
  
@@ -21575,7 +21578,7 @@ index b9f3fa2..9c08320 100644
      if (bias13 & 0x1000) bias13 -= 0x2000;
      key = (uint64_t)minf | ((uint64_t)magf << 8) | ((uint64_t)(bias13 & 0x1FFF) << 12) |
            ((uint64_t)(levels & 15) << 25) | ((uint64_t)(reduce != 0) << 29) |
-@@ -2393,9 +4269,26 @@ static ID3D11SamplerState *sampler(const NvD3DTexture *t, int levels, int reduce
+@@ -2393,10 +4280,27 @@ static ID3D11SamplerState *sampler(const NvD3DTexture *t, int levels, int reduce
          }
          ID3D11Device_CreateSamplerState(s_dev, &d, (ID3D11SamplerState **)slot);
      }
@@ -21589,6 +21592,7 @@ index b9f3fa2..9c08320 100644
      return (ID3D11SamplerState *)*slot;
  }
  
+-/* ------------------------------------------------------------------- draw */
 +static ID3D11SamplerState *sampler(const NvD3DTexture *t, int levels, int reduce)
 +{
 +    return sampler_request(t, levels, reduce, NULL);
@@ -21599,10 +21603,11 @@ index b9f3fa2..9c08320 100644
 +    return sampler_request(t, levels, reduce, stage < 4 ? &s_sampler_request[stage] : NULL);
 +}
 +
- /* ------------------------------------------------------------------- draw */
++/* ------------------------------------------------------------------- draw */
  
  static uint32_t mode_needs_texture(uint32_t mode)
-@@ -2436,18 +4329,77 @@ static ID3D11ShaderResourceView *feedback_copy(Surface *s)
+ {
+@@ -2436,18 +4340,77 @@ static ID3D11ShaderResourceView *feedback_copy(Surface *s)
      return s_feedback_srv;
  }
  
@@ -21689,7 +21694,7 @@ index b9f3fa2..9c08320 100644
  }
  
  static uint32_t write_mask(const NvD3DState *st, Surface *s)
-@@ -2461,13 +4413,277 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
+@@ -2461,13 +4424,277 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
      return m;
  }
  
@@ -21971,7 +21976,7 @@ index b9f3fa2..9c08320 100644
  
  /* A guest pass that reduces a render target (glare, luminance
   * or reflection downsamples) takes texel-exact taps: at the guest's
-@@ -2580,14 +4796,13 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
+@@ -2580,14 +4807,13 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
          unbind_targets();
          ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &s->y16_rtv, NULL);
          ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
@@ -21993,7 +21998,7 @@ index b9f3fa2..9c08320 100644
          ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, &src);
          ID3D11DeviceContext_Draw(s_ctx, 3, 0);
          unbind_targets();
-@@ -2597,9 +4812,16 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
+@@ -2597,9 +4823,16 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
      return s->y16_srv;
  }
  
@@ -22012,7 +22017,7 @@ index b9f3fa2..9c08320 100644
      if (!d->zsrv) return NULL;
      if (!d->y16) {
          d->y16 = make_texture(2 * d->iw, d->ih, 1, 1, DXGI_FORMAT_R16G16B16A16_UNORM,
-@@ -2609,7 +4831,8 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
+@@ -2609,7 +4842,8 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
          ID3D11Device_CreateRenderTargetView(s_dev, (ID3D11Resource *)d->y16, NULL, &d->y16_rtv);
          d->y16_gen = d->gen - 1;
      }
@@ -22022,7 +22027,7 @@ index b9f3fa2..9c08320 100644
          ID3D11ShaderResourceView *src[1] = { d->zsrv };
          D3D11_VIEWPORT vp = { 0, 0, (float)(2 * d->iw), (float)d->ih, 0, 1 };
          D3D11_RECT sc = { 0, 0, (LONG)(2 * d->iw), (LONG)d->ih };
-@@ -2617,29 +4840,543 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
+@@ -2617,29 +4851,543 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
          unbind_targets();
          ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &d->y16_rtv, NULL);
          ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
@@ -22575,7 +22580,7 @@ index b9f3fa2..9c08320 100644
  static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                            uint32_t *out_gw, uint32_t *out_gh, uint32_t *out_zmax)
  {
-@@ -2647,12 +5384,31 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2647,12 +5395,31 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      Depth *d;
      uint32_t gw, gh, n, zf;
      PSConsts pc;
@@ -22610,7 +22615,7 @@ index b9f3fa2..9c08320 100644
  
      {
          /* Bring-up switches: RECOMP_D3D_SKIP_CMASK / _SKIP_SFACTOR (hex) drop
-@@ -2673,6 +5429,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2673,6 +5440,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          cull = st->cull_face == 0x404 ? 1 : st->cull_face == 0x405 ? 2 : 3;
      if (cull == 3 && topology == NV_D3D_TRIANGLES)
          return 0;                                /* front and back culled */
@@ -22621,7 +22626,7 @@ index b9f3fa2..9c08320 100644
      /* Y16 views of 32-bit targets are drawn before this draw's targets go
       * on; see y16_ps. */
      for (n = 0; n < 4; n++) {
-@@ -2682,17 +5442,49 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2682,17 +5453,49 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          if (t->color != 0x35 || t->cube || !t->addr) continue;
          /* A depth buffer wins over a colour surface at the same address:
           * MM3 binds one there for colour-masked stencil passes. */
@@ -22674,7 +22679,7 @@ index b9f3fa2..9c08320 100644
      for (n = 0; n < 4; n++) {
          const NvD3DTexture *t = &st->tex[n];
          uint32_t mode = (st->rc.stage_program >> (n * 5)) & 31;
-@@ -2707,15 +5499,56 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2707,15 +5510,56 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          if (!mode_needs_texture(mode) || !t->addr || !t->width || !t->height)
              continue;
          tex_format(t->color, &kind);
@@ -22735,7 +22740,7 @@ index b9f3fa2..9c08320 100644
          } else if (rt) {
              surface_sync(rt, 0);
              surface_resolve(rt);
-@@ -2742,9 +5575,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2742,9 +5586,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                  }
              }
          } else {
@@ -22747,7 +22752,7 @@ index b9f3fa2..9c08320 100644
              if (kind == K_LIN) {
                  pc.tex_scale[n][0] = 1.0f / (float)t->width;
                  pc.tex_scale[n][1] = 1.0f / (float)t->height;
-@@ -2757,8 +5589,28 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2757,8 +5600,28 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
              pc.tex_scale[n][2] = pc.tex_scale[n][3] = 1.0f;
          }
          if (!view) continue;
@@ -22778,7 +22783,7 @@ index b9f3fa2..9c08320 100644
          pc.tex_info[n][0] = (t->control0 >> 2) & 1;
          pc.tex_info[n][1] = t->filter >> 28;
          /* Point taps of an upscaled linear target average the guest pixel's
-@@ -2777,7 +5629,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2777,7 +5640,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      /* A sampled surface's CPU upload can blit and unbind this draw's
       * outputs. Restore targets and viewport before binding its textures. */
      if ((s != s_cur_rt || d != s_cur_ds) &&
@@ -22787,7 +22792,7 @@ index b9f3fa2..9c08320 100644
          return 0;
  
      /* Combiners. */
-@@ -2797,7 +5649,44 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2797,7 +5660,44 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      pc.stage_prog = st->rc_seen ? st->rc.stage_program : (st->tex_used & 1);
      pc.alpha_func = st->alpha_func;
      pc.alpha_ref = st->alpha_ref;
@@ -22833,7 +22838,7 @@ index b9f3fa2..9c08320 100644
      pc.other_input = st->other_stage_input;
      pc.dot_map = st->dot_rgb_mapping;
      /* SET_FOG_COLOR keeps red in the low byte. */
-@@ -2805,7 +5694,13 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2805,7 +5705,13 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      pc.fog_color[1] = ((st->fog_color >> 8) & 0xFF) / 255.0f;
      pc.fog_color[2] = ((st->fog_color >> 16) & 0xFF) / 255.0f;
      pc.fog_color[3] = (st->fog_color >> 24) / 255.0f;
@@ -22848,7 +22853,7 @@ index b9f3fa2..9c08320 100644
          uint32_t zm = zf == 1 ? 0xFFFFu : 0xFFFFFFu;
          if (st->poly_offset_fill) {
              pc.zp0[0] = st->poly_offset_factor;
-@@ -2815,29 +5710,32 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2815,29 +5721,32 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          pc.zp0[3] = s_cur_sy;
          pc.zp1[0] = 1.0f / ((float)zm + 1.0f);
          pc.zp1[1] = (float)zm;
@@ -22891,7 +22896,7 @@ index b9f3fa2..9c08320 100644
                                                     st->front_face == 0x901, bias, slope));
      apply_scissor(st, gw, gh);
      if ((st->blend_sfactor | st->blend_dfactor) & 0x8000) {
-@@ -2851,11 +5749,11 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2851,11 +5760,11 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      } else {
          bf[0] = bf[1] = bf[2] = bf[3] = 0;
      }
@@ -22908,7 +22913,7 @@ index b9f3fa2..9c08320 100644
                       st->stencil_test, st->stencil_func, st->stencil_func_mask,
                       st->stencil_write_mask, st->stencil_fail,
                       st->stencil_zfail, st->stencil_zpass) : s_ds_off,
-@@ -2871,6 +5769,19 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2871,6 +5780,19 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
   * from a primitive's last vertex on the NV2A (GL's provoking vertex) but its
   * first on D3D11, so flat primitives are rotated to lead with their last
   * vertex; rotating a triangle keeps its winding. */
@@ -22928,7 +22933,7 @@ index b9f3fa2..9c08320 100644
  static void copy_indices(uint32_t *o, const uint32_t *idx, uint32_t ni, uint32_t sub,
                           int topology, int flat)
  {
-@@ -2894,8 +5805,8 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
+@@ -2894,8 +5816,8 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
  {
      if (bytes > cap) return NULL;
      if (*pos + bytes > cap) *pos = 0;
@@ -22939,7 +22944,7 @@ index b9f3fa2..9c08320 100644
          return NULL;
      return (uint8_t *)m->pData + *pos;
  }
-@@ -2908,18 +5819,134 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
+@@ -2908,18 +5830,134 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
   * (index - sub); fills dx with each vertex's x shift in guest pixels and
   * returns 0 when nothing moves, leaving only the shader's 4:3 squeeze. */
  #define HUD_GAP 24.0f
@@ -23077,7 +23082,7 @@ index b9f3fa2..9c08320 100644
          if (r) root = r;
          if (pc) piece = pc;
          if (!b) return 0;
-@@ -2929,13 +5956,16 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2929,13 +5967,16 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
  #define FIND(x) do { while (root[x] != x) x = root[x] = root[root[x]]; } while (0)
      /* pieces: vertices joined by primitives */
      for (i = 0; i < nv; i++) root[i] = i;
@@ -23095,7 +23100,7 @@ index b9f3fa2..9c08320 100644
      for (i = 0; i < nv; i++) {
          uint32_t r = i;
          FIND(r);
-@@ -2943,6 +5973,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2943,6 +5984,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
              piece[i] = np;
              box[np][0] = box[np][2] = 1e30f;
              box[np][1] = box[np][3] = -1e30f;
@@ -23103,7 +23108,7 @@ index b9f3fa2..9c08320 100644
              np++;
          }
      }
-@@ -2951,6 +5982,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2951,6 +5993,7 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
          FIND(r);
          n = piece[r];
          piece[i] = n;
@@ -23111,7 +23116,7 @@ index b9f3fa2..9c08320 100644
          if (pos[i][0] < box[n][0]) box[n][0] = pos[i][0];
          if (pos[i][0] > box[n][1]) box[n][1] = pos[i][0];
          if (pos[i][1] < box[n][2]) box[n][2] = pos[i][1];
-@@ -2962,6 +5994,14 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2962,6 +6005,14 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
      for (i = 0; i < np; i++)
          for (k = i + 1; k < np; k++) {
              uint32_t a = i, b = k;
@@ -23126,7 +23131,7 @@ index b9f3fa2..9c08320 100644
              if (box[i][2] > box[k][3] || box[k][2] > box[i][3] ||
                  box[i][0] > box[k][1] + HUD_GAP || box[k][0] > box[i][1] + HUD_GAP)
                  continue;
-@@ -2976,19 +6016,41 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2976,19 +6027,41 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
      for (i = 0; i < nv; i++) {
          uint32_t c = piece[i];
          FIND(c);
@@ -23169,7 +23174,7 @@ index b9f3fa2..9c08320 100644
  /* ---------------------------------------------- vertex processing on the GPU
   *
   * Every draw runs ub_vs: it pulls the title's raw vertex arrays from a byte
-@@ -2998,7 +6060,6 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
+@@ -2998,7 +6071,6 @@ static int hud_split(const float (*pos)[4], uint32_t nv, const uint32_t *idx, ui
   * its depth the same way (no z-fighting between passes), nothing waits on a
   * shader compile, and no vertex is drawn from a CPU transform. */
  
@@ -23177,7 +23182,7 @@ index b9f3fa2..9c08320 100644
  extern const uint32_t (*nv2a_vsh_program(uint32_t *start, uint32_t *version))[4];
  extern const float (*nv2a_vsh_constants(uint32_t *version))[4];
  
-@@ -3015,9 +6076,103 @@ static uint32_t attr_bytes(uint32_t type, uint32_t size)
+@@ -3015,9 +6087,103 @@ static uint32_t attr_bytes(uint32_t type, uint32_t size)
      }
  }
  
@@ -23282,7 +23287,7 @@ index b9f3fa2..9c08320 100644
  }
  
  void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr[16],
-@@ -3025,6 +6180,7 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3025,6 +6191,7 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
                        uint32_t lo, uint32_t hi, const float (*pos)[4])
  {
      static uint32_t s_prog_version, s_vconst_version;
@@ -23290,14 +23295,14 @@ index b9f3fa2..9c08320 100644
      static float *dx;
      static uint32_t dx_cap;
      struct { const uint8_t *base; uint32_t stride, span; } grp[16];
-@@ -3035,11 +6191,30 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3035,11 +6202,30 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      uint8_t *p;
      UINT total = 0, at = 0, ib_bytes = ni * 4;
      float squeeze = 1.0f, shift = 0.0f, yscale = 1.0f;
 -    int use_dx = 0;
 -    int64_t t_draw;
 +    int use_dx = 0, use_dy = 0, direct = 0;
-+    int suppress_map_base = 0;
++    int suppress_map_base = 0, hide_hud = 0;
 +    float *dy = NULL;
 +    int64_t t_draw, t_setup = 0, slow_draw;
  
@@ -23323,7 +23328,7 @@ index b9f3fa2..9c08320 100644
      memset(&uc, 0, sizeof uc);
      memcpy(uc.def, def, sizeof uc.def);
      /* Arrays: interleaved ones share one copied span. */
-@@ -3067,90 +6242,426 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3067,90 +6253,432 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      }
      for (i = 0; i < ngrp; i++)
          total += (((grp[i].stride ? (count - 1) * grp[i].stride : 0) + grp[i].span) + 15) & ~15u;
@@ -23495,6 +23500,12 @@ index b9f3fa2..9c08320 100644
 +                 fabsf(xhi - s_hud_start[2]) < 2.0f &&
 +                 fabsf(yhi - s_hud_start[3]) < 2.0f)))
 +                s_hud_seen = 1;
++            /* Hidden HUD: the map and all 2D from it on, tagged routes and
++             * name tags; never a pass across the whole canvas (fades). */
++            if (InterlockedCompareExchange(&s_hud_hidden, 0, 0) && nv2a_d3d_hud_active() &&
++                !(wide_x && tall) && (map_part || route_n || name_n || s_hud_seen ||
++                                      (s_draw_textured && hud_texture(s_draw_tex_addr))))
++                hide_hud = 1;
 +            if (nv2a_d3d_hud_active() && (map_part || (widescreen && (name_n || !(wide_x && (!s_draw_textured || s_draw_reads_wide || route_n || full_pass)))))) {
                  squeeze = narrow;
 -                if (nv2a_d3d_hud_active() && world_tag_draw(xlo, xhi, ylo, yhi, s_draw_tex_addr)) {
@@ -23693,7 +23704,7 @@ index b9f3fa2..9c08320 100644
 -    /* Vertex data for [lo, hi], one span per group, then any x shifts. */
 -    if (!s_raw_nooverwrite) s_raw_pos = 0;
 -    if (!(p = ring_map(s_raw, &s_raw_pos, VB_BYTES, total + (use_dx ? count * 4 : 0), &m))) {
-+    if (suppress_map_base) {
++    if (suppress_map_base || hide_hud) {
 +        slow_frame_end(SF_DRAW_SCOPE, slow_draw);
 +        RECOMP_PROFILE_END();
 +        return;
@@ -23786,7 +23797,7 @@ index b9f3fa2..9c08320 100644
  
      uc.info[1] = program ? 1u : 0u;
      if (program) {
-@@ -3158,39 +6669,118 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3158,39 +6686,118 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
          const uint32_t (*prog)[4] = nv2a_vsh_program(&start, &pver);
          const float (*consts)[4] = nv2a_vsh_constants(&cver);
          uc.info[0] = start;
@@ -23919,7 +23930,7 @@ index b9f3fa2..9c08320 100644
      RECOMP_PROFILE_END();
  }
  
-@@ -3204,11 +6794,18 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3204,11 +6811,18 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      float cc[8];
      D3D11_RECT r;
      int zclear = (flags & 1) != 0, sclear = (flags & 2) != 0;
@@ -23940,7 +23951,7 @@ index b9f3fa2..9c08320 100644
      if (s) {
          if (flags & 0x10) mask |= D3D11_COLOR_WRITE_ENABLE_RED;
          if (flags & 0x20) mask |= D3D11_COLOR_WRITE_ENABLE_GREEN;
-@@ -3217,9 +6814,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3217,9 +6831,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
              mask |= D3D11_COLOR_WRITE_ENABLE_ALPHA;
      }
      if (!d) { zclear = sclear = 0; }
@@ -23953,7 +23964,7 @@ index b9f3fa2..9c08320 100644
      zf = (st->surface_format >> 4) & 0xF;
      unpack4(color, cc);
      if (s && (s->color_fmt & 0xF) == 0x3) {
-@@ -3231,28 +6829,39 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3231,28 +6846,39 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      memset(cc + 4, 0, 16);
      cc[4] = zf == 1 ? (float)(zstencil & 0xFFFF) / 65535.0f
                      : (float)(zstencil >> 8) / 16777215.0f;
@@ -24005,7 +24016,7 @@ index b9f3fa2..9c08320 100644
  }
  
  /* -------------------------------------------------------------- write-back */
-@@ -3270,6 +6879,282 @@ typedef struct {
+@@ -3270,6 +6896,282 @@ typedef struct {
      ID3D11RenderTargetView *down_rtv;
  } WbSlot;
  static WbSlot s_wb[MAX_SURFACES];
@@ -24288,7 +24299,7 @@ index b9f3fa2..9c08320 100644
  
  static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
  {
-@@ -3289,12 +7174,14 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
+@@ -3289,12 +7191,14 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
              return 0;
          k->w = w; k->h = h;
      }
@@ -24309,7 +24320,7 @@ index b9f3fa2..9c08320 100644
      }
      return 1;
  }
-@@ -3305,62 +7192,243 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
+@@ -3305,62 +7209,243 @@ static int wb_slot_ready(WbSlot *k, UINT w, UINT h, int need_down)
   * (nv2a_d3d_writeback_busy), holding back DMA_GET and fence releases until
   * then -- the title cannot learn the frame is finished before its pixels are
   * in guest memory. */
@@ -24562,7 +24573,7 @@ index b9f3fa2..9c08320 100644
                  for (x = 0; x < s->w; x++) {
                      uint32_t c = src[x];
                      o[x] = r565 ? (uint16_t)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07E0) | ((c >> 3) & 0x1F))
-@@ -3369,34 +7437,51 @@ static int writeback_finish(int wait)
+@@ -3369,34 +7454,51 @@ static int writeback_finish(int wait)
                  }
              }
              memcpy(s->shadow + (size_t)y * rowb, row, rowb);
@@ -24621,7 +24632,7 @@ index b9f3fa2..9c08320 100644
      RECOMP_PROFILE_BEGIN("D3D11 write-back issue");
      for (i = 0; i < MAX_SURFACES; i++) {
          Surface *s = &s_surf[i];
-@@ -3409,9 +7494,10 @@ static void writeback_surfaces(void)
+@@ -3409,9 +7511,10 @@ static void writeback_surfaces(void)
              continue;
          surface_resolve(s);
          if (scaled) {
@@ -24635,7 +24646,7 @@ index b9f3fa2..9c08320 100644
              ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)k->stage,
                                               (ID3D11Resource *)k->down);
          } else {
-@@ -3420,11 +7506,23 @@ static void writeback_surfaces(void)
+@@ -3420,11 +7523,23 @@ static void writeback_surfaces(void)
          }
          s->gpu_dirty = 0;                        /* later draws dirty it again */
          k->pending = 1;
@@ -24660,7 +24671,7 @@ index b9f3fa2..9c08320 100644
  }
  
  /* ----------------------------------------------------- visibility tests */
-@@ -3439,13 +7537,16 @@ static uint64_t s_zpass;
+@@ -3439,13 +7554,16 @@ static uint64_t s_zpass;
  static void zpass_collect(void)
  {
      UINT64 n = 0;
@@ -24677,7 +24688,7 @@ index b9f3fa2..9c08320 100644
  }
  
  void nv2a_d3d_zpass_enable(int on)
-@@ -3490,10 +7591,43 @@ static ID3D11ShaderResourceView *s_ovl_srv;
+@@ -3490,10 +7608,43 @@ static ID3D11ShaderResourceView *s_ovl_srv;
  static UINT s_ovl_w, s_ovl_h;
  static uint32_t s_ovl_serial = 0xFFFFFFFFu;
  static DWORD s_last_present, s_last_flip;
@@ -24721,7 +24732,7 @@ index b9f3fa2..9c08320 100644
  static int ensure_swapchain(void)
  {
      HWND h = xbox_FramebufferWindowHandle();
-@@ -3505,6 +7639,8 @@ static int ensure_swapchain(void)
+@@ -3505,6 +7656,8 @@ static int ensure_swapchain(void)
      hh = (UINT)(rc.bottom - rc.top);
      if (!w || !hh) return 0;                    /* minimised */
      if (s_swap && s_swap_hwnd != h) {
@@ -24730,7 +24741,7 @@ index b9f3fa2..9c08320 100644
          IDXGISwapChain1_Release(s_swap);
          s_swap = NULL;
      }
-@@ -3522,7 +7658,17 @@ static int ensure_swapchain(void)
+@@ -3522,7 +7675,17 @@ static int ensure_swapchain(void)
          d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
          d.SampleDesc.Count = 1;
          d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -24749,7 +24760,7 @@ index b9f3fa2..9c08320 100644
          d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
          hr = fac ? IDXGIFactory2_CreateSwapChainForHwnd(fac, (IUnknown *)s_dev, h, &d,
                                                          NULL, NULL, &s_swap) : E_FAIL;
-@@ -3534,9 +7680,11 @@ static int ensure_swapchain(void)
+@@ -3534,9 +7697,11 @@ static int ensure_swapchain(void)
          if (dxdev) IDXGIDevice_Release(dxdev);
          if (FAILED(hr)) { fail("CreateSwapChainForHwnd", hr); return 0; }
          s_swap_hwnd = h; s_swap_w = w; s_swap_h = hh;
@@ -24762,7 +24773,7 @@ index b9f3fa2..9c08320 100644
          if (FAILED(IDXGISwapChain1_ResizeBuffers(s_swap, 0, w, hh, DXGI_FORMAT_UNKNOWN, 0)))
              return 0;
          s_swap_w = w; s_swap_h = hh;
-@@ -3556,24 +7704,38 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
+@@ -3556,24 +7721,38 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
      if (!prefix) return;
      if (!remaining) {
          int count = 0;
@@ -24803,7 +24814,7 @@ index b9f3fa2..9c08320 100644
          ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)st, (ID3D11Resource *)bb);
          if (SUCCEEDED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource *)st, 0,
                                               D3D11_MAP_READ, 0, &m))) {
-@@ -3607,6 +7769,8 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
+@@ -3607,10 +7786,79 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
              ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)st, 0);
          }
          ID3D11Texture2D_Release(st);
@@ -24812,7 +24823,78 @@ index b9f3fa2..9c08320 100644
      }
      remaining--;
  }
-@@ -3638,10 +7802,18 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+ 
++/* nv2a_d3d_request_screenshot: one served request, taken from the image the
++ * window is about to show. The flag is the hand-off: the function is stored
++ * before it is raised. */
++static nv2a_screenshot_fn s_shot_fn;
++static volatile LONG s_shot_pending;
++
++void nv2a_d3d_request_screenshot(nv2a_screenshot_fn take)
++{
++    s_shot_fn = take;
++    InterlockedExchange(&s_shot_pending, take != NULL);
++}
++
++static void screenshot_serve(ID3D11Texture2D *bb)
++{
++    nv2a_screenshot_fn take;
++    D3D11_TEXTURE2D_DESC d;
++    ID3D11Texture2D *st = NULL;
++    D3D11_MAPPED_SUBRESOURCE m;
++    if (!InterlockedCompareExchange(&s_shot_pending, 0, 0) || !InterlockedExchange(&s_shot_pending, 0))
++        return;
++    take = s_shot_fn;
++    if (!take) return;
++    ID3D11Texture2D_GetDesc(bb, &d);
++    d.Usage = D3D11_USAGE_STAGING;
++    d.BindFlags = 0;
++    d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
++    d.MiscFlags = 0;
++    if (d.Format != DXGI_FORMAT_B8G8R8A8_UNORM && d.Format != DXGI_FORMAT_B8G8R8A8_UNORM_SRGB &&
++        d.Format != DXGI_FORMAT_R8G8B8A8_UNORM) {
++        fprintf(stderr, "[D3D11] screenshot: back buffer format %d is not 8-bit\n", (int)d.Format);
++        take(NULL, 0, 0, 0);
++        return;
++    }
++    if (FAILED(ID3D11Device_CreateTexture2D(s_dev, &d, NULL, &st))) {
++        take(NULL, 0, 0, 0);
++        return;
++    }
++    ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)st, (ID3D11Resource *)bb);
++    if (SUCCEEDED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource *)st, 0, D3D11_MAP_READ, 0, &m))) {
++        if (d.Format == DXGI_FORMAT_R8G8B8A8_UNORM) {
++            /* swap to B, G, R order in a copy: the callback only knows BGRA */
++            uint32_t y, x;
++            uint8_t *copy = (uint8_t *)malloc((size_t)d.Width * d.Height * 4);
++            if (copy) {
++                for (y = 0; y < d.Height; y++) {
++                    const uint8_t *src = (const uint8_t *)m.pData + (size_t)y * m.RowPitch;
++                    uint8_t *out = copy + (size_t)y * d.Width * 4;
++                    for (x = 0; x < d.Width; x++) {
++                        out[x * 4] = src[x * 4 + 2]; out[x * 4 + 1] = src[x * 4 + 1];
++                        out[x * 4 + 2] = src[x * 4]; out[x * 4 + 3] = src[x * 4 + 3];
++                    }
++                }
++                take(copy, d.Width, d.Height, d.Width * 4);
++                free(copy);
++            } else {
++                take(NULL, 0, 0, 0);
++            }
++        } else {
++            take(m.pData, d.Width, d.Height, m.RowPitch);
++        }
++        ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)st, 0);
++    } else {
++        take(NULL, 0, 0, 0);
++    }
++    ID3D11Texture2D_Release(st);
++}
++
+ /* Draw surface `s` (with the overlay described in *pc) into a w x h target,
+  * letterboxed to the display aspect when asked. */
+ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3638,10 +7886,18 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
      pc->src_size[0] = (float)s->w; pc->src_size[1] = (float)s->h;
      pc->src_size[2] = (float)s->iw; pc->src_size[3] = (float)s->ih;
      pc->force_alpha[0] = 1.0f;
@@ -24831,7 +24913,7 @@ index b9f3fa2..9c08320 100644
      upload_cb(s_cb_present, pc, sizeof *pc);
      unbind_textures();
      unbind_targets();
-@@ -3652,22 +7824,21 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3652,22 +7908,21 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
      vp.MinDepth = 0; vp.MaxDepth = 1;
      sc.left = 0; sc.top = 0; sc.right = (LONG)w; sc.bottom = (LONG)h;
      ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
@@ -24863,7 +24945,7 @@ index b9f3fa2..9c08320 100644
      ID3D11DeviceContext_Draw(s_ctx, 4, 0);
      unbind_targets();
      unbind_textures();
-@@ -3718,22 +7889,75 @@ static void prepare_overlay(PresentConsts *pc)
+@@ -3718,22 +7973,75 @@ static void prepare_overlay(PresentConsts *pc)
      pc->ovl_in[2] = 1.0f;
  }
  
@@ -24940,7 +25022,7 @@ index b9f3fa2..9c08320 100644
          if (!s_cap_tex || s_cap_w != s->iw || s_cap_h != s->ih) {
              if (s_cap_rtv) ID3D11RenderTargetView_Release(s_cap_rtv);
              if (s_cap_tex) ID3D11Texture2D_Release(s_cap_tex);
-@@ -3749,25 +7973,104 @@ static void present_surface(Surface *s)
+@@ -3749,25 +8057,105 @@ static void present_surface(Surface *s)
              composite(s_cap_rtv, s->iw, s->ih, s, &pc, 0);
              capture_backbuffer(s_cap_tex);
          }
@@ -24975,6 +25057,7 @@ index b9f3fa2..9c08320 100644
 -            ID3D11RenderTargetView_Release(rtv);
 -            ID3D11Texture2D_Release(bb);
 +                capture_backbuffer(s_swap_buffer);
++            screenshot_serve(s_swap_buffer);
 +            frame_csv_init();
 +            if (pacing) black_frame_sample(s, &pc);
 +            /* Composite and capture are complete; align the actual host
@@ -25058,7 +25141,7 @@ index b9f3fa2..9c08320 100644
  /* The flip completes at the display's next vertical blank, as it does on the
   * NV2A: FLIP_STALL holds the GPU until then, and the title, waiting on the
   * GPU, is paced by it. Completing it at once let menus run at hundreds of
-@@ -3779,40 +8082,31 @@ static void pace_vblank(void)
+@@ -3779,40 +8167,31 @@ static void pace_vblank(void)
      static LARGE_INTEGER freq;
      static int64_t next;
      static HANDLE timer;
@@ -25115,7 +25198,7 @@ index b9f3fa2..9c08320 100644
      }
  }
  
-@@ -3822,30 +8116,41 @@ static void pace_vblank(void)
+@@ -3822,30 +8201,41 @@ static void pace_vblank(void)
   * the monitor's native resolution and shape). A resize applies once it has
   * settled for RESIZE_SETTLE_MS, by dropping every host surface; they are
   * rebuilt at the new size from guest memory, which the flip just updated.
@@ -25166,7 +25249,7 @@ index b9f3fa2..9c08320 100644
          scale = (float)atof(e);
      } else {
          /* RECOMP_SUPERSAMPLE=N (1..4) renders N x N host pixels per window
-@@ -3860,7 +8165,9 @@ static void display_config(int now)
+@@ -3860,7 +8250,9 @@ static void display_config(int now)
          if (scale < 1.0f) scale = 1.0f;
          if (scale > 8.0f) scale = 8.0f;
      }
@@ -25177,7 +25260,7 @@ index b9f3fa2..9c08320 100644
      if (!now && fabsf(scale - s_scale) < 1e-3f && fabsf(aspect - s_aspect) < 1e-4f)
          return;
      if (!now) {
-@@ -3874,6 +8181,11 @@ static void display_config(int now)
+@@ -3874,6 +8266,11 @@ static void display_config(int now)
      }
      s_scale = scale;
      s_aspect = aspect;
@@ -25189,7 +25272,7 @@ index b9f3fa2..9c08320 100644
      fprintf(stderr, "[D3D11] rendering %ux%u (window %ux%u, aspect %.3f)\n",
              (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
              w, h, aspect);
-@@ -3894,37 +8206,77 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
+@@ -3894,37 +8291,77 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
      return s;
  }
  
@@ -25274,7 +25357,7 @@ index b9f3fa2..9c08320 100644
      s_frame++;
  }
  
-@@ -3932,33 +8284,66 @@ void nv2a_d3d_tick(void)
+@@ -3932,33 +8369,66 @@ void nv2a_d3d_tick(void)
  {
      DWORD now;
      uint32_t va, pitch;
@@ -25347,12 +25430,13 @@ index b9f3fa2..9c08320 100644
  int nv2a_d3d_prof_enabled(void) { return 0; }
  void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
  { (void)slot; (void)ticks; (void)verts; }
-@@ -3977,7 +8362,40 @@ void nv2a_d3d_zpass_enable(int on) { (void)on; }
+@@ -3977,7 +8447,42 @@ void nv2a_d3d_zpass_enable(int on) { (void)on; }
  void nv2a_d3d_zpass_clear(void) {}
  uint32_t nv2a_d3d_zpass_read(void) { return 0; }
  float nv2a_d3d_display_aspect(void) { return 4.0f / 3.0f; }
 +void nv2a_d3d_set_display_aspect(float aspect) { (void)aspect; }
  void nv2a_d3d_set_edge_hud(int on) { (void)on; }
++void nv2a_d3d_set_hud_hidden(int hidden) { (void)hidden; }
 +void nv2a_d3d_set_centered_ui_query(int (*query)(void)) { (void)query; }
 +void nv2a_d3d_set_map_texture_query(int (*query)(uint32_t texture_addr)) { (void)query; }
 +void nv2a_d3d_set_minimap_style_query(int (*query)(void)) { (void)query; }
@@ -25381,6 +25465,7 @@ index b9f3fa2..9c08320 100644
 +void nv2a_d3d_sky_fog_ramp(uint32_t addr, uint32_t format, float row, float scale, float knee)
 +{ (void)addr; (void)format; (void)row; (void)scale; (void)knee; }
  void nv2a_d3d_set_hud_start(float x0, float y0, float x1, float y1) { (void)x0; (void)y0; (void)x1; (void)y1; }
++void nv2a_d3d_request_screenshot(nv2a_screenshot_fn take) { if (take) take(NULL, 0, 0, 0); }
 +void nv2a_d3d_world_tris_publish(uint32_t seq, const NvWorldVertex *v, uint32_t count)
 +{ (void)seq; (void)v; (void)count; }
 +void nv2a_d3d_world_tris(const NvD3DState *st, uint32_t seq, float depth_to_world,
@@ -25389,7 +25474,7 @@ index b9f3fa2..9c08320 100644
 +void nv2a_d3d_hold_frame(void) {}
  #endif
 diff --git a/src/video/nv2a_d3d11.h b/src/video/nv2a_d3d11.h
-index 082f091..549a388 100644
+index 082f091..ee4b99b 100644
 --- a/src/video/nv2a_d3d11.h
 +++ b/src/video/nv2a_d3d11.h
 @@ -2,12 +2,13 @@
@@ -25437,7 +25522,7 @@ index 082f091..549a388 100644
      /* Output merger. */
      uint32_t blend_enable, blend_sfactor, blend_dfactor, blend_equation;
      uint32_t blend_color, color_mask;
-@@ -91,12 +98,125 @@ int nv2a_d3d_widescreen(void);
+@@ -91,12 +98,129 @@ int nv2a_d3d_widescreen(void);
  int  nv2a_d3d_init(void);
  int  nv2a_d3d_active(void);
  
@@ -25463,6 +25548,10 @@ index 082f091..549a388 100644
   * it leaves; while on (and the frame draws no full-screen background) the
   * HUD is placed at the screen edges instead of the centred 4:3 area. */
  void nv2a_d3d_set_edge_hud(int on);
++/* Nonzero: race frames skip their flat 2D HUD (the minimap and the 2D drawn
++ * after it, map routes, name tags over cars). Menus, loading screens and
++ * full-screen passes are unaffected. */
++void nv2a_d3d_set_hud_hidden(int hidden);
 +/* Optional title-scoped overlay query: nonzero keeps its controls in one
 + * centred 4:3 area while the race HUD is active, instead of independently
 + * following world positions or anchoring each draw at a screen edge.
@@ -25564,7 +25653,7 @@ index 082f091..549a388 100644
  /* A title that multiplies its far plane by `scale` (w-buffered, so depth is
   * w / far) still indexes its authored depth lookups (fog ramps) with the
   * original fractions. Depth read back as a texture is reported in those:
-@@ -104,9 +224,38 @@ void nv2a_d3d_set_edge_hud(int on);
+@@ -104,9 +228,44 @@ void nv2a_d3d_set_edge_hud(int on);
   * stretched so the rest of the authored ramp ends at the new far plane.
   * scale 1 (the default) leaves depth untouched. */
  void nv2a_d3d_set_depth_view_remap(float scale, float knee);
@@ -25586,6 +25675,12 @@ index 082f091..549a388 100644
  /* The race HUD's first element, as its 4:3 screen rectangle; 2D drawn ahead
   * of it in a race frame is world-anchored (name tags over cars). */
  void nv2a_d3d_set_hud_start(float x0, float y0, float x1, float y1);
++/* Any thread: the next image presented to the window (what the player sees,
++ * at window size) is handed to `take` once, as B8G8R8A8 rows `pitch` bytes
++ * apart. `take` runs on the presenting thread inside the frame: copy what it
++ * keeps and return quickly. A newer request replaces one not yet served. */
++typedef void (*nv2a_screenshot_fn)(const void *bgra, uint32_t width, uint32_t height, uint32_t pitch);
++void nv2a_d3d_request_screenshot(nv2a_screenshot_fn take);
 +/* World-space triangles a title adds to its scene (nv2a_world_tris.h): a
 + * vertex is a world position and its colour packed R, G, B, A from the low
 + * byte. Title thread: publish batch `seq` (copied; at most
@@ -25603,7 +25698,7 @@ index 082f091..549a388 100644
  
  /* NV097_CLEAR_SURFACE: flags as the method's parameter, rect inclusive. */
  void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
-@@ -115,6 +264,9 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -115,6 +274,9 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
  
  /* The title finished a frame in this surface: put it on screen. */
  void nv2a_d3d_flip(uint32_t surface_addr, uint32_t pitch);
@@ -25613,7 +25708,7 @@ index 082f091..549a388 100644
  
  /* A new pushbuffer segment is about to execute. */
  void     nv2a_d3d_kick(void);
-@@ -129,6 +281,21 @@ int  nv2a_d3d_prof_enabled(void);
+@@ -129,6 +291,21 @@ int  nv2a_d3d_prof_enabled(void);
  /* A flip's surfaces are still being read back into guest memory: DMA_GET and
   * fence releases must wait. Completes whatever the GPU has finished. */
  int  nv2a_d3d_writeback_busy(void);
@@ -53754,6 +53849,179 @@ index 0000000..573f901
 +    puts("PASS: native LightDraw 3D attenuation, Z/XY extent, scene depth and RGB-only output mask");
 +    return 0;
 +}
+diff --git a/tests/nv2a_world_lighting/test_paint_softness.c b/tests/nv2a_world_lighting/test_paint_softness.c
+new file mode 100644
+index 0000000..cce68f5
+--- /dev/null
++++ b/tests/nv2a_world_lighting/test_paint_softness.c
+@@ -0,0 +1,167 @@
++/* Production GPU replay: car paint mirrors the title's display copy blurred
++ * (nv2a_d3d_set_paint_softness); glass and other surfaces stay sharp. */
++#include "../../src/video/nv2a_d3d11.c"
++
++static uint8_t *ram;
++ptrdiff_t xbox_GetMemoryOffset(void) { return (ptrdiff_t)ram; }
++HWND xbox_FramebufferWindowHandle(void) { return NULL; }
++int xbox_FramebufferScanSource(uint32_t *va, uint32_t *pitch) { return 0; }
++int xbox_FramebufferOverlay(XboxOverlay *ovl) { return 0; }
++void xbox_FramebufferNoteFlip(uint32_t draws) {}
++const uint32_t (*nv2a_vsh_program(uint32_t *start, uint32_t *version))[4]
++{
++    *start = 0; *version = 1;
++    return NULL;
++}
++const float (*nv2a_vsh_constants(uint32_t *version))[4]
++{
++    *version = 1;
++    return NULL;
++}
++
++#define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); return 1; } } while (0)
++
++enum { TARGET = 0x10000, COPY = 0x20000, OTHER = 0x30000 };
++
++static uint32_t pixel(Surface *surface, unsigned x, unsigned y)
++{
++    ID3D11Texture2D *staging = NULL;
++    D3D11_TEXTURE2D_DESC desc;
++    D3D11_MAPPED_SUBRESOURCE mapped;
++    uint32_t result = 0xDEADBEEFu;
++    surface_resolve(surface);
++    ID3D11Texture2D_GetDesc(surface->tex, &desc);
++    desc.Usage = D3D11_USAGE_STAGING;
++    desc.BindFlags = desc.MiscFlags = 0;
++    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
++    if (FAILED(ID3D11Device_CreateTexture2D(s_dev, &desc, NULL, &staging))) return result;
++    ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)staging, (ID3D11Resource *)surface->tex);
++    if (SUCCEEDED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource *)staging, 0, D3D11_MAP_READ, 0, &mapped))) {
++        memcpy(&result, (uint8_t *)mapped.pData + y * mapped.RowPitch + x * 4, 4);
++        ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)staging, 0);
++    }
++    ID3D11Texture2D_Release(staging);
++    return result;
++}
++
++/* A 64x64 source: black with a white band over columns 30-33. */
++static void band(const NvD3DState *target, uint32_t address)
++{
++    NvD3DState source = *target;
++    source.color_addr = address;
++    nv2a_d3d_clear(&source, 0xF0, 0xFF000000u, 0, 0, 0, 63, 63);
++    nv2a_d3d_clear(&source, 0xF0, 0xFFFFFFFFu, 0, 30, 0, 33, 63);
++}
++
++/* The source over the whole target, texel for pixel; with the exact
++ * specialised shader when RECOMP_PS_SPEC is on. Returns the row through the
++ * middle in red. */
++static int draw_row(NvD3DState st, Surface *target, unsigned row[64])
++{
++    static const uint32_t indices[] = {0,1,2,2,1,3};
++    static const float position[4][4] = {{0,0,0,1},{64,0,0,1},{0,64,0,1},{64,64,0,1}};
++    static const float uv[4][2] = {{0,0},{64,0},{0,64},{64,64}};
++    NvD3DAttrib attr[16] = {{0}};
++    float defaults[16][4] = {{0}};
++    Surface *surface;
++    uint32_t gw, gh, zmax;
++    unsigned x;
++    attr[0].enabled = 1; attr[0].type = 2; attr[0].size = 4;
++    attr[0].stride = sizeof position[0]; attr[0].data = (const uint8_t *)position;
++    attr[9].enabled = 1; attr[9].type = attr[9].size = 2;
++    attr[9].stride = sizeof uv[0]; attr[9].data = (const uint8_t *)uv;
++    defaults[3][0] = defaults[3][1] = defaults[3][2] = defaults[3][3] = 1;
++    {
++        const char *mode = getenv("RECOMP_PS_SPEC");
++        if (mode && *mode != '0') {
++            ULONGLONG deadline = GetTickCount64() + 15000;
++            CHECK(setup_pipeline(&st, NV_D3D_TRIANGLES, &surface, &gw, &gh, &zmax));
++            while (!spec_ps(&s_uploaded_pc, 0)) { CHECK(GetTickCount64() < deadline); Sleep(1); }
++        }
++    }
++    nv2a_d3d_draw_ub(&st, NV_D3D_TRIANGLES, attr, (const float (*)[4])defaults, 0, indices, 6, 0, 3, NULL);
++    for (x = 0; x < 64; ++x)
++        row[x] = (pixel(target, (unsigned)((x + .5f) * target->sx), (unsigned)(32.5f * target->sy)) >> 16) & 255;
++    return 0;
++}
++
++static unsigned row_sum(const unsigned row[64])
++{
++    unsigned x, sum = 0;
++    for (x = 0; x < 64; ++x) sum += row[x];
++    return sum;
++}
++
++int main(int argc, char **argv)
++{
++    NvD3DState st = {0}, glass;
++    Surface *target, *copy;
++    unsigned sharp[64], soft[64], blended[64], other[64], x;
++    ram = calloc(1, 0x400000);
++    CHECK(ram);
++    _putenv_s("RECOMP_MSAA", argc > 1 ? argv[1] : "1");
++    _putenv_s("RECOMP_RENDER_SCALE", argc > 2 ? argv[2] : "1");
++    _putenv_s("RECOMP_PS_SPEC", argc > 3 ? argv[3] : "0");
++    _putenv_s("RECOMP_PS_PREWARM", "0");
++    _putenv_s("RECOMP_FPS_LIMIT", "0");
++    CHECK(nv2a_d3d_init());
++    st.color_addr = TARGET; st.color_pitch = 64 * 4;
++    st.surface_format = 8; st.clip_w = st.clip_h = 64;
++    st.color_mask = 0x01010101;
++    st.tex_used = 1;
++    st.tex[0].addr = COPY; st.tex[0].color = 0x12; st.tex[0].pitch = 64 * 4;
++    st.tex[0].width = st.tex[0].height = 64; st.tex[0].levels = 1;
++    st.tex[0].filter = 0x02062000;
++    target = surface_get(st.color_addr, st.color_pitch, st.surface_format, 64, 64, 0);
++    CHECK(target);
++    band(&st, COPY);
++    band(&st, OTHER);
++    copy = surface_find(COPY);
++    CHECK(copy);
++    copy->screen_copy = 1;
++
++    /* Off (the default): the mirror is as sharp as the copy. */
++    CHECK(!draw_row(st, target, sharp));
++    CHECK(!(s_uploaded_pc.ps_flags & 0x10000u));
++    CHECK(sharp[20] == 0 && sharp[28] == 0 && sharp[29] == 0);
++    CHECK(sharp[30] == 255 && sharp[31] == 255 && sharp[33] == 255 && sharp[34] == 0);
++
++    /* 32 display pixels: 3.2 texels of a copy spanning 640, 8.5 down. */
++    nv2a_d3d_set_paint_softness(32.0f);
++    CHECK(!draw_row(st, target, soft));
++    CHECK((s_uploaded_pc.ps_flags & 0x10000u) && ((s_uploaded_pc.ps_flags >> 17) & 3u) == 0);
++    CHECK(fabsf(s_uploaded_pc.paint_soft[0] - 32.0f / 640.0f) < 1e-6f &&
++          fabsf(s_uploaded_pc.paint_soft[1] - 32.0f / 240.0f) < 1e-6f);
++    printf("row 24-39 sharp:");
++    for (x = 24; x < 40; ++x) printf(" %3u", sharp[x]);
++    printf("\nrow 24-39 soft: ");
++    for (x = 24; x < 40; ++x) printf(" %3u", soft[x]);
++    printf("\n");
++    /* The band's light spreads beside it, its middle dims, the far paint
++     * stays dark, and the mirror's light is kept (a blur, not a dimmer). */
++    CHECK(soft[28] > 20 && soft[35] > 20);
++    CHECK(soft[31] < 230 && soft[32] < 230 && soft[31] > 100);
++    CHECK(soft[20] == 0 && soft[45] == 0);
++    CHECK(row_sum(soft) * 100u >= row_sum(sharp) * 95u && row_sum(soft) * 100u <= row_sum(sharp) * 105u);
++    for (x = 25; x < 31; ++x) CHECK(soft[x] >= soft[x - 1]);   /* a smooth rise */
++
++    /* Translucent glass reads the same copy sharply. */
++    glass = st;
++    glass.blend_enable = 1; glass.blend_sfactor = 1; glass.blend_dfactor = 0; glass.blend_equation = 0x8006;
++    CHECK(!draw_row(glass, target, blended));
++    CHECK(!(s_uploaded_pc.ps_flags & 0x10000u));
++    CHECK(!memcmp(blended, sharp, sizeof sharp));
++
++    /* Any other texture (not the display copy) is sampled as before. */
++    st.tex[0].addr = OTHER;
++    CHECK(!draw_row(st, target, other));
++    CHECK(!(s_uploaded_pc.ps_flags & 0x10000u));
++    CHECK(!memcmp(other, sharp, sizeof sharp));
++
++    nv2a_d3d_set_paint_softness(0.0f);
++    st.tex[0].addr = COPY;
++    CHECK(!draw_row(st, target, soft));
++    CHECK(!memcmp(soft, sharp, sizeof sharp));
++    puts("PASS: car paint mirrors the display copy blurred (round on screen, light kept); glass, other textures and softness 0 stay sharp");
++    return 0;
++}
 diff --git a/tests/nv2a_world_lighting/test_world_lighting.c b/tests/nv2a_world_lighting/test_world_lighting.c
 new file mode 100644
 index 0000000..8a9d4ae
@@ -54058,10 +54326,10 @@ index 0000000..8a9d4ae
 +    return 0;
 +}
 diff --git a/tests/test_menu_placement.py b/tests/test_menu_placement.py
-index a6b4477..e5126de 100644
+index a6b4477..562c70b 100644
 --- a/tests/test_menu_placement.py
 +++ b/tests/test_menu_placement.py
-@@ -1,41 +1,1106 @@
+@@ -1,41 +1,1134 @@
 -"""Run from an MSVC developer prompt: python tests/test_menu_placement.py."""
 -from pathlib import Path
 -import subprocess
@@ -54129,7 +54397,7 @@ index a6b4477..e5126de 100644
 +state_start = source.index("static volatile LONG s_edge_hud;")
 +state_end = source.index("/* nv2a_d3d_set_depth_view_remap:", state_start)
 +placement_start = source.index("    /* The authored frontend (including turntable geometry)")
-+placement_end = source.index("\n    if (suppress_map_base)", placement_start)
++placement_end = source.index("\n    if (suppress_map_base || hide_hud)", placement_start)
 +placement = source[placement_start:placement_end]
 +# Output checks below use the production shader's horizontal clip transform.
 +assert "((px * ub_map.x - 1.0) * ub_map.w + ub_place.x) * w" in source
@@ -54138,7 +54406,7 @@ index a6b4477..e5126de 100644
 +flip = function("nv2a_d3d_flip")
 +assert "reset_map_placement();" in flip
 +assert "hud_frame_complete();" in flip
-+assert "if (suppress_map_base) {\n        slow_frame_end(SF_DRAW_SCOPE, slow_draw);\n        RECOMP_PROFILE_END();\n        return;" in source
++assert "if (suppress_map_base || hide_hud) {\n        slow_frame_end(SF_DRAW_SCOPE, slow_draw);\n        RECOMP_PROFILE_END();\n        return;" in source
 +
 +harness = r"""
 +#include <assert.h>
@@ -54221,7 +54489,7 @@ index a6b4477..e5126de 100644
 +    return texture == map_base ? 1 : texture == map_marker ? 2 : 0;
 +}
 +typedef struct { float sx, sy; } Surface;
-+typedef struct { float x[16], y[16], squeeze, shift, y_offset, yscale; int use_dx, use_dy, suppressed; } Result;
++typedef struct { float x[16], y[16], squeeze, shift, y_offset, yscale; int use_dx, use_dy, suppressed, hidden; } Result;
 +
 +static void near(float a, float b) {
 +    if (fabsf(a - b) >= 0.0002f) {
@@ -54238,7 +54506,7 @@ index a6b4477..e5126de 100644
 +    Surface surface = {scale * aspect / (4.0f / 3.0f), scale}, *s = &surface;
 +    uint32_t gw = 640, gh = 480, i;
 +    int topology = NV_D3D_TRIANGLES, use_dx = 0, use_dy = 0;
-+    int suppress_map_base = 0;
++    int suppress_map_base = 0, hide_hud = 0;
 +    float squeeze = 1.0f, shift = 0.0f, yscale = 1.0f;
 +    static float *dx;
 +    float *dy = NULL;
@@ -54265,6 +54533,7 @@ index a6b4477..e5126de 100644
 +    result.use_dy = use_dy; result.y_offset = use_dy ? dy[0] : 0.0f;
 +    result.yscale = yscale;
 +    result.suppressed = suppress_map_base;
++    result.hidden = hide_hud;
 +    return result;
 +}
 +static void quad(float p[4][4], float left, float right, float top, float bottom) {
@@ -55117,6 +55386,28 @@ index a6b4477..e5126de 100644
 +    assert(r.suppressed && !s_frame_map_valid); /* Invalid first tile cannot invent a window. */
 +    masked=0;
 +}
++/* Photo mode's hide-HUD key: the race HUD's draws are skipped, a pass across
++ * the whole canvas (a fade, the pause dimmer) is not, and nothing is skipped
++ * in menus or with the key off. */
++static void hidden_hud(float aspect) {
++    Result r;
++    seed(0);
++    nv2a_d3d_set_map_texture_query(map_texture_query);   /* the title registers it at start */
++    r = box(17, 137, 380, 470, aspect, 2.0f, 1, 0, 501);
++    assert(!r.hidden);
++    nv2a_d3d_set_hud_hidden(1);
++    r = box(17, 137, 380, 470, aspect, 2.0f, 1, 0, 501);
++    assert(r.hidden);
++    r = box(500, 620, 400, 460, aspect, 2.0f, 1, 0, 501);
++    assert(r.hidden);
++    r = box(0, 640, 0, 480, aspect, 2.0f, 0, 0, 0);
++    assert(!r.hidden);
++    nv2a_d3d_set_edge_hud(0);
++    r = box(17, 137, 380, 470, aspect, 2.0f, 1, 0, 501);
++    assert(!r.hidden);
++    nv2a_d3d_set_hud_hidden(0);
++}
++
 +int main(void) {
 +    const float aspects[] = {4.0f/3.0f, 16.0f/10.0f, 16.0f/9.0f, 21.0f/9.0f};
 +    int a, phase, scale;
@@ -55126,6 +55417,7 @@ index a6b4477..e5126de 100644
 +        exemptions(aspects[a]);
 +        race_backgrounds(aspects[a]);
 +        scene_overlays(aspects[a]);
++        hidden_hud(aspects[a]);
 +        resume(aspects[a]);
 +        for (scale = 1; scale <= 2; ++scale) dialogue_after_race(aspects[a], (float)scale);
 +        for (scale = 1; scale <= 2; ++scale) shared_name_atlas(aspects[a], (float)scale);
@@ -55163,8 +55455,10 @@ index a6b4477..e5126de 100644
 +    assert harness.count(scene_gate) == 1
 +    blend_gate = "!(frame_has_scene() && st->blend_enable)"
 +    assert harness.count(blend_gate) == 1
++    canvas_gate = "!(wide_x && tall) && (map_part || route_n || name_n || s_hud_seen ||"
++    assert harness.count(canvas_gate) == 1
 +    for legacy in ("", "menu", "presence", "map", "route", "world_name", "mixed_name_map", "speed", "expansion", "queued_camera", "camera_latch",
-+                   "scene_overlay", "blended_artwork"):
++                   "scene_overlay", "blended_artwork", "hidden_canvas"):
 +        name = "placement_" + (legacy or "fixed")
 +        test = Path(folder) / (name + ".c")
 +        # Removing only the new gate reinstates the original renderer path.
@@ -55192,6 +55486,8 @@ index a6b4477..e5126de 100644
 +            mutant = mutant.replace(scene_gate, "0 && !s_frame_bg_tex")
 +        if legacy == "blended_artwork":
 +            mutant = mutant.replace(blend_gate, "1")
++        if legacy == "hidden_canvas":
++            mutant = mutant.replace(canvas_gate, "(map_part || route_n || name_n || s_hud_seen ||")
 +        test.write_text(mutant, encoding="utf-8")
 +        exe = Path(folder) / (name + ".exe")
 +        subprocess.run(
@@ -55199,7 +55495,7 @@ index a6b4477..e5126de 100644
 +            check=True,
 +        )
 +        result = subprocess.run([str(exe)], capture_output=True, text=True)
-+        if legacy in ("speed", "expansion", "queued_camera", "camera_latch"):
++        if legacy in ("speed", "expansion", "queued_camera", "camera_latch", "hidden_canvas"):
 +            assert result.returncode and ("Assertion failed:" in result.stderr or
 +                                          "placement mismatch:" in result.stderr), result
 +            print(legacy + " removed renderer correctly fails camera contract")
@@ -57817,178 +58113,5 @@ index 0000000..5f4f27c
 +        return 1;
 +    }
 +    printf("dsp_recomp_gen: wrote %s (gp %s, ep %s)\n", argv[3], have_gp ? "recompiled" : "absent", have_ep ? "recompiled" : "absent");
-+    return 0;
-+}
-diff --git a/tests/nv2a_world_lighting/test_paint_softness.c b/tests/nv2a_world_lighting/test_paint_softness.c
-new file mode 100644
-index 0000000..cce68f5
---- /dev/null
-+++ b/tests/nv2a_world_lighting/test_paint_softness.c
-@@ -0,0 +1,167 @@
-+/* Production GPU replay: car paint mirrors the title's display copy blurred
-+ * (nv2a_d3d_set_paint_softness); glass and other surfaces stay sharp. */
-+#include "../../src/video/nv2a_d3d11.c"
-+
-+static uint8_t *ram;
-+ptrdiff_t xbox_GetMemoryOffset(void) { return (ptrdiff_t)ram; }
-+HWND xbox_FramebufferWindowHandle(void) { return NULL; }
-+int xbox_FramebufferScanSource(uint32_t *va, uint32_t *pitch) { return 0; }
-+int xbox_FramebufferOverlay(XboxOverlay *ovl) { return 0; }
-+void xbox_FramebufferNoteFlip(uint32_t draws) {}
-+const uint32_t (*nv2a_vsh_program(uint32_t *start, uint32_t *version))[4]
-+{
-+    *start = 0; *version = 1;
-+    return NULL;
-+}
-+const float (*nv2a_vsh_constants(uint32_t *version))[4]
-+{
-+    *version = 1;
-+    return NULL;
-+}
-+
-+#define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); return 1; } } while (0)
-+
-+enum { TARGET = 0x10000, COPY = 0x20000, OTHER = 0x30000 };
-+
-+static uint32_t pixel(Surface *surface, unsigned x, unsigned y)
-+{
-+    ID3D11Texture2D *staging = NULL;
-+    D3D11_TEXTURE2D_DESC desc;
-+    D3D11_MAPPED_SUBRESOURCE mapped;
-+    uint32_t result = 0xDEADBEEFu;
-+    surface_resolve(surface);
-+    ID3D11Texture2D_GetDesc(surface->tex, &desc);
-+    desc.Usage = D3D11_USAGE_STAGING;
-+    desc.BindFlags = desc.MiscFlags = 0;
-+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-+    if (FAILED(ID3D11Device_CreateTexture2D(s_dev, &desc, NULL, &staging))) return result;
-+    ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)staging, (ID3D11Resource *)surface->tex);
-+    if (SUCCEEDED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource *)staging, 0, D3D11_MAP_READ, 0, &mapped))) {
-+        memcpy(&result, (uint8_t *)mapped.pData + y * mapped.RowPitch + x * 4, 4);
-+        ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)staging, 0);
-+    }
-+    ID3D11Texture2D_Release(staging);
-+    return result;
-+}
-+
-+/* A 64x64 source: black with a white band over columns 30-33. */
-+static void band(const NvD3DState *target, uint32_t address)
-+{
-+    NvD3DState source = *target;
-+    source.color_addr = address;
-+    nv2a_d3d_clear(&source, 0xF0, 0xFF000000u, 0, 0, 0, 63, 63);
-+    nv2a_d3d_clear(&source, 0xF0, 0xFFFFFFFFu, 0, 30, 0, 33, 63);
-+}
-+
-+/* The source over the whole target, texel for pixel; with the exact
-+ * specialised shader when RECOMP_PS_SPEC is on. Returns the row through the
-+ * middle in red. */
-+static int draw_row(NvD3DState st, Surface *target, unsigned row[64])
-+{
-+    static const uint32_t indices[] = {0,1,2,2,1,3};
-+    static const float position[4][4] = {{0,0,0,1},{64,0,0,1},{0,64,0,1},{64,64,0,1}};
-+    static const float uv[4][2] = {{0,0},{64,0},{0,64},{64,64}};
-+    NvD3DAttrib attr[16] = {{0}};
-+    float defaults[16][4] = {{0}};
-+    Surface *surface;
-+    uint32_t gw, gh, zmax;
-+    unsigned x;
-+    attr[0].enabled = 1; attr[0].type = 2; attr[0].size = 4;
-+    attr[0].stride = sizeof position[0]; attr[0].data = (const uint8_t *)position;
-+    attr[9].enabled = 1; attr[9].type = attr[9].size = 2;
-+    attr[9].stride = sizeof uv[0]; attr[9].data = (const uint8_t *)uv;
-+    defaults[3][0] = defaults[3][1] = defaults[3][2] = defaults[3][3] = 1;
-+    {
-+        const char *mode = getenv("RECOMP_PS_SPEC");
-+        if (mode && *mode != '0') {
-+            ULONGLONG deadline = GetTickCount64() + 15000;
-+            CHECK(setup_pipeline(&st, NV_D3D_TRIANGLES, &surface, &gw, &gh, &zmax));
-+            while (!spec_ps(&s_uploaded_pc, 0)) { CHECK(GetTickCount64() < deadline); Sleep(1); }
-+        }
-+    }
-+    nv2a_d3d_draw_ub(&st, NV_D3D_TRIANGLES, attr, (const float (*)[4])defaults, 0, indices, 6, 0, 3, NULL);
-+    for (x = 0; x < 64; ++x)
-+        row[x] = (pixel(target, (unsigned)((x + .5f) * target->sx), (unsigned)(32.5f * target->sy)) >> 16) & 255;
-+    return 0;
-+}
-+
-+static unsigned row_sum(const unsigned row[64])
-+{
-+    unsigned x, sum = 0;
-+    for (x = 0; x < 64; ++x) sum += row[x];
-+    return sum;
-+}
-+
-+int main(int argc, char **argv)
-+{
-+    NvD3DState st = {0}, glass;
-+    Surface *target, *copy;
-+    unsigned sharp[64], soft[64], blended[64], other[64], x;
-+    ram = calloc(1, 0x400000);
-+    CHECK(ram);
-+    _putenv_s("RECOMP_MSAA", argc > 1 ? argv[1] : "1");
-+    _putenv_s("RECOMP_RENDER_SCALE", argc > 2 ? argv[2] : "1");
-+    _putenv_s("RECOMP_PS_SPEC", argc > 3 ? argv[3] : "0");
-+    _putenv_s("RECOMP_PS_PREWARM", "0");
-+    _putenv_s("RECOMP_FPS_LIMIT", "0");
-+    CHECK(nv2a_d3d_init());
-+    st.color_addr = TARGET; st.color_pitch = 64 * 4;
-+    st.surface_format = 8; st.clip_w = st.clip_h = 64;
-+    st.color_mask = 0x01010101;
-+    st.tex_used = 1;
-+    st.tex[0].addr = COPY; st.tex[0].color = 0x12; st.tex[0].pitch = 64 * 4;
-+    st.tex[0].width = st.tex[0].height = 64; st.tex[0].levels = 1;
-+    st.tex[0].filter = 0x02062000;
-+    target = surface_get(st.color_addr, st.color_pitch, st.surface_format, 64, 64, 0);
-+    CHECK(target);
-+    band(&st, COPY);
-+    band(&st, OTHER);
-+    copy = surface_find(COPY);
-+    CHECK(copy);
-+    copy->screen_copy = 1;
-+
-+    /* Off (the default): the mirror is as sharp as the copy. */
-+    CHECK(!draw_row(st, target, sharp));
-+    CHECK(!(s_uploaded_pc.ps_flags & 0x10000u));
-+    CHECK(sharp[20] == 0 && sharp[28] == 0 && sharp[29] == 0);
-+    CHECK(sharp[30] == 255 && sharp[31] == 255 && sharp[33] == 255 && sharp[34] == 0);
-+
-+    /* 32 display pixels: 3.2 texels of a copy spanning 640, 8.5 down. */
-+    nv2a_d3d_set_paint_softness(32.0f);
-+    CHECK(!draw_row(st, target, soft));
-+    CHECK((s_uploaded_pc.ps_flags & 0x10000u) && ((s_uploaded_pc.ps_flags >> 17) & 3u) == 0);
-+    CHECK(fabsf(s_uploaded_pc.paint_soft[0] - 32.0f / 640.0f) < 1e-6f &&
-+          fabsf(s_uploaded_pc.paint_soft[1] - 32.0f / 240.0f) < 1e-6f);
-+    printf("row 24-39 sharp:");
-+    for (x = 24; x < 40; ++x) printf(" %3u", sharp[x]);
-+    printf("\nrow 24-39 soft: ");
-+    for (x = 24; x < 40; ++x) printf(" %3u", soft[x]);
-+    printf("\n");
-+    /* The band's light spreads beside it, its middle dims, the far paint
-+     * stays dark, and the mirror's light is kept (a blur, not a dimmer). */
-+    CHECK(soft[28] > 20 && soft[35] > 20);
-+    CHECK(soft[31] < 230 && soft[32] < 230 && soft[31] > 100);
-+    CHECK(soft[20] == 0 && soft[45] == 0);
-+    CHECK(row_sum(soft) * 100u >= row_sum(sharp) * 95u && row_sum(soft) * 100u <= row_sum(sharp) * 105u);
-+    for (x = 25; x < 31; ++x) CHECK(soft[x] >= soft[x - 1]);   /* a smooth rise */
-+
-+    /* Translucent glass reads the same copy sharply. */
-+    glass = st;
-+    glass.blend_enable = 1; glass.blend_sfactor = 1; glass.blend_dfactor = 0; glass.blend_equation = 0x8006;
-+    CHECK(!draw_row(glass, target, blended));
-+    CHECK(!(s_uploaded_pc.ps_flags & 0x10000u));
-+    CHECK(!memcmp(blended, sharp, sizeof sharp));
-+
-+    /* Any other texture (not the display copy) is sampled as before. */
-+    st.tex[0].addr = OTHER;
-+    CHECK(!draw_row(st, target, other));
-+    CHECK(!(s_uploaded_pc.ps_flags & 0x10000u));
-+    CHECK(!memcmp(other, sharp, sizeof sharp));
-+
-+    nv2a_d3d_set_paint_softness(0.0f);
-+    st.tex[0].addr = COPY;
-+    CHECK(!draw_row(st, target, soft));
-+    CHECK(!memcmp(soft, sharp, sizeof sharp));
-+    puts("PASS: car paint mirrors the display copy blurred (round on screen, light kept); glass, other textures and softness 0 stay sharp");
 +    return 0;
 +}

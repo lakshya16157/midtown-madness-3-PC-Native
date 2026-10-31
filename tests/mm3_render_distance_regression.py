@@ -38,7 +38,7 @@ def originals(loader):
     image = common.Image(str(ROOT / 'game_files/default.xbe'))
     constants = []
     for address in (0x384EF4, 0x384EF8, 0x384EFC, 0x384D08, 0x385088,
-                    0x3860E0, *range(0x39ADC0, 0x39ADD4, 4)):
+                    0x3860E0, 0x3A8C90, 0x3A8C94, *range(0x39ADC0, 0x39ADD4, 4)):
         value = None
         for base, offset, size, _ in image.secs:
             if base <= address <= base + size - 4:

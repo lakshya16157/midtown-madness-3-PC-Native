@@ -22,6 +22,15 @@ static void capture(const char *format, ...)
 }
 #define MM3_POLICE_NOW() k_now
 #define MM3_POLICE_PRINT(...) capture(__VA_ARGS__)
+/* What the game folder holds of the model file: its size in Data\Shared and
+ * in Data\XBox, -1 when it is not there. */
+static long long k_shared = -1, k_xbox = -1;
+static long long k_file_size(const char *root, const char *relative)
+{
+    (void)relative;
+    return !strcmp(root, "Shared") ? k_shared : k_xbox;
+}
+#define MM3_POLICE_FILE_SIZE(root, relative) k_file_size(root, relative)
 #include "../src/mm3_police_log.c"
 
 ptrdiff_t g_xbox_mem_offset;
@@ -212,10 +221,40 @@ int main(void)
         mm3_police_note(NOTE_BODY, 0); mm3_police_note(NOTE_BUILD, 0); mm3_police_note(NOTE_INIT, 0);
         mm3_police_step(5);
         mm3_police_note(NOTE_ATTACH, 0);                     /* after the factory: ignored */
+        errno = 33; SetLastError(1234);
         mm3_police_created(0, 0x301000);
+        assert(errno == 33 && GetLastError() == 1234);       /* looking for the file leaves host state alone */
         expect(k_out, "[MM3_POLICE] police car \"Washington PoliceCar\" not made: the police factory refused it "
                       "(sub_0013BB36): the car body model did not load (sub_000E42B1) "
                       "\"+Cars\\washingtonpolice_lod1\\body.cmp\"\n");
+
+        /* The folder lacks the file (a disc file missing from the install): the log says so and how to
+         * restore it. */
+        expect(k_out, "[MM3_POLICE]   the model file Cars\\washingtonpolice_lod1\\body.cmp is NOT in this game "
+                      "folder (Data\\Shared and Data\\XBox searched)");
+        expect(k_out, "Run MM3-Setup with your disc image again to restore the missing files");
+
+        /* The file is there but the game could not load it: a different fault, named as such. */
+        {
+            static const struct { long long shared, xbox; const char *line; } cases[] = {
+                { 118736, -1, "is on disk (118736 bytes in Data\\Shared), so it was found but could not be loaded" },
+                { -1, 5000, "is on disk (5000 bytes in Data\\XBox), so it was found but could not be loaded" },
+                { 0, -1, "is on disk but empty (0 bytes): the copy is damaged" },
+                { -1, 0, "is on disk but empty (0 bytes): the copy is damaged" },
+            };
+            for (unsigned c = 0; c < sizeof cases / sizeof cases[0]; ++c) {
+                k_shared = cases[c].shared; k_xbox = cases[c].xbox;
+                k_out[0] = 0; for (int s = 0; s <= 4; ++s) mm3_police_step(s);
+                mm3_police_factory_begin();
+                mm3_police_note(NOTE_ALLOC, 0x400000); mm3_police_note(NOTE_CAR, 0x400000);
+                mm3_police_note_path(heap_string);
+                mm3_police_note(NOTE_BODY, 0); mm3_police_note(NOTE_BUILD, 0); mm3_police_note(NOTE_INIT, 0);
+                mm3_police_step(5); mm3_police_created(0, 0x301000);
+                expect(k_out, cases[c].line);
+                assert(!strstr(k_out, "is NOT in this game folder"));
+            }
+            k_shared = k_xbox = -1;
+        }
 
         /* No collision file: the car's model name. */
         k_out[0] = 0; for (int s = 0; s <= 4; ++s) mm3_police_step(s);
@@ -234,6 +273,7 @@ int main(void)
         mm3_police_note(NOTE_BUILD, 0); mm3_police_note(NOTE_INIT, 0);
         mm3_police_step(5); mm3_police_created(0, 0x301000);
         expect(k_out, "the car physics did not load (sub_0021ED64) for \"+Cars\\washingtonpolice_lod1\\body.cmp\"");
+        assert(!strstr(k_out, "the model file"));            /* the body loaded: its file is not in question */
 
         /* The car was built but the cop did not take it; no memory; nothing reached. */
         k_out[0] = 0; for (int s = 0; s <= 4; ++s) mm3_police_step(s);
@@ -271,6 +311,7 @@ int main(void)
 
     printf("PASS police log: pool (of wanted, player type), sent once placed, closing/stuck/on you, pool growth, "
            "called off, minute summary, empty pool, broken list, host state, AI setup and fill result, "
-           "car creation step, factory sub-step and model path, line cap, switch\n");
+           "car creation step, factory sub-step and model path, model file missing/present/empty, line cap, "
+           "switch\n");
     return 0;
 }

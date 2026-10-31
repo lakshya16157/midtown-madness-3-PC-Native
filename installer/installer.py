@@ -14,6 +14,7 @@ Headless use (also how the build is tested):
 from __future__ import annotations
 
 import argparse
+import base64
 import collections
 import contextlib
 import copy
@@ -44,7 +45,7 @@ from pathlib import Path
 # PyInstaller see and include them (it only analyses this file's own imports).
 _PAYLOAD_STDLIB = (argparse, collections, copy, hashlib, math, re, struct, tempfile, zipfile, zlib)
 
-VERSION = "2.1"
+VERSION = "2.2"
 TITLE = "Midtown Madness 3 - Setup"
 # "Check for updates" asks GitHub for the newest release and downloads the MM3-Setup.exe attached to it.
 RELEASES_API = "https://api.github.com/repos/lakshya16157/midtown-madness-3-PC-Native/releases/latest"
@@ -62,6 +63,16 @@ CAR_WORKSHOP_TEXT = (
 OWNERSHIP_NOTICE = (
     "Use your own original Xbox disc and a lawfully obtained game image and DLC. "
     "Owning a disc does not automatically authorize third-party downloads."
+)
+
+OWN_DISC_TEXT = (
+    "An ordinary PC DVD drive cannot read original Xbox discs, so the copy is made with an Xbox:\n\n"
+    "1. On a modded original Xbox, use a dashboard with a file manager or FTP (for example "
+    "XBMC4Xbox or UnleashX) to copy the whole game disc (drive D:) to your PC. Some PC drives "
+    "with Kreon firmware can read Xbox discs directly.\n\n"
+    "2. Turn the copied folder into an image with extract-xiso:\n"
+    "    extract-xiso -c <copied folder> MidtownMadness3.iso\n\n"
+    "3. Choose that .iso here. Setup checks it against the retail game before installing."
 )
 
 FROZEN = getattr(sys, "frozen", False)
@@ -295,14 +306,70 @@ def game_files_ready(game_dir: Path, iso_path: Path | None = None) -> bool:
         return False
 
 
+def not_an_install_error(game_dir: Path) -> InstallError:
+    return InstallError(
+        f"{game_dir} already exists but is not a complete Midtown Madness 3 install.\n"
+        "It may hold your saved games, so it was left untouched. Move or delete that folder "
+        "yourself, or pick another install folder.")
+
+
+def restore_missing_files(iso_path: Path, dest: Path, log, progress) -> int:
+    """Put back the disc files a game_files folder lacks, and touch nothing else.
+
+    A folder that lost files (copied without some of them, cleaned up, a setup that stopped half
+    way) looks fine until the game needs one: the Washington police models, for one, left the
+    city without cops and said nothing. Only a folder whose default.xbe is this game's is
+    repaired. A file that is there and not empty stays exactly as it is (modified car archives,
+    DLC, saved games), and each restored file is written under a temporary name first, so a stop
+    in the middle leaves no half file behind. Returns how many files were restored.
+    """
+    ed = extract_disc()
+    game_dir = dest / "game_files"
+    xbe = game_dir / "default.xbe"
+    try:
+        genuine = xbe.is_file() and ed.code_sha256(bytearray(xbe.read_bytes())) == ed.CODE_SHA256
+    except OSError:
+        genuine = False
+    if not genuine:
+        raise not_an_install_error(game_dir)
+    with ed.Xiso(str(iso_path)) as iso:
+        lost = []
+        for directory, entry in iso.walk():
+            target = safe_target(game_dir, directory, entry.name)
+            if target.is_dir():
+                raise InstallError(f"{target} is a folder, but the disc image has a file with that name. "
+                                   "Move or delete that folder yourself, then run setup again.")
+            if not target.is_file() or (entry.size and not target.stat().st_size):
+                lost.append((directory, entry, target))
+        if not lost:
+            return 0
+        total = sum(entry.size for _, entry, _ in lost)
+        if free_bytes(dest) < total + 100_000_000:
+            raise InstallError(f"Not enough disk space on that drive to restore the missing game files: "
+                               f"about {(total + 100_000_000) / 1e6:.0f} MB needed.")
+        names = [f"{directory}/{entry.name}" if directory else entry.name for directory, entry, _ in lost]
+        log(f"{len(lost)} game files are missing from {game_dir}: {', '.join(names[:6])}"
+            f"{', ...' if len(names) > 6 else ''}. Restoring them from the disc image...")
+        done = 0
+        for index, (_, entry, target) in enumerate(lost, 1):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_name(target.name + ".restoring")
+            try:
+                iso.extract(entry, str(temporary))
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+            done += entry.size
+            progress(done / (total or 1), f"Restoring missing game files... {index}/{len(lost)}")
+    log(f"Restored {len(lost)} missing game files; everything that was already there was left as it is.")
+    return len(lost)
+
+
 def extract_game(iso_path: Path, dest: Path, extra_cars: bool, log, progress) -> None:
     ed = extract_disc()
     game_dir, partial = dest / "game_files", dest / "game_files.partial"
     if game_dir.exists():
-        raise InstallError(
-            f"{game_dir} already exists but is not a complete Midtown Madness 3 install.\n"
-            "It may hold your saved games, so it was left untouched. Move or delete that folder "
-            "yourself, or pick another install folder.")
+        raise not_an_install_error(game_dir)
     if partial.exists():  # leftover of an interrupted run; ours alone
         log("Removing an unfinished earlier extraction...")
         shutil.rmtree(partial)
@@ -607,6 +674,11 @@ def install(iso_path, dest, extra_cars: bool, improvements: bool, log, progress,
     progress(0.0, "Starting...")
     if game_files_ready(game_dir, iso_path):
         log("Game files already present; skipping extraction.")
+    elif game_dir.exists():
+        restore_missing_files(iso_path, dest, log, lambda f, text: progress(0.05 + 0.80 * f, text))
+        if not game_files_ready(game_dir, iso_path):
+            raise InstallError("Some game files could not be restored from the disc image. Check that the "
+                               "image is the one this game was installed from, then run setup again.")
     else:
         extract_game(iso_path, dest, extra_cars, log, lambda f, text: progress(0.05 + 0.80 * f, text))
     progress(0.86, "Installing the game...")
@@ -816,6 +888,52 @@ def self_update_possible() -> bool:
 
 # ----------------------------------------------------------------------------- GUI
 
+BRANDING = PAYLOAD / "branding"
+
+
+def branding(name: str):
+    """A picture build.py staged into the payload (the game's logo, the icon), or None."""
+    path = BRANDING / name
+    return path if path.is_file() else None
+
+
+def banner_png(width: int, height: int, scale: float) -> bytes | None:
+    """The header picture, as PNG: the game's logo on a dark blue gradient with a gold edge.
+    None when Pillow or the logo is missing (the window then draws plain text)."""
+    logo_path = branding("mm3_logo.png")
+    if logo_path is None:
+        return None
+    try:
+        from PIL import Image, ImageDraw, ImageFilter
+        logo = Image.open(logo_path).convert("RGBA")
+    except (ImportError, OSError):
+        return None
+    top, bottom = (9, 16, 30), (31, 55, 102)
+    image = Image.new("RGBA", (width, height))
+    draw = ImageDraw.Draw(image)
+    for y in range(height):
+        t = y / max(1, height - 1)
+        draw.line([(0, y), (width, y)], fill=tuple(round(a + (b - a) * t) for a, b in zip(top, bottom)) + (255,))
+    stripes = Image.new("RGBA", image.size, (0, 0, 0, 0))   # faint speed stripes at the right
+    stripe_draw = ImageDraw.Draw(stripes)
+    for i in range(5):
+        x = width - round((190 - i * 34) * scale)
+        stripe_draw.polygon([(x + round(46 * scale), 0), (x + round(62 * scale), 0), (x + round(16 * scale), height),
+                             (x, height)], fill=(255, 255, 255, 12 + i * 3))
+    image = Image.alpha_composite(image, stripes)
+    target_height = round(86 * scale)
+    logo = logo.resize((round(logo.width * target_height / logo.height), target_height), Image.LANCZOS)
+    left, upper = round(30 * scale), (height - target_height) // 2 - round(2 * scale)
+    shadow = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    shadow.paste((0, 0, 0, 150), (left + round(2 * scale), upper + round(4 * scale)), logo.getchannel("A"))
+    image = Image.alpha_composite(image, shadow.filter(ImageFilter.GaussianBlur(round(5 * scale))))
+    image.alpha_composite(logo, (left, upper))
+    ImageDraw.Draw(image).rectangle([0, height - max(3, round(4 * scale)), width, height], fill=(242, 183, 5, 255))
+    out = io.BytesIO()
+    image.convert("RGB").save(out, "PNG")
+    return out.getvalue()
+
+
 def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements: bool = True,
             install_now: bool = False, dlc: str = "", update_api: str = RELEASES_API) -> int:
     import tkinter as tk
@@ -830,15 +948,45 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
     root = tk.Tk()
     root.title(TITLE)
     root.resizable(False, False)
+    scale = max(1.0, root.winfo_fpixels("1i") / 96.0)
+
+    def px(value: float) -> int:
+        return int(round(value * scale))
+
+    icon = branding("mm3.ico")
+    if icon:
+        try:
+            root.iconbitmap(default=str(icon))
+        except tk.TclError:
+            pass
+    page, card_bg, line, ink = "#eceff4", "#ffffff", "#d3d9e2", "#1b2430"
+    grey, green, red, accent, accent_dark = "#667085", "#1a7f37", "#c62828", "#0067c0", "#004f95"
+    root.configure(bg=page)
+    style = ttk.Style()
     try:
-        style = ttk.Style()
-        style.theme_use("vista")
+        style.theme_use("clam")
     except tk.TclError:
         pass
-    pad = {"padx": 18}
-    heading = ("Segoe UI", 10, "bold")
+    heading = ("Segoe UI Semibold", 10)
     body = ("Segoe UI", 9)
-    grey, green, red = "#777777", "#1a7f37", "#c62828"
+    style.configure(".", background=page, foreground=ink, font=body, focuscolor=page)
+    style.configure("TButton", padding=(px(12), px(5)), background="#e3e7ee", bordercolor=line,
+                    lightcolor="#e3e7ee", darkcolor="#e3e7ee", relief="flat")
+    style.map("TButton", background=[("disabled", "#eef0f4"), ("pressed", "#cdd3dd"), ("active", "#d6dbe5")],
+              foreground=[("disabled", "#9aa3b2")], lightcolor=[("active", "#d6dbe5")], darkcolor=[("active", "#d6dbe5")])
+    style.configure("Accent.TButton", background=accent, foreground="#ffffff", bordercolor=accent,
+                    lightcolor=accent, darkcolor=accent, padding=(px(16), px(6)), font=("Segoe UI Semibold", 9))
+    style.map("Accent.TButton", background=[("disabled", "#a9c4e0"), ("pressed", "#003d75"), ("active", accent_dark)],
+              foreground=[("disabled", "#ffffff")], lightcolor=[("active", accent_dark)], darkcolor=[("active", accent_dark)],
+              bordercolor=[("disabled", "#a9c4e0"), ("active", accent_dark)])
+    style.configure("Card.TCheckbutton", background=card_bg, foreground=ink, font=heading,
+                    indicatorsize=px(17), indicatormargin=(0, 0, px(8), 0), indicatorbackground="#ffffff",
+                    indicatorforeground=accent, upperbordercolor="#8b95a5", lowerbordercolor="#8b95a5")
+    style.map("Card.TCheckbutton", background=[("active", card_bg)], indicatorbackground=[("pressed", "#e3e7ee")])
+    style.configure("TEntry", fieldbackground="#ffffff", bordercolor=line, lightcolor=line, darkcolor=line,
+                    padding=px(4))
+    style.configure("Setup.Horizontal.TProgressbar", troughcolor="#d9dee7", background=accent, bordercolor=line,
+                    lightcolor=accent, darkcolor=accent, thickness=px(8))
 
     iso_var = tk.StringVar()
     dlc_var = tk.StringVar(value=dlc)
@@ -848,91 +996,130 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
     events: queue.Queue = queue.Queue()
     state = {"check_id": 0, "iso_ok": False, "busy": False, "done_dest": None, "auto_started": False}
 
-    frame = ttk.Frame(root)
-    frame.pack(fill="both", expand=True, pady=(14, 14))
+    # Header: the game's logo on a dark gradient.
+    width, height = px(700), px(124)
+    banner = tk.Canvas(root, width=width, height=height, bg="#0c1424", highlightthickness=0)
+    banner.pack(fill="x")
+    picture = banner_png(width, height, scale)
+    if picture:
+        banner.photo = tk.PhotoImage(data=base64.b64encode(picture))
+        banner.create_image(0, 0, anchor="nw", image=banner.photo)
+    else:
+        banner.create_text(px(28), height // 2, anchor="w", text="MIDTOWN MADNESS 3", fill="#f2b705",
+                           font=("Segoe UI", 22, "bold italic"))
+    banner.create_text(width - px(26), px(46), anchor="e", text="PC Native Setup", fill="#ffffff",
+                       font=("Segoe UI Semibold", 15))
+    banner.create_text(width - px(26), px(74), anchor="e", text=f"Version {VERSION}", fill="#9db4d6",
+                       font=("Segoe UI", 10))
+
+    frame = tk.Frame(root, bg=page)
+    frame.pack(fill="both", expand=True, padx=px(22), pady=(px(16), px(14)))
+    frame.columnconfigure(0, weight=1)
+
+    def card(row: int, number: int, title: str):
+        """A white section with a numbered badge; returns the frame to fill, and its heading row."""
+        outer = tk.Frame(frame, bg=line)
+        outer.grid(row=row, column=0, sticky="we", pady=(0, px(10)))
+        inner = tk.Frame(outer, bg=card_bg)
+        inner.pack(fill="x", padx=1, pady=1)
+        head = tk.Frame(inner, bg=card_bg)
+        head.pack(fill="x", padx=px(16), pady=(px(12), px(4)))
+        badge = tk.Canvas(head, width=px(24), height=px(24), bg=card_bg, highlightthickness=0)
+        badge.create_oval(1, 1, px(24) - 1, px(24) - 1, fill=accent, outline=accent)
+        badge.create_text(px(12), px(12), text=str(number), fill="#ffffff", font=("Segoe UI Semibold", 9))
+        badge.pack(side="left")
+        if title:
+            tk.Label(head, text=title, font=heading, bg=card_bg, fg=ink).pack(side="left", padx=(px(8), 0))
+        content = tk.Frame(inner, bg=card_bg)
+        content.pack(fill="x", padx=px(16), pady=(0, px(12)))
+        return head, content
 
     # 1 - game image
-    ttk.Label(frame, text="1.  Xbox Europe/Australia or USA game image (.iso)", font=heading).grid(row=0, column=0, sticky="w", **pad)
-    row = ttk.Frame(frame)
-    row.grid(row=1, column=0, sticky="we", padx=18, pady=(4, 0))
+    head, content = card(0, 1, "Xbox Europe/Australia or USA game image (.iso)")
+    ttk.Button(head, text="Make an image...",
+               command=lambda: messagebox.showinfo("Make an image of your own disc", OWN_DISC_TEXT)).pack(side="right")
+    row = tk.Frame(content, bg=card_bg)
+    row.pack(fill="x")
     iso_entry = ttk.Entry(row, textvariable=iso_var, width=62)
     iso_entry.pack(side="left", fill="x", expand=True)
-    browse = ttk.Button(row, text="Browse...", width=10)
-    browse.pack(side="left", padx=(8, 0))
-    iso_status = tk.Label(frame, text="Choose a lawfully obtained image of your own Xbox disc.", font=body, fg=grey, anchor="w")
-    iso_status.grid(row=2, column=0, sticky="we", padx=18, pady=(2, 10))
+    browse = ttk.Button(row, text="Browse...")
+    browse.pack(side="left", padx=(px(8), 0))
+    iso_status = tk.Label(content, text="Choose a lawfully obtained image of your own Xbox disc.", font=body,
+                          fg=grey, bg=card_bg, anchor="w")
+    iso_status.pack(fill="x", pady=(px(6), 0))
 
     # 2 - extra cars
-    cars_check = ttk.Checkbutton(frame, text="2.  Add extra cars", variable=cars_var)
-    cars_check.grid(row=3, column=0, sticky="w", padx=18)
+    cars_head, content = card(1, 2, "")
+    cars_check = ttk.Checkbutton(cars_head, text="Add extra cars", variable=cars_var, style="Card.TCheckbutton")
+    cars_check.pack(side="left", padx=(px(6), 0))
     cars = extra_car_list()
-    cars_details = ttk.Button(frame, text="Car list and credits...",
-                              command=lambda: messagebox.showinfo("Extra cars and credits", "\n".join(cars)))
-    cars_details.grid(row=3, column=0, sticky="e", padx=18)
-    if not cars:
-        cars_details.state(["disabled"])
-    cars_label = tk.Label(frame, font=body, fg=grey, justify="left", anchor="w",
-                          text=("Adds %d community cars. Review the names and authors with Car list and credits.\n"
-                                "The full credits are also saved with the game. Change the new cars\n"
-                                "with Car Workshop, the car toolkit." % len(cars))
-                          if cars else "The extra cars are not included in this build.")
-    cars_label.grid(row=4, column=0, sticky="w", padx=(40, 18), pady=(2, 10))
 
     def car_workshop():
         if messagebox.askyesno("Car Workshop", CAR_WORKSHOP_TEXT + "\n\nOpen its page on GitHub?"):
             import webbrowser
             webbrowser.open(CAR_WORKSHOP_URL)
-    workshop = ttk.Button(frame, text="Car Workshop...", command=car_workshop)
-    workshop.grid(row=4, column=0, sticky="ne", padx=18, pady=(2, 0))
+    workshop = ttk.Button(cars_head, text="Car Workshop...", command=car_workshop)
+    workshop.pack(side="right")
+    cars_details = ttk.Button(cars_head, text="Car list and credits...",
+                              command=lambda: messagebox.showinfo("Extra cars and credits", "\n".join(cars)))
+    cars_details.pack(side="right", padx=(0, px(8)))
+    if not cars:
+        cars_details.state(["disabled"])
+    cars_label = tk.Label(content, font=body, fg=grey, bg=card_bg, justify="left", anchor="w",
+                          wraplength=px(620),
+                          text=("Adds %d community cars. Review the names and authors with Car list and credits. "
+                                "The full credits are also saved with the game. Change the new cars "
+                                "with Car Workshop, the car toolkit." % len(cars))
+                          if cars else "The extra cars are not included in this build.")
+    cars_label.pack(fill="x")
 
     # 3 - improvements
-    improvements_check = ttk.Checkbutton(frame, text="3.  Add game improvements", variable=improvements_var)
-    improvements_check.grid(row=5, column=0, sticky="w", padx=18)
-    tk.Label(frame, text=IMPROVEMENTS_TEXT, font=body, fg=grey, justify="left", anchor="w").grid(
-        row=6, column=0, sticky="w", padx=(40, 18), pady=(2, 10))
+    head, content = card(2, 3, "")
+    improvements_check = ttk.Checkbutton(head, text="Add game improvements", variable=improvements_var,
+                                         style="Card.TCheckbutton")
+    improvements_check.pack(side="left", padx=(px(6), 0))
+    tk.Label(content, text=" ".join(IMPROVEMENTS_TEXT.split()), font=body, fg=grey, bg=card_bg, justify="left",
+             anchor="w", wraplength=px(620)).pack(fill="x")
 
-    # Official DLC is separate from community cars and is never downloaded by setup.
-    dlc_row = ttk.Frame(frame)
-    dlc_row.grid(row=7, column=0, sticky="we", padx=18, pady=(0, 4))
-    ttk.Label(dlc_row, text="Official DLC (optional):", font=heading).pack(side="left")
-    dlc_zip = ttk.Button(dlc_row, text="Choose ZIP...")
+    # 4 - official DLC is separate from community cars and is never downloaded by setup.
+    head, content = card(3, 4, "Official DLC (optional)")
+    dlc_zip = ttk.Button(head, text="Choose ZIP...")
     dlc_zip.pack(side="right")
-    dlc_folder = ttk.Button(dlc_row, text="Choose folder...")
-    dlc_folder.pack(side="right", padx=(8, 8))
-    dlc_entry = ttk.Entry(frame, textvariable=dlc_var, width=74)
-    dlc_entry.grid(row=8, column=0, sticky="we", padx=18, pady=(0, 4))
-    tk.Label(frame, text=OWNERSHIP_NOTICE + "\nExisting DLC is kept. Setup does not download game images or DLC.",
-             font=body, fg=grey, justify="left", wraplength=540).grid(
-                 row=9, column=0, sticky="w", padx=18, pady=(0, 10))
+    dlc_folder = ttk.Button(head, text="Choose folder...")
+    dlc_folder.pack(side="right", padx=(0, px(8)))
+    dlc_entry = ttk.Entry(content, textvariable=dlc_var, width=74)
+    dlc_entry.pack(fill="x")
+    tk.Label(content, text=OWNERSHIP_NOTICE + "\nExisting DLC is kept. Setup does not download game images or DLC.",
+             font=body, fg=grey, bg=card_bg, justify="left", anchor="w", wraplength=px(620)).pack(fill="x", pady=(px(6), 0))
 
     # destination
-    drow = ttk.Frame(frame)
-    drow.grid(row=10, column=0, sticky="we", padx=18, pady=(0, 8))
-    tk.Label(drow, text="Installs to:", font=body, fg=grey).pack(side="left")
+    drow = tk.Frame(frame, bg=page)
+    drow.grid(row=4, column=0, sticky="we", pady=(0, px(8)))
+    tk.Label(drow, text="Installs to:", font=body, fg=grey, bg=page).pack(side="left")
     dest_text = tk.StringVar()  # shortened copy, so a long path never widens the window
     dest_var.trace_add("write", lambda *_: dest_text.set(shorten(dest_var.get())))
     dest_text.set(shorten(dest_var.get()))
-    tk.Label(drow, textvariable=dest_text, font=body, anchor="w", width=52).pack(side="left", padx=(6, 0))
-    change = ttk.Button(drow, text="Change...", width=10)
+    tk.Label(drow, textvariable=dest_text, font=heading, fg=ink, bg=page, anchor="w", width=52).pack(
+        side="left", padx=(px(6), 0))
+    change = ttk.Button(drow, text="Change...")
     change.pack(side="right")
 
     # progress
-    bar = ttk.Progressbar(frame, maximum=1000, length=540)
-    bar.grid(row=11, column=0, sticky="we", padx=18, pady=(6, 0))
-    status = tk.Label(frame, text="", font=body, fg=grey, anchor="w", justify="left", wraplength=400)
-    status.grid(row=12, column=0, sticky="we", padx=18, pady=(2, 8))
+    bar = ttk.Progressbar(frame, maximum=1000, length=px(540), style="Setup.Horizontal.TProgressbar")
+    bar.grid(row=5, column=0, sticky="we", pady=(px(4), 0))
+    status = tk.Label(frame, text="", font=body, fg=grey, bg=page, anchor="w", justify="left", wraplength=px(400))
+    status.grid(row=6, column=0, sticky="we", pady=(px(4), px(8)))
     # wrap long messages (errors) at the window's width, whatever the screen's DPI scaling
-    frame.bind("<Configure>", lambda event: status.configure(wraplength=max(200, event.width - 40)))
+    frame.bind("<Configure>", lambda event: status.configure(wraplength=max(200, event.width - 20)))
 
-    buttons = ttk.Frame(frame)
-    buttons.grid(row=13, column=0, sticky="we", padx=18)
-    update_button = ttk.Button(buttons, text="Check for updates", width=18)
+    buttons = tk.Frame(frame, bg=page)
+    buttons.grid(row=7, column=0, sticky="we")
+    update_button = ttk.Button(buttons, text="Check for updates")
     update_button.pack(side="left")
-    tk.Label(buttons, text=f"Version {VERSION}", font=body, fg=grey).pack(side="left", padx=(8, 0))
-    play = ttk.Button(buttons, text="Play now")
-    install_button = ttk.Button(buttons, text="Install", width=14, state="disabled")
+    play = ttk.Button(buttons, text="Play now", style="Accent.TButton")
+    install_button = ttk.Button(buttons, text="Install", style="Accent.TButton", state="disabled")
     install_button.pack(side="right")
-    ttk.Button(buttons, text="Close", width=10, command=root.destroy).pack(side="right", padx=(0, 8))
+    ttk.Button(buttons, text="Close", command=root.destroy).pack(side="right", padx=(0, px(8)))
 
     def refresh_cars_colour(*_):
         cars_label.configure(fg="#000000" if cars_var.get() else grey)

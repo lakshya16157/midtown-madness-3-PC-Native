@@ -28,7 +28,8 @@ int main(int argc, char **argv)
     assert(config.controller_count == 1);
     assert(config.damage_percent == 100 && config.own_damage_percent == 100 && config.time_percent == 100);
     assert(config.ai_level == 5 && config.free_camera_key == 0x77);
-    assert(config.option[MM3_LAUNCH_FREE_CAMERA] && config.option[MM3_LAUNCH_CHEAT_CODES]);
+    assert(config.option[MM3_LAUNCH_FREE_CAMERA]);
+    assert(config.option[MM3_LAUNCH_PHOTO_MODE]);                     /* photo mode starts on */
     assert(config.pad[4] == 5 && config.pad[5] == 4);
     assert(config.keys[0] == 'Z' && config.drive_keys[0] == VK_UP);
     assert(mm3_launcher_config_path(path, sizeof path, error, sizeof error));
@@ -149,7 +150,7 @@ int main(int argc, char **argv)
     assert(!strcmp(getenv("MM3_DAMAGE_PERCENT"), "0") && !strcmp(getenv("MM3_TIME_PERCENT"), "150"));
     assert(!strcmp(getenv("MM3_OWN_DAMAGE_PERCENT"), "25"));
     assert(!strcmp(getenv("MM3_AI_LEVEL"), "8") && !strcmp(getenv("MM3_FREE_CAMERA_KEY"), "36"));
-    assert(!strcmp(getenv("MM3_FREE_CAMERA"), "1") && !strcmp(getenv("MM3_CHEAT_CODES"), "1"));
+    assert(!strcmp(getenv("MM3_FREE_CAMERA"), "1"));
     /* The Original look: the Xbox visuals, menus and HUD markers; the
      * graphics/audio upgrades and the gameplay as chosen. */
     loaded.option[MM3_LAUNCH_IMPROVED] = 0;
@@ -173,12 +174,13 @@ int main(int argc, char **argv)
     assert(!strcmp(getenv("MM3_DAMAGE_PERCENT"), "100") && !strcmp(getenv("MM3_TIME_PERCENT"), "100"));
     assert(!strcmp(getenv("MM3_OWN_DAMAGE_PERCENT"), "100") && loaded.own_damage_percent == 25);
     assert(!strcmp(getenv("MM3_AI_LEVEL"), "5") && loaded.ai_level == 8);       /* the Xbox opponents */
-    assert(!strcmp(getenv("MM3_FREE_CAMERA"), "0") && !strcmp(getenv("MM3_CHEAT_CODES"), "0"));
+    assert(!strcmp(getenv("MM3_FREE_CAMERA"), "0"));
+    assert(!strcmp(getenv("MM3_PHOTO_MODE"), "1"));       /* photo mode is no gameplay mod: it stays on */
     assert(loaded.damage_percent == 0 && loaded.time_percent == 150);     /* kept for Modded gameplay */
     assert(!strcmp(getenv("MM3_MOD_DRAW_DISTANCE"), "1") && !strcmp(getenv("MM3_HUD_NORTH_MARKER"), "0"));
     /* Which switch each option belongs to. */
     static const int always[] = {MM3_LAUNCH_KEYBOARD, MM3_LAUNCH_WIDESCREEN, MM3_LAUNCH_SKY, MM3_LAUNCH_NATIVE_FOG,
-        MM3_LAUNCH_DSP, MM3_LAUNCH_NETWORK, MM3_LAUNCH_IMPROVED, MM3_LAUNCH_GAMEPLAY};
+        MM3_LAUNCH_DSP, MM3_LAUNCH_NETWORK, MM3_LAUNCH_IMPROVED, MM3_LAUNCH_GAMEPLAY, MM3_LAUNCH_PHOTO_MODE};
     static const int look[] = {MM3_LAUNCH_DISTANCE, MM3_LAUNCH_CAR_LIGHT, MM3_LAUNCH_LAMP_LIGHT, MM3_LAUNCH_WORLD_LIGHT,
         MM3_LAUNCH_FLARE_DEPTH, MM3_LAUNCH_LOADING, MM3_LAUNCH_NORTH_MARKER, MM3_LAUNCH_GRAPHICS_MENU,
         MM3_LAUNCH_DLC_INFO, MM3_LAUNCH_EXHAUST, MM3_LAUNCH_QUIT};
@@ -208,7 +210,9 @@ int main(int argc, char **argv)
     assert(!loaded.option[MM3_LAUNCH_DRAFTING] && !loaded.option[MM3_LAUNCH_ROLL_GUARD]);
     assert(!loaded.option[MM3_LAUNCH_GAMEPLAY] && loaded.option[MM3_LAUNCH_IMPROVED]);   /* Xbox gameplay */
     file = fopen(path, "wb"); assert(file);
-    fputs("[launcher]\nMM3_DRAFTING=1\nMM3_ROLL_GUARD=1\nMM3_MOD_SKY=0\n", file); fclose(file);
+    /* MM3_CHEAT_CODES: the typed cheat codes are gone; a file from before
+     * loads without a warning and the next save leaves it out. */
+    fputs("[launcher]\nMM3_DRAFTING=1\nMM3_ROLL_GUARD=1\nMM3_MOD_SKY=0\nMM3_CHEAT_CODES=1\n", file); fclose(file);
     assert(mm3_launcher_config_load(&loaded, error, sizeof error) && !*error);
     assert(!loaded.option[MM3_LAUNCH_DRAFTING] && !loaded.option[MM3_LAUNCH_ROLL_GUARD]);
     assert(!loaded.option[MM3_LAUNCH_SKY]);
@@ -219,7 +223,7 @@ int main(int argc, char **argv)
     assert(config.option[MM3_LAUNCH_DRAFTING] && !config.option[MM3_LAUNCH_ROLL_GUARD]);
     file = fopen(path, "rb"); assert(file);
     size = fread(saved, 1, sizeof saved - 1, file); saved[size] = 0; fclose(file);
-    assert(strstr(saved, "\nMM3_SETTINGS_REVISION=2\n"));
+    assert(strstr(saved, "\nMM3_SETTINGS_REVISION=2\n") && !strstr(saved, "MM3_CHEAT_CODES"));
     assert(!_putenv_s("MM3_ROLL_GUARD", "1"));   /* Explicit environment still wins. */
     assert(mm3_launcher_config_startup(&config, error, sizeof error));
     assert(config.option[MM3_LAUNCH_ROLL_GUARD]);

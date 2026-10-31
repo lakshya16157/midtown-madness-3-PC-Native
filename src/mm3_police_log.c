@@ -31,6 +31,27 @@
 #define MM3_POLICE_PRINT(...) (fprintf(stderr, __VA_ARGS__), fflush(stderr))
 #endif
 
+/* The size of the loose disc file D:\Data\<root>\<relative> in the game
+ * folder, or -1 when it is not there (a folder of that name counts as not
+ * there). The tests supply their own. */
+#ifndef MM3_POLICE_FILE_SIZE
+BOOL xbox_translate_path(const char *xbox_path, WCHAR *host_path_buf, DWORD buf_size);
+
+static long long disc_file_size(const char *root, const char *relative)
+{
+    char guest[MAX_PATH];
+    WCHAR host[MAX_PATH];
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if (snprintf(guest, sizeof guest, "D:\\Data\\%s\\%s", root, relative) >= (int)sizeof guest ||
+        !xbox_translate_path(guest, host, MAX_PATH) ||
+        !GetFileAttributesExW(host, GetFileExInfoStandard, &data) ||
+        (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+        return -1;
+    return ((long long)data.nFileSizeHigh << 32) | data.nFileSizeLow;
+}
+#define MM3_POLICE_FILE_SIZE(root, relative) disc_file_size(root, relative)
+#endif
+
 enum { POLICE_MAX = 32 };
 
 typedef struct {
@@ -343,10 +364,12 @@ void mm3_police_note_path(uint32_t string_object)
 #define NOTE_REACHED(n) (s_noted & (1u << (n)))
 #define NOTE_FAILED(n) (NOTE_REACHED(n) && !s_note[n])
 
-/* What the factory could not do, from the notes it reached. */
-static const char *factory_reason(int *with_path)
+/* What the factory could not do, from the notes it reached; `body` is set
+ * when that was the body model, whose file the log then looks for. */
+static const char *factory_reason(int *with_path, int *body)
 {
     *with_path = 0;
+    *body = 0;
     if (!NOTE_REACHED(NOTE_ALLOC)) return "it stopped before making the car";
     if (!s_note[NOTE_ALLOC]) return "no memory for the car (0x82C bytes)";
     if (NOTE_FAILED(NOTE_CAR)) return "the car could not be constructed (sub_0021B40A)";
@@ -355,13 +378,37 @@ static const char *factory_reason(int *with_path)
         if (NOTE_REACHED(NOTE_HANDLER)) { *with_path = 0; return "the car init found no game object handler (sub_00220761)"; }
         if (NOTE_REACHED(NOTE_COLLISION)) return "the car model has no collision file (Cars\\<model>[_lod1]\\data.ccol), model";
         if (NOTE_FAILED(NOTE_STREAMED)) return "the streamed car model did not load (sub_001BDDD9)";
-        if (NOTE_FAILED(NOTE_BODY)) return "the car body model did not load (sub_000E42B1)";
+        if (NOTE_FAILED(NOTE_BODY)) { *body = 1; return "the car body model did not load (sub_000E42B1)"; }
         if (NOTE_FAILED(NOTE_SETUP)) return "the car model setup failed (sub_0021CB61) after loading";
         if (NOTE_FAILED(NOTE_PHYSICS)) return "the car physics did not load (sub_0021ED64) for";
         return "the car init failed (sub_00220761) after";
     }
     if (NOTE_FAILED(NOTE_ATTACH)) return "the cop did not take the car (actor + 0x2954, vtable + 4)";
     return "no failing step noted";
+}
+
+/* The body model did not load: is its file in the game folder at all? The
+ * engine looks in the cache, each DLC pack, then Data\XBox and Data\Shared,
+ * and the police models are loose disc files in the last two. A file the
+ * folder lacks is found nowhere; one that is there but unusable is a
+ * different fault, so the line says which. */
+static void model_file_line(const char *path)
+{
+    const char *relative = path[0] == '+' ? path + 1 : path;
+    long long shared = MM3_POLICE_FILE_SIZE("Shared", relative);
+    long long xbox = MM3_POLICE_FILE_SIZE("XBox", relative);
+    if (shared > 0 || xbox > 0)
+        MM3_POLICE_PRINT("[MM3_POLICE]   the model file %s is on disk (%lld bytes in Data\\%s), so it was found "
+                         "but could not be loaded\n", relative, shared > 0 ? shared : xbox,
+                         shared > 0 ? "Shared" : "XBox");
+    else if (shared == 0 || xbox == 0)
+        MM3_POLICE_PRINT("[MM3_POLICE]   the model file %s is on disk but empty (0 bytes): the copy is damaged; "
+                         "run MM3-Setup with your disc image again to restore it\n", relative);
+    else
+        MM3_POLICE_PRINT("[MM3_POLICE]   the model file %s is NOT in this game folder (Data\\Shared and "
+                         "Data\\XBox searched): the folder is missing a disc file, so no cop can be made. Run "
+                         "MM3-Setup with your disc image again to restore the missing files; saves, DLC and "
+                         "settings are kept\n", relative);
 }
 
 /* At the return of sub_0015070A: EAX the cop made, or 0; `name` its type. */
@@ -390,13 +437,14 @@ void mm3_police_created(uint32_t actor, uint32_t name)
         if (actor) {
             MM3_POLICE_PRINT("[MM3_POLICE] police car \"%s\" made\n", text);
         } else if (step == 5) {
-            int with_path;
-            const char *why = factory_reason(&with_path);
+            int with_path, body;
+            const char *why = factory_reason(&with_path, &body);
             if (with_path && s_note_path[0])
                 MM3_POLICE_PRINT("[MM3_POLICE] police car \"%s\" not made: %s: %s \"%s\"\n", text, stopped[4], why,
                                  s_note_path);
             else
                 MM3_POLICE_PRINT("[MM3_POLICE] police car \"%s\" not made: %s: %s\n", text, stopped[4], why);
+            if (body && s_note_path[0]) model_file_line(s_note_path);
         } else {
             MM3_POLICE_PRINT("[MM3_POLICE] police car \"%s\" not made: %s\n", text,
                              step < 0 ? "the police manager was not ready (manager + 8 is 0)" :

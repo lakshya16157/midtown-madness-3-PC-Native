@@ -13,6 +13,7 @@
 #include "mm3_display_config.h"
 #include "mm3_controller_detection.h"
 #include "mm3_update.h"
+#include "mm3_logo.h"   /* generated from the installed game when this is built */
 
 /* The update button's outside world, replaceable by the UI contract test. */
 #ifndef MM3_UPDATE_API_URL
@@ -47,6 +48,7 @@ enum {
     ID_SCREEN, ID_ORIGINAL, ID_XBOX_GAMEPLAY, ID_DAMAGE, ID_TIME, ID_NIGHT, ID_UPDATE,
     ID_HELP_TITLE, ID_HELP_VALUE, ID_HELP_BODY, ID_HELP_EFFECT, ID_REQUIRED,
     ID_PAD_SUMMARY, ID_PAD_HINT, ID_TAB_BAR, ID_OWN_DAMAGE, ID_AI_LEVEL, ID_CAMERA_KEY,
+    ID_TITLE, ID_SUBTITLE, ID_GUIDE_HEAD1, ID_GUIDE_HEAD2,
     ID_OPTION = 300,
     LAUNCHER_WIDTH = 1215, LAUNCHER_HEIGHT = 754,
     /* Settings, Controls, Visual + audio mods, Gameplay mods. */
@@ -94,7 +96,21 @@ typedef struct Launcher {
     UpdateJob *update_job;          /* the step in flight, if any */
     int close_after_update;         /* Cancel or Close was pressed while it ran */
     MM3Update update_found;
+    HBITMAP banner;                 /* the header band: logo on dark blue, gold edge */
+    HBRUSH band_brush, card_brush;
+    int band_height, logo_right;    /* band size in pixels; where the logo ends (0: none) */
 } Launcher;
+
+/* One palette for the whole window: the dark header, the white guide card, the
+ * blue of the open tab and of the main button. */
+#define COLOR_BAND RGB(14, 24, 44)
+#define COLOR_BAND_TEXT RGB(214, 226, 245)
+#define COLOR_GOLD RGB(242, 183, 5)
+#define COLOR_ACCENT RGB(0, 103, 192)
+#define COLOR_CARD RGB(255, 255, 255)
+#define COLOR_CARD_EDGE RGB(206, 213, 224)
+#define COLOR_INK RGB(27, 36, 48)
+#define COLOR_MUTED RGB(102, 112, 133)
 
 static const char *const drive_labels[MM3_LAUNCHER_DRIVE_KEYS] = {
     "Accelerate", "Brake / reverse", "Steer left", "Steer right", "Handbrake",
@@ -126,6 +142,7 @@ static int radio_choice(int id)
            id == ID_XBOX_GAMEPLAY || id == ID_OPTION + MM3_LAUNCH_GAMEPLAY;
 }
 static void help_show(Launcher *ui, int id);
+static HWND push_button(Launcher *ui, int page, const char *text, int id, int x, int y, int width, int height);
 static LRESULT CALLBACK help_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
                                   UINT_PTR subclass, DWORD_PTR reference)
 {
@@ -330,7 +347,7 @@ static void help_show(Launcher *ui, int id)
             "Put Quit in the main menu, in place of Sign In (Xbox Live, which no longer exists). Quit closes the game, as closing its window does. Off shows Sign In, as on the Xbox.",
             "Changes the gameplay. In Checkpoint and circuit races every opponent drives the same car as you, whichever car you pick. Career jobs keep their own cars. Off: the opponents get the game's own cars.",
             "In a race, the Free camera key flies the view away from your car: W/A/S/D or the left stick move, Q/E or the triggers go down and up, the arrows, right stick or mouse with its right button look. Shift/RB faster, Ctrl/LB slower. Your car gets no input meanwhile.",
-            "Changes the gameplay. While playing, type howhardcanitbe and a digit, 0 to 9, to change the Opponents' difficulty until you quit; a chime confirms it. Off: typing does nothing more than press the keys' controller buttons."
+            "Photo mode. In a race, F2 holds everything still and flies the camera: W/A/S/D move, Q/E down and up, the mouse looks (or the sticks and triggers). F3 (pad A) saves a PNG to Pictures\\Midtown Madness 3, F4 (pad X) hides the HUD. F2 again goes back to your car. Off: these keys do nothing."
         };
         int option = id - ID_OPTION, on = checked(ui, id), master = mm3_launcher_option_master(option);
         title = option_caption(option);
@@ -947,10 +964,8 @@ static void controls_controls(Launcher *ui)
     c = combo(ui, 1, ID_PAD_PORT, "Controller to use for capture", 417, 350, 399);
     for (int i = 0; i < 4; ++i) { char text[32]; snprintf(text, sizeof text, "Controller %d", i + 1); combo_item(c, text, i); }
     combo_select(c, 0);
-    add(ui, 1, "BUTTON", "Capture controller button", BS_PUSHBUTTON | WS_TABSTOP,
-         ID_CAPTURE, 417, 414, 399, 32);
-    add(ui, 1, "BUTTON", "Clear selected binding", BS_PUSHBUTTON | WS_TABSTOP,
-         ID_UNBIND, 417, 458, 399, 30);
+    push_button(ui, 1, "Capture controller button", ID_CAPTURE, 417, 414, 399, 32);
+    push_button(ui, 1, "Clear selected binding", ID_UNBIND, 417, 458, 399, 30);
     add(ui, 1, "STATIC", "Select an action, then capture a key/button or select a controller source. Escape cancels capture. Stick axes stay analog. Controller bindings apply equally to players 1-4.",
          0, -1, 417, 504, 399, 80);
 }
@@ -1024,7 +1039,7 @@ static void gameplay_controls(Launcher *ui)
     check(ui, 3, ID_OPTION + MM3_LAUNCH_GAMEPLAY, mm3_launcher_options[MM3_LAUNCH_GAMEPLAY].label, 300, 92, 250);
     label(ui, 3, "Xbox gameplay plays as the Xbox game did. Modded gameplay uses the mods ticked below.", 42, 122, 774);
     option_columns(ui, 3, columns, (int)(sizeof columns / sizeof columns[0]));
-    fixed = add(ui, 3, "STATIC", "Free camera and codes", 0, -1, 300, 384, 250, 26);
+    fixed = add(ui, 3, "STATIC", "Camera and photos", 0, -1, 300, 384, 250, 26);
     SendMessageA(fixed, WM_SETFONT, (WPARAM)ui->section, TRUE);
     check(ui, 3, ID_OPTION + MM3_LAUNCH_FREE_CAMERA, option_caption(MM3_LAUNCH_FREE_CAMERA), 300, 416, 250);
     c = combo(ui, 3, ID_CAMERA_KEY, "Free camera key", 300, 448, 250);
@@ -1034,7 +1049,8 @@ static void gameplay_controls(Launcher *ui)
                  mm3_launcher_camera_keys[i] == 0x77 ? " (default)" : "");
         combo_item(c, name, mm3_launcher_camera_keys[i]);
     }
-    check(ui, 3, ID_OPTION + MM3_LAUNCH_CHEAT_CODES, option_caption(MM3_LAUNCH_CHEAT_CODES), 300, 512, 250);
+    check(ui, 3, ID_OPTION + MM3_LAUNCH_PHOTO_MODE, option_caption(MM3_LAUNCH_PHOTO_MODE), 300, 512, 250);
+    label(ui, 3, "F2 pause and fly, F3 photo, F4 hide HUD", 300, 540, 250);
     fixed = add(ui, 3, "STATIC", "Difficulty", 0, -1, 560, 270, 260, 26);
     SendMessageA(fixed, WM_SETFONT, (WPARAM)ui->section, TRUE);
     c = combo(ui, 3, ID_DAMAGE, "Car damage", 560, 300, 260);
@@ -1269,6 +1285,166 @@ static void poll_pads(Launcher *ui)
     status_text(control(ui, ID_PAD_HINT), hint);
 }
 
+/* ---- Look: header band, buttons, tick boxes ----------------------------- */
+
+static int scaled(const Launcher *ui, int value) { return (int)lroundf((float)value * ui->scale); }
+
+/* The header band as one bitmap: a solid dark blue (so the text on it needs no background of
+ * its own), the game's logo scaled to fit (averaging source pixels, premultiplied alpha), and a
+ * gold line along its foot. Without a logo (MM3_LOGO_WIDTH 0) the band is just the colour. */
+static void banner_make(Launcher *ui)
+{
+    int width = scaled(ui, LAUNCHER_WIDTH), band = scaled(ui, 80), line = scaled(ui, 3);
+    int rows, y;
+    BITMAPINFO info;
+    unsigned char *pixels = NULL;
+    if (line < 2) line = 2;
+    rows = band + line;
+    memset(&info, 0, sizeof info);
+    info.bmiHeader.biSize = sizeof info.bmiHeader;
+    info.bmiHeader.biWidth = width; info.bmiHeader.biHeight = -rows;
+    info.bmiHeader.biPlanes = 1; info.bmiHeader.biBitCount = 32; info.bmiHeader.biCompression = BI_RGB;
+    ui->band_brush = CreateSolidBrush(COLOR_BAND);
+    ui->card_brush = CreateSolidBrush(COLOR_CARD);
+    ui->band_height = rows;
+    ui->banner = CreateDIBSection(NULL, &info, DIB_RGB_COLORS, (void **)&pixels, NULL, 0);
+    if (!ui->banner || !pixels) { ui->banner = NULL; return; }
+    for (y = 0; y < rows; ++y) {
+        COLORREF colour = y < band ? COLOR_BAND : COLOR_GOLD;
+        unsigned char *row = pixels + (size_t)y * width * 4;
+        for (int x = 0; x < width; ++x, row += 4) {
+            row[0] = GetBValue(colour); row[1] = GetGValue(colour); row[2] = GetRValue(colour); row[3] = 255;
+        }
+    }
+    const int logo_wide = MM3_LOGO_WIDTH, logo_high = MM3_LOGO_HEIGHT;   /* 0 x 0 without the game's logo */
+    if (logo_wide > 0 && logo_high > 0) {
+        int high = scaled(ui, 60), wide = high * logo_wide / logo_high;
+        int left = scaled(ui, 22), top = (band - high) / 2;
+        for (int dy = 0; dy < high; ++dy) {
+            int sy0 = dy * MM3_LOGO_HEIGHT / high, sy1 = (dy + 1) * MM3_LOGO_HEIGHT / high;
+            if (sy1 <= sy0) sy1 = sy0 + 1;
+            for (int dx = 0; dx < wide; ++dx) {
+                int sx0 = dx * MM3_LOGO_WIDTH / wide, sx1 = (dx + 1) * MM3_LOGO_WIDTH / wide;
+                unsigned sum[4] = {0, 0, 0, 0}, count;
+                unsigned char *out;
+                if (sx1 <= sx0) sx1 = sx0 + 1;
+                for (int sy = sy0; sy < sy1 && sy < MM3_LOGO_HEIGHT; ++sy)
+                    for (int sx = sx0; sx < sx1 && sx < MM3_LOGO_WIDTH; ++sx) {
+                        const unsigned char *source = mm3_logo_bgra + ((size_t)sy * MM3_LOGO_WIDTH + sx) * 4;
+                        for (int k = 0; k < 4; ++k) sum[k] += source[k];
+                    }
+                count = (unsigned)((sy1 - sy0) * (sx1 - sx0));
+                out = pixels + ((size_t)(top + dy) * width + left + dx) * 4;
+                for (int k = 0; k < 3; ++k) {   /* premultiplied logo over the band colour */
+                    unsigned alpha = sum[3] / count, over = (unsigned)out[k] * (255 - alpha) / 255;
+                    out[k] = (unsigned char)(sum[k] / count + over);
+                }
+            }
+        }
+        ui->logo_right = left + wide;
+    }
+}
+
+static int is_push_button(int id)
+{
+    return id == ID_DEFAULTS || id == ID_UPDATE || id == IDOK || id == IDCANCEL || id == ID_CAPTURE || id == ID_UNBIND;
+}
+
+/* Owner-drawn push buttons track the pointer themselves: bit 0 of the user data means "pointer over". */
+static LRESULT CALLBACK push_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+                                  UINT_PTR subclass, DWORD_PTR reference)
+{
+    (void)subclass; (void)reference;
+    if (message == WM_MOUSEMOVE && !(GetWindowLongPtrA(window, GWLP_USERDATA) & 1)) {
+        TRACKMOUSEEVENT track = {sizeof track, TME_LEAVE, window, 0};
+        TrackMouseEvent(&track);
+        SetWindowLongPtrA(window, GWLP_USERDATA, 1);
+        InvalidateRect(window, NULL, FALSE);
+    } else if (message == WM_MOUSELEAVE) {
+        SetWindowLongPtrA(window, GWLP_USERDATA, 0);
+        InvalidateRect(window, NULL, FALSE);
+    }
+    return DefSubclassProc(window, message, wparam, lparam);
+}
+
+static HWND push_button(Launcher *ui, int page, const char *text, int id, int x, int y, int width, int height)
+{
+    HWND button = add(ui, page, "BUTTON", text, BS_OWNERDRAW | WS_TABSTOP, id, x, y, width, height);
+    if (button) SetWindowSubclass(button, push_proc, 3, 0);
+    return button;
+}
+
+static void draw_push(Launcher *ui, const DRAWITEMSTRUCT *draw)
+{
+    RECT box = draw->rcItem, text = draw->rcItem;
+    char caption[128];
+    int primary = draw->CtlID == IDOK, down = (draw->itemState & ODS_SELECTED) != 0;
+    int disabled = (draw->itemState & ODS_DISABLED) != 0;
+    int hot = (GetWindowLongPtrA(draw->hwndItem, GWLP_USERDATA) & 1) != 0;
+    COLORREF fill, edge, ink;
+    HPEN pen, old_pen;
+    HBRUSH brush, old_brush;
+    HFONT old_font;
+    int radius = scaled(ui, 8);
+    if (primary) {
+        fill = disabled ? RGB(168, 196, 224) : down ? RGB(0, 64, 128) : hot ? RGB(0, 84, 160) : COLOR_ACCENT;
+        edge = fill; ink = RGB(255, 255, 255);
+    } else {
+        fill = disabled ? RGB(238, 240, 244) : down ? RGB(190, 199, 214) : hot ? RGB(213, 220, 232) : RGB(228, 232, 240);
+        edge = disabled ? RGB(220, 225, 233) : RGB(176, 186, 203);
+        ink = disabled ? RGB(150, 158, 172) : COLOR_INK;
+    }
+    FillRect(draw->hDC, &box, (HBRUSH)(COLOR_BTNFACE + 1));
+    pen = CreatePen(PS_SOLID, 1, edge); brush = CreateSolidBrush(fill);
+    old_pen = SelectObject(draw->hDC, pen); old_brush = SelectObject(draw->hDC, brush);
+    RoundRect(draw->hDC, box.left, box.top, box.right - 1, box.bottom - 1, radius, radius);
+    SelectObject(draw->hDC, old_pen); SelectObject(draw->hDC, old_brush);
+    DeleteObject(pen); DeleteObject(brush);
+    if (down) OffsetRect(&text, 0, 1);
+    GetWindowTextA(draw->hwndItem, caption, sizeof caption);
+    SetBkMode(draw->hDC, TRANSPARENT);
+    SetTextColor(draw->hDC, ink);
+    old_font = SelectObject(draw->hDC, primary ? ui->section : ui->font);
+    DrawTextA(draw->hDC, caption, -1, &text, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+    SelectObject(draw->hDC, old_font);
+    if ((draw->itemState & ODS_FOCUS) && !(draw->itemState & ODS_NOFOCUSRECT)) {
+        InflateRect(&box, -scaled(ui, 4), -scaled(ui, 4));
+        DrawFocusRect(draw->hDC, &box);
+    }
+}
+
+/* A tick box or round choice: white with a grey edge, blue and ticked (or dotted) when on. */
+static void draw_box(Launcher *ui, HDC dc, const RECT *box, int round, int on, int enabled)
+{
+    COLORREF edge = !enabled ? RGB(190, 197, 210) : on ? COLOR_ACCENT : RGB(122, 132, 151);
+    COLORREF fill = round || !on ? RGB(255, 255, 255) : (enabled ? COLOR_ACCENT : RGB(190, 197, 210));
+    HPEN pen = CreatePen(PS_SOLID, 1, edge), old_pen = SelectObject(dc, pen);
+    HBRUSH brush = CreateSolidBrush(enabled ? fill : (on && !round ? fill : RGB(244, 246, 249)));
+    HBRUSH old_brush = SelectObject(dc, brush);
+    int size = box->right - box->left;
+    if (round) Ellipse(dc, box->left, box->top, box->right, box->bottom);
+    else RoundRect(dc, box->left, box->top, box->right, box->bottom, scaled(ui, 5), scaled(ui, 5));
+    SelectObject(dc, old_pen); SelectObject(dc, old_brush);
+    DeleteObject(pen); DeleteObject(brush);
+    if (!on) return;
+    if (round) {
+        int inset = size / 3;
+        brush = CreateSolidBrush(enabled ? COLOR_ACCENT : RGB(190, 197, 210));
+        pen = CreatePen(PS_SOLID, 1, enabled ? COLOR_ACCENT : RGB(190, 197, 210));
+        old_brush = SelectObject(dc, brush); old_pen = SelectObject(dc, pen);
+        Ellipse(dc, box->left + inset, box->top + inset, box->right - inset, box->bottom - inset);
+        SelectObject(dc, old_pen); SelectObject(dc, old_brush);
+        DeleteObject(pen); DeleteObject(brush);
+    } else {
+        int thick = size / 8 < 2 ? 2 : size / 8;
+        pen = CreatePen(PS_SOLID, thick, RGB(255, 255, 255)); old_pen = SelectObject(dc, pen);
+        MoveToEx(dc, box->left + size * 22 / 100, box->top + size * 52 / 100, NULL);
+        LineTo(dc, box->left + size * 43 / 100, box->top + size * 72 / 100);
+        LineTo(dc, box->left + size * 79 / 100, box->top + size * 29 / 100);
+        SelectObject(dc, old_pen); DeleteObject(pen);
+    }
+}
+
 /* ---- Check for updates ------------------------------------------------- */
 
 static int update_progress(void *context, unsigned long long done, unsigned long long total)
@@ -1307,6 +1483,18 @@ static int update_paths(wchar_t *setup, size_t setup_size, wchar_t *folder, size
     if (!slash) return 0;
     *slash = 0;
     return _snwprintf(setup, setup_size, L"%ls\\updates\\MM3-Setup.exe", folder) > 0;
+}
+
+/* Only an install made by Setup gets updates through Setup. The developer's own build (run from
+ * the build folder, or a special exe copied over an install) has no say in it: Setup writes
+ * setup-options.json beside the game, and without that file the button only reports. */
+static int update_installed(void)
+{
+    wchar_t setup[2 * MAX_PATH], folder[2 * MAX_PATH], options[2 * MAX_PATH + 24];
+    if (!update_paths(setup, sizeof setup / sizeof setup[0], folder, sizeof folder / sizeof folder[0])) return 0;
+    _snwprintf(options, sizeof options / sizeof options[0], L"%ls\\setup-options.json", folder);
+    options[sizeof options / sizeof options[0] - 1] = 0;
+    return GetFileAttributesW(options) != INVALID_FILE_ATTRIBUTES;
 }
 
 static int update_open_setup(const wchar_t *setup, const wchar_t *folder)
@@ -1374,6 +1562,10 @@ static void update_done(Launcher *ui, UpdateJob *job)
     } else if (job->result == 0) {
         snprintf(text, sizeof text, "You have the latest version (%s).", MM3_VERSION);
         update_status(ui, text);
+    } else if (!update_installed()) {
+        snprintf(text, sizeof text, "Version %s is available. This is a developer build, not an install made by "
+                 "Setup, so it is not updated from here. Players update with Setup.", job->update.version);
+        update_status(ui, text);
     } else {
         ui->update_found = job->update;
         snprintf(text, sizeof text,
@@ -1417,10 +1609,19 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
         ui->section = CreateFontA(-(int)lroundf(17.f * ui->scale), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
-        HWND title = add(ui, -1, "STATIC", "Midtown Madness 3  " MM3_VERSION, 0, -1, 25, 17, 570, 35);
-        SendMessageA(title, WM_SETFONT, (WPARAM)ui->heading, TRUE);
-        add(ui, -1, "STATIC", "Detecting controllers...", 0, ID_PAD_SUMMARY, 620, 23, 570, 24);
-        label(ui, -1, "Choose your settings. The guide explains each value as you select or change it.", 25, 55, 1150);
+        /* The header band (logo, title, subtitle, controller summary) is dark blue; its texts
+         * take that colour as their background (WM_CTLCOLORSTATIC) and the band is painted
+         * by WM_ERASEBKGND. With the game's logo the title is just the product line. */
+        banner_make(ui);
+        {
+            int text_x = ui->logo_right ? (int)lroundf((float)ui->logo_right / ui->scale) + 20 : 25;
+            HWND title = add(ui, -1, "STATIC", ui->logo_right ? "PC Native  " MM3_VERSION : "Midtown Madness 3  " MM3_VERSION,
+                             0, ID_TITLE, text_x, 14, 560, 35);
+            SendMessageA(title, WM_SETFONT, (WPARAM)ui->heading, TRUE);
+            add(ui, -1, "STATIC", "Detecting controllers...", SS_RIGHT, ID_PAD_SUMMARY, 620, 23, 570, 24);
+            add(ui, -1, "STATIC", "Choose your settings. The guide explains each value as you select or change it.",
+                0, ID_SUBTITLE, text_x, 50, 1190 - text_x, 24);
+        }
         /* The classic tab control barely marks the open tab, so WM_DRAWITEM
          * draws the headers: the open one solid blue with white bold text,
          * the others grey, and a blue line joins it to its page. */
@@ -1451,20 +1652,19 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             if (ui->page_shift < 0) ui->page_shift = 0;
         }
         settings_controls(ui); controls_controls(ui); look_controls(ui); gameplay_controls(ui);
-        add(ui, -1, "STATIC", "", SS_ETCHEDVERT, -1, 855, 85, 2, 550);
-        label(ui, -1, "SETTING GUIDE", 880, 103, 295);
+        add(ui, -1, "STATIC", "SETTING GUIDE", 0, ID_GUIDE_HEAD1, 880, 103, 295, 24);
         HWND help_title = add(ui, -1, "STATIC", "", SS_NOPREFIX, ID_HELP_TITLE, 880, 139, 295, 76);
         SendMessageA(help_title, WM_SETFONT, (WPARAM)ui->heading, TRUE);
         add(ui, -1, "STATIC", "", SS_NOPREFIX, ID_HELP_VALUE, 880, 219, 295, 52);
         add(ui, -1, "STATIC", "", SS_NOPREFIX, ID_HELP_BODY, 880, 285, 295, 190);
-        label(ui, -1, "WHAT TO EXPECT", 880, 489, 295);
+        add(ui, -1, "STATIC", "WHAT TO EXPECT", 0, ID_GUIDE_HEAD2, 880, 489, 295, 24);
         add(ui, -1, "STATIC", "", SS_NOPREFIX, ID_HELP_EFFECT, 880, 521, 295, 100);
         add(ui, -1, "STATIC", "Keyboard: Tab to move, Enter to activate. Controller: D-pad moves, A selects, LB/RB changes tab, Start plays.",
             0, ID_STATUS, 25, 644, 1165, 45);
-        add(ui, -1, "BUTTON", "Restore defaults", BS_PUSHBUTTON | WS_TABSTOP, ID_DEFAULTS, 25, 699, 155, 34);
-        add(ui, -1, "BUTTON", "Check for updates", BS_PUSHBUTTON | WS_TABSTOP, ID_UPDATE, 195, 699, 175, 34);
-        add(ui, -1, "BUTTON", "Play", BS_DEFPUSHBUTTON | WS_TABSTOP, IDOK, 933, 699, 122, 34);
-        add(ui, -1, "BUTTON", "Cancel", BS_PUSHBUTTON | WS_TABSTOP, IDCANCEL, 1068, 699, 122, 34);
+        push_button(ui, -1, "Restore defaults", ID_DEFAULTS, 25, 699, 155, 34);
+        push_button(ui, -1, "Check for updates", ID_UPDATE, 195, 699, 175, 34);
+        push_button(ui, -1, "Play", IDOK, 933, 699, 122, 34);
+        push_button(ui, -1, "Cancel", IDCANCEL, 1068, 699, 122, 34);
         populate(ui); page_show(ui, 0);
         poll_pads(ui);
         SetTimer(window, 1, 70, NULL);
@@ -1545,14 +1745,51 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             help_show(ui, GetDlgCtrlID(child));
         break;
     }
-    case WM_CTLCOLORSTATIC:
+    case WM_ERASEBKGND: {
+        HDC dc = (HDC)wparam;
+        RECT client, card = {scaled(ui, 862), scaled(ui, 85), scaled(ui, 1192), scaled(ui, 635)};
+        HBRUSH edge = CreateSolidBrush(COLOR_CARD_EDGE);
+        GetClientRect(window, &client);
+        FillRect(dc, &client, (HBRUSH)(COLOR_BTNFACE + 1));
+        if (ui->banner) {
+            HDC memory = CreateCompatibleDC(dc);
+            HGDIOBJ old = SelectObject(memory, ui->banner);
+            BITMAP bitmap;
+            RECT band = {0, 0, client.right, ui->band_height};
+            GetObjectA(ui->banner, sizeof bitmap, &bitmap);
+            FillRect(dc, &band, ui->band_brush);
+            BitBlt(dc, 0, 0, bitmap.bmWidth < client.right ? bitmap.bmWidth : client.right, ui->band_height, memory, 0, 0, SRCCOPY);
+            SelectObject(memory, old); DeleteDC(memory);
+        }
+        if (ui->card_brush) {   /* the setting guide's white card */
+            FillRect(dc, &card, ui->card_brush);
+            FrameRect(dc, &card, edge);
+        }
+        DeleteObject(edge);
+        return 1;
+    }
+    case WM_CTLCOLORSTATIC: {
+        int id = GetDlgCtrlID((HWND)lparam);
+        HDC dc = (HDC)wparam;
         if ((HWND)lparam == control(ui, ID_TAB_BAR) && ui->accent) return (LRESULT)ui->accent;
+        if (ui->band_brush && (id == ID_TITLE || id == ID_SUBTITLE || id == ID_PAD_SUMMARY)) {
+            SetTextColor(dc, id == ID_TITLE ? RGB(255, 255, 255) : COLOR_BAND_TEXT);
+            SetBkColor(dc, COLOR_BAND);
+            return (LRESULT)ui->band_brush;
+        }
+        if (ui->card_brush && (id == ID_HELP_TITLE || id == ID_HELP_VALUE || id == ID_HELP_BODY ||
+                               id == ID_HELP_EFFECT || id == ID_GUIDE_HEAD1 || id == ID_GUIDE_HEAD2)) {
+            SetTextColor(dc, id == ID_HELP_VALUE ? COLOR_ACCENT : id == ID_GUIDE_HEAD1 || id == ID_GUIDE_HEAD2 ? COLOR_MUTED : COLOR_INK);
+            SetBkColor(dc, COLOR_CARD);
+            return (LRESULT)ui->card_brush;
+        }
         if ((HWND)lparam == control(ui, ID_HELP_VALUE)) {
-            SetTextColor((HDC)wparam, RGB(0, 90, 150));
-            SetBkColor((HDC)wparam, GetSysColor(COLOR_BTNFACE));
+            SetTextColor(dc, RGB(0, 90, 150));
+            SetBkColor(dc, GetSysColor(COLOR_BTNFACE));
             return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
         }
         break;
+    }
     case WM_DRAWITEM: {
         DRAWITEMSTRUCT *draw = (DRAWITEMSTRUCT *)lparam;
         char caption[256];
@@ -1579,15 +1816,16 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             return TRUE;
         }
         if (draw->CtlType != ODT_BUTTON) break;
+        if (is_push_button((int)draw->CtlID)) { draw_push(ui, draw); return TRUE; }
         FillRect(draw->hDC, &draw->rcItem, (HBRUSH)(COLOR_BTNFACE + 1));
         box.left += 2; box.right = box.left + size;
         box.top += ((box.bottom - box.top) - size) / 2; box.bottom = box.top + size;
-        if (SendMessageA(draw->hwndItem, BM_GETCHECK, 0, 0) == BST_CHECKED) flags |= DFCS_CHECKED;
-        if (!IsWindowEnabled(draw->hwndItem)) flags |= DFCS_INACTIVE;
-        DrawFrameControl(draw->hDC, &box, DFC_BUTTON, flags);
-        text.left = box.right + (int)lroundf(6.f * ui->scale);
+        (void)flags;
+        draw_box(ui, draw->hDC, &box, radio_choice((int)draw->CtlID),
+                 SendMessageA(draw->hwndItem, BM_GETCHECK, 0, 0) == BST_CHECKED, IsWindowEnabled(draw->hwndItem));
+        text.left = box.right + (int)lroundf(8.f * ui->scale);
         SetBkMode(draw->hDC, TRANSPARENT);
-        SetTextColor(draw->hDC, GetSysColor(IsWindowEnabled(draw->hwndItem) ? COLOR_BTNTEXT : COLOR_GRAYTEXT));
+        SetTextColor(draw->hDC, IsWindowEnabled(draw->hwndItem) ? COLOR_INK : GetSysColor(COLOR_GRAYTEXT));
         HFONT old = SelectObject(draw->hDC, ui->font);
         GetWindowTextA(draw->hwndItem, caption, sizeof caption);
         DrawTextA(draw->hDC, caption, -1, &text, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
@@ -1733,10 +1971,27 @@ int mm3_launcher_run(void)
             } else if (ui.capture && message.message == WM_KEYDOWN && message.wParam == VK_ESCAPE) {
                 ui.capture = 0; SetWindowTextA(control(&ui, ID_STATUS), "Capture cancelled."); help_show(&ui, ID_CAPTURE); continue;
             }
+            if (message.message == WM_KEYDOWN && message.wParam == VK_RETURN && !ui.capture && IsChild(window, message.hwnd)) {
+                /* The push buttons are owner-drawn, so the dialog manager no longer finds a default
+                 * one: Enter presses the focused button, or Play from any other control (but a
+                 * dropped-down list keeps its Enter to choose an item). */
+                HWND focus = GetFocus();
+                char kind[32] = "";
+                if (focus) GetClassNameA(focus, kind, sizeof kind);
+                if (focus && !_stricmp(kind, "Button") && is_push_button(GetDlgCtrlID(focus))) {
+                    SendMessageA(focus, BM_CLICK, 0, 0); continue;
+                }
+                if (focus && !(!_stricmp(kind, "ComboBox") && SendMessageA(focus, CB_GETDROPPEDSTATE, 0, 0)) &&
+                    _stricmp(kind, "Edit") != 0 && _stricmp(kind, "ListBox") != 0) {
+                    SendMessageA(window, WM_COMMAND, IDOK, 0); continue;
+                }
+            }
             if (!IsDialogMessageA(window, &message)) { TranslateMessage(&message); DispatchMessageA(&message); }
         }
         if (ui.font) DeleteObject(ui.font); if (ui.heading) DeleteObject(ui.heading); if (ui.section) DeleteObject(ui.section);
         if (ui.accent) DeleteObject(ui.accent); if (ui.tab_idle) DeleteObject(ui.tab_idle);
+        if (ui.banner) DeleteObject(ui.banner); if (ui.band_brush) DeleteObject(ui.band_brush);
+        if (ui.card_brush) DeleteObject(ui.card_brush);
         if (ui.smoke || !ui.result) return 0;
     } else if (!mm3_launcher_config_apply(&ui.config, warning, sizeof warning)) {
         fprintf(stderr, "[MM3_LAUNCHER] %s\n", warning); return 0;

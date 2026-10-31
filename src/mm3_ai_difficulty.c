@@ -3,7 +3,8 @@
 #include "recomp_types.h"
 #include "mm3_cheat_keys.h"
 
-/* howhardcanitbe0..9: the race opponents' difficulty (5 = the Xbox game).
+/* The race opponents' difficulty, 0..9: the launcher's Opponents' difficulty
+ * (MM3_AI_LEVEL, src/mm3_cheat_keys.c; 5 = the Xbox game).
  *
  * A race opponent is driven by a RaceCar AI (vtable 0x37FAB0; police and
  * traffic have their own AIs and are left alone). Each frame its Normal state

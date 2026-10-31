@@ -50,7 +50,7 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"MM3_MENU_QUIT", "Quit in the main menu", 1},
     {"MM3_SAME_CAR", "Opponents drive your car", 0},
     {"MM3_FREE_CAMERA", "Free camera", 1},
-    {"MM3_CHEAT_CODES", "Typed cheat codes", 1}
+    {"MM3_PHOTO_MODE", "Photo mode", 1}
 };
 
 typedef struct { int option; const char *value; } MM3ForcedOption;
@@ -73,7 +73,7 @@ static const MM3ForcedOption xbox_gameplay[] = {
     {MM3_LAUNCH_UNLOCK, "0"}, {MM3_LAUNCH_ROUTE_NAVIGATION, "0"}, {MM3_LAUNCH_RACE_ARROW, "1"},
     {MM3_LAUNCH_DEV_TOOLS, "0"}, {MM3_LAUNCH_DEV_HUD, "0"}, {MM3_LAUNCH_DEBUG_MENU, "0"},
     {MM3_LAUNCH_CAMERAS, "0"}, {MM3_LAUNCH_E3, "0"}, {MM3_LAUNCH_SAME_CAR, "0"},
-    {MM3_LAUNCH_FREE_CAMERA, "0"}, {MM3_LAUNCH_CHEAT_CODES, "0"}
+    {MM3_LAUNCH_FREE_CAMERA, "0"}
 };
 
 /* The launcher saves every option, so a changed default would never reach a
@@ -325,6 +325,9 @@ int mm3_launcher_config_load(MM3LauncherConfig *config, char *error, size_t capa
         equals = strchr(key, '=');
         if (!equals) continue;
         *equals = 0; key = trim(key); value = trim(equals + 1);
+        /* Settings this launcher no longer has (the typed cheat codes) are
+         * dropped quietly; the next save leaves them out. */
+        if (!strcmp(key, "MM3_CHEAT_CODES")) continue;
         if (!strcmp(key, "MM3_SETTINGS_REVISION")) {
             if (!integer(value, 1, INT_MAX, &revision))
                 error_set(error, capacity, "Some unknown or invalid launcher settings were ignored.");

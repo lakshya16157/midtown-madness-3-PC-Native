@@ -3,31 +3,54 @@
 #include <stdlib.h>
 #include <string.h>
 #include "mm3_cheat_keys.h"
+#include "mm3_photo.h"
 
-/* Keyboard cheats typed into the game window, each switched on the
- * launcher's Gameplay mods tab (only with Modded gameplay):
+/* Keys the game window gives us, each switched on the launcher's Gameplay
+ * mods tab:
  *
- *   howhardcanitbeN  N = 0..9: the race opponents' difficulty for the rest of
- *                    the session (src/mm3_ai_difficulty.c); 5 is the Xbox game.
- *                    Typed cheat codes, MM3_CHEAT_CODES. Until one is typed the
- *                    launcher's Opponents' difficulty, MM3_AI_LEVEL, holds.
  *   F8               the free camera on or off (src/mm3_free_camera.c). Free
- *                    camera, MM3_FREE_CAMERA; the key is MM3_FREE_CAMERA_KEY
- *                    (a Win32 virtual key, F8 = 119 by default).
+ *                    camera, MM3_FREE_CAMERA (only with Modded gameplay); the
+ *                    key is MM3_FREE_CAMERA_KEY (a Win32 virtual key, F8 = 119
+ *                    by default).
+ *   F2               holds the race still and flies the camera around it, and
+ *                    again lets the race run (src/mm3_pause_clock.c,
+ *                    src/mm3_free_camera.c); F3 saves a picture of the window
+ *                    (src/mm3_photo.c). Photo mode, MM3_PHOTO_MODE; the keys
+ *                    are MM3_PAUSE_KEY and MM3_PHOTO_KEY (F2 = 113, F3 = 114),
+ *                    never F9-F11 or the free camera's key.
+ *   F4               hides the race HUD and shows it again (the renderer skips
+ *                    it, nv2a_d3d_set_hud_hidden, and the checkpoint arrow
+ *                    stays away, src/mm3_hud_options.c); it comes back by
+ *                    itself when the race ends. Photo mode too, MM3_HUD_KEY.
  *
  * The window records which keys are held (xbox_FramebufferKeyDown, written
  * by the window thread, only while it has the focus), so a thread of our own
- * watches it every few milliseconds and turns presses into typed letters:
- * a key is held for 30 ms or more even in fast typing. The letters still
- * reach the game as the controller buttons they are bound to; the code is
- * long enough that nothing is ever typed by accident. Nothing here touches
- * guest memory: the game thread reads the results. */
+ * watches it every few milliseconds and counts presses: a key is held for
+ * 30 ms or more even when tapped. Nothing here touches guest memory: the game
+ * thread reads the results.
+ *
+ * The opponents' difficulty is the launcher's Opponents' difficulty,
+ * MM3_AI_LEVEL; the typed codes that once changed it in game are gone. */
 extern int xbox_FramebufferKeyDown(int vk);
+extern void nv2a_d3d_set_hud_hidden(int hidden);
 
-#define CODE "HOWHARDCANITBE"
-
-static volatile LONG s_ai_level = -1;      /* -1 until typed: MM3_AI_LEVEL or 5 */
 static volatile LONG s_camera_presses;
+static volatile LONG s_pause_presses;
+static volatile LONG s_hud_presses;     /* from the free camera's controller button */
+static volatile LONG s_hud_hidden;
+
+int mm3_hud_hidden(void)
+{
+    return InterlockedCompareExchange(&s_hud_hidden, 0, 0) != 0;
+}
+
+static void hide_hud(int hidden, const char *why)
+{
+    InterlockedExchange(&s_hud_hidden, hidden != 0);
+    nv2a_d3d_set_hud_hidden(hidden);
+    fprintf(stderr, "[MM3_PHOTO] HUD %s (%s)\n", hidden ? "hidden" : "shown", why);
+    fflush(stderr);
+}
 
 /* An on/off switch from the launcher; on unless it says 0. */
 static int switched_on(const char *name)
@@ -43,43 +66,51 @@ static int camera_key(void)
     return vk > 0 && vk < 256 && vk != 0x79 && vk != 0x7A ? vk : 0x77;   /* not F10/F11 */
 }
 
-static void typed(char c)
+/* A key from the launcher or the environment, else the default. The keys the
+ * game window keeps for itself (F9 black frame capture, F10 settings, F11 full
+ * screen) and the ones already taken fall back to the default, and a default
+ * that is taken moves on to the next key. */
+static int photo_key(const char *name, int fallback, int taken, int taken_too)
 {
-    static char text[32];
-    size_t length = strlen(text), code = sizeof CODE - 1;
-    if (length == sizeof text - 1) {
-        memmove(text, text + 1, length);
-        --length;
-    }
-    text[length++] = c;
-    text[length] = 0;
-    if (c >= '0' && c <= '9' && length > code && !memcmp(text + length - 1 - code, CODE, code)) {
-        InterlockedExchange(&s_ai_level, c - '0');
-        fprintf(stderr, "[MM3_CHEAT] howhardcanitbe%c: opponents' difficulty %c (5 = Xbox)\n", c, c);
-        fflush(stderr);
-        MessageBeep(MB_ICONASTERISK);   /* the game shows nothing: a sound says it was taken */
-        text[0] = 0;
-    }
+    const char *v = getenv(name);
+    int vk = v && *v ? atoi(v) : 0;
+    if (vk < 1 || vk > 255 || (vk >= 0x78 && vk <= 0x7A) || vk == taken || vk == taken_too) vk = fallback;
+    while (vk == taken || vk == taken_too) ++vk;
+    return vk;
 }
 
 static DWORD WINAPI watch(void *unused)
 {
-    static unsigned char was[256], camera_was;
-    int codes = switched_on("MM3_CHEAT_CODES"), camera = switched_on("MM3_FREE_CAMERA"), key = camera_key();
+    static unsigned char camera_was, pause_was, photo_was, hud_was;
+    int camera = switched_on("MM3_FREE_CAMERA"), key = camera_key();
+    int photos = switched_on("MM3_PHOTO_MODE");
+    int pause_key = photo_key("MM3_PAUSE_KEY", 0x71, camera ? key : 0, 0);
+    int picture_key = photo_key("MM3_PHOTO_KEY", 0x72, camera ? key : 0, pause_key);
+    int hud_key = photo_key("MM3_HUD_KEY", 0x73, camera ? key : 0, pause_key);
+    while (hud_key == picture_key || hud_key == pause_key || (camera && hud_key == key) ||
+           (hud_key >= 0x78 && hud_key <= 0x7A)) ++hud_key;
     (void)unused;
-    fprintf(stderr, "[MM3_CHEAT] typed cheat codes %s, free camera %s (key 0x%02X), opponents' difficulty %d\n",
-            codes ? "on" : "off", camera ? "on" : "off", key, mm3_cheat_ai_level());
+    fprintf(stderr, "[MM3_CHEAT] free camera %s (key 0x%02X), opponents' difficulty %d\n",
+            camera ? "on" : "off", key, mm3_cheat_ai_level());
+    fprintf(stderr, "[MM3_CHEAT] photo mode %s (pause and fly key 0x%02X, picture key 0x%02X, hide HUD key 0x%02X)\n",
+            photos ? "on" : "off", pause_key, picture_key, hud_key);
     for (;;) {
-        int vk, down;
-        for (vk = '0'; codes && vk <= 'Z'; ++vk) {
-            if (vk > '9' && vk < 'A') continue;
-            down = xbox_FramebufferKeyDown(vk) || (vk <= '9' && xbox_FramebufferKeyDown(VK_NUMPAD0 + vk - '0'));
-            if (down && !was[vk]) typed((char)vk);
-            was[vk] = (unsigned char)down;
-        }
-        down = camera && xbox_FramebufferKeyDown(key);
+        int down = camera && xbox_FramebufferKeyDown(key);
         if (down && !camera_was) InterlockedIncrement(&s_camera_presses);
         camera_was = (unsigned char)down;
+        down = photos && xbox_FramebufferKeyDown(pause_key);
+        if (down && !pause_was) InterlockedIncrement(&s_pause_presses);
+        pause_was = (unsigned char)down;
+        down = photos && xbox_FramebufferKeyDown(picture_key);
+        if (down && !photo_was) mm3_photo_take();
+        photo_was = (unsigned char)down;
+        /* The HUD key only in a race; the HUD returns when the race ends. */
+        down = photos && xbox_FramebufferKeyDown(hud_key);
+        if (down && !hud_was && mm3_race_view_recent()) hide_hud(!mm3_hud_hidden(), "key");
+        hud_was = (unsigned char)down;
+        if (InterlockedExchange(&s_hud_presses, 0) && photos && mm3_race_view_recent())
+            hide_hud(!mm3_hud_hidden(), "controller");
+        if (mm3_hud_hidden() && !mm3_race_view_recent()) hide_hud(0, "no race view");
         mm3_free_camera_watchdog();
         Sleep(4);
     }
@@ -88,8 +119,8 @@ static DWORD WINAPI watch(void *unused)
 void mm3_cheat_keys_start(void)
 {
     HANDLE thread;
-    if (!switched_on("MM3_CHEAT_CODES") && !switched_on("MM3_FREE_CAMERA")) {
-        fprintf(stderr, "[MM3_CHEAT] typed cheat codes and free camera off, opponents' difficulty %d\n",
+    if (!switched_on("MM3_FREE_CAMERA") && !switched_on("MM3_PHOTO_MODE")) {
+        fprintf(stderr, "[MM3_CHEAT] free camera and photo mode off, opponents' difficulty %d\n",
                 mm3_cheat_ai_level());
         return;
     }
@@ -102,15 +133,26 @@ void mm3_cheat_keys_start(void)
 
 int mm3_cheat_ai_level(void)
 {
-    LONG level = InterlockedCompareExchange(&s_ai_level, -1, -1);
-    if (level < 0) {
-        const char *v = getenv("MM3_AI_LEVEL");
-        level = v && *v >= '0' && *v <= '9' && !v[1] ? *v - '0' : 5;
-    }
-    return (int)level;
+    const char *v = getenv("MM3_AI_LEVEL");
+    return v && *v >= '0' && *v <= '9' && !v[1] ? *v - '0' : 5;
 }
 
 int mm3_cheat_camera_presses(void)
 {
     return (int)InterlockedExchange(&s_camera_presses, 0);
+}
+
+int mm3_cheat_pause_presses(void)
+{
+    return (int)InterlockedExchange(&s_pause_presses, 0);
+}
+
+void mm3_cheat_pause_press(void)
+{
+    InterlockedIncrement(&s_pause_presses);
+}
+
+void mm3_cheat_hud_press(void)
+{
+    InterlockedIncrement(&s_hud_presses);
 }

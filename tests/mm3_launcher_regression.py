@@ -35,7 +35,11 @@ def run(port):
         subprocess.run([str(config), str(folder / "launcher.ini")], check=True,
                        cwd=folder, env=environment)
         ui = folder / "launcher.exe"
-        subprocess.run(common + ["/DMM3_LAUNCHER_AUDIO=1", "/DMM3_LAUNCHER_NETWORK=1",
+        # The launcher's header logo is generated from the installed game (an empty one without it).
+        subprocess.run([sys.executable, str(ROOT / "tools/branding/generate_logo.py"),
+                        "--archive", str(ROOT / "game_files/Data/Data_dvd.zip"),
+                        "--header", str(folder / "branding/mm3_logo.h")], check=True, cwd=folder)
+        subprocess.run(common + ["/I" + str(folder / "branding"), "/DMM3_LAUNCHER_AUDIO=1", "/DMM3_LAUNCHER_NETWORK=1",
             str(ROOT / "tests/mm3_launcher_ui_contract.c"),
             str(ROOT / "src/mm3_launcher_config.c"), str(ROOT / "src/mm3_display_config.c"),
             str(ROOT / "src/mm3_update.c"),

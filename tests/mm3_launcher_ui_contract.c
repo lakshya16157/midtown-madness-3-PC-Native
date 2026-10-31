@@ -646,7 +646,7 @@ static void contextual_help(HWND window)
         HWND child = GetDlgItem(window, id);
         if (i == MM3_LAUNCH_IMPROVED || i == MM3_LAUNCH_GAMEPLAY) continue;
         select_page(window, i == MM3_LAUNCH_DSP || i == MM3_LAUNCH_NETWORK ? 0 :
-                    mm3_launcher_option_master(i) == MM3_LAUNCH_GAMEPLAY ? 3 : 2);
+                    mm3_launcher_option_master(i) == MM3_LAUNCH_GAMEPLAY || i == MM3_LAUNCH_PHOTO_MODE ? 3 : 2);
         CHECK(child && IsWindowVisible(child));
         focus_control(window, id); help_text(window, &previous); help_layout(window);
         CHECK(*previous.value);
@@ -763,6 +763,8 @@ static DWORD WINAPI exercise(void *unused)
     SendMessageA(GetDlgItem(window, ID_OPTION + MM3_LAUNCH_DISTANCE), BM_SETCHECK, BST_UNCHECKED, 0);
     focus_control(window, ID_OPTION + MM3_LAUNCH_CAR_LIGHT);
     capture_page(window, "mods");
+    select_page(window, 3);
+    capture_page(window, "gameplay");
     select_page(window, 0);
     SetDlgItemTextA(window, ID_FPS, "30");
     SendMessageA(GetDlgItem(window, ID_VSYNC), BM_SETCHECK, BST_CHECKED, 0);
@@ -775,6 +777,17 @@ static DWORD WINAPI exercise(void *unused)
 }
 static int s_update_run;   /* 0: answers; 1: Cancel during a slow check; 2: download and open Setup */
 static const char *s_update_port;
+static char s_update_marker[600];   /* setup-options.json: what an install made by Setup has beside the game */
+
+static void update_marker(int present)
+{
+    if (present) {
+        FILE *marker = fopen(s_update_marker, "wb");
+        CHECK(marker);
+        fputs("{}", marker);
+        fclose(marker);
+    } else CHECK(DeleteFileA(s_update_marker));
+}
 
 static void update_api_for(const char *scenario)
 {
@@ -832,6 +845,18 @@ static DWORD WINAPI update_exercise(void *unused)
         update_click(window);
         update_wait_status(window, "does not match the release's checksum");
         CHECK(s_update_asked == 2 && s_update_opened == 0 && IsWindowEnabled(button));
+        /* The developer's own build (no setup-options.json beside it) only reports: nothing is offered,
+         * downloaded or opened, whatever the release says. */
+        update_marker(0);
+        s_update_answer = 1;
+        update_api_for("newer");
+        {
+            int asked = s_update_asked;
+            update_click(window);
+            update_wait_status(window, "developer build");
+            CHECK(s_update_asked == asked && s_update_opened == 0 && IsWindowEnabled(button));
+        }
+        update_marker(1);
         /* The button's explanation. */
         focus_control(window, ID_UPDATE);
         CHECK(help_contains(window, "Check for updates") && help_contains(window, "GitHub"));
@@ -863,6 +888,8 @@ static void update_runs(const char *port, const char *folder)
     HANDLE thread, file;
     LARGE_INTEGER size;
     s_update_port = port;
+    snprintf(s_update_marker, sizeof s_update_marker, "%s\\setup-options.json", folder);
+    update_marker(1);   /* run as an install made by Setup */
     CHECK(!_putenv_s("MM3_LAUNCHER", "1")); CHECK(!_putenv_s("MM3_LAUNCHER_SMOKE", ""));
     for (s_update_run = 0; s_update_run < 3; ++s_update_run) {
         s_update_opened = 0; s_update_setup[0] = 0;
@@ -938,8 +965,8 @@ static void smaller_layout(void)
     choose(window, ID_GROUP, 0);
     focus_control(window, ID_BINDINGS);
     capture_page(window, "controls-720p");
-    page_show(&ui, 2); help_layout(window); capture_page(window, "mods-720p");
-    page_show(&ui, 3); help_layout(window); capture_page(window, "gameplay-720p");
+    select_page(window, 2); help_layout(window); capture_page(window, "mods-720p");
+    select_page(window, 3); help_layout(window); capture_page(window, "gameplay-720p");
     DestroyWindow(window); DeleteObject(ui.font); DeleteObject(ui.heading);
 }
 int main(int argc, char **argv)

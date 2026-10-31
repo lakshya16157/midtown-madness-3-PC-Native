@@ -55,6 +55,20 @@ your image, destination and optional content, then:
    The game's launcher has the same button (`src/mm3_update.c`, WinHTTP + BCrypt, same
    rules and the same release files): it saves the new Setup as `updates\MM3-Setup.exe` in the
    install folder, closes without starting the game and runs it with `--dest <install folder>`.
+   **Only for installs made by Setup** (it looks for `setup-options.json` beside the game):
+   the maintainer's own build, run from the build folder or copied over an install, only
+   reports that a newer release exists and never downloads or replaces anything. Players run the
+   published version; the developer exe stays the developer's.
+7. **Make an image...** (beside the game image heading) shows how to make an image of your own
+   disc: copy it with a modded original Xbox (or a Kreon-firmware drive) and build the `.iso`
+   with `extract-xiso -c`. Setup links to no game image downloads.
+
+**Look.** Setup's window and the launcher share one look: the game's own logo
+(`Menu/Gfx/mm3_logo.cdds`) on a dark header with a gold edge, a blue accent for the main button.
+The logo is game artwork, so it is **never committed**: `build.py` extracts it from the maintainer's
+`game_files` into the payload (`stage_branding`; without game_files or Pillow, Setup is built without
+it and shows plain text), and CMake runs `tools/branding/generate_logo.py` to turn it into the
+launcher's `mm3_logo.h` (an empty logo when the game files are missing).
    Releases must therefore attach `MM3-Setup.exe` **and** `MM3-Setup.exe.sha256`
    (`<hex>  MM3-Setup.exe`), and bump `VERSION` before building, or Setup would keep offering
    the same release.
@@ -64,10 +78,17 @@ and DLC files. Owning a disc does not automatically authorize third-party downlo
 or redistribution. The [main README](../README.md#ownership-disc-images-and-dlc) explains
 the preferred own-disc backup route, local-law limits and the requested source links.
 
-Safety rules: it never deletes or overwrites an existing `game_files\` that is not a complete
-install (saved games live there); it extracts into `game_files.partial` and renames only when
-finished; it rejects file names in a disc image that could escape the install folder
-(`..`, drive letters, backslashes, NTFS stream names); and it checks free disk space first.
+Safety rules: it never deletes or overwrites an existing `game_files\` (saved games live
+there); it extracts a new install into `game_files.partial` and renames only when finished; it
+rejects file names in a disc image that could escape the install folder (`..`, drive letters,
+backslashes, NTFS stream names); and it checks free disk space first.
+
+An existing `game_files\` that lacks some disc files (copied without them, cleaned up, a setup
+that stopped half way) is repaired, not refused: when its `default.xbe` is this game's, Setup
+restores only the files that are missing or empty, each under a temporary name first, and leaves
+every other file as it is (modified car archives, DLC, saves). A folder with another
+`default.xbe` is still left untouched. The game's `[MM3_POLICE]` log names the case that made
+this matter: a missing `Cars\washingtonpolice_lod1\body.cmp` means no cop can be made in Washington.
 
 ## Files
 

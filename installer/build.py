@@ -51,6 +51,31 @@ def newest_game_exe(repo: Path) -> Path:
     return max(found, key=lambda p: p.stat().st_mtime)
 
 
+def stage_branding(payload: Path, repo: Path) -> None:
+    """The window icon, and the game's own logo (Menu/Gfx/mm3_logo.cdds) from the maintainer's
+    extracted game files. The logo is game artwork, so it is taken here and never committed; without
+    game_files (or Pillow) Setup is built without it and shows plain text instead."""
+    branding = payload / "branding"
+    branding.mkdir(parents=True)
+    shutil.copy2(repo / "src" / "mm3.ico", branding / "mm3.ico")
+    archive = repo / "game_files" / "Data" / "Data_dvd.zip"
+    try:
+        sys.path.insert(0, str(repo / "tools" / "car-models"))
+        import io
+        import zipfile
+        import mm3_textures
+        from PIL import Image
+        with zipfile.ZipFile(archive) as zipped:
+            dds = mm3_textures.cdds_to_dds(zipped.read("Menu/Gfx/mm3_logo.cdds"))
+        Image.open(io.BytesIO(dds)).convert("RGBA").save(branding / "mm3_logo.png")
+        print("game logo: Menu/Gfx/mm3_logo.cdds")
+    except (ImportError, OSError, KeyError, ValueError) as error:
+        print(f"WARNING: no game logo in this Setup ({type(error).__name__}: {error})")
+    finally:
+        if sys.path and sys.path[0] == str(repo / "tools" / "car-models"):
+            sys.path.pop(0)
+
+
 def stage_payload(payload: Path, repo: Path, packages: Path, downloads: Path) -> None:
     if payload.exists():
         shutil.rmtree(payload)
@@ -66,6 +91,7 @@ def stage_payload(payload: Path, repo: Path, packages: Path, downloads: Path) ->
         sys.exit(f"Missing {runtime}; build with an official Windows x64 Python installation.")
     shutil.copy2(runtime, payload / runtime.name)
 
+    stage_branding(payload, repo)
     (payload / "scripts").mkdir()
     shutil.copy2(repo / "scripts" / "extract_disc.py", payload / "scripts")
     xiso = payload / "tools" / "xboxrecomp" / "tools" / "xiso"

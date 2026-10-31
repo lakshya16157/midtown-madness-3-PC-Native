@@ -127,7 +127,9 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_002430FD)
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001D7441)
 # F8 free camera: the race view's world-to-camera matrix (src/mm3_free_camera.c).
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001EA16C)
-# howhardcanitbe0..9: the race opponents' Normal driving state (src/mm3_ai_difficulty.c).
+# F2 holds the race still: the engine timer's counter read (src/mm3_pause_clock.c).
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0016FC89)
+# Opponents' difficulty: the race opponents' Normal driving state (src/mm3_ai_difficulty.c).
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0014194C)
 # Lua natives this port adds to sub_0020646F's list (src/mm3_lua_natives.c).
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0020646F)
@@ -512,6 +514,17 @@ add_custom_command(OUTPUT "${MM3_MENU_HEADER}"
     COMMENT "Building native graphics menu resources from the installed game"
     VERBATIM)
 
+# The launcher's header picture: the game's own logo, read from the installed game.
+set(MM3_LOGO_HEADER "${CMAKE_CURRENT_BINARY_DIR}/branding/mm3_logo.h")
+add_custom_command(OUTPUT "${MM3_LOGO_HEADER}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/branding/generate_logo.py"
+        --archive "${CMAKE_CURRENT_SOURCE_DIR}/game_files/Data/Data_dvd.zip"
+        --header "${MM3_LOGO_HEADER}"
+    DEPENDS tools/branding/generate_logo.py tools/car-models/mm3_textures.py
+        "${CMAKE_CURRENT_SOURCE_DIR}/game_files/Data/Data_dvd.zip"
+    COMMENT "Reading the launcher logo from the installed game"
+    VERBATIM)
+
 add_executable(${PROJECT_NAME}
     src/main.c
     src/mm3_collision_cells.c
@@ -525,6 +538,7 @@ add_executable(${PROJECT_NAME}
     src/mm3_menu_resources.c
     src/mm3_graphics_menu.c
     "${MM3_MENU_HEADER}"
+    "${MM3_LOGO_HEADER}"
     src/mm3_asset_cache.c
     src/mm3_debug_features.c
  src/mm3_memory_compat.c
@@ -568,6 +582,8 @@ add_executable(${PROJECT_NAME}
  src/mm3_vehicle_dynamics.c
  src/mm3_cheat_keys.c
  src/mm3_free_camera.c
+ src/mm3_pause_clock.c
+ src/mm3_photo.c
  src/mm3_ai_difficulty.c
  src/mm3_police_log.c
  src/mm3_score_tables.c
@@ -616,6 +632,7 @@ endif()
 target_include_directories(${PROJECT_NAME} PRIVATE
     src
     "${CMAKE_CURRENT_BINARY_DIR}/native_menu"
+    "${CMAKE_CURRENT_BINARY_DIR}/branding"
     src/recomp
     ${RECOMP_GEN_DIR}
     ${XBOXRECOMP_DIR}/src/video
@@ -626,11 +643,11 @@ set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_L
 set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_LAUNCHER_NETWORK=1)
 # The release this build belongs to: the launcher's title and the first log
 # line show it, so a report says which version it came from.
-set(MM3_VERSION "2.1")
+set(MM3_VERSION "2.2")
 set_property(SOURCE src/mm3_launcher.c src/main.c APPEND PROPERTY COMPILE_DEFINITIONS
     "MM3_VERSION=\"${MM3_VERSION}\"")
 if(WIN32)
-    target_link_libraries(${PROJECT_NAME} PRIVATE comctl32 xinput winhttp bcrypt shell32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE comctl32 xinput winhttp bcrypt shell32 windowscodecs ole32 uuid)
 endif()
 
 # MM3's CRT uses NtAllocateVirtualMemory reserve requests as heap-backed

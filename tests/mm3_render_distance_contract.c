@@ -172,10 +172,13 @@ int main(int argc, char **argv)
     assert(remap_calls == 0); /* Requested scale is not the effective far plane. */
     if (custom_first) set_pedestrians(custom_peds, 1);
     else set_pedestrians(custom_peds, 0); /* Failed custom input keeps defaults. */
+    assert(MEMF(0x3A8C90u) == 125 && MEMF(0x3A8C94u) == 175);    /* the XBE's street prop ranges */
     check_object(0xE4672u, 100, 100 * object);
     check_pedestrians(custom_first ? custom_peds : retail_peds, object);
+    assert(MEMF(0x3A8C90u) == 125 * object && MEMF(0x3A8C94u) == 175 * object);
     check_object(0xE4672u, 100, 100 * object); /* Repeated construction. */
     check_pedestrians(custom_first ? custom_peds : retail_peds, object);
+    assert(MEMF(0x3A8C90u) == 125 * object && MEMF(0x3A8C94u) == 175 * object);   /* scaled once */
     check_object(0xE2E94u, 125, 125 * object); /* Explicit title override. */
     check_object(0x211273u, 300 * object, 300 * object);
     check_object(0x2114EDu, 125 * object, 125 * object); /* Restore exactly. */

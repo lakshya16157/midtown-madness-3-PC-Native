@@ -3,8 +3,10 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "recomp_types.h"
 #include "mm3_cheat_keys.h"
+#include "mm3_photo.h"
 
 /* Free camera: its key in a race (F8 unless the launcher's Gameplay mods tab
  * chose another; Free camera off there: never) flies the view away from the car.
@@ -30,8 +32,16 @@
  * Controls: W/S/A/D or the left stick move, Q/E or the triggers go down and
  * up, the arrow keys, the right stick or the mouse with its right button held
  * look around; Shift or RB is five times faster, Ctrl or LB five times slower.
- * The key thread (src/mm3_cheat_keys.c) gives the input back if races stop
- * drawing (results, menus) while it is on. */
+ *
+ * Photo mode flies it too: while F2 holds the race (src/mm3_pause_clock.c)
+ * the camera comes loose by itself, with or without the free camera's own
+ * switch (nothing in the race moves, so it changes no gameplay), the mouse
+ * looks around without a button while the game window has the focus, and
+ * when the race runs again the view goes back to the game's. The free camera
+ * key during a hold puts the camera back on the car until the next hold. On
+ * the controller Y holds and releases the race, A takes the picture (F3 on
+ * the keyboard) and X hides or shows the HUD (F4). The key thread (src/mm3_cheat_keys.c) gives the input
+ * back if races stop drawing (results, menus) while it is on. */
 extern void sub_001EA16C_original(void);
 extern int xbox_FramebufferKeyDown(int vk);
 extern void xbox_InputSetBlocked(int blocked);
@@ -46,6 +56,16 @@ static float s_pos[3], s_yaw, s_pitch, s_hand;
 static LARGE_INTEGER s_last;
 static POINT s_cursor;
 static int s_mouse_held;
+static WORD s_buttons;                  /* the controller buttons held last frame */
+/* The game thread's own: flying because F2 holds the race (it lands when the
+ * race runs again), and the free camera key put it down during this hold. */
+static int s_from_hold, s_declined;
+
+/* A race view was drawn in the last 1.5 s (the pause clock lets go otherwise). */
+int mm3_race_view_recent(void)
+{
+    return GetTickCount() - (DWORD)InterlockedCompareExchange(&s_drawn, 0, 0) <= 1500u;
+}
 
 static float range(void)
 {
@@ -59,6 +79,26 @@ static float range(void)
 }
 
 static int key(int vk) { return xbox_FramebufferKeyDown(vk) != 0; }
+
+/* The game window is the one the player is using (never steer the pointer
+ * of another program). */
+static int focused(void)
+{
+    DWORD process = 0;
+    HWND window = GetForegroundWindow();
+    return window && GetWindowThreadProcessId(window, &process) && process == GetCurrentProcessId();
+}
+
+/* Photo mode, unless the launcher turned it off (MM3_PHOTO_MODE=0). */
+static int switched_on_photo(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("MM3_PHOTO_MODE");
+        on = !v || !*v || strcmp(v, "0") != 0;
+    }
+    return on;
+}
 
 static float stick(SHORT value, SHORT dead)
 {
@@ -86,7 +126,7 @@ static int pad(XINPUT_GAMEPAD *out)
     return 0;
 }
 
-static void start(uint32_t camera)
+static void start(uint32_t camera, int from_hold)
 {
     const float *r = (const float *)XBOX_PTR(camera + 0x10u);
     float cross[3];
@@ -104,9 +144,11 @@ static void start(uint32_t camera)
     }
     QueryPerformanceCounter(&s_last);
     s_mouse_held = 0;
+    s_from_hold = from_hold;
     InterlockedExchange(&s_active, 1);
     xbox_InputSetBlocked(1);
-    fprintf(stderr, "[MM3_FREE_CAMERA] on at %.1f %.1f %.1f\n", s_pos[0], s_pos[1], s_pos[2]);
+    fprintf(stderr, "[MM3_FREE_CAMERA] on at %.1f %.1f %.1f%s\n", s_pos[0], s_pos[1], s_pos[2],
+            from_hold ? " (the race is held: mouse look)" : "");
     fflush(stderr);
 }
 
@@ -144,7 +186,8 @@ static void fly(uint32_t camera, float out[16])
     if (key(VK_RIGHT)) s_yaw += TURN * dt * s_hand;
     if (key(VK_UP)) s_pitch += TURN * dt;
     if (key(VK_DOWN)) s_pitch -= TURN * dt;
-    if (key(VK_RBUTTON)) {
+    /* The right button looks; while the race is held the mouse alone does. */
+    if (key(VK_RBUTTON) || (s_from_hold && focused())) {
         POINT p;
         if (GetCursorPos(&p)) {
             /* The pointer goes back where the button was pressed each frame,
@@ -177,6 +220,17 @@ static void fly(uint32_t camera, float out[16])
         move[1] += (g.bRightTrigger - g.bLeftTrigger) / 255.0f;
         if (g.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) speed *= 5.0f;
         if (g.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) speed *= 0.2f;
+        /* Photo mode: a press of Y holds or releases the race, of A takes the
+         * picture, of X hides or shows the HUD. */
+        if (switched_on_photo()) {
+            WORD pressed = (WORD)(g.wButtons & ~s_buttons);
+            if (pressed & XINPUT_GAMEPAD_Y) mm3_cheat_pause_press();
+            if (pressed & XINPUT_GAMEPAD_A) mm3_photo_take();
+            if (pressed & XINPUT_GAMEPAD_X) mm3_cheat_hud_press();
+        }
+        s_buttons = g.wButtons;
+    } else {
+        s_buttons = 0;
     }
     s_pitch = fmaxf(-1.55f, fminf(1.55f, s_pitch));
     s_yaw = remainderf(s_yaw, 6.2831853f);
@@ -223,16 +277,25 @@ static void fly(uint32_t camera, float out[16])
 void sub_001EA16C(void)
 {
     uint32_t camera = MEM32(g_esp + 4u), out = g_ebx, manager = MEM32(0x003C5CDCu);
-    int presses;
+    int presses, holding;
     sub_001EA16C_original();
     if (manager < 0x10000u || camera != MEM32(manager + 0x54u)) return;   /* player 1's view only */
     /* Presses made away from a race (menus, loading) are not for this one. */
     presses = mm3_cheat_camera_presses();
     if (GetTickCount() - (DWORD)InterlockedExchange(&s_drawn, (LONG)GetTickCount()) > 1500u) presses = 0;
+    holding = switched_on_photo() && mm3_pause_frozen();
+    if (!holding) s_declined = 0;
     if (presses & 1) {
-        if (InterlockedCompareExchange(&s_active, 0, 0)) stop("key");
-        else start(camera);
+        if (InterlockedCompareExchange(&s_active, 0, 0)) {
+            stop("key");
+            s_declined = holding;
+        } else {
+            start(camera, holding);
+        }
     }
+    /* F2: the camera comes loose with the hold and lands when the race runs. */
+    if (holding && !s_declined && !InterlockedCompareExchange(&s_active, 0, 0)) start(camera, 1);
+    if (!holding && s_from_hold && InterlockedCompareExchange(&s_active, 0, 0)) stop("the race runs again");
     if (!InterlockedCompareExchange(&s_active, 0, 0)) return;
     xbox_InputSetBlocked(1);      /* again: closing the F10 dialog gives it back */
     /* The key thread's watchdog may have stopped it in between: then its

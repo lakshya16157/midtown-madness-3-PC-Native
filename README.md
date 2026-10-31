@@ -68,9 +68,9 @@ Spanish voices in Spanish.
 | Exhaust smoke from each car's own pipes (off by default) | Improved minimap, which shows more of the map at speed |
 | Quit in the main menu, minimap compass pins hidden | Opponents drive your car (off by default) |
 | Softer car paint reflections | Car damage and time limits, from no damage to 3x and from half to 3x the time (Xbox values by default) |
-| | Your car's damage, on top of car damage: invulnerable to 3x (Xbox by default) |
+| Photo mode: **F2** holds the race and flies the camera, **F3** saves a picture, **F4** hides the HUD | Your car's damage, on top of car damage: invulnerable to 3x (Xbox by default) |
 | | Opponents' difficulty 0 to 9 (5 = Xbox by default) |
-| | Free camera on a key of your choice, typed cheat codes (both on with Modded gameplay) |
+| | Free camera on a key of your choice (on with Modded gameplay) |
 | | Unlock all vehicles, developer tools (off by default) |
 
 ## Graphics settings
@@ -100,11 +100,28 @@ While playing:
   button held look around, **Shift**/**RB** is faster and **Ctrl**/**LB** slower. Your car
   gets no input while the camera flies, and the camera stays within 400 m of it (the city
   only loads around your car). **F8** again goes back to the game's camera.
+- **Photo mode** (Gameplay mods tab, **Photo mode**, on by default, with either gameplay): **F2**
+  in a race holds the whole race still, with no menu (cars, traffic, police and the race clock
+  stop; the game's own pause, **Start**, is unchanged), and the camera comes loose so you can
+  frame a shot:
+  - **W/A/S/D** move, **Q/E** go down and up.
+  - The **mouse** looks around, no button needed; the arrow keys turn too.
+  - **Shift** moves faster, **Ctrl** slower.
+  - On a controller: the left stick moves, the right stick looks, the triggers go down and up,
+    **RB**/**LB** faster and slower, **A** takes the picture, **X** hides the HUD, **Y** lets
+    the race run again.
+
+  **F3** saves a picture of the window as a PNG in *Pictures\Midtown Madness 3* (the folder in
+  `MM3_PHOTO_DIR` if set), at the window's size; a Windows chime confirms it. **F4** hides the
+  race HUD (minimap, speedometer, name tags and the checkpoint arrow) for a clean picture and
+  shows it again; it comes back by itself when the race ends. Menus are never hidden.
+  **F2** again puts the camera back on your car and the race goes on. The game gets no input
+  while the race is held, and the camera stays within 400 m of your car. Sounds keep playing,
+  and **F2** does nothing with System Link on. `MM3_PAUSE_KEY`, `MM3_PHOTO_KEY` and
+  `MM3_HUD_KEY` (Windows virtual-key numbers) change the keys.
 - **Opponents' difficulty** (Gameplay mods tab) sets how hard race opponents drive: **5** is
   the Xbox game; above 5 they accelerate harder, brake later and harder, take corners a little
-  faster and stop holding back in the early races; below 5 they are slower. With **Typed cheat
-  codes** ticked you can also change it while playing: type **howhardcanitbe** and a digit,
-  **0** to **9**; a Windows chime confirms it.
+  faster and stop holding back in the early races; below 5 they are slower.
 
 ## Extra cars and Car Workshop
 
@@ -159,6 +176,11 @@ players, is in [docs/MULTIPLAYER.md](docs/MULTIPLAYER.md).
 - **A save from a real Xbox says it is damaged:** run
   `python tools\saves\resign_save.py <its UDATA folder> <new folder>`, then copy the new
   `4d53002a` folder into `game_files\UDATA`.
+- **No police ever appear in Cruise (cops set above None):** the game folder may be missing
+  a disc file. The log says so in a line like `[MM3_POLICE] ... the model file
+  Cars\washingtonpolice_lod1\body.cmp is NOT in this game folder`. Run Setup again with your
+  disc image: it puts back only the files that are missing (or empty) and leaves everything
+  else, saves and DLC included, as it is.
 - **Something else:** the game writes `logs\last-run.log` in the install folder.
   [Open an issue](https://github.com/lakshya16157/midtown-madness-3-PC-Native/issues) and
   attach it.
@@ -204,6 +226,10 @@ pack's original readme is saved next to the game in `Extra cars - credits.txt`.
 **You need a legal copy of Midtown Madness 3:** you must own the original Xbox game, and use
 only DLC you are entitled to. The best way is to make the disc image from your own disc,
 where your local law allows it. Setup does not include or download the game or its DLC.
+A PC DVD drive cannot read Xbox discs: copy the disc with a modded original Xbox (an FTP or
+file-manager dashboard such as XBMC4Xbox or UnleashX) or a drive with Kreon firmware, then
+make the image with `extract-xiso -c <copied folder> MidtownMadness3.iso`. Setup's
+**Make an image...** button shows the same steps.
 
 These are the game image and DLC Setup was tested with. Download them only if you own a
 legal copy of the game and your local law allows it:

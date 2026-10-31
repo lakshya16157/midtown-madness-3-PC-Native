@@ -126,6 +126,30 @@ static void pedestrian_defaults(void)
     }
 }
 
+static int s_prop_distances_initialized;
+
+/* Street props (cones, bollards, barrels, benches, signs: the city's breakable
+ * objects) keep their 3D model to 125 m along the view, cross-fade to a flat
+ * billboard until 175 m and are billboards beyond (sub_0016946B; 0x16A476
+ * splits the sorted billboards at 175 m and 0x168DE5/0x168EC2/0x169171 derive
+ * the fade from both). They are XBE constants no setter or Lua call reaches,
+ * so props stayed at the Xbox range while everything else drew farther and
+ * thin ones, the highway's white posts, faded out early. Scale them once with
+ * the other object distances, keeping their 125:175 ratio. */
+static void prop_distance_defaults(void)
+{
+    if (!s_prop_distances_initialized) {
+        float scale = distance_scale();
+        if (MEMF(0x003A8C90u) == 125.0f && MEMF(0x003A8C94u) == 175.0f) {
+            MEMF(0x003A8C90u) *= scale;
+            MEMF(0x003A8C94u) *= scale;
+        }
+        fprintf(stderr, "[MM3_DISTANCE] street props: 3D model to %.4g m, billboards from %.4g m\n",
+                MEMF(0x003A8C90u), MEMF(0x003A8C94u));
+        s_prop_distances_initialized = 1;
+    }
+}
+
 extern void sub_000E2D5B_original(void);
 void sub_000E2D5B(void)
 {
@@ -135,6 +159,7 @@ void sub_000E2D5B(void)
      * install and restore already effective values for temporary passes. */
     if (caller == 0x000E4672u || caller == 0x000E2E94u) {
         pedestrian_defaults();
+        prop_distance_defaults();
         MEMF(g_esp + 4) *= distance_scale();
     }
     sub_000E2D5B_original();
