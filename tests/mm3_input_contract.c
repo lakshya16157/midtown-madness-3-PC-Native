@@ -1,4 +1,4 @@
-/* Exercise the real keyboard window handler, XInput translation and USB
+/* Exercise the real keyboard window handler, pad translation and USB
  * report encoder without running MM3 or requiring a physical controller. */
 #include <windows.h>
 #include <xinput.h>
@@ -11,10 +11,21 @@
 static XINPUT_STATE host_state;
 static BOOL host_connected;
 static BOOL driving_context;
+/* The Keyboard driving mod on (the "mm3" run) or off ("legacy"). */
+static BOOL mod_on;
 
-static BOOL fixture_driving(void) { return driving_context; }
+static int fixture_driving(void) { return driving_context; }
 
-static DWORD WINAPI fixture_get_state(DWORD port, XINPUT_STATE *state)
+void mm3_keyboard_driving_init(int (*driving)(void));
+/* As mm3_mods_init installs the mod; off, nothing is installed. */
+static void set_driving_probe(int (*driving)(void))
+{
+    if (mod_on) mm3_keyboard_driving_init(driving);
+}
+
+/* The production pad merge reads its host pad through host_pad_state; the test supplies it. */
+#define XBOX_INPUT_HOST_PAD 1
+static DWORD host_pad_state(DWORD port, XINPUT_STATE *state)
 {
     if (!host_connected || port != 0) return ERROR_DEVICE_NOT_CONNECTED;
     *state = host_state;
@@ -23,9 +34,14 @@ static DWORD WINAPI fixture_get_state(DWORD port, XINPUT_STATE *state)
 
 static unsigned vibration_calls;
 static DWORD vibration_port;
-static XINPUT_VIBRATION vibration_last;
+#include "../tools/xboxrecomp/src/input/xinput_xbox.h"
+static XBOX_VIBRATION vibration_last;
 
-static DWORD WINAPI fixture_set_state(DWORD port, XINPUT_VIBRATION *vibration)
+/* usb_gamepad_output hands the title's rumble report to xbox_InputSetState,
+ * which sends it to the SDL3 pad (the toolkit's input_sdl_pad test covers that
+ * last step). Here the production xbox_InputSetState is renamed away while
+ * xinput_device.c is included, so the fixture below receives the call. */
+static DWORD fixture_set_state(DWORD port, const XBOX_VIBRATION *vibration)
 {
     ++vibration_calls;
     vibration_port = port;
@@ -33,20 +49,17 @@ static DWORD WINAPI fixture_set_state(DWORD port, XINPUT_VIBRATION *vibration)
     return ERROR_SUCCESS;
 }
 
-static DWORD WINAPI fixture_get_caps(DWORD port, DWORD flags,
-                                    XINPUT_CAPABILITIES *caps)
-{
-    (void)port; (void)flags;
-    memset(caps, 0, sizeof(*caps));
-    return ERROR_SUCCESS;
-}
-
-#define XInputGetState fixture_get_state
-#define XInputSetState fixture_set_state
-#define XInputGetCapabilities fixture_get_caps
+#define xbox_InputSetState xbox_InputSetState_production
 #include "../tools/xboxrecomp/src/input/xinput_device.c"
+#undef xbox_InputSetState
+DWORD xbox_InputSetState(DWORD port, const XBOX_VIBRATION *vibration)
+{
+    return fixture_set_state(port, vibration);
+}
 #include "../tools/xboxrecomp/src/video/fb_present.c"
+#include "../tools/xboxrecomp/src/video/fb_window_win32.c"
 #include "../tools/xboxrecomp/src/usb/usb_gamepad.c"
+#include "../src/mods/keyboard_driving.c"
 
 /* Rendering is outside this fixture. No framebuffer thread is started. */
 ptrdiff_t xbox_GetMemoryOffset(void) { return 0; }
@@ -92,47 +105,6 @@ static void expect_triggers(unsigned left, unsigned right)
 static void key(HWND window, int vk, BOOL down)
 {
     SendMessageA(window, down ? WM_KEYDOWN : WM_KEYUP, (WPARAM)vk, 0);
-}
-
-static void check_host_report(void)
-{
-    static const uint8_t pressures[] = {0, 1, 29, 30, 31, 127, 128, 254, 255};
-    uint8_t out[20], short_report[20];
-    unsigned i, j;
-    host_connected = TRUE;
-    memset(&host_state, 0, sizeof(host_state));
-    /* No deadzone, truncation or coupling may be introduced between triggers. */
-    for (i = 0; i < sizeof pressures; ++i) {
-        for (j = 0; j < sizeof pressures; ++j) {
-            host_state.Gamepad.bLeftTrigger = pressures[i];
-            host_state.Gamepad.bRightTrigger = pressures[j];
-            expect_triggers(pressures[i], pressures[j]);
-        }
-    }
-    memset(&host_state, 0, sizeof(host_state));
-    host_state.Gamepad.wButtons = XINPUT_GAMEPAD_RIGHT_SHOULDER;
-    report(out);
-    CHECK(out[8] == 255 && out[9] == 0); /* RB is Xbox Black. */
-    host_state.Gamepad.wButtons = XINPUT_GAMEPAD_LEFT_SHOULDER;
-    report(out);
-    CHECK(out[8] == 0 && out[9] == 255); /* LB is Xbox White. */
-    host_state.Gamepad.wButtons = XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B |
-        XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_Y | XINPUT_GAMEPAD_START |
-        XINPUT_GAMEPAD_DPAD_RIGHT | XINPUT_GAMEPAD_LEFT_THUMB;
-    host_state.Gamepad.sThumbLX = -32768;
-    host_state.Gamepad.sThumbLY = 32767;
-    host_state.Gamepad.sThumbRX = -12345;
-    host_state.Gamepad.sThumbRY = 12345;
-    report(out);
-    CHECK(out[2] == (XBOX_GAMEPAD_START | XBOX_GAMEPAD_DPAD_RIGHT |
-                     XBOX_GAMEPAD_LEFT_THUMB));
-    CHECK(out[4] == 255 && out[5] == 255 && out[6] == 255 && out[7] == 255);
-    CHECK(report_axis(out, 12) == -32768 && report_axis(out, 14) == 32767);
-    CHECK(report_axis(out, 16) == -12345 && report_axis(out, 18) == 12345);
-    memset(short_report, 0xA5, sizeof short_report);
-    CHECK(usb_gamepad_report(0, short_report, 19) == 0);
-    for (i = 0; i < sizeof short_report; ++i) CHECK(short_report[i] == 0xA5);
-    host_connected = FALSE;
 }
 
 static void check_keyboard(HWND window, BOOL mm3)
@@ -209,14 +181,14 @@ static void check_context(HWND window, BOOL mm3)
 {
     uint8_t out[20];
     /* Until a title registers a probe, arrows are only navigation keys. */
-    xbox_InputSetKeyboardDrivingProbe(NULL);
+    set_driving_probe(NULL);
     key(window, VK_UP, TRUE); key(window, VK_DOWN, TRUE);
     key(window, VK_LEFT, TRUE); key(window, VK_RIGHT, TRUE);
     report(out);
     CHECK((out[2] & 0x0F) == 0x0F);
     CHECK(out[10] == 0 && out[11] == 0 && report_axis(out, 12) == 0);
 
-    xbox_InputSetKeyboardDrivingProbe(fixture_driving);
+    set_driving_probe(fixture_driving);
     driving_context = FALSE;
     report(out);
     CHECK((out[2] & 0x0F) == 0x0F);
@@ -309,9 +281,9 @@ static void check_camera(HWND window, BOOL mm3)
     key(window, 'C', TRUE);
     report(out);
     for (i = 2; i < sizeof out; ++i) CHECK(out[i] == 0);
-    xbox_InputSetKeyboardDrivingProbe(NULL);
+    set_driving_probe(NULL);
     report(out); CHECK(out[8] == 0);
-    xbox_InputSetKeyboardDrivingProbe(fixture_driving);
+    set_driving_probe(fixture_driving);
 
     driving_context = TRUE;
     for (held = 0; held < 3; ++held) {
@@ -370,10 +342,10 @@ static void check_handbrake(HWND window, BOOL mm3)
     report(out);
     for (i = 2; i < sizeof out; ++i) CHECK(out[i] == 0);
     driving_context = TRUE;
-    xbox_InputSetKeyboardDrivingProbe(NULL);
+    set_driving_probe(NULL);
     report(out);
     for (i = 2; i < sizeof out; ++i) CHECK(out[i] == 0);
-    xbox_InputSetKeyboardDrivingProbe(fixture_driving);
+    set_driving_probe(fixture_driving);
 
     for (held = 0; held < 3; ++held) {
         report(out);
@@ -490,15 +462,89 @@ static void check_rumble(void)
     CHECK(vibration_calls == before + 2);
 }
 
+static void check_saved_maps(HWND window)
+{
+    uint8_t out[20];
+    /* The launcher's saved map assigns throttle to W, but title driving
+     * aliases still work beside it and stop immediately upon pausing. */
+    driving_context = TRUE;
+    set_driving_probe(fixture_driving);
+    key(window, '3', TRUE); expect_triggers(0, 0);
+    key(window, '3', FALSE);
+    key(window, 'W', TRUE); expect_triggers(0, 255);
+    key(window, VK_UP, TRUE); expect_triggers(0, 255);
+    key(window, 'W', FALSE); expect_triggers(0, 255);
+    key(window, VK_UP, FALSE); expect_triggers(0, 0);
+    key(window, VK_DOWN, TRUE); expect_triggers(255, 0);
+    key(window, VK_DOWN, FALSE);
+    key(window, VK_LEFT, TRUE);
+    report(out); CHECK(report_axis(out, 12) == -32767);
+    key(window, VK_LEFT, FALSE);
+    key(window, 'C', TRUE); key(window, VK_SPACE, TRUE);
+    key(window, 'R', TRUE); key(window, 'F', TRUE);
+    report(out);
+    CHECK(out[4] == 255 && out[5] == 255 && out[6] == 255 && out[8] == 255);
+    driving_context = FALSE;
+    report(out);
+    CHECK(out[4] == 0 && out[5] == 0 && out[6] == 0 && out[8] == 0);
+    SendMessageA(window, WM_KILLFOCUS, 0, 0);
+
+    /* A saved custom shoulder swap must survive export/reload instead of
+     * being silently replaced by the new launcher's default layout. */
+    host_connected = TRUE;
+    memset(&host_state, 0, sizeof(host_state));
+    host_state.Gamepad.wButtons = XINPUT_GAMEPAD_LEFT_SHOULDER;
+    report(out); CHECK(out[8] == 255 && out[9] == 0);
+    host_state.Gamepad.wButtons = XINPUT_GAMEPAD_RIGHT_SHOULDER;
+    report(out); CHECK(out[8] == 0 && out[9] == 255);
+    host_connected = FALSE;
+}
+
+static unsigned mouse_presses;
+static float press_x, press_y;
+static int fixture_menu(void) { return !driving_context; }
+static int fixture_mouse_press(float x, float y)
+{
+    ++mouse_presses; press_x = x; press_y = y;
+    return 1;
+}
+
+static void check_mouse(HWND window)
+{
+    RECT client;
+    uint8_t out[20];
+    GetClientRect(window, &client);
+    CHECK(client.right > 0 && client.bottom > 0);
+    xbox_InputSetMenuProbe(fixture_menu);
+    xbox_InputSetMenuClickHandler(fixture_mouse_press);
+    /* Down/up between USB polls must survive, using the press coordinates,
+     * without also activating the old focus through a synthetic A button. */
+    SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(10, 12));
+    SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(20, 22));
+    CHECK(mouse_presses == 1);
+    CHECK(press_x == 10.0f / client.right && press_y == 12.0f / client.bottom);
+    report(out); CHECK(out[4] == 0);
+    driving_context = TRUE;
+    SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(10, 12));
+    CHECK(mouse_presses == 1 && xbox_FramebufferKeyDown(VK_LBUTTON));
+    SendMessageA(window, WM_LBUTTONUP, 0, 0);
+    driving_context = FALSE;
+    xbox_InputSetMenuClickHandler(NULL);
+    SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(10, 12));
+    CHECK(mouse_presses == 1 && xbox_FramebufferKeyDown(VK_LBUTTON));
+    report(out); CHECK(out[4] == 255); /* Generic pad-A fallback remains. */
+    SendMessageA(window, WM_LBUTTONUP, 0, 0);
+}
+
 int main(int argc, char **argv)
 {
     WNDCLASSA wc = {0};
     HWND window;
     BOOL mm3;
-    if (argc != 2) { fprintf(stderr, "Usage: mm3_input_contract mm3|legacy\n"); return 2; }
-    mm3 = _stricmp(argv[1], "mm3") == 0;
+    if (argc < 2 || argc > 3) { fprintf(stderr, "Usage: mm3_input_contract mm3|legacy [saved-maps]\n"); return 2; }
+    mm3 = mod_on = _stricmp(argv[1], "mm3") == 0;
     _putenv_s("RECOMP_KEYBOARD", "1");
-    _putenv_s("RECOMP_KEYBOARD_LAYOUT", argv[1]);
+    if (!strcmp(argv[1], "mouse")) _putenv_s("RECOMP_MENU_KEYS", "1");
     _putenv_s("RECOMP_PAD_SCRIPT", ""); _putenv_s("RECOMP_PAD_PRESS", "");
     _putenv_s("RECOMP_PAD_LIVE", ""); _putenv_s("RECOMP_INPUT_DIAG", "");
     _putenv_s("RECOMP_KEY_TRACE", "");
@@ -510,14 +556,19 @@ int main(int argc, char **argv)
     window = CreateWindowA(wc.lpszClassName, "Offline input test", WS_OVERLAPPED,
         0, 0, 64, 64, NULL, NULL, wc.hInstance, NULL);
     if (!window) return 2;
-    check_host_report();
-    check_context(window, mm3);
-    check_keyboard(window, mm3);
-    check_gears(window, mm3);
-    check_camera(window, mm3);
-    check_handbrake(window, mm3);
-    check_escape(window, mm3);
-    check_rumble();
+    if (!strcmp(argv[1], "mouse")) {
+        check_mouse(window);
+    } else if (argc == 3 && !strcmp(argv[2], "saved-maps")) {
+        check_saved_maps(window);
+    } else {
+        check_context(window, mm3);
+        check_keyboard(window, mm3);
+        check_gears(window, mm3);
+        check_camera(window, mm3);
+        check_handbrake(window, mm3);
+        check_escape(window, mm3);
+        check_rumble();
+    }
     DestroyWindow(window);
     UnregisterClassA(wc.lpszClassName, wc.hInstance);
     printf("%s input contract: %u checks, %u failures\n", argv[1], checks, failures);

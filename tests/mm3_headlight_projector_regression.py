@@ -192,6 +192,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="mm3-headlight-projector-") as temporary:
         folder = Path(temporary)
         shutil.copyfile(ROOT / "src/mm3_recomp_types.h", folder / "recomp_types.h")
+        shutil.copyfile(ROOT / "tools/xboxrecomp/templates/runtime/recomp_types.h", folder / "recomp_base.h")
         declarations = "\n".join(f"void {name}(void);" for name in NATIVE)
         (folder / "native.inc").write_text(declarations + "\n" + native)
         (folder / "constants.inc").write_text(constants(native))

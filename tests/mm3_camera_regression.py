@@ -1,6 +1,6 @@
 """Exercise camera hooks through the retail chase callers and projection math.
 
-Run after scripts/enter-env.ps1. Requires generated code and the user's PAL XBE;
+Run inside `python scripts/devenv.py --shell`. Requires generated code and the user's PAL XBE;
 extracts its constants at test time. No game process, GPU or assets are modified.
 """
 from pathlib import Path
@@ -12,6 +12,8 @@ import subprocess
 import sys
 import tempfile
 
+import cc
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -19,7 +21,7 @@ def native_source():
     names = ("sub_001EF87E", "sub_001EF738", "sub_000F4AC3", "sub_0025968E",
              "sub_001EF926")
     found = {}
-    for path in sorted((ROOT / "src/recomp/gen").glob("recomp_*.c")):
+    for path in sorted((Path(os.environ.get("MM3_TEST_GENERATED_DIR", ROOT / "src/recomp/gen"))).glob("recomp_*.c")):
         source = path.read_text()
         for name in names:
             match = re.search(r"^void " + name + r"\(void\)\n\{.*?^\}", source, re.M | re.S)
@@ -61,6 +63,9 @@ def native_source():
         constants.add(int(addr, 16))
         if kind == "D":
             constants.add(int(addr, 16) + 4)
+    # The generator's fallback flag variable is unused in these bodies: GCC warns
+    # about it under -Werror, MSVC does not. Silence it in the copied text only.
+    native = native.replace("int _flags = 0; /*", "int _flags = 0; (void)_flags; /*")
     native += "\nstatic void native_constants(void) {\n"
     for address in sorted(constants):
         native += f"    MEM32(0x{address:X}) = 0x{word(address):08X}u;\n"
@@ -68,21 +73,22 @@ def native_source():
 
 
 def main():
-    if not shutil.which("cl"):
-        raise SystemExit("Run scripts/enter-env.ps1 first so cl.exe is available.")
+    cc.require_compiler()
     cmake = (ROOT / "CMakeLists.txt").read_text()
     assert "list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001EEC53)" in cmake
     with tempfile.TemporaryDirectory(prefix="mm3-camera-") as folder:
         folder = Path(folder)
         shutil.copyfile(ROOT / "src/mm3_recomp_types.h", folder / "recomp_types.h")
-        production = (ROOT / "src/mm3_widescreen.c").read_text()
+        shutil.copyfile(ROOT / "tools/xboxrecomp/templates/runtime/recomp_types.h", folder / "recomp_base.h")
+        shutil.copyfile(ROOT / "src/mods/mods.h", folder / "mods.h")
+        production = (ROOT / "src/mods/widescreen.c").read_text()
         (folder / "production_widescreen.c").write_text(production, encoding="utf-8")
         (folder / "native_camera.inc").write_text(native_source(), encoding="utf-8")
-        executable = folder / "contract.exe"
-        command = ["cl", "/nologo", "/W3", "/WX", "/wd4102", "/Od", "/std:c11",
-                        "/I" + str(folder), "/I" + str(ROOT / "tools/xboxrecomp/include"),
-                        str(ROOT / "tests/mm3_camera_contract.c"),
-                        "/Fo:" + str(folder / "contract.obj"), "/Fe:" + str(executable)]
+        executable = folder / f"contract{cc.exe_suffix()}"
+        command = cc.compile_command([ROOT / "tests/mm3_camera_contract.c"], executable,
+                                     includes=[folder, ROOT / "tools/xboxrecomp/include"], std="c11",
+                                     optimize="none", warnings="normal", werror=True,
+                                     disable_warnings=("4102",), obj=folder / "contract.obj")
         subprocess.run(command, check=True, cwd=folder)
         for value in (None, "", "60", "80", "95.5", "100", "110", "nan", "inf", "59", "111", "80garbage",
                       "original"):
@@ -92,6 +98,9 @@ def main():
             if value == "original":
                 environment["MM3_IMPROVED"] = "0"   # the Xbox chase camera
                 value = None
+            environment.pop("MM3_FOV", None)
+            environment.pop("MM3_MOD_FOV", None)
+            environment.pop("MM3_MOD_WIDESCREEN", None)
             if value is not None:
                 environment["MM3_FOV_DEGREES"] = value
             expected = value if value in ("60", "80", "95.5", "100", "110") else "0"
@@ -101,12 +110,30 @@ def main():
             if result.returncode:
                 print(result.stderr, end="")
             result.check_returncode()
+        for settings, expected in (
+            ({"MM3_FOV": "125"}, "0"),
+            ({"MM3_FOV": "125", "MM3_FOV_DEGREES": "90"}, "90"),
+            ({"MM3_FOV": "125", "MM3_FOV_DEGREES": "90", "MM3_MOD_FOV": "0"}, "0"),
+            ({"MM3_MOD_WIDESCREEN": "0", "MM3_FOV": "120"}, "0"),
+            ({"MM3_MOD_WIDESCREEN": "0", "MM3_FOV_DEGREES": "95"}, "95"),
+        ):
+            environment = os.environ.copy()
+            for key in ("MM3_FOV", "MM3_FOV_DEGREES", "MM3_MOD_FOV", "MM3_MOD_WIDESCREEN"):
+                environment.pop(key, None)
+            environment.update(settings)
+            subprocess.run([str(executable), expected], env=environment, cwd=folder, check=True)
         if "--check-mutants" in sys.argv:
             mutants = {
                 "missing near-distance adjustment": production.replace(
                     "if (MEM32(g_esp) == 0x001EF922u && chase_adjusted())", "if (0)"),
                 "matrix/culling FOV mismatch": production.replace(
                     "MEMF(g_ebp + 8) = fovy;", "(void)fovy;"),
+                "split-screen half view taken for a stale shape": production.replace(
+                    "int half_ok = split && fabsf(aspect - 2.0f * wide) < 2e-4f;", "int half_ok = 0;"),
+                "live update rebuilds the half view as a single view": production.replace(
+                    "int doubled = mm3_split_screen() &&", "int doubled = 0 &&"),
+                "4:3 half view not widened": production.replace(
+                    "    if (half43)\n        MEMF(g_esp + 0xC) = 2.0f * wide;", ""),
                 "write after native RET 20": production.replace(
                     "    sub_0025968E_original();", "    sub_0025968E_original();\n"
                     "    if (patch) MEMF(g_esp + 8) = aspect;"),

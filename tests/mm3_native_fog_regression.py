@@ -9,7 +9,9 @@ with tempfile.TemporaryDirectory(prefix="mm3-native-fog-") as temporary:
     shutil.copyfile(ROOT / "src/mm3_recomp_types.h", folder / "recomp_types.h")
     executable = folder / "contract.exe"
     subprocess.run(["cl", "/nologo", "/W4", "/WX", "/Od", "/std:c11", "/D_CRT_SECURE_NO_WARNINGS",
-                    "/I" + str(folder), "/I" + str(ROOT / "tools/xboxrecomp/include"),
+                    "/I" + str(folder), "/I" + str(ROOT / "src"), "/I" + str(ROOT / "src/mods"),
+                    "/I" + str(ROOT / "tools/xboxrecomp/include"),
+                    "/I" + str(ROOT / "tools/xboxrecomp/src"),
                     str(ROOT / "tests/mm3_native_fog_contract.c"),
                     "/Fo:" + str(folder / "contract.obj"), "/Fe:" + str(executable)],
                    check=True, cwd=folder)

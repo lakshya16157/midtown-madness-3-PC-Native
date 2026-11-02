@@ -1,12 +1,18 @@
 # AGENTS.md
 
-## GitHub push identity
+## Fast Python game checks
 
-Always use the GitHub account `lakshya16157` when pushing this repository.
-Push to `origin` (`https://github.com/lakshya16157/midtown-madness-3-PC-Native.git`). Keep the
-Git author name and GitHub credential username set to `lakshya16157` in this
-repository's local Git configuration; do not change global settings. Verify
-the selected account before pushing, and do not fall back to another account.
+Use `tools/game_test/run.py` for bounded runtime scenarios and
+`tools/game_test/README.md` for the session API, scenario format and evidence.
+Supply the executable and extracted assets explicitly; use a copied save
+template for menu/driving checks. The harness owns its child process, private
+save/cache directory and input pipe. Never kill unrelated game instances.
+
+Run harness regressions with
+`python -m unittest discover -s tests -p test_game_harness.py -v`.
+`boot.json` is startup-only; require movement telemetry and inspect gameplay
+captures before claiming driving acceptance. Internal frame CSVs are diagnostics,
+not a replacement for external performance traces.
 
 ## Generated files and disk usage
 
@@ -85,7 +91,7 @@ from scratch.
 Install the pinned Windows profiler with:
 
 ```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File tools\powershell\install_tracy.ps1
+python tools/xboxrecomp/tools/tracy/install_tracy.py --root .
 ```
 
 The executable is `tools\bin\tracy-0.14.1\tracy-profiler.exe`. Tracy is useful

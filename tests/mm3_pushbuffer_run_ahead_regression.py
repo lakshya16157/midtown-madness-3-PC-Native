@@ -28,6 +28,7 @@ RECOMP_TLS double g_fp_stack[8];
 static unsigned observations, waits, reports;
 static unsigned char memory[0x400000], expected[sizeof memory];
 static void mm3_producer_diagnostics_kick(void){++observations;}
+void recomp_sampler_watch_current_thread(void){} /* spike_sampler.c: profiler only */
 /* Production configuration state (mm3_configure_kick_bound). */
 static uint32_t s_kick_lag=0x40000u;
 static int s_kick_stats,s_kick_wrap_sync;

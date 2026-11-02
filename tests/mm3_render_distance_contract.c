@@ -6,9 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 #ifndef MM3_DISTANCE_SOURCE
-#define MM3_DISTANCE_SOURCE "mm3_render_distance.c"
+#define MM3_DISTANCE_SOURCE "mods/draw_distance.c"
 #endif
 #include MM3_DISTANCE_SOURCE
+#include "env_range.c"
 #include "mm3_facade_capacity.c"
 
 ptrdiff_t g_xbox_mem_offset;
@@ -22,6 +23,25 @@ static float camera_far, shadow_distance, remap_scale;
 static unsigned remap_calls, vb_calls;
 static int native_fog;
 int nv2a_d3d_distance_fog_ready(void) { return native_fog; }
+/* The draw distance mod is on; the fog, flare and exhaust hooks that share
+ * the file are inert here (tests/mm3_native_fog_contract.c, tests/mm3_draw_distance_contract.c). */
+int mm3_mod_on(int mod) { (void)mod; return 1; }
+int mm3_exhaust_enabled(void) { return 0; }
+int mm3_exhaust_packet(uint32_t view, uint32_t words[18]) { (void)view; (void)words; return 0; }
+void sub_000F8DCE_original(void) {}
+void sub_000F8750_original(void) {}
+void sub_00248518_original(void) {}
+void sub_00344770(void) {}
+/* engine.occlusion's constructor (sub_001A6CE3, `ret 4`): its clip distance
+ * at +0xE0 is the literal 0x42AA0000 (85.0), checked against the generated
+ * body by the runner. */
+static float occlusion_clip = 85.0f;
+void sub_001A6CE3_original(void)
+{
+    MEMF(g_edi + 0xE0u) = occlusion_clip;
+    g_eax = g_edi;
+    g_esp += 8;
+}
 static uint32_t vb_capacities[4];
 static int vb_success = 1;
 
@@ -179,6 +199,17 @@ int main(int argc, char **argv)
     check_object(0xE4672u, 100, 100 * object); /* Repeated construction. */
     check_pedestrians(custom_first ? custom_peds : retail_peds, object);
     assert(MEMF(0x3A8C90u) == 125 * object && MEMF(0x3A8C94u) == 175 * object);   /* scaled once */
+    /* Small street props: the size cull's clip distance grows once with the
+     * object distance (an Xbox 85 at 1x); a value the title set is left alone. */
+    prepare(0x228D21u, 0, 0);
+    g_edi = manager + 0x800;
+    sub_001A6CE3();
+    assert(MEMF(g_edi + 0xE0u) == 85 * object && g_eax == g_edi && g_esp == stack + 8);
+    occlusion_clip = 120.0f;
+    prepare(0x228D21u, 0, 0);
+    g_edi = manager + 0x900;
+    sub_001A6CE3();
+    assert(MEMF(g_edi + 0xE0u) == 120.0f && g_esp == stack + 8);
     check_object(0xE2E94u, 125, 125 * object); /* Explicit title override. */
     check_object(0x211273u, 300 * object, 300 * object);
     check_object(0x2114EDu, 125 * object, 125 * object); /* Restore exactly. */

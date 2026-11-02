@@ -21,6 +21,10 @@ static unsigned allocations, base_unloads, deletes;
 static volatile LONG query_stop;
 
 float nv2a_d3d_display_aspect(void) { return 1.6f; }
+void mm3_hud_set_edge(int on) { (void)on; }
+void mm3_hud_set_start(float a, float b, float c, float d) {
+    (void)a; (void)b; (void)c; (void)d;
+}
 void nv2a_d3d_set_edge_hud(int on) { (void)on; }
 void nv2a_d3d_set_hud_start(float a, float b, float c, float d) {
     (void)a; (void)b; (void)c; (void)d;
@@ -33,11 +37,22 @@ float mm3_minimap_motion(float cx, float cy) { (void)cx; (void)cy; return 0; }
 void nv2a_d3d_set_minimap_motion_query(float (*callback)(float, float)) { assert(callback(114, 384) == 0); }
 float mm3_minimap_expansion(float cx, float cy) { (void)cx; (void)cy; return 0; }
 void nv2a_d3d_set_minimap_expansion_query(float (*callback)(float, float)) { assert(callback(114, 384) == 0); }
+/* The renderer's split-screen question reads the title's player type (0x407C20 == 1). */
+void nv2a_d3d_set_split_screen_query(int (*callback)(void)) {
+    assert(callback() == 0);
+    MEM32(0x00407C20u) = 1; assert(callback() == 1);
+    MEM32(0x00407C20u) = 2; assert(callback() == 0);
+    MEM32(0x00407C20u) = 0;
+}
 void sub_0025968E_original(void) { g_esp += 24; }
 void sub_001EEC53_original(void) { g_esp += 60; }
 void sub_000F4AC3(void) { g_esp += 20; }
 void sub_000F4BB1_original(void) { g_esp += 4; }
+#include "mods.h"
+int mm3_mod_on(int mod) { (void)mod; return 1; }
 #include "production_widescreen.c"
+#include "camera_math.c"
+#include "slot_publish.c"
 
 static uint32_t data(unsigned group, unsigned part) {
     return 0x2000000 + group * 0x10000 + part * 0x1000;
@@ -89,6 +104,9 @@ void sub_00170ED1(void) {
 #define RECOMP_ICALL_SAFE_AT(target, saved, site) fake_icall(target)
 #undef RECOMP_ICALL_SAFE
 #define RECOMP_ICALL_SAFE(target, saved) fake_icall(target)
+/* Caller-cleanup call sites (the generated 0x93DD3 formatter) use this form. */
+#undef RECOMP_ICALL_SAFE_CC
+#define RECOMP_ICALL_SAFE_CC(target, saved) fake_icall(target)
 #define eax g_eax
 #define ecx g_ecx
 #define edx g_edx
@@ -141,7 +159,7 @@ int main(void) {
     MEM32(context) = context + 0x100;
     MEM32(context + 0x100 + 0xBC) = 0x104;
     MEM32(context + 0x100 + 0x8C) = 0x108;
-    mm3_widescreen_init();
+    query = mm3_map_texture_role;
     assert(query && !query(0) && !query(0x80000000) && !query(0x80514000));
     load(0x10000, 0); assert(allocations == 10 && LO8(g_eax)); check_group(0, 1);
     /* No guest pointers are read by the render-thread callback. */

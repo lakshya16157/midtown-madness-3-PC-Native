@@ -18,8 +18,11 @@ ROOT = common.ROOT
 STACK = 0x700000
 DESCRIPTOR = 0x800000
 LEAVES = ((2, 0x756E6547, 0x6C65746E, 0x49656E69),
-          (0x68A, 0, 0, 0x0383F9FD),
-          (0x03020101, 0, 0, 0x0C040841))
+          (0x683, 0, 0, 0x0383F9FF),
+          (0x03020101, 0, 0, 0x0C040800))
+
+
+
 
 
 def original_result(image, entry, direction):
@@ -60,33 +63,36 @@ def original_result(image, entry, direction):
 
 
 def native_source():
-    source = (ROOT / 'src/recomp/gen/recomp_0008.c').read_text()
+    source = ''.join(p.read_text() for p in sorted((ROOT / 'src/recomp/gen').glob('recomp_*.c')))
     names = ('sub_000A4FE0', 'sub_000A5060')
     bodies = []
     for name in names:
         body = re.search(r'void ' + name + r'\(void\)\n\{.*?\n\}', source, re.S).group()
         body = body.replace('    int _flags = 0; /* fallback flag var */\n', '')
         bodies.append(body)
+    pragma_push = '#ifdef _MSC_VER\n#pragma warning(push)\n#pragma warning(disable:4102 4127)\n#endif\n'
     aliases = ''.join(f'#define {r} g_{r}\n' for r in ('eax', 'ebx', 'ecx', 'edx', 'esp', 'esi', 'edi'))
     unaliases = ''.join(f'#undef {r}\n' for r in ('eax', 'ebx', 'ecx', 'edx', 'esp', 'esi', 'edi'))
     return (diagnostics.COMMON_NATIVE.replace('#include "recomp_types.h"',
             '#define RECOMP_GENERATED_CODE\n#include "recomp_types.h"') + r'''
 RECOMP_TLS uint32_t g_eflags;
 RECOMP_TLS double g_fp_stack[8];
+RECOMP_TLS uint32_t g_fp_valid;
 RECOMP_TLS int g_fp_top,g_fp_cmp;
 RECOMP_TLS uint16_t g_fp_control_word,g_fp_cc;
 RECOMP_TLS RecompXmm g_xmm0,g_xmm1,g_xmm2,g_xmm3,g_xmm4,g_xmm5,g_xmm6,g_xmm7;
 RECOMP_TLS RecompMmx g_mm0,g_mm1,g_mm2,g_mm3,g_mm4,g_mm5,g_mm6,g_mm7;
+''' + diagnostics.runtime_cpuid() + r'''
 static unsigned fallback_calls;
 void recomp_unimpl(const char *text,uint32_t va){
  assert(strcmp(text,"cpuid")==0 && va==0xA4FEE);fallback_calls++;
 }
 void sub_000A4FE0(void);
 void sub_000A5060(void);
-''' + aliases + '#pragma warning(push)\n#pragma warning(disable:4102 4127)\n'
-            + '\n'.join(bodies) + r'''
-static void run_site(uint32_t site){RECOMP_UNIMPL("cpuid",site);}
-''' + '#pragma warning(pop)\n' + unaliases + r'''
+''' + aliases
+            + pragma_push + '\n'.join(bodies) + r'''
+static void run_site(uint32_t site){uint32_t id[4];(void)site;xbox_Cpuid(g_eax,g_ecx,id);g_eax=id[0];g_ebx=id[1];g_ecx=id[2];g_edx=id[3];}
+''' + '#ifdef _MSC_VER\n#pragma warning(pop)\n#endif\n' + unaliases + r'''
 static RecompXmm *xmm[8];
 static RecompMmx *mm[8];
 static RecompXmm saved_xmm[8];
@@ -128,7 +134,7 @@ int main(int argc,char **argv){
   g_eax=leaf;g_ecx=(uint32_t)strtoul(argv[4],0,0);
   memcpy(saved_memory,memory,sizeof(memory));run_site(site);check_other_state(direction);
   assert(g_esp==0x700000&&memcmp(saved_memory,memory,sizeof(memory))==0);
-  assert(fallback_calls==(unsigned)(site==0xA4FEE));
+  assert(fallback_calls==0); /* Every CPUID site is lowered; none reaches RECOMP_UNIMPL. */
   printf("%u %u %u %u\n",g_eax,g_ebx,g_ecx,g_edx);
  }else{
   assert(argc==3);
@@ -157,15 +163,16 @@ def main():
         from pathlib import Path
         directory = Path(temporary)
         shutil.copyfile(ROOT / 'src/mm3_recomp_types.h', directory / 'recomp_types.h')
-        executable = diagnostics.compile_fixture(directory, 'sites', native_source())
+        shutil.copyfile(ROOT / "tools/xboxrecomp/templates/runtime/recomp_types.h", directory / "recomp_base.h")
+        executable = diagnostics.compile_fixture(directory, 'sites', native_source(),
+                                                 disable_warnings=('4102',))
         cases = 0
         for site in (0x9379E, 0xA4FED, 0xA504B, 0xA4FEE):
             for leaf in (0, 1, 2, 0xFFFFFFFF, 0x40000000):
                 for subleaf in (0, 0x12345678):
                     for direction in (0, 1):
                         output = subprocess.check_output([str(executable), 'site', str(site), str(leaf), str(subleaf), str(direction)], text=True)
-                        expected = (leaf, 0x12345678, subleaf, 0x432) if site == 0xA4FEE else (
-                            (0, 0, 0, 0) if leaf == 0x40000000 else LEAVES[min(leaf, 2)])
+                        expected = LEAVES[min(leaf, 2)]          # the runtime clamps every higher leaf
                         assert list(map(int, output.split())) == list(expected)
                         cases += 1
         for mode, entry in (('descriptor', 0xA4FE0), ('gate', 0xA5060)):

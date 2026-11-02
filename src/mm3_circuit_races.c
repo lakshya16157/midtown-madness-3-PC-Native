@@ -304,6 +304,9 @@ void sub_001E4F97(void)
 
 extern void sub_00103BE1_original(void);
 extern void sub_001038D0_original(void);
+/* src/mods/menu_mouse.c: each box drawn is a track tile for the pointer. */
+extern void *mm3_menu_mouse_box_begin(void);
+extern void mm3_menu_mouse_box_end(void *parent);
 
 void sub_00103BE1(void)
 {
@@ -331,10 +334,14 @@ void sub_00103BE1(void)
 /* Outside Circuit mode the strip still walks every picture of the city, the
  * circuits' after the downloadable races', although none of them can be
  * chosen there: leave their boxes out. The box draw (stdcall, RET 0x34)
- * takes the walk's iterator at +0x14, whose node holds the race. */
+ * takes the walk's iterator at +0x14, whose node holds the race.
+ * This is the one hook of the box draw: the menu mouse mod records every box
+ * actually drawn (so left-out boxes are no tile, and a Circuit box counts
+ * under the number the native draws it with). */
 void sub_001038D0(void)
 {
     uint32_t iterator, node;
+    void *mouse;
     if (circuit_mode) MEM32(g_esp + BOX_NUMBER_ARGUMENT) += CIRCUIT_FIRST_RACE;
     else if (guest_object(iterator = MEM32(g_esp + BOX_ITERATOR_ARGUMENT), 4u) &&
              guest_object(node = MEM32(iterator), 0x18u) &&
@@ -342,7 +349,9 @@ void sub_001038D0(void)
         g_esp += 4u + BOX_ARGUMENT_BYTES;
         return;
     }
+    mouse = mm3_menu_mouse_box_begin();
     sub_001038D0_original();
+    mm3_menu_mouse_box_end(mouse);
 }
 
 static uint32_t circuit_city_screen, circuit_setup_screen;

@@ -11,6 +11,7 @@ RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi, g_edi;
 RECOMP_TLS uint32_t g_ebp, g_seh_ebp;
 RECOMP_TLS double g_fp_stack[8];
 RECOMP_TLS int g_fp_top, g_fp_cmp, g_df;
+RECOMP_TLS uint32_t g_mxcsr = 0x1F80u; /* the newer generated x87 conversion reads MXCSR */
 RECOMP_TLS uint16_t g_fp_cc, g_fp_control_word;
 static unsigned char memory[0x800000];
 static const uint32_t stack = 0x80000, node = 0x10000, second_node = 0x10200;

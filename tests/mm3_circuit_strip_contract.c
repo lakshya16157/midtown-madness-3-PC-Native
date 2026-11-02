@@ -28,6 +28,10 @@ void sub_00103BE1_original(void) { assert(!"strip walk not expected"); }
 void sub_001238B7_original(void) { assert(!"race setup not expected"); }
 void sub_00120A9A_original(void) { assert(!"menu path not expected"); }
 void sub_001038D0(void);
+/* The menu mouse (src/mods/menu_mouse.c) brackets each box drawn; here it counts them. */
+static unsigned tiles;
+void *mm3_menu_mouse_box_begin(void) { ++tiles; return &tiles; }
+void mm3_menu_mouse_box_end(void *parent) { assert(parent == &tiles); }
 void sub_001E0F69(void);
 void sub_001E4F97(void);
 
@@ -77,7 +81,7 @@ static uint32_t won(uint32_t caller, uint32_t city, uint32_t mode)
 /* Draw box `box` for a picture of `race`; returns 1 when it was drawn. */
 static int box(uint32_t race, uint32_t box_number, uint32_t iterator)
 {
-    unsigned before = drawn;
+    unsigned before = drawn, tiles_before = tiles;
     MEM32(NODE + 0xC) = race;
     MEM32(ITERATOR) = NODE;
     g_esp = STACK;
@@ -86,6 +90,7 @@ static int box(uint32_t race, uint32_t box_number, uint32_t iterator)
     MEM32(STACK + 0x18) = box_number;
     sub_001038D0();
     assert(g_esp == STACK + 4 + 0x34);   /* the caller's stack, drawn or not */
+    assert(tiles - tiles_before == drawn - before);   /* the mouse sees exactly the boxes drawn */
     return drawn != before;
 }
 

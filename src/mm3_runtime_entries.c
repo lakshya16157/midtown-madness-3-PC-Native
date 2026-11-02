@@ -4,6 +4,7 @@
 #include <windows.h>
 #endif
 #include "mm3_lua_natives.h"
+#include "recomp_lookup_cache.h"
 void sub_00083A6C(void);
 
 typedef void (*mm3_recomp_func_t)(void);
@@ -32,7 +33,8 @@ static mm3_recomp_func_t lookup_manual_uncached(uint32_t va)
  * A vtable call then costs a bounds check and one load, and RECOMP_ICALL never
  * needs its second lookup. Results are those of the two lookups in order;
  * other addresses (kernel thunks) and calls before the code range is known
- * keep a per-thread cache of the manual answer alone. */
+ * use the fork's per-thread memo (recomp_lookup_memoized) of the manual answer
+ * alone; the chain above runs only on a miss. */
 #define RESOLVED_SPAN_LIMIT 0x04000000u
 static mm3_recomp_func_t *volatile s_resolved;
 static uint32_t s_resolved_base, s_resolved_span;
@@ -63,17 +65,7 @@ static mm3_recomp_func_t *resolved_table(void)
 
 static mm3_recomp_func_t lookup_manual_cached(uint32_t va)
 {
-#ifdef _MSC_VER
-    static __declspec(thread) struct { uint32_t va; mm3_recomp_func_t fn; } cache[1024];
-#else
-    static _Thread_local struct { uint32_t va; mm3_recomp_func_t fn; } cache[1024];
-#endif
-    unsigned slot = (va ^ (va >> 10)) & 1023u;
-    if (cache[slot].va != va || !va) {
-        cache[slot].fn = lookup_manual_uncached(va);
-        cache[slot].va = va;
-    }
-    return cache[slot].fn;
+    return (mm3_recomp_func_t)recomp_lookup_memoized(va, lookup_manual_uncached);
 }
 
 mm3_recomp_func_t recomp_lookup_manual(uint32_t va)

@@ -171,22 +171,87 @@ static int peers_valid(const char *value)
     return 1;
 }
 
+const char *const mm3_launcher_player_names[2][MM3_LAUNCHER_PLAYER1_CHOICES] = {
+    {"Controller 1 + keyboard", "Controller 1", "Keyboard (arrows)", "Keyboard 2 (WASD)", "Controller 2"},
+    {"Controller 2", "Controller 1", "Keyboard (arrows)", "Keyboard 2 (WASD)", NULL}
+};
+/* Each choice's controller (-1 none) and keyboard set (0 none, 1, 2), and the
+ * RECOMP_INPUT_Pn text the toolkit reads (src/input/input_bindings.h). */
+static const struct { int pad, keys; const char *text; } player_sources[2][MM3_LAUNCHER_PLAYER1_CHOICES] = {
+    {{0, 1, "PAD1+KEYS1"}, {0, 0, "PAD1"}, {-1, 1, "KEYS1"}, {-1, 2, "KEYS2"}, {1, 0, "PAD2"}},
+    {{1, 0, "PAD2"}, {0, 0, "PAD1"}, {-1, 1, "KEYS1"}, {-1, 2, "KEYS2"}, {-1, 0, NULL}}
+};
+
+static int players_clash(int player1, int player2)
+{
+    int pad = player_sources[0][player1].pad, keys = player_sources[0][player1].keys;
+    return (pad >= 0 && pad == player_sources[1][player2].pad) ||
+           (player1 != 0 && keys && keys == player_sources[1][player2].keys);
+}
+
+int mm3_launcher_player1_for(int player1, int player2)
+{
+    if (player1 < 0 || player1 >= MM3_LAUNCHER_PLAYER1_CHOICES || player2 < 0 ||
+        player2 >= MM3_LAUNCHER_PLAYER2_CHOICES) return 0;
+    for (int i = 0; i < MM3_LAUNCHER_PLAYER1_CHOICES && players_clash(player1, player2); ++i)
+        player1 = i;
+    return player1;
+}
+
+int mm3_launcher_players_share_keyboard(int player1, int player2, int keyboard)
+{
+    int first, second;
+    player1 = mm3_launcher_player1_for(player1, player2);
+    if (player2 < 0 || player2 >= MM3_LAUNCHER_PLAYER2_CHOICES) return 0;
+    first = (player_sources[0][player1].keys == 1 && (player1 || keyboard)) || player_sources[1][player2].keys == 1;
+    second = player_sources[0][player1].keys == 2 || player_sources[1][player2].keys == 2;
+    return first && second;
+}
+
+static void keyboard1_defaults(XbInputBindings *map, int right)
+{
+    if (right) xb_bindings_defaults_right(map);
+    else xb_bindings_defaults(map);
+}
+
+int mm3_launcher_keyboard1_is(const MM3LauncherConfig *config, int right)
+{
+    XbInputBindings map;
+    keyboard1_defaults(&map, right);
+    for (int i = 0; i < MM3_LAUNCHER_KEYS; ++i) if (config->keys[i] != map.keys[i]) return 0;
+    for (int i = 0; i < MM3_LAUNCHER_DRIVE_KEYS; ++i) if (config->drive_keys[i] != map.drive[i]) return 0;
+    return 1;
+}
+
+void mm3_launcher_keyboard1_set(MM3LauncherConfig *config, int right)
+{
+    XbInputBindings map;
+    keyboard1_defaults(&map, right);
+    for (int i = 0; i < MM3_LAUNCHER_KEYS; ++i) config->keys[i] = map.keys[i];
+    for (int i = 0; i < MM3_LAUNCHER_DRIVE_KEYS; ++i) config->drive_keys[i] = map.drive[i];
+}
+
 void mm3_launcher_config_defaults(MM3LauncherConfig *config)
 {
-    XbInputBindings bindings;
+    XbInputBindings bindings, second;
     xb_bindings_defaults(&bindings);
+    xb_bindings_defaults_keys2(&second);
     memset(config, 0, sizeof *config);
     for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i)
         config->option[i] = mm3_launcher_options[i].default_value;
     for (int i = 0; i < MM3_LAUNCHER_KEYS; ++i) config->keys[i] = bindings.keys[i];
     for (int i = 0; i < MM3_LAUNCHER_DRIVE_KEYS; ++i) config->drive_keys[i] = bindings.drive[i];
     for (int i = 0; i < MM3_LAUNCHER_PAD_INPUTS; ++i) config->pad[i] = bindings.pad[i];
+    for (int i = 0; i < MM3_LAUNCHER_KEYS; ++i) config->keys2[i] = second.keys[i];
+    for (int i = 0; i < MM3_LAUNCHER_DRIVE_KEYS; ++i) config->drive_keys2[i] = second.drive[i];
     config->controller_count = 1;
     config->network_port = 3075;
     config->damage_percent = config->own_damage_percent = config->time_percent = 100;
     config->ai_level = 5;
     config->free_camera_key = 0x77;   /* F8 */
 }
+
+static int key_valid(int vk) { return vk >= 0 && vk <= 255 && vk != VK_F10 && vk != VK_F11; }
 
 int mm3_launcher_config_valid(const MM3LauncherConfig *config)
 {
@@ -202,9 +267,11 @@ int mm3_launcher_config_valid(const MM3LauncherConfig *config)
     for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i)
         if (config->option[i] < 0 || config->option[i] > 1) return 0;
     for (int i = 0; i < MM3_LAUNCHER_KEYS; ++i)
-        if (config->keys[i] < 0 || config->keys[i] > 255 || config->keys[i] == VK_F10 || config->keys[i] == VK_F11) return 0;
+        if (!key_valid(config->keys[i]) || !key_valid(config->keys2[i])) return 0;
     for (int i = 0; i < MM3_LAUNCHER_DRIVE_KEYS; ++i)
-        if (config->drive_keys[i] < 0 || config->drive_keys[i] > 255 || config->drive_keys[i] == VK_F10 || config->drive_keys[i] == VK_F11) return 0;
+        if (!key_valid(config->drive_keys[i]) || !key_valid(config->drive_keys2[i])) return 0;
+    if (config->player1 < 0 || config->player1 >= MM3_LAUNCHER_PLAYER1_CHOICES ||
+        config->player2 < 0 || config->player2 >= MM3_LAUNCHER_PLAYER2_CHOICES) return 0;
     for (int i = 0; i < MM3_LAUNCHER_PAD_INPUTS; ++i)
         if (config->pad[i] < 0 || config->pad[i] >= MM3_LAUNCHER_PAD_SOURCES) return 0;
     return 1;
@@ -277,6 +344,18 @@ int mm3_launcher_config_assign(MM3LauncherConfig *config, const char *key, const
         return parse_map(value, config->drive_keys, MM3_LAUNCHER_DRIVE_KEYS, mm3_launcher_drive_names, 0);
     if (!strcmp(key, "RECOMP_PADMAP"))
         return parse_map(value, config->pad, MM3_LAUNCHER_PAD_INPUTS, mm3_launcher_pad_names, 1);
+    if (!strcmp(key, "RECOMP_KEYMAP2"))
+        return parse_map(value, config->keys2, MM3_LAUNCHER_KEYS, mm3_launcher_key_names, 0);
+    if (!strcmp(key, "MM3_DRIVE_KEYMAP2"))
+        return parse_map(value, config->drive_keys2, MM3_LAUNCHER_DRIVE_KEYS, mm3_launcher_drive_names, 0);
+    if (!strcmp(key, "MM3_PLAYER1_INPUT")) {
+        if (!integer(value, 0, MM3_LAUNCHER_PLAYER1_CHOICES - 1, &number)) return 0;
+        config->player1 = number; return 1;
+    }
+    if (!strcmp(key, "MM3_PLAYER2_INPUT")) {
+        if (!integer(value, 0, MM3_LAUNCHER_PLAYER2_CHOICES - 1, &number)) return 0;
+        config->player2 = number; return 1;
+    }
     return 0;
 }
 
@@ -362,7 +441,7 @@ static int format_map(char *text, size_t capacity, const int *map, int count,
 
 int mm3_launcher_config_save(const MM3LauncherConfig *config, char *error, size_t capacity)
 {
-    char path[32768], keys[1024], drive[512], pad[512];
+    char path[32768], keys[1024], drive[512], pad[512], keys2[1024], drive2[512];
     wchar_t wide[32768], temporary[32768], parent[32768], *slash;
     static volatile LONG sequence;
     HANDLE handle;
@@ -394,6 +473,8 @@ int mm3_launcher_config_save(const MM3LauncherConfig *config, char *error, size_
     format_map(keys, sizeof keys, config->keys, MM3_LAUNCHER_KEYS, mm3_launcher_key_names, 0);
     format_map(drive, sizeof drive, config->drive_keys, MM3_LAUNCHER_DRIVE_KEYS, mm3_launcher_drive_names, 0);
     format_map(pad, sizeof pad, config->pad, MM3_LAUNCHER_PAD_INPUTS, mm3_launcher_pad_names, 1);
+    format_map(keys2, sizeof keys2, config->keys2, MM3_LAUNCHER_KEYS, mm3_launcher_key_names, 0);
+    format_map(drive2, sizeof drive2, config->drive_keys2, MM3_LAUNCHER_DRIVE_KEYS, mm3_launcher_drive_names, 0);
     if (fprintf(file, "# Midtown Madness 3 launcher preferences\n[launcher]\nMM3_SETTINGS_REVISION=%d\n",
                 SETTINGS_REVISION) < 0) failed = 1;
     for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i)
@@ -406,6 +487,8 @@ int mm3_launcher_config_save(const MM3LauncherConfig *config, char *error, size_
     if (fprintf(file, "RECOMP_USB_PADS=%d\nMM3_FOV_DEGREES=%d\nRECOMP_NET_PORT=%d\nRECOMP_NET_PEERS=%s\n"
                 "RECOMP_KEYMAP=%s\nMM3_DRIVE_KEYMAP=%s\nRECOMP_PADMAP=%s\n",
                 config->controller_count, config->fov_degrees, config->network_port, config->peers, keys, drive, pad) < 0) failed = 1;
+    if (fprintf(file, "MM3_PLAYER1_INPUT=%d\nMM3_PLAYER2_INPUT=%d\nRECOMP_KEYMAP2=%s\nMM3_DRIVE_KEYMAP2=%s\n",
+                config->player1, config->player2, keys2, drive2) < 0) failed = 1;
     if (fflush(file) || _commit(_fileno(file))) failed = 1;
     if (fclose(file)) failed = 1;
     if (!failed && !MoveFileExW(temporary, wide, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) failed = 1;
@@ -421,7 +504,8 @@ int mm3_launcher_config_startup(MM3LauncherConfig *config, char *error, size_t c
     static const char *const extra[] = {"RECOMP_USB_PADS", "MM3_FOV_DEGREES", "RECOMP_NET_PORT", "RECOMP_NET_PEERS",
                                        "RECOMP_KEYMAP", "MM3_DRIVE_KEYMAP", "RECOMP_PADMAP",
                                        "MM3_DAMAGE_PERCENT", "MM3_OWN_DAMAGE_PERCENT", "MM3_TIME_PERCENT",
-                                       "MM3_AI_LEVEL", "MM3_FREE_CAMERA_KEY"};
+                                       "MM3_AI_LEVEL", "MM3_FREE_CAMERA_KEY", "RECOMP_KEYMAP2", "MM3_DRIVE_KEYMAP2",
+                                       "MM3_PLAYER1_INPUT", "MM3_PLAYER2_INPUT"};
     int loaded;
     mm3_launcher_config_defaults(config);
     loaded = mm3_launcher_config_load(config, error, capacity);
@@ -480,6 +564,23 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
     format_map(drive, sizeof drive, config->drive_keys, MM3_LAUNCHER_DRIVE_KEYS, mm3_launcher_drive_names, 0);
     format_map(pad, sizeof pad, config->pad, MM3_LAUNCHER_PAD_INPUTS, mm3_launcher_pad_names, 1);
     SET("RECOMP_KEYMAP", keys); SET("MM3_DRIVE_KEYMAP", drive); SET("RECOMP_PADMAP", pad);
+    format_map(keys, sizeof keys, config->keys2, MM3_LAUNCHER_KEYS, mm3_launcher_key_names, 0);
+    format_map(drive, sizeof drive, config->drive_keys2, MM3_LAUNCHER_DRIVE_KEYS, mm3_launcher_drive_names, 0);
+    SET("RECOMP_KEYMAP2", keys); SET("MM3_DRIVE_KEYMAP2", drive);
+    {
+        /* Players: unset (as before) while both keep their first choice. A player
+         * on a keyboard turns keyboard controls on; a second player's own choice
+         * gives the game a second controller port. */
+        int player1 = mm3_launcher_player1_for(config->player1, config->player2), player2 = config->player2;
+        const char *first = player_sources[0][player1].text;
+        if (player1 == 0 && (!config->option[MM3_LAUNCH_KEYBOARD] || player_sources[1][player2].keys == 1))
+            first = "PAD1";
+        SET("RECOMP_INPUT_P1", player1 || player2 ? first : "");
+        SET("RECOMP_INPUT_P2", player1 || player2 ? player_sources[1][player2].text : "");
+        if ((player1 && player_sources[0][player1].keys) || player_sources[1][player2].keys)
+            SET(mm3_launcher_options[MM3_LAUNCH_KEYBOARD].key, "1");
+        if (player2 && config->controller_count < 2) SET("RECOMP_USB_PADS", "2");
+    }
     if (!config->option[MM3_LAUNCH_IMPROVED]) {
         for (size_t i = 0; i < sizeof original_look / sizeof original_look[0]; ++i)
             SET(mm3_launcher_options[original_look[i].option].key, original_look[i].value);

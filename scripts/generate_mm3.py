@@ -5,12 +5,14 @@
 Runs the whole recipe the build depends on, in order:
   1. analysis (disasm with mm3_runtime_function_seeds.json, func_id, abi)
   2. the batch: every function, minus recomp_manual.c's hand-written bodies,
-     with the native tail constructors and the proven GUI boundary coalescing
+     with the native tail constructor entries
   3. overlays the project wraps: memmove tails, alternate-SEH and ABI bodies
   4. runtime-proven entries (mm3_runtime_entry_repairs.json)
-Needs a Python with capstone (scripts/setup.ps1 makes one).
+Tested with Capstone 5.0.7; scripts/setup.py installs that disassembler version.
 """
 import argparse
+import bisect
+import hashlib
 import json
 import re
 import shutil
@@ -18,34 +20,37 @@ import subprocess
 import sys
 from pathlib import Path
 
-import io
 import os
-import tarfile
 
 REPO = Path(__file__).resolve().parents[1]
-# The generator is pinned separately from the runtime: this commit's lifter
-# reproduces the translation the game was proven on (menus, races, AI).
-# Newer lifters (upstream v0.13.x) translate ~3.6k functions differently and
-# the race AI misdrives; see README "Regenerating". MM3_GENERATOR_DIR points
-# at another checkout instead, for bisecting.
-GENERATOR_COMMIT = '967ec30f362dee229183b4e112e928cd41830484'
 
 
 def generator_dir():
+    """The runtime's own tools generate the code. MM3_GENERATOR_DIR points at
+    another checkout for comparisons."""
     if os.environ.get('MM3_GENERATOR_DIR'):
         return Path(os.environ['MM3_GENERATOR_DIR']).resolve()
-    out = REPO / 'tools/.generator' / GENERATOR_COMMIT[:12]
-    if not (out / 'tools/recomp/__main__.py').exists():
-        tar = subprocess.run(['git', '-C', str(REPO / 'tools/xboxrecomp'), 'archive', '--format=tar',
-                              GENERATOR_COMMIT, 'tools'], check=True, capture_output=True).stdout
-        with tarfile.open(fileobj=io.BytesIO(tar)) as t:
-            t.extractall(out, filter='data')
-    return out
+    return REPO / 'tools/xboxrecomp'
 
 
-TOOLKIT = None
-DISASM = None
+def generation_key():
+    toolkit_tree = subprocess.check_output(
+        ['git', '-C', str(generator_dir()), 'rev-parse', 'HEAD:tools', 'HEAD:templates/runtime'])
+    digest = hashlib.sha256(toolkit_tree)
+    for path in ('scripts/generate_mm3.py', 'scripts/Generate-MM3RuntimeEntries.py',
+                 'scripts/mm3_runtime_unwind.py', 'tools/prepare_mm3_gui_boundaries.py',
+                 'mm3_runtime_entry_repairs.json', 'mm3_runtime_function_seeds.json',
+                 'mm3_pointer_function_entries.json',
+                 'mm3_tail_constructor_functions.json', 'src/recomp_manual.c',
+                 'src/mm3_recomp_types.h', 'game_files/default.xbe'):
+        digest.update((REPO / path).read_bytes())
+    # shortcut: committed toolkit trees only; use --force for local toolkit edits.
+    return digest.hexdigest() + '\n'
+
+
 XBE = REPO / 'game_files/default.xbe'
+TOOLKIT = None  # set by setup_toolkit(); importing this module has no side effects
+DISASM = None
 
 
 def setup_toolkit():
@@ -58,6 +63,9 @@ def setup_toolkit():
 # Computed reverse-copy entries share 0x93860's frame and end at its epilogue.
 MEMMOVE_TAILS = (0x93B04, 0x93B58, 0x93B60, 0x93B70, 0x93B84)
 MEMMOVE_END = 0x93B9D
+# Remainder entries inside the 0x93B04 tail: reverse_memmove's jump table and
+# the tails above reach them directly, so each is a resume entry of that tail.
+MEMMOVE_RESUME = (0x93B0C, 0x93B14, 0x93B1C, 0x93B24, 0x93B2C, 0x93B3F)
 # Bodies recomp_manual.c wraps (sub_X calls sub_X_gen): CRT functions on the
 # alternate SEH prolog and FPO helpers whose callee-save contract is enforced.
 SEH_OVERLAYS = (0x83FBB, 0x84020, 0x8427E, 0x842EA, 0x854CF, 0x858F3, 0x860AA,
@@ -84,9 +92,44 @@ def write_tail_functions(path):
     path.write_text(json.dumps(functions, indent=1))
 
 
-def write_runtime_entry_functions(path):
-    functions = [f for f in json.loads((DISASM / 'functions.json').read_text())]
+def undefined_entry_calls(out):
+    """Functions recomp_runtime_entries.c calls that no generated file defines."""
+    defined = set()
+    for path in out.glob('*.c'):
+        defined.update(re.findall(r'^void (sub_[0-9A-F]{8})\(void\)(?!;)', path.read_text(), re.M))
+    called = set(re.findall(r'\b(sub_[0-9A-F]{8})\b', (out / 'recomp_runtime_entries.c').read_text()))
+    return {int(name[4:], 16) for name in called - defined}
+
+
+def runtime_entries(extra=()):
+    """The repair manifest plus the pointer-only entries. The detector folds code the
+    title reaches only through a data pointer (vtable, callback) into the body before
+    it; seeding a split there loses the flags across the cut, so each is lifted as its
+    own entry over the rest of that body, which stays whole."""
     entries = json.loads((REPO / 'mm3_runtime_entry_repairs.json').read_text())
+    functions = sorted((int(f['start'], 16), int(f['end'], 16))
+                       for f in json.loads((DISASM / 'functions.json').read_text()))
+    starts = [start for start, _ in functions]
+    known = set(starts) | {int(e['start'], 16) for e in entries}
+    pointers = [int(item['start'], 16)
+                for item in json.loads((REPO / 'mm3_pointer_function_entries.json').read_text())]
+    for start in pointers + sorted(extra):
+        if start in known:
+            continue
+        i = bisect.bisect_right(starts, start) - 1
+        if i >= 0 and start < functions[i][1]:
+            end = functions[i][1]
+        elif i + 1 < len(starts):
+            end = starts[i + 1]
+        else:
+            continue
+        entries.append({'start': f'0x{start:08X}', 'end': f'0x{end:08X}', 'optional': True})
+        known.add(start)
+    return entries
+
+
+def write_runtime_entry_functions(path, entries):
+    functions = [f for f in json.loads((DISASM / 'functions.json').read_text())]
     starts = {e['start'] for e in entries}
     functions = [f for f in functions if f['start'] not in starts]
     for e in entries:
@@ -269,7 +312,7 @@ def main():
     setup_toolkit()
     out = args.out.resolve()
     if not XBE.exists():
-        sys.exit(f'{XBE} missing: run scripts/setup.ps1 -Iso <disc> first')
+        sys.exit(f'{XBE} missing: run scripts/setup.py --iso <disc> first')
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
@@ -285,18 +328,23 @@ def main():
     py(REPO / 'tools/prepare_mm3_gui_boundaries.py', '--output', gui)
     from tools.recomp.manual_scan import scan
     skip, wrap, _ = scan(str(REPO / 'src/recomp_manual.c'))
+    recovered = {int(entry['start'], 16) for entry in
+                 json.loads((REPO / 'mm3_runtime_entry_repairs.json').read_text())}
     manual = out / 'manual_functions.json'
-    manual.write_text(json.dumps({hex(a): f'sub_{a:08X}' for a in skip | wrap}))
+    manual.write_text(json.dumps({hex(a): f'sub_{a:08X}' for a in skip | wrap | recovered}))
     py('-m', 'tools.recomp', XBE, '--all', '--split', 1000, '--gen-dir', out, '--functions', gui,
-       '--manual-functions', manual, '--coalesce-functions', REPO / 'mm3_function_coalescences.json',
+       '--manual-functions', manual,
        '--skip-binary-check')
 
     tails = out / 'memmove_tail_functions.json'
     write_tail_functions(tails)
     for address in MEMMOVE_TAILS:
         name = f'sub_{address:08X}'
+        resume = []
+        if address == 0x93B04:
+            resume = [arg for entry in MEMMOVE_RESUME for arg in ('--resume-entry', hex(entry))]
         body = py('-m', 'tools.recomp', XBE, '--function', hex(address), '--functions', tails,
-                  '--seh-prolog', '0x00097AA4', '--skip-binary-check',
+                  '--seh-prolog', '0x00097AA4', '--skip-binary-check', *resume,
                   capture_output=True, text=True).stdout
         body = body.replace(f'void {name}(void)', f'void {name}_gen(void)')
         (out / f'recomp_{address:08x}_tail.c').write_text(PRELUDE.format('') + body)
@@ -319,13 +367,24 @@ def main():
             prelude = PRELUDE.format(f'#define {name} {name}_gen\n')
             (out / f'recomp_{address:08x}_{kind}.c').write_text(prelude + body)
 
-    write_runtime_entry_functions(out / 'runtime_entry_functions.json')
-    py(REPO / 'scripts/Generate-MM3RuntimeEntries.py', out)
+    # Pointer entries call functions only they reach; lift those too until closed.
+    extra = set()
+    for _ in range(10):
+        entries = runtime_entries(extra)
+        manifest = out / 'runtime_entry_manifest.json'
+        manifest.write_text(json.dumps(entries, indent=1))
+        write_runtime_entry_functions(out / 'runtime_entry_functions.json', entries)
+        py(REPO / 'scripts/Generate-MM3RuntimeEntries.py', out, '--manifest', manifest)
+        missing = undefined_entry_calls(out) - extra
+        if not missing:
+            break
+        extra |= missing
     fix_flag_joins(out, verbose=args.verbose_flag_joins)
 
     # Runtime semantics stay project-owned.
     shutil.copy(REPO / 'src/mm3_recomp_types.h', out / 'recomp_types.h')
-    shutil.copy(REPO / 'tools/xboxrecomp/include/recomp_cpu.h', out / 'recomp_cpu.h')
+    shutil.copy(REPO / 'tools/xboxrecomp/templates/runtime/recomp_types.h', out / 'recomp_base.h')
+    (out / 'generation.sha256').write_text(generation_key())
     print(f'generated {len(list(out.glob("*.c")))} sources in {out}')
 
 

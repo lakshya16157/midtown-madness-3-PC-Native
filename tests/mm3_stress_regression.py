@@ -11,15 +11,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     # Assert the inspected retail owner layout before trusting diagnostic reads.
-    source=(ROOT / "src/recomp/gen/recomp_0014.c").read_text()
-    owner=lambda name: re.search(r"void "+name+r"\(void\)\n\{.*?\n\}",source,re.S).group()
-    factory=owner("sub_0017BB4B");constructor=owner("sub_0017BC0C");release=owner("sub_0017BAFD")
+    # Generated chunks are renumbered between translator versions: search them all.
+    all_sources="".join(path.read_text() for path in (ROOT / "src/recomp/gen").glob("recomp_*.c"))
+    def body(name): return re.search(r"void "+name+r"\(void\)\n\{.*?\n\}",all_sources,re.S).group()
+    factory=body("sub_0017BB4B");constructor=body("sub_0017BC0C");release=body("sub_0017BAFD")
     assert "eax = MEM32(ebx + 4);" in factory and "edi = ebx + 0xC;" in factory
     assert "PUSH32(esp, 0x40);" in constructor and "POP32(esp, esi);" in constructor
     assert "eax = esi + 0xC;" in release and "MEM32(edi + 4) = MEM32(edi + 4) - 1;" in release
     # std::list insert/erase own count+8; deque count is+10 relative to+0C.
-    all_sources="".join(path.read_text() for path in (ROOT / "src/recomp/gen").glob("recomp_*.c"))
-    def body(name): return re.search(r"void "+name+r"\(void\)\n\{.*?\n\}",all_sources,re.S).group()
     assert "RECOMP_ABI_CALL(0x0001AF52u, sub_0001AF52)" in body("sub_0003F85B")
     assert "eax = MEM32(ecx + 8);" in body("sub_0001AF52") and "MEM32(ecx + 8) = eax;" in body("sub_0001AF52")
     assert "MEM32(esi + 0x10) = MEM32(esi + 0x10) + 1;" in body("sub_00079645")

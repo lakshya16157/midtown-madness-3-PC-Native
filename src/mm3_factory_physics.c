@@ -19,6 +19,10 @@
 #include <windows.h>
 #endif
 #include "recomp_types.h"
+#include "string_ci.h"
+#ifndef MM3_FACTORY_CONTRACT
+#include "xbox_memory_layout.h"
+#endif
 
 extern void sub_0021ED64_original(void);
 extern void sub_001D0E2D_original(void);
@@ -41,64 +45,19 @@ typedef struct {
     const FactoryProfile *profile;
 } FactoryBinding;
 static FactoryProfile profiles[PROFILE_LIMIT];
-static unsigned profile_count, initialized, replacement;
+static unsigned profile_count, initialized;
 static FactoryBinding bindings[BINDING_LIMIT];
-/* Runtime low RAM remains committed until shutdown: HeapFree reuses blocks,
- * and NtFreeVirtualMemory decommit zeroes them (kernel_bridge.c). Cache only
- * OS-verified ranges, refresh on each vehicle construction or memory rebase.
- * Object identity is still checked on every physics call. */
-static struct { uintptr_t lo, hi; } mapped_ranges[4];
-static ptrdiff_t mapped_offset;
-static unsigned mapped_next;
-
 static int mapped(uint32_t va, size_t size)
 {
+#ifdef MM3_FACTORY_CONTRACT
     if (va < 0x10000u || va >= 0x08000000u || size > 0x08000000u - va)
         return 0;
-#ifdef MM3_FACTORY_CONTRACT
     return va + size <= 0x400000u;
 #else
-    {
-        uintptr_t p = XBOX_PTR(va), lo = 0, hi = 0;
-        unsigned i;
-        if (mapped_offset != g_xbox_mem_offset) {
-            memset(mapped_ranges, 0, sizeof mapped_ranges);
-            mapped_offset = g_xbox_mem_offset;
-        }
-        for (i = 0; i < 4; ++i)
-            if (p >= mapped_ranges[i].lo && p + size <= mapped_ranges[i].hi) return 1;
-#ifdef _WIN32
-        MEMORY_BASIC_INFORMATION info;
-        if (!VirtualQuery((void *)p, &info, sizeof info) || info.State != MEM_COMMIT ||
-            (info.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return 0;
-        lo = (uintptr_t)info.BaseAddress; hi = lo + info.RegionSize;
-#else
-        FILE *maps = fopen("/proc/self/maps", "r");
-        char line[256], access[5];
-        unsigned long long map_lo, map_hi;
-        if (!maps) return 0;
-        while (fgets(line, sizeof line, maps))
-            if (sscanf(line, "%llx-%llx %4s", &map_lo, &map_hi, access) == 3 &&
-                access[0] == 'r' && access[1] == 'w' && p >= map_lo && p + size <= map_hi) {
-                lo = (uintptr_t)map_lo; hi = (uintptr_t)map_hi; break;
-            }
-        fclose(maps);
-#endif
-        if (p + size > hi) return 0;
-        i = mapped_next++ % 4;
-        mapped_ranges[i].lo = lo; mapped_ranges[i].hi = hi;
-        return 1;
-    }
+    return size <= UINT32_MAX && xbox_GuestMapped(va, (uint32_t)size);
 #endif
 }
 
-static int alias_equal(const char *a, const char *b)
-{
-    while (*a && *b) {
-        if (tolower((unsigned char)*a++) != tolower((unsigned char)*b++)) return 0;
-    }
-    return *a == *b;
-}
 
 static int allowed_alias(const char *alias)
 {
@@ -106,7 +65,7 @@ static int allowed_alias(const char *alias)
         "Ford_GTcar", "Senna_Road", "Senna_GTR1", "FXXK_Racer", "Regera_GT1", "AventadorX"};
     unsigned i;
     for (i = 0; i < sizeof names / sizeof names[0]; ++i)
-        if (alias_equal(alias, names[i])) return 1;
+        if (recomp_strings_equal_ci(alias, names[i])) return 1;
     return 0;
 }
 
@@ -165,7 +124,7 @@ static void load_profiles(void)
         if (!strchr(line, '\n') && !feof(file)) break; /* Never parse a truncated line. */
         if (!parse_profile(line, &profile)) continue;
         for (i = 0; i < profile_count; ++i)
-            if (alias_equal(profile.alias, profiles[i].alias)) break;
+            if (recomp_strings_equal_ci(profile.alias, profiles[i].alias)) break;
         if (i == profile_count && profile_count == PROFILE_LIMIT) continue;
         if (i == profile_count) ++profile_count;
         profiles[i] = profile;
@@ -235,7 +194,7 @@ static void bind_player(uint32_t player)
     if (!player_alias(player, alias)) return;
     load_profiles();
     for (i = 0; i < profile_count; ++i)
-        if (alias_equal(alias, profiles[i].alias)) { value.profile = &profiles[i]; break; }
+        if (recomp_strings_equal_ci(alias, profiles[i].alias)) { value.profile = &profiles[i]; break; }
     if (!value.profile) return;
     value.player = player;
     value.bridge = MEM32(player + 0x19C); value.parameters = MEM32(player + 0x1A4);
@@ -248,7 +207,13 @@ static void bind_player(uint32_t player)
             memset(&bindings[i], 0, sizeof bindings[i]); slot = i;
         } else if (slot == BINDING_LIMIT && !bindings[i].profile) slot = i;
     }
-    if (slot == BINDING_LIMIT) slot = replacement++ % BINDING_LIMIT;
+    if (slot == BINDING_LIMIT) {
+        /* Every slot holds a live car. Refuse rather than evict one: the evicted
+         * car would silently drop to retail physics while still running. */
+        fprintf(stderr, "[FACTORY_PHYSICS] no free binding for alias=%s player=%08X; retail physics\n",
+            alias, player);
+        return;
+    }
     bindings[slot] = value;
     if (binding_for(value.controller)) {
         apply_gearing(&bindings[slot]);
@@ -262,7 +227,6 @@ void sub_0021ED64(void)
 {
     uint32_t player = MEM32(g_esp + 4);
     unsigned i;
-    memset(mapped_ranges, 0, sizeof mapped_ranges);
     for (i = 0; i < BINDING_LIMIT; ++i)
         if (bindings[i].player == player) memset(&bindings[i], 0, sizeof bindings[i]);
     sub_0021ED64_original();
@@ -277,7 +241,6 @@ void sub_001D0E2D(void)
 {
     uint32_t controller = MEM32(g_esp + 4);
     unsigned i;
-    memset(mapped_ranges, 0, sizeof mapped_ranges);
     for (i = 0; i < BINDING_LIMIT; ++i)
         if (bindings[i].controller == controller) memset(&bindings[i], 0, sizeof bindings[i]);
     sub_001D0E2D_original();

@@ -1,8 +1,14 @@
-/* Optional diagnostic: observe RootLevel child-pointer writes. */
-#include <windows.h>
+/* Optional diagnostic: observe RootLevel child-pointer writes.
+ *
+ * The write watch is the fork's host_write_watch hardware watchpoint on the
+ * guest field; this file only chooses the field and reports the writes. */
+#include "platform/xbox_winnt.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include "host_write_watch.h"
+#include "recomp_env.h"
 #include "recomp_funcs.h"
 
 extern void sub_000FA37E_original(void);
@@ -16,18 +22,13 @@ extern void sub_0008E3C0_original(void);
  * CRT's environment lock and scans the block, far too slow for the heap's
  * every allocation and free. */
 static int bink_alloc_trace = -1, unresolved_trace = -1, heap_link_trace = -1, heap_frontier = -1;
-static int env_flag(int *slot, const char *name)
-{
-    if (*slot < 0) *slot = getenv(name) != NULL;
-    return *slot;
-}
 
 void sub_0008E3C0(void)
 {
     uint32_t header = MEM32(g_esp + 4u), caller = MEM32(g_esp);
     uint32_t total = MEM32(0x003BDF78u), count = MEM32(0x003BDF7Cu);
     uint32_t outputs = MEM32(0x00392FF8u), sizes = MEM32(0x00392FFCu);
-    int trace = env_flag(&bink_alloc_trace, "MM3_BINK_ALLOC_TRACE");
+    int trace = recomp_env_flag(&bink_alloc_trace, "MM3_BINK_ALLOC_TRACE");
     sub_0008E3C0_original();
     if (trace) {
         int invalid = g_eax && g_eax < 0x00500000u;
@@ -50,7 +51,7 @@ void sub_0008E420(void)
 {
     uint32_t size = MEM32(g_esp + 4u), caller = MEM32(g_esp);
     uint32_t callback = MEM32(0x003BDF9Cu), before = g_esp;
-    int trace = env_flag(&bink_alloc_trace, "MM3_BINK_ALLOC_TRACE");
+    int trace = recomp_env_flag(&bink_alloc_trace, "MM3_BINK_ALLOC_TRACE");
     sub_0008E420_original();
     if (trace) {
         static RECOMP_TLS unsigned reports;
@@ -65,12 +66,10 @@ void sub_0008E420(void)
 void mm3_frontend_before_call(uint32_t va);
 void mm3_frontend_after_call(uint32_t va, uint32_t edi_before, uint32_t esp_before, uint32_t esi_before);
 extern intptr_t xbox_GetMemoryOffset(void);
-#define MM3_ARM_WATCH 0xE0424D33u
-static DWORD watch_thread;
+static int watch_armed;
 static uint32_t watch_object, watch_value;
 static volatile uint32_t *watch_field;
 static unsigned watch_reports;
-static PVOID watch_handler;
 static int child_constructor;
 static unsigned child_reports;
 static int child_factory;
@@ -87,7 +86,7 @@ void mm3_frontend_unresolved_stub(uint32_t va)
 {
     unsigned i;
     uint32_t count;
-    if (!env_flag(&unresolved_trace, "MM3_UNRESOLVED_STUB_TRACE")) return;
+    if (!recomp_env_flag(&unresolved_trace, "MM3_UNRESOLVED_STUB_TRACE")) return;
     for (i = 0; i < unresolved_stub_count; ++i)
         if (unresolved_stubs[i].va == va) break;
     if (i == unresolved_stub_count) {
@@ -189,7 +188,7 @@ int mm3_heap_double_free(uint32_t heap, uint32_t caller, uint32_t pointer);   /*
 void sub_000860AA(void)
 {
     uint32_t heap = MEM32(g_esp+4u), caller = MEM32(g_esp), pointer = MEM32(g_esp+12u);
-    int trace = env_flag(&heap_link_trace, "MM3_HEAP_LINK_TRACE");
+    int trace = recomp_env_flag(&heap_link_trace, "MM3_HEAP_LINK_TRACE");
     uint32_t before;
     if (mm3_heap_double_free(heap, caller, pointer)) {
         g_eax = (g_eax & ~0xFFu) | 1u;   /* TRUE: as if freed */
@@ -212,8 +211,8 @@ void sub_000858F3(void)
 {
     uint32_t heap = MEM32(g_esp+4u), caller = MEM32(g_esp);
     uint32_t size = MEM32(g_esp+12u);
-    int trace = env_flag(&heap_frontier, "MM3_HEAP_FRONTIER");
-    int link_trace = env_flag(&heap_link_trace, "MM3_HEAP_LINK_TRACE");
+    int trace = recomp_env_flag(&heap_frontier, "MM3_HEAP_FRONTIER");
+    int link_trace = recomp_env_flag(&heap_link_trace, "MM3_HEAP_LINK_TRACE");
     uint32_t bad_before = link_trace ? heap_bad_free_link(heap) : 0;
     if (trace && (heap < 0x10000u || (heap & 0xFFFu)))
         fprintf(stderr, "[HEAP_INVALID_ARGUMENT] heap=%08X caller=%08X esp=%08X ebp=%08X seh=%08X args=%08X,%08X,%08X,%08X\n",
@@ -232,33 +231,22 @@ void sub_000858F3(void)
     if (trace) check_heap_frontier(heap, caller, "after");
 }
 
-static LONG CALLBACK frontend_write_exception(EXCEPTION_POINTERS *p)
+static void report_write(uint32_t value, uint64_t rip)
 {
-    CONTEXT *c = p->ContextRecord;
-    if (GetCurrentThreadId() != watch_thread) return EXCEPTION_CONTINUE_SEARCH;
-    if (p->ExceptionRecord->ExceptionCode == MM3_ARM_WATCH) {
-        /* Do not take slot zero from an attached debugger. */
-        if (c->Dr7 & 3u) return EXCEPTION_CONTINUE_EXECUTION;
-        c->ContextFlags |= CONTEXT_DEBUG_REGISTERS;
-        c->Dr0 = (DWORD64)(uintptr_t)watch_field;
-        c->Dr7 = (c->Dr7 & ~0xF0003ull) | 0xD0001ull; /* write, four bytes */
-        c->Dr6 &= ~1ull;
-        fprintf(stderr, "[FRONTEND_WATCH] object=%08X child=%08X armed\n", watch_object, watch_value);
-        return EXCEPTION_CONTINUE_EXECUTION;
-    }
-    if (p->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP || !(c->Dr6 & 1u))
-        return EXCEPTION_CONTINUE_SEARCH;
-    uint32_t value = *watch_field;
     if (watch_reports++ < 64 || value == 0x2000u) {
         uintptr_t base = (uintptr_t)GetModuleHandleW(NULL);
         fprintf(stderr, "[FRONTEND_WRITE] object=%08X child=%08X->%08X hostRVA=%llX eax=%08X ecx=%08X edx=%08X esi=%08X edi=%08X ebp=%08X esp=%08X\n",
-                watch_object, watch_value, value, (unsigned long long)(c->Rip-base),
+                watch_object, watch_value, value, (unsigned long long)(rip - base),
                 g_eax, g_ecx, g_edx, g_esi, g_edi, g_ebp, g_esp);
     }
     watch_value = value;
-    c->Dr6 &= ~1ull;
-    if (value == 0x2000u) c->Dr7 &= ~3ull;
-    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+static int frontend_write_watch(void *user, uint32_t value, uint64_t rip)
+{
+    (void)user;
+    report_write(value, rip);
+    return value != 0x2000u;
 }
 
 static void arm_frontend_watch(uint32_t object)
@@ -267,15 +255,14 @@ static void arm_frontend_watch(uint32_t object)
     if (entries++ < 16)
         fprintf(stderr, "[FRONTEND_WATCH_ENTRY] object=%08X enabled=%d thread=%u\n",
                 object, getenv("MM3_FRONTEND_WRITE_WATCH") != NULL, GetCurrentThreadId());
-    if (!getenv("MM3_FRONTEND_WRITE_WATCH") || watch_thread ||
+    if (!getenv("MM3_FRONTEND_WRITE_WATCH") || watch_armed ||
         object < 0x10000u || object >= 0x08000000u-12u) return;
-    if (!watch_handler) watch_handler = AddVectoredExceptionHandler(1, frontend_write_exception);
-    if (!watch_handler) return;
     watch_object = object;
     watch_field = (volatile uint32_t *)(xbox_GetMemoryOffset() + object + 8u);
     watch_value = *watch_field;
-    watch_thread = GetCurrentThreadId();
-    RaiseException(MM3_ARM_WATCH, 0, 0, NULL);
+    if (!host_write_watch_arm(watch_field, frontend_write_watch, NULL)) return;
+    watch_armed = 1;
+    fprintf(stderr, "[FRONTEND_WATCH] object=%08X child=%08X armed\n", watch_object, watch_value);
 }
 
 void sub_000FA37E(void)

@@ -96,7 +96,9 @@ def stage_payload(payload: Path, repo: Path, packages: Path, downloads: Path) ->
     shutil.copy2(repo / "scripts" / "extract_disc.py", payload / "scripts")
     xiso = payload / "tools" / "xboxrecomp" / "tools" / "xiso"
     xiso.mkdir(parents=True)
-    shutil.copy2(repo / "tools" / "xboxrecomp" / "tools" / "xiso" / "xdvdfs.py", xiso)
+    # extract_disc.py imports xdvdfs and the CLI's _safe_component (__main__.py), a package.
+    for name in ("__init__.py", "__main__.py", "xdvdfs.py"):
+        shutil.copy2(repo / "tools" / "xboxrecomp" / "tools" / "xiso" / name, xiso)
 
     mods = payload / "tools" / "car-mods"
     mods.mkdir(parents=True)

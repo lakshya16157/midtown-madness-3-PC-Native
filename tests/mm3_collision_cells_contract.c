@@ -1,7 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-#include "../src/mm3_collision_cells.c"
+#include "../src/mods/collision_fix.c"
 ptrdiff_t g_xbox_mem_offset;
 RECOMP_TLS uint32_t g_eax, g_esi, g_esp;
 static unsigned char memory[0x100000];
@@ -66,7 +66,7 @@ static void test_face_sets(void)
         memcpy(memory + 0x50000, ranges, sizeof ranges);
     }
     snapshot_ranges(7, 7);
-    collision_sanitize(0x11000);
+    sanitize(0x11000);
     check_range_sets(3, 7, 7);
     for (trial = 0; trial < 256; ++trial) {
         unsigned length = next_random() % 97u, cells = 1 + next_random() % 64u;
@@ -83,7 +83,7 @@ static void test_face_sets(void)
             MEM16(0x50002 + i * 4u) = (uint16_t)(i % 8 ? next_random() % (length + 17) : length);
         }
         snapshot_ranges(length, cells);
-        collision_sanitize(0x11000);
+        sanitize(0x11000);
         check_range_sets(faces, length, cells);
     }
 }
@@ -121,17 +121,17 @@ int main(void)
     /* Cache hits must not scan/repair again. */
     MEM16(0x12000) = 0xFFFF; sub_0015A929(); assert(MEM16(0x12000) == 0xFFFF);
     /* Reject dimensions whose product would overflow or make unbounded work. */
-    setup(); MEM32(0x11044) = 0xFFFFFFFF; collision_sanitize(0x11000);
+    setup(); MEM32(0x11044) = 0xFFFFFFFF; sanitize(0x11000);
     assert(MEM16(0x12000) == 0xFFA4);
-    setup(); MEM32(0x11048) = 0; collision_sanitize(0x11000);
+    setup(); MEM32(0x11048) = 0; sanitize(0x11000);
     assert(MEM16(0x12000) == 0xFFA4);
     /* Reject spans crossing the guest RAM boundary without dereferencing. */
-    setup(); MEM32(0x11008) = 0x07FFFFFE; collision_sanitize(0x11000);
+    setup(); MEM32(0x11008) = 0x07FFFFFE; sanitize(0x11000);
     assert(MEM16(0x12000) == 0xFFA4);
-    collision_sanitize(0x07FFFFF0); collision_sanitize(0xFFFFFFFF);
-    setup(); MEM32(0x11010) = 0x12000; collision_sanitize(0x11000);
+    sanitize(0x07FFFFF0); sanitize(0xFFFFFFFF);
+    setup(); MEM32(0x11010) = 0x12000; sanitize(0x11000);
     assert(MEM16(0x12000) == 0xFFA4);
-    setup(); MEM32(0x11008) = 0x11004; collision_sanitize(0x11000);
+    setup(); MEM32(0x11008) = 0x11004; sanitize(0x11000);
     assert(MEM32(0x11004) == 3);
     test_face_sets();
     /* A valid cell is untouched, including scratch. Holding the scratch lock
@@ -141,7 +141,7 @@ int main(void)
     MEM16(0x13000)=0; MEM16(0x13002)=6; MEM16(0x13004)=2; MEM16(0x13006)=4;
     for (i = 0; i < 65535; ++i) collision_bounds[i] = 0xDEADBEEFu;
     memcpy(valid_snapshot, memory, sizeof memory);
-    COLLISION_LOCK(); collision_sanitize(0x11000); COLLISION_UNLOCK();
+    COLLISION_LOCK(); sanitize(0x11000); COLLISION_UNLOCK();
     assert(!memcmp(valid_snapshot, memory, sizeof memory));
     for (i = 0; i < 65535; ++i) assert(collision_bounds[i] == 0xDEADBEEFu);
     /* Maximum overlapping ranges stay linear; all-invalid input is bounded. */
@@ -149,7 +149,7 @@ int main(void)
     MEM32(0x11008) = 0x20000; MEM32(0x11010) = 0x50000;
     memset(memory + 0x20000, 0xFF, 131070);
     for (i = 0; i < 65536; ++i) { MEM16(0x50000+4*i)=0; MEM16(0x50002+4*i)=65535; }
-    collision_sanitize(0x11000);
+    sanitize(0x11000);
     assert(MEM16(0x20000) == 0 && MEM16(0x3FFFC) == 0);
     for (i = 0; i < 65536; ++i)
         assert(MEM16(0x50000+4*i)==65535 && MEM16(0x50002+4*i)==65535);
@@ -159,23 +159,23 @@ int main(void)
     memset(memory + 0x20008, 0xFF, (65530u - 4u) * 2u);
     memset(memory + 0x3FFF6, 0xFF, 8);
     for (i = 0; i < 65536; ++i) { MEM16(0x50000+4*i)=0; MEM16(0x50002+4*i)=65535; }
-    collision_sanitize(0x11000);
+    sanitize(0x11000);
     for (i = 0; i < 65536; ++i)
         assert(MEM16(0x50000+4*i)==3 && MEM16(0x50002+4*i)==65531);
     assert(MEM16(0x20006)==2 && MEM16(0x3FFF4)==1);
     for (i = 0; i < 65535; ++i)
         assert(MEM16(0x20000 + 2u*i) == (i < 65530 ? 2 : 1));
     /* Zero-length lists can have no list pointer and become empty ranges. */
-    setup(); MEM32(0x11008)=0; MEM32(0x1100C)=0; collision_sanitize(0x11000);
+    setup(); MEM32(0x11008)=0; MEM32(0x1100C)=0; sanitize(0x11000);
     assert(MEM16(0x13000)==0 && MEM16(0x13002)==0 &&
            MEM16(0x13004)==0 && MEM16(0x13006)==0);
     /* Zero faces is rejected, preserving the existing metadata policy. */
-    setup(); MEM32(0x11004)=0; collision_sanitize(0x11000);
+    setup(); MEM32(0x11004)=0; sanitize(0x11000);
     assert(MEM16(0x12000)==0xFFA4 && MEM16(0x13002)==99);
     /* Maximum face count preserves the last valid face without sentinel alias. */
     setup(); MEM32(0x11004)=65535; MEM32(0x1100C)=3; MEM32(0x11044)=1;
     MEM16(0x12000)=65535; MEM16(0x12002)=65534; MEM16(0x12004)=65535;
-    MEM16(0x13000)=0; MEM16(0x13002)=3; collision_sanitize(0x11000);
+    MEM16(0x13000)=0; MEM16(0x13002)=3; sanitize(0x11000);
     assert(MEM16(0x13000)==1 && MEM16(0x13002)==2 && MEM16(0x12002)==65534);
     puts("collision exact face sets, overlap bounds, untouched valid cells, cache hits and guest ABI: PASS");
     return 0;

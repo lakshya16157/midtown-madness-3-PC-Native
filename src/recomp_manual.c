@@ -6,15 +6,20 @@
 #include <xmmintrin.h>
 #include <emmintrin.h>
 #include <string.h>
-#include <windows.h>
+#include "platform/xbox_winnt.h"
 
 #include "recomp_types.h"
 #include "mm3_producer_diagnostics.h"
+#include "guest_state.h"
+#include "mods/mods.h"
+#include "icall_diagnostics.h"
 
 typedef void (*recomp_func_t)(void);
 
 static int g_mm3_unimpl_trap;
 static int g_mm3_frontend_icall_trace;
+static int g_mm3_stream_trace;
+static void mm3_icall_report(const XboxIcallReport *report);
 
 /* Configure before guest workers start. cli/sti occur in tight polling loops;
  * querying the CRT environment on each no-op serializes those workers. */
@@ -74,38 +79,66 @@ void mm3_configure_diagnostics(void)
     const char *trap = getenv("RECOMP_UNIMPL_TRAP");
     g_mm3_unimpl_trap = trap && *trap && *trap != '0';
     g_mm3_frontend_icall_trace = getenv("MM3_FRONTEND_ICALL_TRACE") != NULL;
+    g_mm3_stream_trace = getenv("MM3_STREAM_TRACE") != NULL;
+    xbox_icall_set_trace_all(g_mm3_frontend_icall_trace);
+    xbox_icall_set_report_hook(mm3_icall_report);
+    /* The building trace includes the runtime's async-wait trace unless that
+     * is set itself. */
+    {
+        const char *building = getenv("MM3_BUILDING_TRACE");
+        if (building && *building && *building != '0' && !getenv("RECOMP_ASYNC_WAIT_TRACE"))
+            _putenv_s("RECOMP_ASYNC_WAIT_TRACE", "1");
+    }
+}
+
+static void recomp_unimpl_known(volatile LONG *noted, const char *text, uint32_t va,
+                                const char *why)
+{
+    if (InterlockedCompareExchange(noted, 1, 0) == 0)
+        fprintf(stderr, "[UNIMPL] known no-op `%s` at 0x%08X: %s\n", text, va, why);
 }
 
 void recomp_unimpl(const char *text, uint32_t va)
 {
-    static volatile LONG printed;
+    static volatile LONG noted[4];
     int stop = g_mm3_unimpl_trap;
 
     if (!stop) {
         /* These exact sites operate Xbox hardware which the native backends
          * already replace. Interrupt masking around the APU clock sample
          * cannot mask Windows interrupts; host port 0x80C0 is not Xbox PCI.
-         * Keep unknown instructions visible and retain the diagnostic trap. */
-        if ((va == 0x0035F882u && strcmp(text, "cli") == 0) ||
-            (va == 0x0035F893u && strcmp(text, "sti") == 0) ||
-            (va == 0x003475DCu && strcmp(text, "out dx, al") == 0 &&
-             (g_edx & 0xFFFFu) == 0x80C0u))
+         * Keep unknown instructions visible and retain the diagnostic trap.
+         * Each known site is logged once at its first hit, then stays a no-op. */
+        if (va == 0x0035F882u && strcmp(text, "cli") == 0) {
+            recomp_unimpl_known(&noted[0], text, va,
+                                "APU clock sample interrupt masking, no-op on the host");
             return;
+        }
+        if (va == 0x0035F893u && strcmp(text, "sti") == 0) {
+            recomp_unimpl_known(&noted[1], text, va,
+                                "APU clock sample interrupt masking, no-op on the host");
+            return;
+        }
+        if (va == 0x003475DCu && strcmp(text, "out dx, al") == 0 &&
+            (g_edx & 0xFFFFu) == 0x80C0u) {
+            recomp_unimpl_known(&noted[2], text, va,
+                                "host port 0x80C0 is not Xbox PCI, no-op");
+            return;
+        }
         if (va == 0x00345E9Du && strcmp(text, "wbinvd") == 0) {
             /* Guest memory is coherent host RAM. Publish earlier writes to
              * the native GPU consumer without flushing host CPU caches. */
             _mm_mfence();
+            recomp_unimpl_known(&noted[3], text, va,
+                                "guest memory is coherent host RAM, mfence in place");
             return;
         }
     }
-    if (stop || (printed < 50 && InterlockedIncrement(&printed) <= 50)) {
-        fprintf(stderr,
-                "[UNIMPL] untranslated instruction REACHED: `%s` at 0x%08X"
-                " (a no-op; set RECOMP_UNIMPL_TRAP=1 to stop here)\n",
-                text, va);
-        fflush(stderr);
-    }
-    if (stop) abort();
+    fprintf(stderr,
+            "[UNIMPL] untranslated instruction REACHED: `%s` at 0x%08X; stopping%s\n",
+            text, va, stop ? " (RECOMP_UNIMPL_TRAP=1)" : "");
+    fflush(stderr);
+    abort();
 }
 
 extern void sub_000838C3(void);
@@ -165,32 +198,6 @@ void sub_000252AF(void)
     uint32_t caller_ebx = g_ebx;
     uint32_t caller_esi = g_esi;
     uint32_t caller_edi = g_edi;
-    uint32_t trace_context = g_eax - 4u;
-    uint32_t trace_field;
-    unsigned trace_char;
-    static unsigned trace_count;
-    int trace_call = trace_count++ < 20;
-    if (trace_call)
-        fprintf(stderr, "[252AF_ENTRY] esp=%08X ebp=%08X seh=%08X eax=%08X ret=%08X args=%08X,%08X,%08X ctx=%08X:{%08X,%08X,%08X,%08X,%08X,%08X}\n",
-                g_esp, g_ebp, g_seh_ebp, g_eax,
-                MEM32(g_esp), MEM32(g_esp + 4), MEM32(g_esp + 8),
-                MEM32(g_esp + 12), g_eax - 4u, MEM32(g_eax - 4u),
-                MEM32(g_eax), MEM32(g_eax + 4u), MEM32(g_eax + 8u),
-                MEM32(g_eax + 12u), MEM32(g_eax + 16u));
-    if (trace_call) {
-        for (trace_field = 3; trace_field <= 5; trace_field++) {
-            uint32_t text_va = MEM32(trace_context + trace_field * 4u);
-            if (text_va >= 0x01000000u && text_va < 0x02000000u) {
-                fprintf(stderr, "[252AF_CTX_TEXT] field=%u va=%08X text=", trace_field, text_va);
-                for (trace_char = 0; trace_char < 80; trace_char++) {
-                    unsigned char ch = MEM8(text_va + trace_char);
-                    if (ch == 0) break;
-                    fputc(ch >= 32 && ch <= 126 ? ch : '.', stderr);
-                }
-                fputc('\n', stderr);
-            }
-        }
-    }
     /* Native 0x252AF is PUSH [EAX]: the stream's FILE pointer, not the
      * containing polymorphic stream object. Passing EAX-4 makes fread
      * interpret a vtable and path fields as CRT buffering state. */
@@ -198,10 +205,6 @@ void sub_000252AF(void)
     PUSH32(g_esp, 1);
     PUSH32(g_esp, MEM32(g_esp + 0x10));
     PUSH32(g_esp, MEM32(g_esp + 0x10));
-    if (trace_call)
-        fprintf(stderr, "[252AF_ARGS] esp=%08X values=%08X,%08X,%08X,%08X\n",
-                g_esp, MEM32(g_esp), MEM32(g_esp + 4),
-                MEM32(g_esp + 8), MEM32(g_esp + 12));
     uint32_t args_esp = g_esp;
     PUSH32(g_esp, 0x000252C0u);
     RECOMP_ABI_CALL(0x0009492Bu, sub_0009492B);
@@ -229,19 +232,11 @@ void sub_000252DF(void)
 void sub_0002539A(void)
 {
     uint32_t esp = g_esp;
-    uint32_t ebp = g_ebp;
-    uint32_t seh_ebp = g_seh_ebp;
-    uint32_t ebx = g_ebx;
-    uint32_t esi = g_esi;
-    uint32_t edi = g_edi;
+    xbox_callee_saved saved;
 
+    xbox_callee_saved_save(&saved);
     sub_0002539A_gen();
-
-    g_ebp = ebp;
-    g_seh_ebp = seh_ebp;
-    g_ebx = ebx;
-    g_esi = esi;
-    g_edi = edi;
+    xbox_callee_saved_restore(&saved);
     g_esp = esp + 4;
 }
 
@@ -250,19 +245,15 @@ void sub_0002539A(void)
  * generated, but compile that one function with the correct helper selected. */
 static void call_alternate_seh_preserving(recomp_func_t body)
 {
-    uint32_t ebx = g_ebx;
-    uint32_t esi = g_esi;
-    uint32_t edi = g_edi;
-    uint32_t ebp = g_ebp;
-    uint32_t seh_ebp = g_seh_ebp;
+    xbox_callee_saved saved;
 
+    if (!mm3_mod_on(MM3_MOD_TRANSLATION)) {     /* the generated body as it is */
+        body();
+        return;
+    }
+    xbox_callee_saved_save(&saved);
     body();
-
-    g_ebx = ebx;
-    g_esi = esi;
-    g_edi = edi;
-    g_ebp = ebp;
-    g_seh_ebp = seh_ebp;
+    xbox_callee_saved_restore(&saved);
 }
 
 void sub_00083FBB(void)
@@ -349,6 +340,9 @@ void sub_00093DD3(void)
     POP32(g_esp, g_ebp);
     g_esp += 4u;
 }
+int mm3_heap_trace_on(void);                                        /* mm3_heap_trace.c */
+void mm3_heap_trace_alloc(uint32_t pointer, uint32_t size, uint32_t esp);
+void mm3_heap_trace_free(uint32_t pointer, uint32_t esp);
 void sub_00084020(void) { call_alternate_seh_preserving(sub_00084020_gen); }
 void sub_0008427E(void) { call_alternate_seh_preserving(sub_0008427E_gen); }
 void sub_000842EA(void) { call_alternate_seh_preserving(sub_000842EA_gen); }
@@ -359,25 +353,27 @@ void sub_000858F3_original(void)
 void sub_000858F3(void)
 #endif
 {
-    static unsigned calls;
-    if (calls++ < 8)
-        fprintf(stderr, "[858F3_ENTRY] call=%u ret=%08X args=%08X,%08X,%08X esi=%08X edi=%08X\n",
-                calls, MEM32(g_esp), MEM32(g_esp + 4), MEM32(g_esp + 8),
-                MEM32(g_esp + 12), g_esi, g_edi);
+    uint32_t esp = g_esp, size = MEM32(esp + 12u);
     call_alternate_seh_preserving(sub_000858F3_gen);
+    if (mm3_heap_trace_on()) mm3_heap_trace_alloc(g_eax, size, esp);
 }
 #ifdef MM3_HEAP_WATCH_WRAPPER
 void sub_000860AA_original(void) { call_alternate_seh_preserving(sub_000860AA_gen); }
 #else
 int mm3_heap_double_free(uint32_t heap, uint32_t caller, uint32_t pointer);   /* mm3_heap_guard.c */
+int mm3_heap_damaged_neighbour(uint32_t pointer);
 void sub_000860AA(void)
 {
-    /* RtlFreeHeap: a second free of a block is skipped (and logged). */
-    if (mm3_heap_double_free(MEM32(g_esp + 4), MEM32(g_esp), MEM32(g_esp + 12))) {
+    uint32_t pointer = MEM32(g_esp + 12);
+    /* RtlFreeHeap: a second free of a block is skipped (and logged); so is a free next to a chunk that only
+     * looks free (its header was overwritten): the merge would write through its garbage links (the crash
+     * in sub_00084709 +0xa12 of both 2026-11-02 stress sessions). Either way one block is not freed. */
+    if (mm3_heap_double_free(MEM32(g_esp + 4), MEM32(g_esp), pointer) || mm3_heap_damaged_neighbour(pointer)) {
         g_eax = (g_eax & ~0xFFu) | 1u;   /* TRUE, as if freed */
         g_esp += 16;                      /* ret 12 */
         return;
     }
+    if (mm3_heap_trace_on()) mm3_heap_trace_free(pointer, g_esp);
     call_alternate_seh_preserving(sub_000860AA_gen);
 }
 #endif
@@ -402,7 +398,7 @@ void sub_0009418C(void)
     uint32_t edi = g_edi;
  uint32_t path = MEM32(g_esp + 4u);
  sub_0009418C_gen();
- if (getenv("MM3_STREAM_TRACE")) {
+ if (g_mm3_stream_trace) {
   static unsigned samples;
   if (samples++ < 32) {
    fprintf(stderr, "[CRT_OPEN] path=%08X FILE=%08X", path, g_eax);
@@ -1017,159 +1013,23 @@ void sub_00012850(void)
     g_esp += 0x0C;
 }
 
-void recomp_icall_fail_log(uint32_t xbox_va)
+/* The runtime owns the bounded indirect-call loggers (src/kernel/icall_diagnostics.c).
+ * This title adds two caller-specific dumps through the report hook: the XPP USB
+ * request behind caller 0x35D048, and the frontend call sites when
+ * MM3_FRONTEND_ICALL_TRACE is set. */
+static void mm3_icall_report(const XboxIcallReport *report)
 {
-    static volatile LONG printed;
-    uint32_t caller = 0;
-    /* A broken guest callback can recur in a polling loop. Keep the first
-     * failures useful without turning a fault into unbounded synchronous I/O.
-     * Dispatch and fallback behavior are unchanged. Explicit callback tracing
-     * retains all failures for diagnosis, matching the non-code logger. */
-    if (!g_mm3_frontend_icall_trace &&
-        (printed >= 50 || InterlockedIncrement(&printed) > 50))
-        return;
-    if (g_esp >= 0x00010000u && g_esp < 0x04000000u)
-        caller = *(const uint32_t *)((uintptr_t)g_esp + g_xbox_mem_offset);
-    fprintf(stderr, "[ICALL] Failed resolve VA 0x%08X caller=0x%08X\n",
-            xbox_va, caller);
-}
-
-/* Diagnostics must not dereference a corrupt guest object while reporting it.
- * The code image is stable, but heap/stack pointers may refer to freed pages. */
-static int mm3_icall_read(uint32_t va, void *out, size_t size)
-{
-    uintptr_t address, end, cursor;
-    SIZE_T copied = 0;
-    if (!size || size > 128 || va < 0x10000u ||
-        va >= 0x08000000u || size > 0x08000000u - va) return 0;
-    address = XBOX_PTR(va);
-    end = address + size;
-    if (end < address) return 0;
-    for (cursor = address; cursor < end;) {
-        MEMORY_BASIC_INFORMATION info;
-        uintptr_t next;
-        if (!VirtualQuery((void *)cursor, &info, sizeof info) ||
-            info.State != MEM_COMMIT || (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
-            return 0;
-        next = (uintptr_t)info.BaseAddress + info.RegionSize;
-        if (next <= cursor) return 0;
-        cursor = next;
-    }
-    /* A concurrent guest free can invalidate a page after VirtualQuery.
-     * ReadProcessMemory reports that race instead of faulting in diagnostics. */
-    return ReadProcessMemory(GetCurrentProcess(), (const void *)address, out,
-                             size, &copied) && copied == size;
-}
-
-/* Decode the original near indirect CALL ending at its return address. A
- * target-value scan cannot identify a null vtable slot: every zero in the
- * unrelated startup callback table matches it. The common FF /2 addressing
- * forms below include register, absolute, displacement and SIB operands.
- * ESP at operand evaluation precedes the pushed return address by four bytes. */
-static unsigned mm3_icall_decode(uint32_t caller, uint32_t target,
-                                 uint32_t *slot, unsigned *base)
-{
-    uint32_t regs[8] = {g_eax, g_ecx, g_edx, g_ebx, g_esp + 4u,
-                        g_ebp, g_esi, g_edi};
-    unsigned length;
-    *slot = 0; *base = 9;
-    if (caller < g_xbox_code_lo + 2u || caller > g_xbox_code_hi) return 0;
-    for (length = 7; length >= 2; --length) {
-        unsigned char bytes[7];
-        unsigned mod, rm, used = 2, reg;
-        uint32_t address = 0, observed;
-        int32_t displacement = 0;
-        if (caller - g_xbox_code_lo < length ||
-            !mm3_icall_read(caller - length, bytes, length) || bytes[0] != 0xFF ||
-            ((bytes[1] >> 3) & 7u) != 2u) continue;
-        mod = bytes[1] >> 6; rm = bytes[1] & 7u;
-        if (mod == 3) {
-            if (length == 2 && regs[rm] == target) { *base = rm; return 2; }
-            continue;
-        }
-        reg = rm;
-        if (rm == 4) {
-            unsigned sib, index;
-            if (used == length) continue;
-            sib = bytes[used++]; reg = sib & 7u; index = (sib >> 3) & 7u;
-            if (index != 4) address = regs[index] << (sib >> 6);
-        }
-        if (mod == 0 && reg == 5) {
-            reg = 8; /* Absolute addressing, including a SIB without a base. */
-        } else {
-            address += regs[reg];
-        }
-        if (mod == 1) {
-            if (used + 1 != length) continue;
-            displacement = (int8_t)bytes[used++];
-        } else if (mod == 2 || reg == 8) {
-            if (used + 4 != length) continue;
-            memcpy(&displacement, bytes + used, 4); used += 4;
-        }
-        if (used != length) continue;
-        address += (uint32_t)displacement;
-        if (mm3_icall_read(address, &observed, 4) && observed != target) continue;
-        *slot = address; *base = reg;
-        return 1;
-    }
-    return 0;
-}
-
-void recomp_icall_not_code_log(uint32_t xbox_va)
-{
-    static volatile LONG printed;
-    static volatile LONG sequence;
-    uint32_t caller = 0;
-    uint32_t slot = 0;
-    uint32_t slot_value = 0, object_words[8] = {0};
-    uint32_t stack_words[16] = {0}, frame_words[16] = {0};
-    uint32_t frame = g_ebp >= 0x10020u ? g_ebp - 0x20u : 0;
-    unsigned base = 9, kind, slot_read, object_read, stack_read, frame_read, sample;
-    unsigned long long tick;
-    static const char *const names[] = {
-        "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "absolute", "unknown"};
-    /* Broken callbacks can recur every frame. Keep a bounded diagnostic,
-     * with no decoding, pointer reads or synchronous I/O after the limit. */
-    if (!g_mm3_frontend_icall_trace &&
-        (printed >= 50 || InterlockedIncrement(&printed) > 50))
-        return;
-    sample = (unsigned)InterlockedIncrement(&sequence);
-    tick = (unsigned long long)GetTickCount64();
-    mm3_icall_read(g_esp, &caller, 4);
-    kind = mm3_icall_decode(caller, xbox_va, &slot, &base);
-    slot_read = kind == 1 && mm3_icall_read(slot, &slot_value, 4);
-    object_read = mm3_icall_read(g_ecx, object_words, sizeof object_words);
-    stack_read = mm3_icall_read(g_esp, stack_words, sizeof stack_words);
-    frame_read = mm3_icall_read(frame, frame_words, sizeof frame_words);
-    fprintf(stderr, "[ICALL] non-code target 0x%08X slot=0x%08X caller=0x%08X esp=0x%08X"
-            " kind=%s base=%s slot_read=%u slot_value=%08X"
-            " eax=%08X ecx=%08X edx=%08X esi=%08X edi=%08X object_read=%u"
-            " object_words=%08X,%08X,%08X,%08X,%08X,%08X,%08X,%08X"
-            " sample=%u tick_ms=%llu\n",
-            xbox_va, slot, caller, g_esp,
-            kind == 1 ? "memory" : kind == 2 ? "register" : "unknown", names[base],
-            slot_read, slot_value, g_eax, g_ecx, g_edx, g_esi, g_edi, object_read,
-            object_words[0], object_words[1], object_words[2], object_words[3],
-            object_words[4], object_words[5], object_words[6], object_words[7], sample, tick);
-    fprintf(stderr, "[ICALL_STATE] sample=%u tick_ms=%llu ebx=%08X ebp=%08X seh_ebp=%08X df=%d"
-            " stack_base=%08X stack_read=%u stack_words=", sample, tick,
-            g_ebx, g_ebp, g_seh_ebp, g_df, g_esp, stack_read);
-    for (unsigned i = 0; i < 16; ++i)
-        fprintf(stderr, "%s%08X", i ? "," : "", stack_words[i]);
-    fprintf(stderr, " frame_base=%08X frame_read=%u frame_words=", frame, frame_read);
-    for (unsigned i = 0; i < 16; ++i)
-        fprintf(stderr, "%s%08X", i ? "," : "", frame_words[i]);
-    fprintf(stderr, "\n");
-    if (caller == 0x0035D048u) {
-        uint32_t request = stack_read ? stack_words[1] : g_eax;
+    if (report->caller == 0x0035D048u) {
+        uint32_t request = report->stack_read ? report->stack_words[1] : g_eax;
         uint32_t words[16] = {0};
-        unsigned readable = mm3_icall_read(request, words, sizeof words);
+        unsigned readable = xbox_icall_read(request, words, sizeof words);
         /* This XPP call uses ECX as a callback, not a this pointer. Capture
          * the actual USB request passed as argument one, separately from
          * the callback target's bytes, to diagnose late or reused requests. */
         fprintf(stderr, "[ICALL_REQUEST] sample=%u tick_ms=%llu request=%08X source=%s"
                 " request_read=%u size=%u kind=%u status=%08X callback=%08X context=%08X"
-                " request_words=", sample, tick, request, stack_read ? "stack_arg" : "eax",
+                " request_words=", report->sample, (unsigned long long)GetTickCount64(),
+                request, report->stack_read ? "stack_arg" : "eax",
                 readable, words[0] & 0xFFu, (words[0] >> 8) & 0xFFu,
                 words[1], words[2], words[3]);
         for (unsigned i = 0; i < 16; ++i)
@@ -1177,7 +1037,7 @@ void recomp_icall_not_code_log(uint32_t xbox_va)
         fprintf(stderr, "\n");
     }
     if (g_mm3_frontend_icall_trace &&
-        (caller == 0x0011FB9Cu || caller == 0x000FB05Eu)) {
+        (report->caller == 0x0011FB9Cu || report->caller == 0x000FB05Eu)) {
         static unsigned samples;
         if (samples++ < 8) {
             fprintf(stderr, "[FRONTEND_ICALL] eax=%08X ecx=%08X edx=%08X esi=%08X edi=%08X\n",
@@ -1186,7 +1046,7 @@ void recomp_icall_not_code_log(uint32_t xbox_va)
             for (unsigned i = 0; i < 4; ++i) {
                 uint32_t p = pointers[i];
                 uint32_t words[32];
-                if (mm3_icall_read(p, words, sizeof words)) {
+                if (xbox_icall_read(p, words, sizeof words)) {
                     fprintf(stderr, "[FRONTEND_ICALL] object %08X:", p);
                     for (unsigned j = 0; j < 32; ++j)
                         fprintf(stderr, " %08X", words[j]);
@@ -1195,7 +1055,6 @@ void recomp_icall_not_code_log(uint32_t xbox_va)
             }
         }
     }
-    fflush(stderr);
 }
 
 /* Project override for the one startup allocator entry whose generated FPO
@@ -1337,9 +1196,17 @@ extern void xbox_Nv2aWbcWait(uint32_t register_va);
  * restarts at the ring start, device+0x24..+0x28), GET still walks to the end
  * before following that jump: the distance is (end - GET) + (PUT - start).
  * Waiting at every wrap regardless of that distance drained the executor
- * about once a frame. Layouts outside the ring keep the full synchronization. */
+ * about once a frame. Layouts outside the ring keep the full synchronization.
+ * MM3_PRODUCER_LAG_KB=0 waits at every kick, as the fork's xbox_Nv2aWbcFlush
+ * does; the bound is this port's measured default. */
 void sub_00344AB0(void)
 {
+    {   /* D3D's kick runs on the game's render thread: the one spike
+         * reports sample (RECOMP_SPIKE_CAPTURE). */
+        extern void recomp_sampler_watch_current_thread(void);
+        static int watched;
+        if (!watched) { watched = 1; recomp_sampler_watch_current_thread(); }
+    }
     mm3_producer_diagnostics_kick();
     uint32_t device = MEM32(0x351F48u);
     g_eax = MEM32(device + 0x17C8u);

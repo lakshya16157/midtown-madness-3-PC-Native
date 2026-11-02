@@ -1,5 +1,9 @@
 #define WIN32_LEAN_AND_MEAN
+#ifndef COBJMACROS
+#define COBJMACROS
+#endif
 #include <windows.h>
+#include <dxgi1_6.h>
 #include <commctrl.h>
 #include <shellapi.h>
 #include <xinput.h>
@@ -11,7 +15,9 @@
 #include "mm3_launcher.h"
 #include "mm3_launcher_config.h"
 #include "mm3_display_config.h"
+#include "mm3_frame_limit.h"
 #include "mm3_controller_detection.h"
+#include "mm3_performance_profile.h"
 #include "mm3_update.h"
 #include "mm3_logo.h"   /* generated from the installed game when this is built */
 
@@ -30,6 +36,27 @@
 #define MM3_UPDATE_OPEN(setup, folder) update_open_setup(setup, folder)
 #endif
 
+/* Folders and logs, the game-files check and its Setup page: the same hooks for the UI contract test,
+ * which must not open Explorer or a browser, or depend on a game being installed beside it. */
+#ifndef MM3_LAUNCHER_MENU
+#define MM3_LAUNCHER_MENU(ui) tools_choose(ui)
+#endif
+#ifndef MM3_LAUNCHER_OPEN
+#define MM3_LAUNCHER_OPEN(path) tools_open(path)
+#endif
+#ifndef MM3_LAUNCHER_COPY
+#define MM3_LAUNCHER_COPY(window, text) clipboard_copy(window, text)
+#endif
+#ifndef MM3_LAUNCHER_GAME_FILES
+#define MM3_LAUNCHER_GAME_FILES(folder, count, missing) game_files_present(folder, count, missing)
+#endif
+#ifndef MM3_GAME_MISSING_ASK
+#define MM3_GAME_MISSING_ASK(window, text)     (MessageBoxW(window, text, L"Midtown Madness 3", MB_YESNO | MB_ICONWARNING) == IDYES)
+#endif
+#ifndef MM3_LAUNCHER_OPEN_PAGE
+#define MM3_LAUNCHER_OPEN_PAGE(url) ((INT_PTR)ShellExecuteA(NULL, "open", url, NULL, NULL, SW_SHOWNORMAL) > 32)
+#endif
+
 #ifndef MM3_LAUNCHER_AUDIO
 #define MM3_LAUNCHER_AUDIO 0
 #endif
@@ -46,10 +73,13 @@ enum {
     ID_RESOLUTION, ID_MODE, ID_FPS, ID_VSYNC, ID_SCALE, ID_ASPECT, ID_MSAA,
     ID_ANISO, ID_DRAW, ID_VIEW, ID_SHOW_FPS, ID_MINIMAP, ID_FOV, ID_PORT, ID_PEERS,
     ID_SCREEN, ID_ORIGINAL, ID_XBOX_GAMEPLAY, ID_DAMAGE, ID_TIME, ID_NIGHT, ID_UPDATE,
+    ID_PRESET, ID_TOOLS,
     ID_HELP_TITLE, ID_HELP_VALUE, ID_HELP_BODY, ID_HELP_EFFECT, ID_REQUIRED,
     ID_PAD_SUMMARY, ID_PAD_HINT, ID_TAB_BAR, ID_OWN_DAMAGE, ID_AI_LEVEL, ID_CAMERA_KEY,
-    ID_TITLE, ID_SUBTITLE, ID_GUIDE_HEAD1, ID_GUIDE_HEAD2,
+    ID_TITLE, ID_SUBTITLE, ID_GUIDE_HEAD1, ID_GUIDE_HEAD2, ID_PLAYER1, ID_PLAYER2, ID_GPU,
     ID_OPTION = 300,
+    /* The "Folders and logs" menu's items. */
+    ID_TOOL_GAME = 700, ID_TOOL_LOGS, ID_TOOL_SETTINGS, ID_TOOL_COPY,
     LAUNCHER_WIDTH = 1215, LAUNCHER_HEIGHT = 754,
     /* Settings, Controls, Visual + audio mods, Gameplay mods. */
     LAUNCHER_PAGES = 4
@@ -123,6 +153,15 @@ static const char *const key_labels[MM3_LAUNCHER_KEYS] = {
     "Left stick down", "Left stick up", "Right stick left", "Right stick right",
     "Right stick down", "Right stick up"
 };
+
+/* Keyboard binding groups: 1 and 3 Xbox buttons, 2 and 4 driving keys; 3 and 4
+ * are the second keyboard set. */
+static int *group_keys(Launcher *ui)
+{
+    return ui->group == 1 ? ui->config.keys : ui->group == 2 ? ui->config.drive_keys :
+           ui->group == 3 ? ui->config.keys2 : ui->config.drive_keys2;
+}
+static const char *group_label(const Launcher *ui, int i) { return ui->group & 1 ? key_labels[i] : drive_labels[i]; }
 
 static HWND control(Launcher *ui, int id) { return GetDlgItem(ui->window, id); }
 /* Two options switch off a retail HUD element. Their boxes offer hiding it,
@@ -293,6 +332,12 @@ static void key_name(int vk, char *text, size_t capacity)
     case VK_MBUTTON: snprintf(text, capacity, "Middle mouse"); return;
     case VK_XBUTTON1: snprintf(text, capacity, "Mouse side 1"); return;
     case VK_XBUTTON2: snprintf(text, capacity, "Mouse side 2"); return;
+    case VK_LSHIFT: snprintf(text, capacity, "Left Shift"); return;
+    case VK_RSHIFT: snprintf(text, capacity, "Right Shift"); return;
+    case VK_LCONTROL: snprintf(text, capacity, "Left Ctrl"); return;
+    case VK_RCONTROL: snprintf(text, capacity, "Right Ctrl"); return;
+    case VK_LMENU: snprintf(text, capacity, "Left Alt"); return;
+    case VK_RMENU: snprintf(text, capacity, "Right Alt"); return;
     }
     scan = MapVirtualKeyA((UINT)vk, MAPVK_VK_TO_VSC);
     if (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN ||
@@ -300,6 +345,66 @@ static void key_name(int vk, char *text, size_t capacity)
         vk == VK_PRIOR || vk == VK_NEXT || vk == VK_DIVIDE) scan |= 0x100;
     if (GetKeyNameTextA((LONG)(scan << 16), key, sizeof key)) snprintf(text, capacity, "%s", key);
     else snprintf(text, capacity, "VK %02X", vk);
+}
+
+/* ---- Quick presets -------------------------------------------------------
+ * A preset fills in the graphics choices with one performance profile's values (the profiles the
+ * game already has: mm3_performance_profile.h). It saves nothing of its own: the six controls it
+ * sets are what Play saves, so launcher.ini and display.ini keep their format. The box shows
+ * whichever preset the controls spell out, or Custom. */
+static const char *const preset_names[] = {NULL, "LowPower", "Balanced", "Quality"};
+static const char *const preset_labels[] = {"Custom (your own choices)", "Low power", "Balanced", "Quality"};
+
+static int preset_scale(const MM3PerformanceProfile *profile)
+{ return (int)lroundf((float)atof(profile->render_scale) * 1000.f); }
+static int preset_distance(const MM3PerformanceProfile *profile)
+{ return (int)lroundf((float)atof(profile->draw_distance) * 1000.f); }
+
+static int preset_current(Launcher *ui)
+{
+    char fps[32];
+    GetWindowTextA(control(ui, ID_FPS), fps, sizeof fps);
+    for (int i = 1; i < 4; ++i) {
+        const MM3PerformanceProfile *p = mm3_performance_profile(preset_names[i]);
+        if (combo_value(control(ui, ID_SCALE)) == preset_scale(p) && combo_value(control(ui, ID_MSAA)) == atoi(p->msaa) &&
+            combo_value(control(ui, ID_ANISO)) == atoi(p->aniso) &&
+            combo_value(control(ui, ID_DRAW)) == preset_distance(p) &&
+            combo_value(control(ui, ID_VIEW)) == preset_distance(p) && atoi(fps) == atoi(p->fps_limit))
+            return i;
+    }
+    return 0;
+}
+
+static void preset_show(Launcher *ui)
+{ if (control(ui, ID_PRESET)) combo_select(control(ui, ID_PRESET), preset_current(ui)); }
+
+/* What a preset sets, in words (also the guide's text and the status line). */
+static void preset_summary(const MM3PerformanceProfile *p, char *text, size_t capacity)
+{
+    char filtering[16], antialiasing[24];
+    snprintf(filtering, sizeof filtering, "%sx", p->aniso);
+    if (atoi(p->msaa) > 1) snprintf(antialiasing, sizeof antialiasing, "%sx MSAA", p->msaa);
+    else snprintf(antialiasing, sizeof antialiasing, "no anti-aliasing");
+    snprintf(text, capacity, "%.1fx internal resolution, %s, %s texture filtering, %sx distances, %s FPS",
+             atof(p->render_scale), antialiasing, filtering, p->draw_distance, p->fps_limit);
+}
+
+static void preset_apply(Launcher *ui, int preset)
+{
+    const MM3PerformanceProfile *p;
+    char text[320], fps[24], line[480];
+    if (preset < 1 || preset > 3) return;
+    p = mm3_performance_profile(preset_names[preset]);
+    combo_select(control(ui, ID_SCALE), preset_scale(p));
+    combo_select(control(ui, ID_MSAA), atoi(p->msaa));
+    combo_select(control(ui, ID_ANISO), atoi(p->aniso));
+    combo_select(control(ui, ID_DRAW), preset_distance(p));
+    combo_select(control(ui, ID_VIEW), preset_distance(p));
+    snprintf(fps, sizeof fps, "%d", atoi(p->fps_limit));
+    SetWindowTextA(control(ui, ID_FPS), fps);
+    preset_summary(p, text, sizeof text);
+    snprintf(line, sizeof line, "%s filled in: %s. Play saves it; Cancel discards it.", preset_labels[preset], text);
+    SetWindowTextA(control(ui, ID_STATUS), line);
 }
 
 /* Read the controls, not the saved configuration: the guide follows edits
@@ -411,9 +516,9 @@ static void help_show(Launcher *ui, int id)
             char *end;
             long fps = strtol(value, &end, 10);
             title = "Maximum FPS";
-            body = "Limit gameplay frame presentation to 1-60 frames per second. This is a ceiling, not a guarantee that the PC can reach that rate. Movies keep their own frame rate.";
-            if (end == value || *end || fps < 1 || fps > 60)
-                effect = "Enter a whole number from 1 to 60 before pressing Play.";
+            body = "1-120 frames per second. 120 is the game engine's hard limit: the cars' physics runs 120 steps a second, so more frames would only repeat positions. 60 is the tested default. VSync off shows frames at once (may tear).";
+            if (end == value || *end || fps < 1 || fps > MM3_FPS_LIMIT_MAX)
+                effect = "Enter a whole number from 1 to 120 before pressing Play.";
             else {
                 snprintf(consequence, sizeof consequence, "%ld FPS allows about %.1f ms per frame. Higher values look smoother but need more CPU/GPU work; lower values reduce demand.", fps, 1000.0 / (double)fps);
                 effect = consequence;
@@ -503,14 +608,25 @@ static void help_show(Launcher *ui, int id)
             body = "Use keyboard and mouse bindings for player 1 while the game window has focus. A controller can still be used alongside them.";
             effect = checked(ui, id) ? "Edit Xbox-button bindings or driving shortcuts below. F10 and F11 remain reserved for graphics settings and fullscreen." : "Keyboard gameplay bindings are disabled. Controllers and reserved window shortcuts remain available.";
             break;
+        case ID_PLAYER1: case ID_PLAYER2: {
+            int player = id == ID_PLAYER2;
+            title = player ? "Player 2 plays with" : "Player 1 plays with";
+            snprintf(value, sizeof value, "%s", mm3_launcher_player_names[player][combo_value(control(ui, id))]);
+            body = "Each player's controller or keyboard for split screen. Two players can share one keyboard, no key in common. Keyboard: arrows, Right Ctrl = A / handbrake, Right Shift = camera, / = back, Enter = pause. Keyboard 2: W/A/S/D, Space = A / handbrake, Left Shift = camera, Q = back, Tab = pause.";
+            effect = "Two keyboards move Keyboard to the right half (your own key changes are kept). Picking the other player's device moves them on.";
+            break;
+        }
         case ID_PAD_COUNT:
             title = "Controllers in game";
             body = "Expose 1-4 Xbox controller ports to the game. This is separate from the connected-controller status: choosing 4 does not create four physical controllers.";
-            effect = "Physical controller 1 feeds player 1, controller 2 feeds player 2, and so on. Keyboard input belongs to player 1.";
+            effect = "Player 1 and Player 2 use the controller or keyboard chosen above; players 3 and 4 use controllers 3 and 4.";
             break;
         case ID_GROUP:
             title = "Binding group";
-            body = ui->group == 0 ? "Map physical controller buttons and triggers to Xbox inputs. The same mapping is used by all four players; stick axes keep their analog movement." : ui->group == 1 ? "Map keyboard keys or mouse buttons to Xbox buttons and stick directions. These generic Xbox inputs are interpreted by the game's current control layout." : "Map direct driving shortcuts for acceleration, braking, steering, gears, handbrake and camera. They take priority over colliding generic keyboard bindings while driving.";
+            body = ui->group == 0 ? "Map physical controller buttons and triggers to Xbox inputs. The same mapping is used by all four players; stick axes keep their analog movement." : ui->group & 1 ? "Map keyboard keys or mouse buttons to Xbox buttons and stick directions. These generic Xbox inputs are interpreted by the game's current control layout." : "Map direct driving shortcuts for acceleration, braking, steering, gears, handbrake and camera. They take priority over colliding generic keyboard bindings while driving.";
+            if (ui->group >= 3)
+                effect = "Keyboard 2 is for a second player on the same keyboard. While a player uses it, its keys belong to it alone: the first keyboard set ignores them.";
+            else
             effect = "Select an action in the list, then capture an input or clear that action. Changes are saved only when you press Play.";
             break;
         case ID_BINDINGS: case ID_SOURCE: case ID_CAPTURE: case ID_UNBIND: case ID_PAD_PORT: {
@@ -523,9 +639,9 @@ static void help_show(Launcher *ui, int id)
                 body = "Choose the physical button or trigger that will produce this Xbox input. NONE unbinds it. The mapping applies equally to all players; stick axes remain analog.";
                 effect = "Triggers keep analog pressure for analog inputs. For digital actions they activate after about one-third travel.";
             } else {
-                key_name(ui->group == 1 ? ui->config.keys[action] : ui->config.drive_keys[action], binding, sizeof binding);
-                snprintf(value, sizeof value, "%s <- %s", ui->group == 1 ? key_labels[action] : drive_labels[action], binding);
-                body = ui->group == 1 ? "This key or mouse button produces the selected Xbox input. Its game action follows the in-game control layout." : "This key or mouse button activates the selected driving shortcut. It takes priority over a generic Xbox-key binding on the same key while driving.";
+                key_name(group_keys(ui)[action], binding, sizeof binding);
+                snprintf(value, sizeof value, "%s <- %s", group_label(ui, action), binding);
+                body = ui->group & 1 ? "This key or mouse button produces the selected Xbox input. Its game action follows the in-game control layout." : "This key or mouse button activates the selected driving shortcut. It takes priority over a generic Xbox-key binding on the same key while driving.";
                 effect = "Capture accepts a key or mouse button. Escape cancels capture; F10 and F11 are reserved.";
             }
             if (id == ID_PAD_PORT) {
@@ -619,6 +735,23 @@ static void help_show(Launcher *ui, int id)
             body = "Play validates and saves every tab, then launches the game with these preferences. Changing a control here does not alter a game that is already running.";
             effect = "Hover over, focus or change any setting to see its current value and what it does. In-game Graphics Settings are available with F10.";
             break;
+        case ID_PRESET: {
+            int pick = preset_current(ui);
+            title = "Quick preset";
+            body = "Fill in resolution, anti-aliasing, texture filtering, distances and the FPS limit in one step. Low power suits laptops and older graphics cards, Balanced is the default, Quality asks for a strong graphics card. You can still change every value afterwards.";
+            if (!pick) {
+                effect = "These graphics choices are your own mix. Pick a preset to replace them; nothing is saved until you press Play.";
+            } else {
+                preset_summary(mm3_performance_profile(preset_names[pick]), consequence, sizeof consequence);
+                effect = consequence;
+            }
+            break;
+        }
+        case ID_TOOLS:
+            title = "Folders and logs"; value[0] = 0;
+            body = "Open the game folder, the logs folder or the settings folder in Explorer, or copy the version and folder paths to the clipboard. The log of the last run is the first thing to send when something goes wrong.";
+            effect = "Opening a folder changes nothing. The copied text hides your Windows user name.";
+            break;
         case ID_UPDATE:
             title = "Check for updates"; value[0] = 0;
             body = "Ask GitHub whether a newer version of Midtown Madness 3 PC has been published. If there is one, the launcher offers to download its Setup, checks the download against the release's checksum, closes and opens Setup so you can install it.";
@@ -671,9 +804,8 @@ static void binding_detail(Launcher *ui)
                   mm3_launcher_pad_sources[ui->config.pad[selected]]);
         combo_select(control(ui, ID_SOURCE), ui->config.pad[selected]);
     } else {
-        int vk = ui->group == 1 ? ui->config.keys[selected] : ui->config.drive_keys[selected];
-        key_name(vk, key, sizeof key);
-        snprintf(text, sizeof text, "%s: %s", ui->group == 1 ? key_labels[selected] : drive_labels[selected], key);
+        key_name(group_keys(ui)[selected], key, sizeof key);
+        snprintf(text, sizeof text, "%s: %s", group_label(ui, selected), key);
     }
     SetWindowTextA(control(ui, ID_BIND_LABEL), text);
     EnableWindow(control(ui, ID_SOURCE), ui->group == 0);
@@ -685,7 +817,7 @@ static void bindings_refresh(Launcher *ui)
 {
     HWND list = control(ui, ID_BINDINGS);
     int old = (int)SendMessageA(list, LB_GETCURSEL, 0, 0);
-    int count = ui->group == 0 ? MM3_LAUNCHER_PAD_INPUTS : ui->group == 1 ? MM3_LAUNCHER_KEYS : MM3_LAUNCHER_DRIVE_KEYS;
+    int count = ui->group == 0 ? MM3_LAUNCHER_PAD_INPUTS : ui->group & 1 ? MM3_LAUNCHER_KEYS : MM3_LAUNCHER_DRIVE_KEYS;
     SendMessageA(list, LB_RESETCONTENT, 0, 0);
     for (int i = 0; i < count; ++i) {
         char text[160], key[80];
@@ -694,8 +826,8 @@ static void bindings_refresh(Launcher *ui)
             name = mm3_launcher_pad_names[i];
             snprintf(key, sizeof key, "%s", mm3_launcher_pad_sources[ui->config.pad[i]]);
         } else {
-            name = ui->group == 1 ? key_labels[i] : drive_labels[i];
-            key_name(ui->group == 1 ? ui->config.keys[i] : ui->config.drive_keys[i], key, sizeof key);
+            name = group_label(ui, i);
+            key_name(group_keys(ui)[i], key, sizeof key);
         }
         snprintf(text, sizeof text, "%s     :     %s", name, key);
         SendMessageA(list, LB_ADDSTRING, 0, (LPARAM)text);
@@ -712,12 +844,237 @@ static void binding_set(Launcher *ui, int value)
         return;
     }
     if (ui->group == 0) ui->config.pad[selected] = value;
-    else if (ui->group == 1) ui->config.keys[selected] = value;
-    else ui->config.drive_keys[selected] = value;
+    else group_keys(ui)[selected] = value;
     ui->capture = 0;
     SetWindowTextA(control(ui, ID_STATUS), "Binding updated. Play saves your preferences.");
     bindings_refresh(ui);
     help_show(ui, ID_BINDINGS);
+}
+
+/* Both keyboard sets in play: the first one moves to the right half of the
+ * keyboard, beside the second set's left half, and back to its one-player
+ * keys when they no longer share it. Keys the player changed are left alone. */
+static void keyboard_layout_follow(Launcher *ui)
+{
+    int share = mm3_launcher_players_share_keyboard(combo_value(control(ui, ID_PLAYER1)),
+                                                    combo_value(control(ui, ID_PLAYER2)), checked(ui, ID_KEYBOARD));
+    if (!mm3_launcher_keyboard1_is(&ui->config, !share)) return;
+    mm3_launcher_keyboard1_set(&ui->config, share);
+    bindings_refresh(ui);
+    SetWindowTextA(control(ui, ID_STATUS), share ?
+        "Two players on one keyboard: Keyboard now uses the right half (arrows, Right Ctrl, Right Shift, Enter) and Keyboard 2 the left half (W/A/S/D, Space, Left Shift, Tab). No key is shared." :
+        "Keyboard is back to its one-player keys.");
+}
+
+/* A player who takes the other's controller or keyboard moves the other one
+ * on (mm3_launcher_player1_for); a keyboard choice ticks keyboard controls,
+ * and a second player's choice opens a second controller port. */
+static void players_changed(Launcher *ui, int id)
+{
+    int player1 = combo_value(control(ui, ID_PLAYER1)), player2 = combo_value(control(ui, ID_PLAYER2));
+    for (int i = 0; id == ID_PLAYER1 && i < MM3_LAUNCHER_PLAYER2_CHOICES &&
+         mm3_launcher_player1_for(player1, player2) != player1; ++i)
+        player2 = i;
+    player1 = mm3_launcher_player1_for(player1, player2);
+    combo_select(control(ui, ID_PLAYER1), player1);
+    combo_select(control(ui, ID_PLAYER2), player2);
+    if (player1 == 2 || player1 == 3 || player2 >= 2) set_checked(ui, ID_KEYBOARD, 1);
+    if (player2 && combo_value(control(ui, ID_PAD_COUNT)) < 2) combo_select(control(ui, ID_PAD_COUNT), 2);
+    keyboard_layout_follow(ui);
+    help_show(ui, id);
+}
+
+/* Keyboard controls off: players on a keyboard go back to controllers. */
+static void players_keyboard_off(Launcher *ui)
+{
+    int player1 = combo_value(control(ui, ID_PLAYER1)), player2 = combo_value(control(ui, ID_PLAYER2));
+    if (player2 >= 2) combo_select(control(ui, ID_PLAYER2), player2 = 0);
+    if (player1 == 2 || player1 == 3) combo_select(control(ui, ID_PLAYER1), mm3_launcher_player1_for(1, player2));
+    keyboard_layout_follow(ui);
+}
+
+/* The GPU the game renders on. The renderer asks DXGI for the high-performance
+ * adapter (nv2a_d3d11.c), so this asks the same; dxgi.dll is loaded here so
+ * the launcher needs no import library for it. */
+static void gpu_name(char *text, size_t capacity)
+{
+    static const GUID factory6 = {0xc1b6694f, 0xff09, 0x44a9, {0xb0, 0x3c, 0x77, 0x90, 0x0a, 0x0a, 0x1d, 0x17}};
+    static const GUID adapter1 = {0x29038f61, 0x3839, 0x4626, {0x91, 0xfd, 0x08, 0x68, 0x79, 0x01, 0x1a, 0x05}};
+    typedef HRESULT (WINAPI *CreateFactory)(REFIID, void **);
+    HMODULE dxgi = LoadLibraryA("dxgi.dll");
+    CreateFactory create = dxgi ? (CreateFactory)(void (*)(void))GetProcAddress(dxgi, "CreateDXGIFactory1") : NULL;
+    IDXGIFactory6 *factory = NULL;
+    IDXGIAdapter1 *adapter = NULL;
+    DXGI_ADAPTER_DESC1 desc;
+    char name[128];
+    snprintf(text, capacity, "GPU: not found");
+    if (create && SUCCEEDED(create(&factory6, (void **)&factory))) {
+        if (SUCCEEDED(IDXGIFactory6_EnumAdapterByGpuPreference(factory, 0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                                                               &adapter1, (void **)&adapter))) {
+            if (SUCCEEDED(IDXGIAdapter1_GetDesc1(adapter, &desc)) &&
+                WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof name, NULL, NULL)) {
+                /* Shorter for the header: "NVIDIA RTX 2000 Ada Generation Laptop GPU" -> "... Ada Laptop GPU". */
+                static const char *const noise[] = {"(TM)", "(R)", " Generation"};
+                for (size_t i = 0; i < sizeof noise / sizeof noise[0]; ++i) {
+                    char *at;
+                    while ((at = strstr(name, noise[i])) != NULL)
+                        memmove(at, at + strlen(noise[i]), strlen(at + strlen(noise[i])) + 1);
+                }
+                snprintf(text, capacity, "GPU: %s", name);
+            }
+            IDXGIAdapter1_Release(adapter);
+        }
+        IDXGIFactory6_Release(factory);
+    }
+    if (dxgi) FreeLibrary(dxgi);
+}
+
+/* ---- Folders and logs, support info ------------------------------------- */
+
+static int tools_open(const wchar_t *path)
+{ return (INT_PTR)ShellExecuteW(NULL, L"open", path, NULL, NULL, SW_SHOWNORMAL) > 32; }
+
+static int clipboard_copy(HWND window, const wchar_t *text)
+{
+    size_t bytes = (wcslen(text) + 1) * sizeof(wchar_t);
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    void *at;
+    int done = 0;
+    if (!memory) return 0;
+    at = GlobalLock(memory);
+    if (at) { memcpy(at, text, bytes); GlobalUnlock(memory); }
+    if (at && OpenClipboard(window)) {
+        EmptyClipboard();
+        if (SetClipboardData(CF_UNICODETEXT, memory)) { memory = NULL; done = 1; }
+        CloseClipboard();
+    }
+    if (memory) GlobalFree(memory);
+    return done;
+}
+
+/* The three folders someone helping with a problem asks for. The logs folder is made when it is not
+ * there yet (Explorer would otherwise refuse to open it). */
+static int tools_path(wchar_t *path, size_t count, int which)
+{
+    wchar_t *slash;
+    if (which == ID_TOOL_SETTINGS) {
+        char utf8[2 * MAX_PATH], error[256];
+        if (!mm3_launcher_config_path(utf8, sizeof utf8, error, sizeof error)) return 0;
+        if (!MultiByteToWideChar(CP_UTF8, 0, utf8, -1, path, (int)count)) return 0;
+        slash = wcsrchr(path, L'\\');
+        if (wcsrchr(path, L'/') > slash) slash = wcsrchr(path, L'/');   /* the path may use either */
+        if (slash) *slash = 0;
+        return 1;
+    }
+    if (!GetCurrentDirectoryW((DWORD)count, path) || wcslen(path) + 6 >= count) return 0;
+    if (which == ID_TOOL_LOGS) {
+        wcscat(path, L"\\logs");
+        CreateDirectoryW(path, NULL);
+    }
+    return 1;
+}
+
+static int tools_choose(Launcher *ui)
+{
+    HMENU menu = CreatePopupMenu();
+    RECT button;
+    int command;
+    if (!menu) return 0;
+    AppendMenuA(menu, MF_STRING, ID_TOOL_GAME, "Open the game folder");
+    AppendMenuA(menu, MF_STRING, ID_TOOL_LOGS, "Open the logs folder");
+    AppendMenuA(menu, MF_STRING, ID_TOOL_SETTINGS, "Open the settings folder");
+    AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(menu, MF_STRING, ID_TOOL_COPY, "Copy version and folder info for support");
+    GetWindowRect(control(ui, ID_TOOLS), &button);
+    command = (int)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_BOTTOMALIGN,
+                                  button.left, button.top, 0, ui->window, NULL);
+    DestroyMenu(menu);
+    return command;
+}
+
+/* The files the game cannot start without: the ones Setup also looks for (default.xbe and the main
+ * data archive). Relative to the working directory, where main.c has already moved to the install. */
+static int game_files_present(wchar_t *folder, size_t count, const wchar_t **missing)
+{
+    static const wchar_t *const required[] = {L"game_files\\default.xbe", L"game_files\\Data\\Data_hd.zip"};
+    if (!GetCurrentDirectoryW((DWORD)count, folder)) folder[0] = 0;
+    for (int i = 0; i < (int)(sizeof required / sizeof required[0]); ++i)
+        if (GetFileAttributesW(required[i]) == INVALID_FILE_ATTRIBUTES) { *missing = required[i]; return 0; }
+    *missing = NULL;
+    return 1;
+}
+
+/* Plain words about what is wrong and what to do; also the line under the settings. */
+static void game_files_message(const wchar_t *folder, const wchar_t *missing, wchar_t *text, size_t count)
+{
+    _snwprintf(text, count,
+               L"%ls is missing from %ls, so the game cannot start.\n\nIf you installed with MM3-Setup.exe, run it "
+               L"again and choose your game image: it puts back whatever is missing and keeps your saved games.",
+               missing, folder);
+    text[count - 1] = 0;
+}
+
+/* Play pressed: 1 when the game's files are there; otherwise say so, offer Setup's page, return 0. */
+static int game_files_check(Launcher *ui)
+{
+    wchar_t folder[2 * MAX_PATH], text[2 * MAX_PATH + 600], ask[2 * MAX_PATH + 700];
+    const wchar_t *missing = NULL;
+    if (MM3_LAUNCHER_GAME_FILES(folder, sizeof folder / sizeof folder[0], &missing)) return 1;
+    game_files_message(folder, missing, text, sizeof text / sizeof text[0]);
+    _snwprintf(ask, sizeof ask / sizeof ask[0], L"%ls\n\nOpen the download page of Setup?", text);
+    ask[sizeof ask / sizeof ask[0] - 1] = 0;
+    if (MM3_GAME_MISSING_ASK(ui->window, ask)) (void)MM3_LAUNCHER_OPEN_PAGE(MM3_UPDATE_PAGE);
+    SetWindowTextW(control(ui, ID_STATUS), text);
+    return 0;
+}
+
+/* A line for a message to whoever helps: version, Windows, folders, the newest log. The user's own
+ * profile folder reads %USERPROFILE%. */
+static void hide_profile(wchar_t *text, size_t count)
+{
+    wchar_t home[MAX_PATH];
+    DWORD length = GetEnvironmentVariableW(L"USERPROFILE", home, MAX_PATH);
+    wchar_t *at;
+    if (!length || length >= MAX_PATH) return;
+    while ((at = wcsstr(text, home)) != NULL && wcslen(text) + 13 < count) {
+        size_t tail = wcslen(at + length) + 1;
+        memmove(at + 13, at + length, tail * sizeof(wchar_t));
+        memcpy(at, L"%USERPROFILE%", 13 * sizeof(wchar_t));
+    }
+}
+
+static int update_installed(void);
+static void support_text(wchar_t *text, size_t count)
+{
+    wchar_t folder[2 * MAX_PATH], logs[2 * MAX_PATH], settings[2 * MAX_PATH], newest[MAX_PATH] = L"none yet";
+    const wchar_t *missing = NULL;
+    OSVERSIONINFOW os = {sizeof os};
+    typedef LONG (WINAPI *RtlGetVersionFn)(OSVERSIONINFOW *);
+    RtlGetVersionFn version = (RtlGetVersionFn)(void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion");
+    WIN32_FIND_DATAW found;
+    FILETIME latest = {0, 0};
+    HANDLE search;
+    int present = MM3_LAUNCHER_GAME_FILES(folder, sizeof folder / sizeof folder[0], &missing);
+    if (version) version(&os);
+    if (!tools_path(settings, sizeof settings / sizeof settings[0], ID_TOOL_SETTINGS)) wcscpy(settings, L"unknown");
+    _snwprintf(logs, sizeof logs / sizeof logs[0], L"%ls\\logs\\*.log", folder);
+    logs[sizeof logs / sizeof logs[0] - 1] = 0;
+    search = FindFirstFileW(logs, &found);
+    if (search != INVALID_HANDLE_VALUE) {
+        do if (CompareFileTime(&found.ftLastWriteTime, &latest) > 0) {
+            latest = found.ftLastWriteTime;
+            _snwprintf(newest, MAX_PATH, L"logs\\%ls (%lu KB)", found.cFileName, (unsigned long)(found.nFileSizeLow >> 10));
+            newest[MAX_PATH - 1] = 0;
+        } while (FindNextFileW(search, &found));
+        FindClose(search);
+    }
+    _snwprintf(text, count,
+               L"Midtown Madness 3 PC Native %hs\r\nWindows %lu.%lu build %lu\r\nGame folder: %ls\r\n"
+               L"Game files: %ls\r\nSettings folder: %ls\r\nNewest log: %ls\r\nMade by Setup: %ls\r\n",
+               MM3_VERSION, os.dwMajorVersion, os.dwMinorVersion, os.dwBuildNumber, folder,
+               present ? L"found" : missing, settings, newest, update_installed() ? L"yes" : L"no (developer or manual build)");
+    text[count - 1] = 0;
+    hide_profile(text, count);
 }
 
 static void populate(Launcher *ui)
@@ -785,6 +1142,8 @@ static void populate(Launcher *ui)
     }
     set_checked(ui, ID_KEYBOARD, ui->config.option[MM3_LAUNCH_KEYBOARD]);
     combo_select(control(ui, ID_PAD_COUNT), ui->config.controller_count);
+    combo_select(control(ui, ID_PLAYER1), mm3_launcher_player1_for(ui->config.player1, ui->config.player2));
+    combo_select(control(ui, ID_PLAYER2), ui->config.player2);
     for (int i = 1; i < MM3_LAUNCH_OPTION_COUNT; ++i)
         set_checked(ui, ID_OPTION + i, option_inverted(i) ? !ui->config.option[i] : ui->config.option[i]);
     set_checked(ui, ID_ORIGINAL, !ui->config.option[MM3_LAUNCH_IMPROVED]);
@@ -805,6 +1164,7 @@ static void populate(Launcher *ui)
     }
     snprintf(text, sizeof text, "%d", ui->config.network_port); SetWindowTextA(control(ui, ID_PORT), text);
     SetWindowTextA(control(ui, ID_PEERS), ui->config.peers);
+    preset_show(ui);
     bindings_refresh(ui);
 }
 
@@ -822,8 +1182,8 @@ static int read_controls(Launcher *ui, char *error, size_t capacity)
 {
     int resolution = combo_value(control(ui, ID_RESOLUTION));
     MM3DisplaySettings *s = &ui->display;
-    if (!read_integer(ui, ID_FPS, 1, 60, &s->fps_limit)) {
-        snprintf(error, capacity, "Enter a maximum FPS between 1 and 60."); return 0;
+    if (!read_integer(ui, ID_FPS, 1, MM3_FPS_LIMIT_MAX, &s->fps_limit)) {
+        snprintf(error, capacity, "Enter a maximum FPS between 1 and 120."); return 0;
     }
     if (!read_integer(ui, ID_FOV, 0, 110, &ui->config.fov_degrees) ||
         (ui->config.fov_degrees && ui->config.fov_degrees < 60)) {
@@ -848,6 +1208,8 @@ static int read_controls(Launcher *ui, char *error, size_t capacity)
     s->night_light = combo_value(control(ui, ID_NIGHT));
     ui->config.option[MM3_LAUNCH_KEYBOARD] = checked(ui, ID_KEYBOARD);
     ui->config.controller_count = combo_value(control(ui, ID_PAD_COUNT));
+    ui->config.player1 = combo_value(control(ui, ID_PLAYER1));
+    ui->config.player2 = combo_value(control(ui, ID_PLAYER2));
     ui->config.damage_percent = combo_value(control(ui, ID_DAMAGE));
     ui->config.own_damage_percent = combo_value(control(ui, ID_OWN_DAMAGE));
     ui->config.time_percent = combo_value(control(ui, ID_TIME));
@@ -909,9 +1271,9 @@ static void settings_controls(Launcher *ui)
         static const char *const ratios[] = {"auto", "4:3", "16:9", "16:10", "21:9"};
         SendMessageA(c, CB_ADDSTRING, 0, (LPARAM)ratios[i]);
     }
-    label(ui, 0, "Maximum FPS (1-60)", 42, 166, 238);
+    label(ui, 0, "Maximum FPS (1-120, engine limit)", 42, 166, 260);
     c = add(ui, 0, "COMBOBOX", "", CBS_DROPDOWN | WS_TABSTOP, ID_FPS, 42, 190, 110, 120);
-    combo_item(c, "30", 30); combo_item(c, "60", 60);
+    combo_item(c, "30", 30); combo_item(c, "60", 60); combo_item(c, "120", 120);
     check(ui, 0, ID_VSYNC, "VSync", 172, 190, 100);
     c = combo(ui, 0, ID_SCALE, "Internal resolution", 310, 166, 238);
     combo_item(c, "Automatic + supersampling", 0); combo_item(c, "480p", 1000);
@@ -926,9 +1288,12 @@ static void settings_controls(Launcher *ui)
     for (int i = 1; i <= 4; ++i) { char name[24]; snprintf(name, sizeof name, "%dx%s", i, i == 1 ? " (Xbox)" : ""); combo_item(c, name, i * 1000); }
     c = combo(ui, 0, ID_VIEW, "Building view distance", 578, 234, 238);
     for (int i = 1; i <= 4; ++i) { char name[24]; snprintf(name, sizeof name, "%dx%s", i, i == 1 ? " (Xbox)" : ""); combo_item(c, name, i * 1000); }
-    check(ui, 0, ID_SHOW_FPS, "Show FPS in the window title", 42, 312, 350);
-    c = combo(ui, 0, ID_MINIMAP, "Minimap style", 445, 302, 371);
-    combo_item(c, "Retail", 0); combo_item(c, "Improved perspective roads", 1);
+    c = combo(ui, 0, ID_PRESET, "Quick preset", 42, 302, 238);
+    for (int i = 0; i < 4; ++i) combo_item(c, preset_labels[i], i);
+    combo_select(c, 0);
+    c = combo(ui, 0, ID_MINIMAP, "Minimap style", 310, 302, 238);
+    combo_item(c, "Retail", 0); combo_item(c, "Improved perspective", 1);
+    check(ui, 0, ID_SHOW_FPS, "Show FPS in the title bar", 578, 328, 238);
     check(ui, 0, ID_OPTION + MM3_LAUNCH_DSP, mm3_launcher_options[MM3_LAUNCH_DSP].label, 42, 379, 390);
     EnableWindow(control(ui, ID_OPTION + MM3_LAUNCH_DSP), MM3_LAUNCHER_AUDIO);
     label(ui, 0, MM3_LAUNCHER_AUDIO ? "Console DSP effects and mixing." : "Sound-processor controls will be enabled when the audio update is installed.", 42, 407, 774);
@@ -947,17 +1312,23 @@ static void settings_controls(Launcher *ui)
 static void controls_controls(Launcher *ui)
 {
     HWND c;
-    check(ui, 1, ID_KEYBOARD, "Enable keyboard controls (player 1, alongside a controller)", 42, 94, 774);
-    c = combo(ui, 1, ID_PAD_COUNT, "Controllers in game", 42, 130, 345);
+    check(ui, 1, ID_KEYBOARD, "Enable keyboard controls", 42, 94, 774);
+    c = combo(ui, 1, ID_PLAYER1, "Player 1 plays with", 42, 130, 345);
+    for (int i = 0; i < MM3_LAUNCHER_PLAYER1_CHOICES; ++i) combo_item(c, mm3_launcher_player_names[0][i], i);
+    c = combo(ui, 1, ID_PLAYER2, "Player 2 plays with", 42, 186, 165);
+    for (int i = 0; i < MM3_LAUNCHER_PLAYER2_CHOICES; ++i) combo_item(c, mm3_launcher_player_names[1][i], i);
+    c = combo(ui, 1, ID_PAD_COUNT, "Controllers in game", 222, 186, 165);
     for (int i = 1; i <= 4; ++i) { char text[16]; snprintf(text, sizeof text, "%d", i); combo_item(c, text, i); }
     add(ui, 1, "STATIC", "Detecting controllers...", 0, ID_PAD_STATUS, 417, 130, 399, 92);
-    add(ui, 1, "STATIC", "", 0, ID_PAD_HINT, 42, 190, 345, 48);
-    c = combo(ui, 1, ID_GROUP, "Bindings", 42, 247, 345);
+    add(ui, 1, "STATIC", "", 0, ID_PAD_HINT, 42, 242, 345, 48);
+    c = combo(ui, 1, ID_GROUP, "Bindings", 42, 296, 345);
     combo_item(c, "Controller buttons (all four players)", 0);
     combo_item(c, "Keyboard Xbox buttons", 1); combo_item(c, "Keyboard driving shortcuts", 2);
+    combo_item(c, "Keyboard 2 Xbox buttons (left half)", 3);
+    combo_item(c, "Keyboard 2 driving shortcuts (left half)", 4);
     combo_select(c, 0);
     add(ui, 1, "LISTBOX", "", LBS_NOTIFY | WS_BORDER | WS_VSCROLL | WS_TABSTOP,
-         ID_BINDINGS, 42, 307, 345, 251);
+         ID_BINDINGS, 42, 356, 345, 202);
     add(ui, 1, "STATIC", "", 0, ID_BIND_LABEL, 417, 229, 399, 48);
     c = combo(ui, 1, ID_SOURCE, "Controller source", 417, 285, 399);
     for (int i = 0; i < MM3_LAUNCHER_PAD_SOURCES; ++i) combo_item(c, mm3_launcher_pad_sources[i], i);
@@ -1347,7 +1718,8 @@ static void banner_make(Launcher *ui)
 
 static int is_push_button(int id)
 {
-    return id == ID_DEFAULTS || id == ID_UPDATE || id == IDOK || id == IDCANCEL || id == ID_CAPTURE || id == ID_UNBIND;
+    return id == ID_DEFAULTS || id == ID_UPDATE || id == ID_TOOLS || id == IDOK || id == IDCANCEL ||
+           id == ID_CAPTURE || id == ID_UNBIND;
 }
 
 /* Owner-drawn push buttons track the pointer themselves: bit 0 of the user data means "pointer over". */
@@ -1570,8 +1942,8 @@ static void update_done(Launcher *ui, UpdateJob *job)
         ui->update_found = job->update;
         snprintf(text, sizeof text,
                  "Version %s is available (this is %s).\n\nDownload its Setup now? When it is ready, this window "
-                 "closes and Setup opens: choose your game image there and press Install to update. "
-                 "Your saved games and DLC stay.", job->update.version, MM3_VERSION);
+                 "closes and Setup opens: press Update this install there (your game image is only needed "
+                 "if Setup finds game files missing). Your saved games and DLC stay.", job->update.version, MM3_VERSION);
         if (MM3_UPDATE_ASK(ui->window, text)) update_start(ui, 1);
         else {
             snprintf(text, sizeof text, "Version %s is available. Press Check for updates to download it.",
@@ -1620,7 +1992,12 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             SendMessageA(title, WM_SETFONT, (WPARAM)ui->heading, TRUE);
             add(ui, -1, "STATIC", "Detecting controllers...", SS_RIGHT, ID_PAD_SUMMARY, 620, 23, 570, 24);
             add(ui, -1, "STATIC", "Choose your settings. The guide explains each value as you select or change it.",
-                0, ID_SUBTITLE, text_x, 50, 1190 - text_x, 24);
+                0, ID_SUBTITLE, text_x, 50, 820 - text_x, 24);
+            {
+                char gpu[160];
+                gpu_name(gpu, sizeof gpu);
+                add(ui, -1, "STATIC", gpu, SS_RIGHT | SS_ENDELLIPSIS, ID_GPU, 830, 50, 360, 24);
+            }
         }
         /* The classic tab control barely marks the open tab, so WM_DRAWITEM
          * draws the headers: the open one solid blue with white bold text,
@@ -1663,9 +2040,20 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             0, ID_STATUS, 25, 644, 1165, 45);
         push_button(ui, -1, "Restore defaults", ID_DEFAULTS, 25, 699, 155, 34);
         push_button(ui, -1, "Check for updates", ID_UPDATE, 195, 699, 175, 34);
+        push_button(ui, -1, "Folders and logs", ID_TOOLS, 385, 699, 175, 34);
         push_button(ui, -1, "Play", IDOK, 933, 699, 122, 34);
         push_button(ui, -1, "Cancel", IDCANCEL, 1068, 699, 122, 34);
         populate(ui); page_show(ui, 0);
+        {   /* Say it before Play is pressed, not after a start that cannot work. */
+            wchar_t folder[2 * MAX_PATH], text[2 * MAX_PATH + 100];
+            const wchar_t *missing = NULL;
+            if (!MM3_LAUNCHER_GAME_FILES(folder, sizeof folder / sizeof folder[0], &missing)) {
+                _snwprintf(text, sizeof text / sizeof text[0], L"Game files not found: %ls is missing from %ls. "
+                           L"Play will explain how to repair the install.", missing, folder);
+                text[sizeof text / sizeof text[0] - 1] = 0;
+                SetWindowTextW(control(ui, ID_STATUS), text);
+            }
+        }
         poll_pads(ui);
         SetTimer(window, 1, 70, NULL);
         if (ui->smoke) SetTimer(window, 2, 150, NULL);
@@ -1691,19 +2079,44 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             (LOWORD(wparam) >= ID_OPTION && LOWORD(wparam) < ID_OPTION + MM3_LAUNCH_OPTION_COUNT))) {
             int id = LOWORD(wparam);
             set_checked(ui, id, !checked(ui, id));
+            if (id == ID_KEYBOARD) { if (checked(ui, id)) keyboard_layout_follow(ui); else players_keyboard_off(ui); }
             if (id == ID_OPTION + MM3_LAUNCH_WORLD_LIGHT || id == ID_OPTION + MM3_LAUNCH_FREE_CAMERA)
                 mods_enable(ui);   /* Night brightness, the free camera key */
             help_show(ui, id);
             return 0;
         }
+        if (HIWORD(wparam) == CBN_SELCHANGE && LOWORD(wparam) == ID_PRESET) {
+            int pick = combo_value(control(ui, ID_PRESET));
+            if (pick > 0) preset_apply(ui, pick);
+            help_show(ui, ID_PRESET);
+            return 0;
+        }
         if (HIWORD(wparam) == CBN_SELCHANGE || HIWORD(wparam) == CBN_EDITCHANGE ||
-            HIWORD(wparam) == EN_CHANGE || HIWORD(wparam) == LBN_SELCHANGE)
-            help_show(ui, LOWORD(wparam));
+            HIWORD(wparam) == EN_CHANGE || HIWORD(wparam) == LBN_SELCHANGE) {
+            int id = LOWORD(wparam);
+            if (id == ID_SCALE || id == ID_MSAA || id == ID_ANISO || id == ID_DRAW || id == ID_VIEW || id == ID_FPS)
+                preset_show(ui);    /* the box follows what the controls now spell out */
+            help_show(ui, id);
+        }
         switch (LOWORD(wparam)) {
         case IDOK:
             if (ui->update_job) { update_status(ui, "Wait for the update to finish, or press Cancel."); return 0; }
-            if (!ui->capture && apply(ui)) { ui->result = 1; game_window_follow(); DestroyWindow(window); }
+            if (!ui->capture && game_files_check(ui) && apply(ui)) { ui->result = 1; game_window_follow(); DestroyWindow(window); }
             return 0;
+        case ID_TOOLS: {
+            int command = MM3_LAUNCHER_MENU(ui);
+            wchar_t path[2 * MAX_PATH + 16];
+            if (command == ID_TOOL_COPY) {
+                wchar_t text[3 * MAX_PATH + 1024];
+                support_text(text, sizeof text / sizeof text[0]);
+                update_status(ui, MM3_LAUNCHER_COPY(window, text) ? "Copied. Paste it into your message." :
+                                  "Could not copy to the clipboard.");
+            } else if (command >= ID_TOOL_GAME && command <= ID_TOOL_SETTINGS) {
+                if (!tools_path(path, sizeof path / sizeof path[0], command) || !MM3_LAUNCHER_OPEN(path))
+                    update_status(ui, "Could not open that folder.");
+            }
+            return 0;
+        }
         case IDCANCEL:
             if (ui->capture) { ui->capture = 0; SetWindowTextA(control(ui, ID_STATUS), "Capture cancelled."); help_show(ui, ID_CAPTURE); }
             else if (!update_defer_close(ui)) DestroyWindow(window);
@@ -1716,6 +2129,9 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             mm3_display_settings_defaults(&ui->display, getenv("MM3_PERFORMANCE_PROFILE"));
             populate(ui); SetWindowTextA(control(ui, ID_STATUS), "Defaults restored in this window. Play saves them; Cancel discards them.");
             help_show(ui, ID_DEFAULTS);
+            return 0;
+        case ID_PLAYER1: case ID_PLAYER2:
+            if (HIWORD(wparam) == CBN_SELCHANGE) players_changed(ui, LOWORD(wparam));
             return 0;
         case ID_GROUP:
             if (HIWORD(wparam) == CBN_SELCHANGE) { ui->capture = 0; ui->group = combo_value(control(ui, ID_GROUP)); bindings_refresh(ui); help_show(ui, ID_GROUP); }
@@ -1772,7 +2188,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         int id = GetDlgCtrlID((HWND)lparam);
         HDC dc = (HDC)wparam;
         if ((HWND)lparam == control(ui, ID_TAB_BAR) && ui->accent) return (LRESULT)ui->accent;
-        if (ui->band_brush && (id == ID_TITLE || id == ID_SUBTITLE || id == ID_PAD_SUMMARY)) {
+        if (ui->band_brush && (id == ID_TITLE || id == ID_SUBTITLE || id == ID_PAD_SUMMARY || id == ID_GPU)) {
             SetTextColor(dc, id == ID_TITLE ? RGB(255, 255, 255) : COLOR_BAND_TEXT);
             SetBkColor(dc, COLOR_BAND);
             return (LRESULT)ui->band_brush;
@@ -1836,7 +2252,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
     case WM_TIMER:
         if (wparam == 1) { poll_pads(ui); return 0; }
         if (wparam == 2) {
-            static const int important[] = {ID_MODE, ID_FPS, ID_MINIMAP, ID_KEYBOARD,
+            static const int important[] = {ID_MODE, ID_FPS, ID_MINIMAP, ID_KEYBOARD, ID_PLAYER1, ID_PLAYER2,
                 ID_GROUP, ID_BINDINGS, ID_SOURCE, ID_CAPTURE, ID_PAD_COUNT, ID_PAD_STATUS,
                 ID_PAD_SUMMARY, ID_PAD_HINT, ID_FOV, IDOK, IDCANCEL};
             int valid = 1;

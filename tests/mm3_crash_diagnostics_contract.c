@@ -18,6 +18,17 @@ static uint32_t g_esp, g_eax, g_ebp, g_seh_ebp, g_fs_base;
 static uint32_t g_ecx, g_ebx, g_esi, g_edi;
 static void *xbox_GetMemoryBase(void) { return memory; }
 
+/* The generic host/guest register block moved into the toolkit (kernel/crash_report.c, covered by its
+ * crash_dump test); this stand-in prints its first line, so each report is seen to call it. */
+static LONG xbox_CrashReport(EXCEPTION_POINTERS *info)
+{
+    const EXCEPTION_RECORD *record = info ? info->ExceptionRecord : NULL;
+    fprintf(stderr, "[CRASH] code=0x%08lX address=%p guest_esp=0x%08X eax=0x%08X\n",
+            record ? record->ExceptionCode : 0,
+            record ? record->ExceptionAddress : NULL, g_esp, g_eax);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 #include "production_crash_report.inc"
 
 static void set_word(uint32_t address, uint32_t value)

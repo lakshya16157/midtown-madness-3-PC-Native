@@ -23,17 +23,23 @@ INITIAL = (NODE + 0x14, NODE, 0x55667788, STACK,
            0x12345678, 0x23456789, 0x3456789A, 0x456789AB)
 
 
+def gen_function(name):
+    """Generated chunks are renumbered between translator versions: search them all."""
+    head = 'void ' + name + '(void)\n{'
+    for path in sorted((ROOT / 'src/recomp/gen').glob('recomp_*.c')):
+        text = path.read_text()
+        start = text.find(head)
+        if start >= 0:
+            return text[start:text.index('\n}', start) + 2]
+    raise AssertionError(name)
+
+
 def native_source(old=False):
     bodies = []
-    owners = ((ROOT / 'src/recomp/gen/recomp_runtime_entries.c', 0x6726A),
-              (ROOT / 'src/recomp/gen/recomp_0004.c', 0x4DBC7),
-              (ROOT / 'src/recomp/gen/recomp_0012.c', 0x135B2A))
-    for path, address in owners:
-        name = f'sub_{address:08X}'
-        match = re.search(r'void ' + name + r'\(void\)\n\{.*?\n\}', path.read_text(), re.S)
-        assert match, (path, name)
+    for address in (0x6726A, 0x4DBC7, 0x135B2A):
+        body = gen_function(f'sub_{address:08X}')
         bodies.append('void sub_0006726A(void){g_esp+=4;}'
-                      if old and address == 0x6726A else match.group())
+                      if old and address == 0x6726A else body)
     return r'''
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,6 +49,10 @@ ptrdiff_t g_xbox_mem_offset;
 RECOMP_TLS uint32_t g_eax,g_ecx,g_edx,g_esp,g_ebx,g_esi,g_edi,g_ebp,g_seh_ebp;
 RECOMP_TLS int g_df;
 void sub_0006726A(void);void sub_0004DBC7(void);void sub_00135B2A(void);
+/* The translator now emits the 135B2A -> 6726A tail jump as an indirect tail
+   call through the function table; resolve it directly in the harness. */
+#undef RECOMP_ITAIL
+#define RECOMP_ITAIL(va) do { if ((va) == 0x6726Au) sub_0006726A(); } while (0)
 ''' + '\n'.join(bodies) + r'''
 int main(int argc,char**argv){
  unsigned char*ram=(unsigned char*)malloc(0x1000000);

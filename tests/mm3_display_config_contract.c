@@ -112,7 +112,7 @@ static void persistence(void)
     assert(!mm3_display_settings_save(&invalid, error, sizeof error));
     assert(strstr(error, "view_distance"));
     invalid = expected;
-    invalid.fps_limit = 61;
+    invalid.fps_limit = 121;
     assert(!mm3_display_settings_save(&invalid, error, sizeof error));
     assert(strstr(error, "fps_limit"));
     invalid = expected;

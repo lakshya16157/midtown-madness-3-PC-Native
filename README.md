@@ -1,8 +1,9 @@
-# Midtown Madness 3 PC Native
+# Midtown Madness 3 recompilation
 
-Play the Xbox racing game **Midtown Madness 3** natively on your Windows PC: your screen's
-resolution and widescreen, 60 fps, controller or keyboard, and optional mods. You need your
-own copy of the Xbox game.
+Play the Xbox racing game **Midtown Madness 3** natively on your Windows PC (or on Linux and
+the Steam Deck through Proton): your screen's resolution and widescreen, up to 120 fps,
+controller or keyboard, two-player split screen, and optional mods. You need your own copy of
+the Xbox game.
 
 **[Download MM3-Setup.exe](https://github.com/lakshya16157/midtown-madness-3-PC-Native/releases/latest)**
 (under **Assets** on the latest release).
@@ -14,6 +15,9 @@ own copy of the Xbox game.
 2. **Pick your game image**: a disc image of your own Midtown Madness 3 Xbox disc (`.iso`
    or `.xiso`). The Europe/Australia and USA releases both work. See
    [Ownership, disc images and DLC](#ownership-disc-images-and-dlc) for where to get one.
+   Setup looks for it by itself in your Downloads, Desktop and Documents folders and fills it
+   in; it tells you in plain words if a file is not the game, is another release, or is
+   incomplete, and shows how much disk space the install needs before you press Install.
 3. **Choose options** (you can change them later by running Setup again):
    - **Add extra cars**: nine community cars (see [credits](#extra-car-credits)).
    - **Add game improvements** (on by default): sharper image defaults. Untick it to start
@@ -21,21 +25,37 @@ own copy of the Xbox game.
    - **Official DLC** (optional): point Setup at the DLC ZIP or folder
      ([download link below](#ownership-disc-images-and-dlc)) if you are entitled to use it.
      It adds 14 cars and 40 Blitz and Checkpoint races.
-4. Click **Install**, then **Play now**. Later, start the game with
-   **Play Midtown Madness 3.cmd** in the install folder.
+4. Click **Install**, then **Play now**. Later, start the game from the **Midtown Madness 3**
+   shortcut on your Desktop or in the Start menu (Setup adds them unless you untick the box),
+   or with **Play Midtown Madness 3.cmd** in the install folder. **Cancel install** stops
+   safely; the next Install continues where it left off. If something goes wrong, **Copy
+   details** and **Report a problem on GitHub** show up under the progress bar. **Uninstall...**
+   (shown when Setup finds an install in the folder) removes the game program and shortcuts and
+   keeps your saved games unless you also ask to delete them.
+   **Already installed?** Run the new Setup next to (or pointing at) your install folder and press
+   **Update this install**: it needs no disc image and no DLC pack. It reuses the game files and DLC you
+   already have, refreshes the game program, extra cars and shortcuts, and keeps your saved games and
+   settings. Setup first checks that the game files are complete; if something is missing or damaged
+   it says what and asks for the image to repair it.
 5. **Updates:** click **Check for updates** at the bottom left of Setup. If a newer release
    is published, Setup downloads it (checking it against the release's checksum), replaces
-   itself and restarts. Then pick your image and click **Install** again to put the new game
-   in your existing install; your saves and DLC stay, and the extra cars and improvements
-   boxes start as you left them. (Setup 2.1 and later have the button; with an older Setup,
+   itself and restarts. Then press **Update this install** to put the new game program in your
+   existing install; no image is needed, your saves and DLC stay, and the extra cars and
+   improvements boxes start as you left them. (Setup 2.1 and later have the button; with an older Setup,
    download the latest release by hand once.) The game's own launcher window, the one you
    see before the game starts, has the same **Check for updates** button: it downloads the
    new Setup (checked the same way) into an `updates` folder in the install, closes, and
-   opens that Setup for your install folder, ready for you to pick your image and install.
+   opens that Setup for your install folder, ready for you to press **Update this install**.
+   The launcher also has a **Quick preset** (Low power, Balanced, Quality) on the Settings tab
+   that fills in resolution, anti-aliasing, filtering, distances and the FPS limit in one step,
+   a **Folders and logs** button (game, logs and settings folders, and a copy of the version and
+   folder paths for a bug report, without your Windows user name), and it says so, instead of
+   starting a game that cannot run, when files of the game are missing: run Setup again with
+   your image to put them back.
 
 You need Windows 10 or 11 (64-bit), a Direct3D 11 graphics card and about 6 GB of free
-disk space. The first start shows the intro movies for about 3½ minutes; the game has not
-frozen.
+disk space, or Linux / Steam Deck with Proton or Wine ([Linux and Steam Deck](#linux-and-steam-deck)).
+The first start shows the intro movies for about 3½ minutes; the game has not frozen.
 
 ## Look and gameplay
 
@@ -78,7 +98,7 @@ Spanish voices in Spanish.
 | Setting | Where | Original look | Improved look |
 |---|---|---|---|
 | Window size, fullscreen, screen, aspect ratio | Launcher **Settings** | Yes | Yes |
-| Maximum FPS (up to 60), VSync, FPS in the title | Launcher **Settings** | Yes | Yes |
+| Maximum FPS (1-120: 120 is the game engine's limit, its car physics runs 120 steps a second), VSync (off shows each frame at once; the picture may tear), FPS in the title | Launcher **Settings** | Yes | Yes |
 | Internal resolution, anti-aliasing, texture filtering | Launcher **Settings** | Yes | Yes |
 | Object detail and building view distance | Launcher **Settings** | Xbox distances | 1x to 4x |
 | Minimap style | Launcher **Settings** | Xbox minimap | Xbox, or improved with Modded gameplay |
@@ -152,7 +172,14 @@ The full guide is in [tools/car-mods/README.md](tools/car-mods/README.md).
   - Driving: arrows drive, **Space** is the handbrake, **C** changes the camera.
   - Menus: **Z** confirms, **X** or **Escape** goes back, **Enter** pauses.
   - Hold **Ctrl** to enlarge the map.
-- **Change bindings** in the launcher's **Controls** tab.
+- **Two players (split screen):** in the launcher's **Controls** tab choose what **Player 1** and
+  **Player 2** play with: a controller, **Keyboard (arrows)** or **Keyboard 2 (WASD)**. Two players
+  can share one keyboard with no key in common:
+  - Player 1, right half: arrows drive, **Right Ctrl** = A / handbrake, **Right Shift** = camera,
+    **/** = back, **Enter** = pause.
+  - Player 2, left half: **W A S D** drive, **Space** = A / handbrake, **Left Shift** = camera,
+    **Q** = back, **Tab** = pause.
+- **Change bindings** in the launcher's **Controls** tab (Keyboard 2 has its own lists).
 - **Graphics:** see [Graphics settings](#graphics-settings).
 
 ## Multiplayer (System Link)
@@ -166,6 +193,26 @@ Every player needs the same version and their own game files.
 Players on different networks can join through a private VPN. Allow the game's UDP port
 (3075) through Windows Firewall. The full guide, for the internet and up to eight
 players, is in [docs/MULTIPLAYER.md](docs/MULTIPLAYER.md).
+
+## Linux and Steam Deck
+
+The game is a Windows program; it runs on Linux and the Steam Deck through **Proton 8 or newer
+(Proton Experimental recommended)** or a recent **Wine**. Install it with the same tool you play it
+with, then start `mm3_recomp.exe` from the install folder:
+
+- **Steam (also Steam Deck):** in Steam, **Add a Non-Steam Game** and pick `MM3-Setup.exe`; in its
+  **Properties > Compatibility**, tick **Force the use of a specific Steam Play compatibility tool** and
+  choose **Proton Experimental**. Run it to install. Then add `mm3_recomp.exe` from the install folder
+  the same way (same Proton) and play that one. Controllers work through Steam Input.
+- **Lutris, Bottles or Heroic:** add a Windows game with a Wine-GE or Proton-GE runner, run
+  `MM3-Setup.exe` in it to install, then point the game's executable at `mm3_recomp.exe` in the install
+  folder.
+- **Plain Wine:** `wine MM3-Setup.exe`, then in the install folder
+  `sh "Play Midtown Madness 3 (Linux).sh"` (Setup writes it; `WINE=/path/to/wine` picks another Wine).
+
+The game brings its graphics shaders with it, so it does not depend on Wine's shader compiler (that
+gave a white screen with sound before 2.3). The launcher, settings, saves and logs work the same as
+on Windows (`logs` in the install folder). Proton 7 and older are not supported.
 
 ## Problems?
 
@@ -245,6 +292,25 @@ legal copy of the game and your local law allows it:
 
 A link being online does not give you the right to use it. The full notes are in
 [DEVELOPERS.md](DEVELOPERS.md#ownership-disc-images-and-dlc).
+
+## Also from the shared mm3-recomp port
+
+This version carries Matt Graham's current [mm3-recomp](https://github.com/MattSG/mm3-recomp)
+work too. Where both ports changed the same thing, the behaviour above is the default. Added:
+
+- **Renderer and platforms:** an SDL3 GPU renderer (Vulkan or Direct3D 12) next to Direct3D 11,
+  with the Linux build scripts: `python scripts/setup.py --renderer SDL3_GPU`, or the
+  `scripts/build_gui.py` builder.
+- **Mods:** keyboard driving, menu mouse, lamp flare depth, skip intro movies, console-rate
+  simulation, the collision cell guard and developer tools. Each has a `MM3_MOD_*` switch listed
+  in [src/mods/mods.c](src/mods/mods.c). Its RmlUi launcher with the Mods tab stays available:
+  start the game with `MM3_RMLUI_LAUNCHER=1`.
+- **Debug tools:** an in-game ImGui interface and a teleport pipe, described in
+  [docs/IMGUI_DEBUG_TOOLS.md](docs/IMGUI_DEBUG_TOOLS.md) and [docs/DEBUG_TELEPORT.md](docs/DEBUG_TELEPORT.md).
+- **Multiplayer:** Xbox Live names are routed to [Insignia](https://insignia.live); sign-in is not
+  verified yet.
+
+The code is [GPL-3.0-only](LICENSE) and [THIRD_PARTY.md](THIRD_PARTY.md) lists what it builds on.
 
 ## Credits and developers
 

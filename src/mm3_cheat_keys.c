@@ -21,7 +21,8 @@
  *   F4               hides the race HUD and shows it again (the renderer skips
  *                    it, nv2a_d3d_set_hud_hidden, and the checkpoint arrow
  *                    stays away, src/mm3_hud_options.c); it comes back by
- *                    itself when the race ends. Photo mode too, MM3_HUD_KEY.
+ *                    itself when the race ends. Photo mode or the free
+ *                    camera, MM3_HUD_KEY; X on the controller in the free camera.
  *
  * The window records which keys are held (xbox_FramebufferKeyDown, written
  * by the window thread, only while it has the focus), so a thread of our own
@@ -104,11 +105,12 @@ static DWORD WINAPI watch(void *unused)
         down = photos && xbox_FramebufferKeyDown(picture_key);
         if (down && !photo_was) mm3_photo_take();
         photo_was = (unsigned char)down;
-        /* The HUD key only in a race; the HUD returns when the race ends. */
-        down = photos && xbox_FramebufferKeyDown(hud_key);
+        /* The HUD key only in a race; the HUD returns when the race ends. It
+         * works with the free camera alone too (no photo mode needed). */
+        down = (photos || camera) && xbox_FramebufferKeyDown(hud_key);
         if (down && !hud_was && mm3_race_view_recent()) hide_hud(!mm3_hud_hidden(), "key");
         hud_was = (unsigned char)down;
-        if (InterlockedExchange(&s_hud_presses, 0) && photos && mm3_race_view_recent())
+        if (InterlockedExchange(&s_hud_presses, 0) && (photos || camera) && mm3_race_view_recent())
             hide_hud(!mm3_hud_hidden(), "controller");
         if (mm3_hud_hidden() && !mm3_race_view_recent()) hide_hud(0, "no race view");
         mm3_free_camera_watchdog();

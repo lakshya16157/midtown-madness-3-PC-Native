@@ -249,11 +249,22 @@ int main(int argc, char **argv)
     end_frame(30);
     for (i = 0; i < 4; ++i) assert(step(component, 0) == 0);
     end_frame(30);
-    /* Slower (20 fps, six steps a frame): still the game's own frames. */
-    for (i = 0; i < 6; ++i) assert(step(component, 600) == 600);
+    /* Slower (20 fps, six steps a frame): a hit already there applies in the
+     * first four steps, as in the Xbox frame; steps five and six are the
+     * Xbox's next frame, where it is gone. */
+    for (i = 0; i < 4; ++i) assert(step(component, 600) == 600);
+    for (i = 0; i < 2; ++i) assert(step(component, 600) == 0);
     end_frame(20);
     for (i = 0; i < 6; ++i) assert(step(component, 0) == 0);
     end_frame(20);
+    /* 15 fps (eight steps): the main impact found after the first step applies
+     * three times, as at 30 fps on the Xbox, not seven. */
+    assert(step(component, 0) == 0);
+    for (i = 0; i < 3; ++i) assert(step(component, 800) == 800);
+    for (i = 0; i < 4; ++i) assert(step(component, 800) == 0);
+    end_frame(15);
+    for (i = 0; i < 8; ++i) assert(step(component, 0) == 0);
+    end_frame(15);
     /* 45 fps (three steps a frame): frames stand alone. */
     assert(step(component, 0) == 0 && step(component, 0) == 0 && step(component, 600) == 600);
     end_frame(45);
@@ -289,7 +300,8 @@ int main(int argc, char **argv)
          "hit found before a frame's steps four times wherever it falls, a "
          "steady contact is applied three times a console frame, a larger find takes over, cars apart "
          "(300 at once), a hit keeps the damage factor it was found with when the job's script drops it, "
-         "frames told apart by the game's frame clock, record restored; 30 fps and slower keep the game's "
-         "own frames, 45 fps frames stand alone; ordinary races and ambulance jobs alike");
+         "frames told apart by the game's frame clock, record restored; 30 fps keeps the game's own "
+         "frames, slower frames apply a hit only in their first four steps (15 fps three times, not "
+         "seven), 45 fps frames stand alone; ordinary races and ambulance jobs alike");
     return 0;
 }

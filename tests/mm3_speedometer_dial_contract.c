@@ -12,6 +12,10 @@ static double contract_cos(double angle) { ++contract_cos_count; return cos(angl
 static double contract_sin(double angle) { ++contract_sin_count; return sin(angle); }
 #define cos contract_cos
 #define sin contract_sin
+/* The shared guest-state helpers, as shipped. */
+#include "../tools/xboxrecomp/src/kernel/guest_state.c"
+#include "../src/string_ci.c"
+#include "../src/geometry/thick_line.c"
 #include "../src/mm3_speedometer.c"
 #undef cos
 #undef sin
@@ -28,6 +32,17 @@ RECOMP_TLS RecompMmx g_mm0, g_mm1, g_mm2, g_mm3;
 RECOMP_TLS RecompMmx g_mm4, g_mm5, g_mm6, g_mm7;
 
 static unsigned char contract_memory[0x400000];
+
+/* Test double for the fork's xbox_GuestMapped: the devkit window, and the
+ * whole range must lie inside this fixture's committed guest buffer. */
+int xbox_GuestMapped(uint32_t va, uint32_t bytes)
+{
+    uintptr_t host;
+    if (va < 0x10000u || va >= 0x08000000u || bytes > 0x08000000u - va) return 0;
+    host = (uintptr_t)va + (uintptr_t)g_xbox_mem_offset;
+    return host >= (uintptr_t)contract_memory &&
+           host + bytes <= (uintptr_t)contract_memory + sizeof contract_memory;
+}
 static const uint32_t contract_frame = 0x3D000, contract_stack = 0x3C000;
 static const uint32_t contract_node = 0x17000, contract_renderer = 0x18000;
 static const uint32_t contract_effects = 0x19000;

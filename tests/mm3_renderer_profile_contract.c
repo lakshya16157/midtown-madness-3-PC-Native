@@ -38,12 +38,18 @@ static uint64_t s_prof_vb_bytes, s_prof_vb_epoch_repeat, s_prof_vb_frame_repeat,
 static uint64_t s_prof_vb_reused, s_prof_vconst_uploads, s_prof_epochs;
 static int64_t s_prof_draw_setup, s_prof_draw_upload;
 static int s_prof_on = -1;
-static const char *setting;
-static unsigned env_calls, clock_calls, frequency_calls, output_calls;
+static const char *setting, *spike_setting;
+static unsigned env_calls, spike_calls, clock_calls, frequency_calls, output_calls;
 static int64_t clock_ticks = 1000;
 
+/* RECOMP_D3D_PROFILE prints the once-a-second line; RECOMP_SPIKE_CAPTURE runs
+ * the same stage timers without printing it. */
 static char *test_getenv(const char *key)
 {
+    if (strcmp(key, "RECOMP_SPIKE_CAPTURE") == 0) {
+        spike_calls++;
+        return (char *)spike_setting;
+    }
     CHECK(strcmp(key, "RECOMP_D3D_PROFILE") == 0);
     env_calls++;
     return (char *)setting;
@@ -71,20 +77,25 @@ static int test_fflush(FILE *file)
 int main(int argc, char **argv)
 {
     unsigned i;
-    int enabled;
+    int printing, enabled;
     CHECK(argc == 2);
-    setting = strcmp(argv[1], "unset") ? argv[1] : NULL;
-    enabled = setting && *setting && *setting != '0';
+    spike_setting = strcmp(argv[1], "spike") ? NULL : "1";
+    setting = strcmp(argv[1], "unset") && !spike_setting ? argv[1] : NULL;
+    printing = setting && *setting && *setting != '0';
+    enabled = printing || spike_setting;
     for (i = 0; i < 1000; i++) {
         CHECK(nv2a_d3d_prof_enabled() == enabled);
         prof_report();
     }
-    CHECK(env_calls == 1);
+    /* Each variable is read once, not per frame: the enable check reads the
+     * profile (then the spike one unless the profile already enabled it) and
+     * the first report reads the profile again to decide whether to print. */
+    CHECK(env_calls == (enabled ? 2u : 1u));
+    CHECK(spike_calls == (printing ? 0u : 1u));
     if (!enabled) {
         CHECK(!clock_calls && !frequency_calls && !output_calls);
     } else {
-        CHECK(clock_calls == 1000 && frequency_calls == 1 && !output_calls);
-        for (i = 0; i < PROF_COUNT; i++) s_prof[i] = 1;
+        CHECK(clock_calls == 1000 && frequency_calls == 1 && !output_calls);        for (i = 0; i < PROF_COUNT; i++) s_prof[i] = 1;
         s_prof_verts = s_prof_draws = s_prof_ps_uploads = s_prof_ps_reused = 1;
         s_prof_light_draws = s_prof_depth_views = s_prof_local_depth_views = s_prof_light_depth_aliases = 1;
         s_prof_program_uploads = s_prof_pipeline_issued = s_prof_color_writes = s_prof_index_maps = 1;
@@ -96,7 +107,8 @@ int main(int argc, char **argv)
         s_prof_upload_last[0] = 0x00123000u;
         clock_ticks += 1000;
         prof_report();
-        CHECK(clock_calls == 1001 && frequency_calls == 1 && output_calls > 0);
+        CHECK(clock_calls == 1001 && frequency_calls == 1);
+        CHECK(printing ? output_calls > 0 : output_calls == 0); /* the spike timers stay silent */
         for (i = 0; i < PROF_COUNT; i++) CHECK(!s_prof[i]);
         CHECK(!s_prof_verts && !s_prof_draws && !s_prof_ps_uploads && !s_prof_ps_reused);
         CHECK(!s_prof_light_draws && !s_prof_depth_views && !s_prof_local_depth_views && !s_prof_light_depth_aliases);
@@ -108,6 +120,6 @@ int main(int argc, char **argv)
         CHECK(!s_prof_sync_changed && !s_prof_upload_pixels);
     }
     printf("PASS: renderer profiling '%s': one configuration read; %s\n", argv[1],
-           enabled ? "enabled timings/output/reset preserved" : "zero timing calls and output for 1000 frames");
+           enabled ? "enabled timings/reset preserved, output only when profiled" : "zero timing calls and output for 1000 frames");
     return 0;
 }

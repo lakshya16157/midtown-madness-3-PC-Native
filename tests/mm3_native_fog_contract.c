@@ -5,9 +5,10 @@
 #include <string.h>
 static unsigned long long test_clock = 1;
 #define MM3_NATIVE_FOG_CLOCK() test_clock
-#include "../src/mm3_native_fog.c"
+#include "../src/mods/draw_distance.c"
+#include "env_range.c"
 ptrdiff_t g_xbox_mem_offset;
-RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp, g_ebp, g_seh_ebp;
+RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp, g_edi, g_ebp, g_seh_ebp;
 static unsigned fog_calls, horizon_calls, space_calls;
 static int available = 1, space_room;
 static unsigned char *arena;
@@ -17,7 +18,19 @@ int nv2a_d3d_distance_fog_ready(void) { return available; }
 /* The exhaust smoke is off here (tests/mm3_exhaust_regression.py). */
 int mm3_exhaust_enabled(void) { return 0; }
 int mm3_exhaust_packet(uint32_t view, uint32_t words[18]) { (void)view; (void)words; return 0; }
-float mm3_city_haze_scale(void) { return 2.0f; }
+/* The distance hooks and flare queue that share the file are inert here
+ * (tests/mm3_render_distance_contract.c, tests/mm3_draw_distance_contract.c). */
+int mm3_mod_on(int mod) { (void)mod; return 1; }
+void nv2a_d3d_set_depth_view_remap(float scale, float knee) { (void)scale; (void)knee; }
+void sub_000E2D5B_original(void) {}
+void sub_000D9E2E_original(void) {}
+void sub_000FE71E_original(void) {}
+void sub_0022F298_original(void) {}
+void sub_001661D0_original(void) {}
+void sub_000F4AC3_original(void) {}
+void sub_002256C7_original(void) {}
+void sub_001A6CE3_original(void) {}
+void sub_00248518_original(void) {}
 void sub_000F8DCE_original(void) { ++fog_calls; assert(g_ecx == self && g_esp == stack); g_eax = 0x55660000; g_esp += 16; }
 void sub_000F8750_original(void) { ++horizon_calls; assert(g_ecx == horizon && g_esp == stack); g_eax = 0x77880000; g_esp += 8; }
 /* Title MakeSpace: stdcall (minimum, requested) below a return slot. With
@@ -144,6 +157,7 @@ int main(int argc, char **argv)
     assert(!_putenv_s("MM3_NATIVE_FOG", argv[1]));
     arena = VirtualAlloc(NULL, 0x84000000ull, MEM_RESERVE, PAGE_NOACCESS);
     assert(arena); g_xbox_mem_offset = (ptrdiff_t)arena;
+    s_haze_scale = 2.0f;   /* the city is drawn twice as far as authored: the ramp's remap scale */
     commit(0x10000, 0x60000); commit(0x351000, 0x2000); commit(0x80010000, 0x1000);
     setup();
     if (!strcmp(argv[1], "0")) { check_fallback(); assert(!space_calls); cut_cases(0); goto done; }

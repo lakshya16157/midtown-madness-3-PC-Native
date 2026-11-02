@@ -16,6 +16,7 @@ def main():
         subprocess.run([
             "cl", "/nologo", "/W4", "/WX", "/Od", "/std:c11", "/utf-8",
             "/D_CRT_SECURE_NO_WARNINGS", "/I" + str(ROOT / "src"),
+            "/I" + str(ROOT / "tools/xboxrecomp/src"),
             str(ROOT / "tests/mm3_display_config_contract.c"),
             str(ROOT / "src/mm3_display_config.c"),
             "/Fo:" + str(folder) + "/", "/Fe:" + str(executable),

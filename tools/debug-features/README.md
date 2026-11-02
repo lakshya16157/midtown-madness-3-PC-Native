@@ -27,11 +27,13 @@ Rendering corruption was seen during testing, particularly after debug drawing c
 
 ## Use
 
-Build Release with the Visual Studio CMake. Run tools/venv/Scripts/python.exe tools/debug-features/prepare.py while the game is stopped, then tools/debug-features/run.ps1.
+Build Release with the Visual Studio CMake. Run tools/venv/Scripts/python.exe tools/debug-features/prepare.py while the game is stopped, then `python tools/debug-features/run.py`.
 
 While gameplay is active, write one number to the request.txt path in out/debug-features/current-run.json's run directory:
 
-0 baseline; 1 HUD on; 2 debug menu; 3 extended camera modes; 4 facade floors 3; 5 engine profiler; 6 pedestrian count (known failure); 7 E3 preset; 8 reset/menu close; 9 input-bound camera.
+0 baseline; 1 HUD on; 2 debug menu; 3 extended camera modes; 4 facade floors 3; 5 engine profiler; 6 pedestrian count (known failure); 7 E3 preset; 8 reset/menu close; 9 input-bound camera; 10 HUD off; 11 debug menu off; 12 player camera.
+
+`MM3_DEV_HOTKEYS=HUD:70,MENU:71,CAMERAS:72` (virtual keys in hex; the launcher's Controls tab writes it) toggles the HUD, debug menu and extended cameras with a key during gameplay, through probes 1/10, 2/11 and 3/12. Re-run prepare.py once to install probes 10-12.
 
 The hook calls the original Lua loader on the game thread and preserves guest registers. Each request logs begin/end and the loader result. Loader success alone does not establish that a feature works.
 
@@ -47,11 +49,11 @@ The isolated instance is left running with the debug menu and HUD enabled for re
 
 ## Launch flags and graphics regression
 
-`run.ps1 -DevHud -DebugMenu -ExtendedCameras` enables the corresponding tools on the first player update. `-E3Preset` runs the E3 settings too. Environment equivalents are MM3_DEV_HUD, MM3_DEBUG_MENU, MM3_EXTENDED_CAMERAS and MM3_E3_PRESET (1 enables, 0 disables). Scripts must first be installed with prepare.py. Startup flags were exercised in run-20261009-135727 (probes 1, 2 and 3 all loaded=1).
+`python tools/debug-features/run.py --dev-hud --debug-menu --extended-cameras` enables the corresponding tools on the first player update. `--e3-preset` runs the E3 settings too. Environment equivalents are MM3_DEV_HUD, MM3_DEBUG_MENU, MM3_EXTENDED_CAMERAS and MM3_E3_PRESET (1 enables, 0 disables). Scripts must first be installed with prepare.py. Startup flags were exercised in run-20261009-135727 (probes 1, 2 and 3 all loaded=1).
 
-`-GraphicsPreset Retail|Default|Max` selects baseline/enhanced/max quality. Max uses draw distance 4, 8x MSAA, 16x AF, 1920 internal lines. `-Graphics @{ RECOMP_MSAA='1' }` overrides a supported graphics option. `-CaptureDisplay` captures the final window composite; otherwise captures are at internal resolution. The D3D debug layer is optional via `-Graphics @{ RECOMP_D3D_DEBUG='1' }`; it is not a quality feature.
+`--graphics-preset Retail|Default|Max` selects baseline/enhanced/max quality. Max uses draw distance 4, 8x MSAA, 16x AF, 1920 internal lines. `--graphics RECOMP_MSAA=1` overrides a supported graphics option. `--capture-display` captures the final window composite; otherwise captures are at internal resolution. The D3D debug layer is optional via `--graphics RECOMP_D3D_DEBUG=1`; it is not a quality feature.
 
-For blank-frame or texture-dropout regression testing omit all developer overlay switches. Capture a sequence by writing N to capture.flag. Run `python tools/debug-features/analyze_frames.py <run-directory> --start <first-gameplay-frame>` to produce frame-analysis.json. It reports sampled black frames and adjacent image changes; visual inspection must distinguish scene motion from defects. `--self-test` checks the metrics.
+For blank-frame or texture-dropout regression testing omit all developer overlay switches. Capture a sequence by writing N to capture.flag. Run `python tools/xboxrecomp/tools/bench/analyze_frames.py <run-directory> --start <first-gameplay-frame>` to produce frame-analysis.json. It reports sampled black frames and adjacent image changes; visual inspection must distinguish scene motion from defects. `--self-test` checks the metrics.
 
 The current branch integrates committed vertex-fetch and sky/depth/fog fixes through toolkit merge 40598f1 (see git history for full hash). The original font/menu placement reverts remain.
 

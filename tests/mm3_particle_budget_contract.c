@@ -5,27 +5,34 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../src/mm3_render_distance.c"
+#include "platform/win32_compat.h" /* _putenv_s: CRT on Windows, compat layer elsewhere */
+#include "../src/mods/draw_distance.c"
 
 ptrdiff_t g_xbox_mem_offset;
-RECOMP_TLS uint32_t g_eax, g_ecx, g_esp, g_ebp;
+RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp, g_edi, g_ebp, g_seh_ebp;
+/* Generated functions the mod calls. The budget logic under test does not
+ * depend on their bodies, so they are inert here. */
+void sub_001A6CE3_original(void) {}
+void sub_00248518_original(void) {}
+void sub_00344770(void) {}
 static unsigned char memory[0x10000], expected[0x10000];
 static unsigned original_calls;
 static unsigned constructor_budget = 12;
 static const uint32_t manager = 0x1000, particles = 0x3000;
 int nv2a_d3d_distance_fog_ready(void) { return 0; }
+void nv2a_d3d_set_depth_view_remap(float scale, float knee) { (void)scale; (void)knee; }
+int mm3_exhaust_enabled(void) { return 0; }
+int mm3_exhaust_packet(uint32_t view, uint32_t words[18]) { (void)view; (void)words; return 0; }
 
-void nv2a_d3d_set_depth_view_remap(float scale, float knee)
-{
-    assert(scale >= 1.0f && scale <= 4.0f);
-    assert(knee == 0.78f);
-}
+void sub_000F8DCE_original(void) {}
+void sub_000F8750_original(void) {}
 void sub_000E2D5B_original(void) {}
 void sub_000D9E2E_original(void) {}
 void sub_000FE71E_original(void) {}
 void sub_0022F298_original(void) {}
 void sub_001661D0_original(void) {}
 void sub_000F4AC3_original(void) {}
+int mm3_mod_on(int mod) { (void)mod; return 1; }
 void sub_002256C7_original(void)
 {
     assert(g_ecx == manager);

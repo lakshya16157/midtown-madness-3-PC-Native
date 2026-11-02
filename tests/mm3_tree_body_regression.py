@@ -175,9 +175,11 @@ default:fprintf(stderr,"unexpected dispatch %X\\n",va);''')
 
 
 def check_geometry_seams(directory):
-    source = (ROOT / 'src/recomp/gen/recomp_0014.c').read_text()
     cases = 0
     for owner in ('sub_0015CD35', 'sub_0015B9AB'):
+        # The generator chooses the chunk file; find the one defining the owner.
+        source = next(text for text in (path.read_text() for path in sorted((ROOT / 'src/recomp/gen').glob('recomp_0*.c')))
+                      if 'void ' + owner + '(void)\n{' in text)
         body = re.search(r'void ' + owner + r'\(void\)\n\{.*?\n\}', source, re.S).group()
         for newline in ('\n', '\r\n'):
             original = directory / 'geometry-before.c'

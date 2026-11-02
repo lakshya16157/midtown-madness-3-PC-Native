@@ -1,5 +1,6 @@
 #include "mm3_display_config.h"
 #include "mm3_performance_profile.h"
+#include "mm3_frame_limit.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -45,7 +46,7 @@ static const SettingField s_fields[] = {
     INT_FIELD(window_width, NULL, 640, 7680, 0),
     INT_FIELD(window_height, NULL, 480, 4320, 0),
     INT_FIELD(fullscreen, "RECOMP_FULLSCREEN", 0, 1, 0),
-    INT_FIELD(fps_limit, "RECOMP_FPS_LIMIT", 1, 60, 0),
+    INT_FIELD(fps_limit, "RECOMP_FPS_LIMIT", 1, MM3_FPS_LIMIT_MAX, 0),
     INT_FIELD(vsync, "RECOMP_VSYNC", 0, 1, 0),
     INT_FIELD(show_fps, "MM3_SHOW_FPS", 0, 1, 0),
     INT_FIELD(minimap_improved, "MM3_MINIMAP_IMPROVED", 0, 1, 0),

@@ -37,6 +37,23 @@ static wchar_t s_update_setup[600];
 #define MM3_UPDATE_TRUSTED ""
 #define MM3_UPDATE_ASK(window, text) (++s_update_asked, s_update_answer)
 #define MM3_UPDATE_OPEN(setup, folder) (++s_update_opened, wcsncpy(s_update_setup, (setup), 599), 1)
+/* Folders and logs, the game-files check: recorded, never opened; the game's files are "installed" or not. */
+static int s_game_files = 1, s_missing_asked, s_missing_answer, s_pages_opened, s_menus, s_menu_command, s_folders_opened;
+static wchar_t s_missing_text[1600], s_folder[600], s_copied[4096];
+static char s_page[256];
+static int fake_game_files(wchar_t *folder, size_t count, const wchar_t **missing)
+{
+    (void)count;
+    wcscpy(folder, L"C:\\Fake Game");
+    *missing = s_game_files ? NULL : L"game_files\\default.xbe";
+    return s_game_files;
+}
+#define MM3_LAUNCHER_GAME_FILES(folder, count, missing) fake_game_files(folder, count, missing)
+#define MM3_GAME_MISSING_ASK(window, text) (++s_missing_asked, wcsncpy(s_missing_text, (text), 1599), s_missing_answer)
+#define MM3_LAUNCHER_OPEN_PAGE(url) (++s_pages_opened, snprintf(s_page, sizeof s_page, "%s", (url)), 1)
+#define MM3_LAUNCHER_MENU(ui) (++s_menus, s_menu_command)
+#define MM3_LAUNCHER_OPEN(path) (++s_folders_opened, wcsncpy(s_folder, (path), 599), 1)
+#define MM3_LAUNCHER_COPY(window, text) (wcsncpy(s_copied, (text), 4095), 1)
 #include "../src/mm3_launcher.c"
 #undef XInputGetState
 #undef GetRawInputDeviceList
@@ -485,12 +502,12 @@ static void contextual_help(HWND window)
 {
     static const int settings[] = {ID_RESOLUTION, ID_MODE, ID_SCREEN, ID_FPS, ID_VSYNC, ID_SCALE,
         ID_ASPECT, ID_MSAA, ID_ANISO, ID_DRAW, ID_VIEW, ID_SHOW_FPS, ID_MINIMAP,
-        ID_PORT, ID_PEERS};
+        ID_PORT, ID_PEERS, ID_PRESET};
     static const int choices[] = {ID_RESOLUTION, ID_MODE, ID_SCREEN, ID_SCALE, ID_ASPECT,
         ID_MSAA, ID_ANISO, ID_DRAW, ID_VIEW, ID_MINIMAP};
     static const int controls[] = {ID_KEYBOARD, ID_PAD_COUNT, ID_GROUP, ID_BINDINGS,
         ID_SOURCE, ID_PAD_PORT, ID_CAPTURE, ID_UNBIND};
-    static const int buttons[] = {ID_DEFAULTS, ID_UPDATE, IDOK, IDCANCEL};
+    static const int buttons[] = {ID_DEFAULTS, ID_UPDATE, ID_TOOLS, IDOK, IDCANCEL};
     HelpText text, previous;
     char page_titles[LAUNCHER_PAGES][256];
     for (int page = 0; page < LAUNCHER_PAGES; ++page) {
@@ -707,12 +724,131 @@ static void ignore_pointer(HWND window)
     CHECK(SetLayeredWindowAttributes(window, 0, 255, LWA_ALPHA));
 }
 
+static int combo_is(HWND window, int id, int value) { return combo_value(GetDlgItem(window, id)) == value; }
+
+static void edit_is(HWND window, int id, const char *value)
+{
+    char text[64];
+    GetDlgItemTextA(window, id, text, sizeof text);
+    CHECK(!strcmp(text, value));
+}
+
+/* Quick presets fill in the graphics choices from the game's performance profiles, follow later edits
+ * back to Custom, and save nothing of their own. */
+static void presets(HWND window)
+{
+    char status[512];
+    HWND preset = GetDlgItem(window, ID_PRESET);
+    select_page(window, 0);
+    CHECK(IsWindowVisible(preset) && SendMessageA(preset, CB_GETCOUNT, 0, 0) == 4);
+    SendMessageA(window, WM_COMMAND, ID_DEFAULTS, 0);
+    CHECK(combo_value(preset) == 2);                              /* the defaults are the Balanced profile */
+    choose(window, ID_PRESET, 1);                                 /* Low power */
+    CHECK(combo_is(window, ID_SCALE, 1500) && combo_is(window, ID_MSAA, 1) && combo_is(window, ID_ANISO, 16));
+    CHECK(combo_is(window, ID_DRAW, 1000) && combo_is(window, ID_VIEW, 1000));
+    edit_is(window, ID_FPS, "30");
+    GetDlgItemTextA(window, ID_STATUS, status, sizeof status);
+    CHECK(strstr(status, "Low power filled in") && strstr(status, "30 FPS") && strstr(status, "Cancel discards"));
+    CHECK(combo_value(preset) == 1 && help_contains(window, "Low power") && help_contains(window, "no anti-aliasing"));
+    choose(window, ID_PRESET, 3);                                 /* Quality */
+    CHECK(combo_is(window, ID_SCALE, 3000) && combo_is(window, ID_MSAA, 8) && combo_is(window, ID_DRAW, 2000));
+    edit_is(window, ID_FPS, "60");
+    CHECK(combo_value(preset) == 3 && help_contains(window, "8x MSAA"));
+    /* Any other choice for one of its values makes the box say Custom, and the old one back puts it right. */
+    choose(window, ID_MSAA, 4);
+    CHECK(combo_value(preset) == 0);
+    choose(window, ID_MSAA, 8);
+    CHECK(combo_value(preset) == 3);
+    edit_value(window, ID_FPS, "45");
+    CHECK(combo_value(preset) == 0);
+    edit_value(window, ID_FPS, "60");
+    CHECK(combo_value(preset) == 3);
+    /* Picking Custom changes nothing. */
+    choose(window, ID_PRESET, 0);
+    CHECK(combo_is(window, ID_SCALE, 3000) && combo_is(window, ID_MSAA, 8));
+    CHECK(help_contains(window, "your own mix") || help_contains(window, "Custom"));
+    /* Other settings the presets do not touch stay as they were. */
+    choose(window, ID_RESOLUTION, 1920 * 10000 + 1080);
+    choose(window, ID_PRESET, 2);
+    CHECK(combo_is(window, ID_RESOLUTION, 1920 * 10000 + 1080) && combo_is(window, ID_SCALE, 2000));
+    CHECK(combo_value(preset) == 2);
+    SendMessageA(window, WM_COMMAND, ID_DEFAULTS, 0);
+}
+
+/* The game-files check on Play, and the Folders and logs menu. */
+static void tools_and_files(HWND window, const char *folder)
+{
+    char status[512], copied[4096], home[MAX_PATH];
+    wchar_t wide_folder[600], here[600];
+    int menus;
+    select_page(window, 0);
+    /* Play with the game's files missing: the reason in plain words, Setup's page on request, no start. */
+    s_game_files = 0;
+    SendMessageA(window, WM_COMMAND, IDOK, 0);
+    CHECK(IsWindow(window) && s_missing_asked == 1 && s_pages_opened == 0);
+    CHECK(wcsstr(s_missing_text, L"game_files\\default.xbe is missing from C:\\Fake Game") &&
+          wcsstr(s_missing_text, L"MM3-Setup.exe") && wcsstr(s_missing_text, L"keeps your saved games"));
+    GetDlgItemTextA(window, ID_STATUS, status, sizeof status);
+    CHECK(strstr(status, "default.xbe is missing") && strstr(status, "cannot start"));
+    s_missing_answer = 1;
+    SendMessageA(window, WM_COMMAND, IDOK, 0);
+    CHECK(IsWindow(window) && s_missing_asked == 2 && s_pages_opened == 1 && !strcmp(s_page, MM3_UPDATE_PAGE));
+    s_missing_answer = 0;
+    s_game_files = 1;
+
+    /* The menu: each item reaches its folder; a closed menu does nothing. */
+    menus = s_menus;
+    s_menu_command = 0;
+    SendMessageA(window, WM_COMMAND, ID_TOOLS, 0);
+    CHECK(s_menus == menus + 1 && s_folders_opened == 0);
+    s_menu_command = ID_TOOL_GAME;
+    SendMessageA(window, WM_COMMAND, ID_TOOLS, 0);
+    CHECK(s_folders_opened == 1);
+    GetCurrentDirectoryW(600, here);
+    CHECK(!wcscmp(s_folder, here));
+    s_menu_command = ID_TOOL_LOGS;
+    SendMessageA(window, WM_COMMAND, ID_TOOLS, 0);
+    CHECK(s_folders_opened == 2 && wcslen(s_folder) > 5 && !wcscmp(s_folder + wcslen(s_folder) - 5, L"\\logs"));
+    CHECK(GetFileAttributesW(s_folder) & FILE_ATTRIBUTE_DIRECTORY);
+    s_menu_command = ID_TOOL_SETTINGS;
+    SendMessageA(window, WM_COMMAND, ID_TOOLS, 0);
+    MultiByteToWideChar(CP_UTF8, 0, folder, -1, wide_folder, 600);
+    CHECK(s_folders_opened == 3);
+    for (wchar_t *at = wide_folder; *at; ++at) if (*at == L'/') *at = L'\\';
+    for (wchar_t *at = s_folder; *at; ++at) if (*at == L'/') *at = L'\\';
+    CHECK(!_wcsicmp(s_folder, wide_folder));                         /* the folder holding launcher.ini */
+
+    /* Copy for support: version, Windows, folders; the Windows user name does not appear. */
+    s_copied[0] = 0;
+    s_menu_command = ID_TOOL_COPY;
+    SendMessageA(window, WM_COMMAND, ID_TOOLS, 0);
+    WideCharToMultiByte(CP_UTF8, 0, s_copied, -1, copied, sizeof copied, NULL, NULL);
+    CHECK(strstr(copied, "Midtown Madness 3 PC Native 2.1") && strstr(copied, "Windows ") &&
+          strstr(copied, "Game folder: C:\\Fake Game"));
+    CHECK(strstr(copied, "Game files: found") && strstr(copied, "Settings folder:") && strstr(copied, "Newest log:"));
+    CHECK(strstr(copied, "Made by Setup:"));
+    if (GetEnvironmentVariableA("USERPROFILE", home, sizeof home) && strlen(home) > 3) CHECK(!strstr(copied, home));
+    GetDlgItemTextA(window, ID_STATUS, status, sizeof status);
+    CHECK(strstr(status, "Copied"));
+    CHECK(s_folders_opened == 3);                                    /* copying opened nothing */
+    focus_control(window, ID_TOOLS);
+    CHECK(help_contains(window, "Folders and logs") && help_contains(window, "user name"));
+    s_menu_command = 0;
+}
+
+static const char *s_folder_argument;   /* the test folder: where launcher.ini lives */
 static DWORD WINAPI exercise(void *unused)
 {
     (void)unused;
     HWND window = wait_launcher();
     RECT bounds, work;
     ignore_pointer(window);
+    if (!s_play) {   /* opened with the game's files missing: the status line says so at once */
+        char opening[512];
+        GetDlgItemTextA(window, ID_STATUS, opening, sizeof opening);
+        CHECK(strstr(opening, "Game files not found: game_files\\default.xbe is missing from C:\\Fake Game"));
+        s_game_files = 1;
+    }
     GetWindowRect(window, &bounds); SystemParametersInfoA(SPI_GETWORKAREA, 0, &work, 0);
     CHECK(bounds.left >= work.left && bounds.top >= work.top && bounds.right <= work.right && bounds.bottom <= work.bottom);
     HWND play = GetDlgItem(window, IDOK); RECT footer;
@@ -721,6 +857,7 @@ static DWORD WINAPI exercise(void *unused)
     tab_bar_clear(window);
     controller_detection(window, "controls-detected");
     contextual_help(window);
+    if (!s_play) { presets(window); tools_and_files(window, s_folder_argument); }
     select_page(window, 1);
     controllers_layout(window);
     HWND count = GetDlgItem(window, ID_PAD_COUNT);
@@ -728,6 +865,23 @@ static DWORD WINAPI exercise(void *unused)
     combo_select(count, 4);
     SendMessageA(window, WM_COMMAND, ID_DEFAULTS, 0);
     CHECK(combo_value(count) == 1);
+    {   /* Players: two keyboards split it into halves; a taken controller moves the other player on. */
+        Launcher *players = (Launcher *)GetWindowLongPtrA(window, GWLP_USERDATA);
+        CHECK(players->config.keys[0] == 'Z');
+        choose(window, ID_PLAYER1, 2); choose(window, ID_PLAYER2, 3);
+        CHECK(players->config.keys[0] == VK_RCONTROL && players->config.drive_keys[0] == VK_UP);
+        CHECK(combo_value(count) == 2 && checked(players, ID_KEYBOARD));
+        choose(window, ID_GROUP, 1); help_show(players, ID_PLAYER1);
+        capture_page(window, "players-two-keyboards");
+        choose(window, ID_GROUP, 3); capture_page(window, "players-keyboard2");
+        choose(window, ID_GROUP, 0);
+        choose(window, ID_PLAYER2, 0);
+        CHECK(players->config.keys[0] == 'Z' && combo_value(GetDlgItem(window, ID_PLAYER1)) == 2);
+        choose(window, ID_PLAYER1, 1); choose(window, ID_PLAYER2, 1);
+        CHECK(combo_value(GetDlgItem(window, ID_PLAYER1)) == 2);
+        SendMessageA(window, WM_COMMAND, ID_DEFAULTS, 0);
+        CHECK(combo_value(GetDlgItem(window, ID_PLAYER1)) == 0 && combo_value(GetDlgItem(window, ID_PLAYER2)) == 0);
+    }
     combo_select(count, 4);
     HWND group = GetDlgItem(window, ID_GROUP), list = GetDlgItem(window, ID_BINDINGS);
     CHECK(IsWindowVisible(list));
@@ -976,6 +1130,7 @@ int main(int argc, char **argv)
     MM3LauncherConfig config;
     MM3DisplaySettings display;
     CHECK(argc == 3);   /* the folder, and the update stand-in's port */
+    s_folder_argument = argv[1];
     dualsense_detection_contract();
     snprintf(display_path, sizeof display_path, "%s/display.ini", argv[1]);
     snprintf(launcher_path, sizeof launcher_path, "%s/launcher.ini", argv[1]);
@@ -983,6 +1138,7 @@ int main(int argc, char **argv)
     CHECK(!_putenv_s("MM3_LAUNCHER_CONFIG", launcher_path));
     CHECK(!_putenv_s("MM3_LAUNCHER", "1"));
     CHECK(!_putenv_s("MM3_LAUNCHER_SMOKE", ""));
+    s_game_files = 0;
     thread = CreateThread(NULL, 0, exercise, NULL, 0, NULL); CHECK(thread);
     CHECK(!mm3_launcher_run());
     CHECK(WaitForSingleObject(thread, 10000) == WAIT_OBJECT_0); CloseHandle(thread);
@@ -1026,6 +1182,6 @@ int main(int argc, char **argv)
     smaller_layout();
     DeleteFileA(display_path); DeleteFileA(launcher_path);
     update_runs(argv[2], argv[1]);
-    puts("PASS launcher UI: deterministic XInput detection (zero/one/four and sparse ports), DualSense/Edge HID filtering and hotplug, live buttons/triggers/sticks, unplug/reconnect, persistent summary, stable idle text, normal/720p controller/help layout, contextual explanations and live values, keyboard capture/reserved keys, pad mapping, Cancel isolation, Play persistence, defaults, explicit USB overrides and bypass bootstrap, Check for updates (latest, offline, declined, bad checksum, Cancel during a check, download then Setup opened)");
+    puts("PASS launcher UI: deterministic XInput detection (zero/one/four and sparse ports), DualSense/Edge HID filtering and hotplug, live buttons/triggers/sticks, unplug/reconnect, persistent summary, stable idle text, normal/720p controller/help layout, contextual explanations and live values, keyboard capture/reserved keys, pad mapping, Cancel isolation, Play persistence, defaults, explicit USB overrides and bypass bootstrap, Check for updates (latest, offline, declined, bad checksum, Cancel during a check, download then Setup opened), quick presets (Low power/Balanced/Quality fill in and follow edits back to Custom), Folders and logs menu and support info, Play refused with the game files missing");
     return 0;
 }

@@ -163,6 +163,19 @@ class DlcImportTest(unittest.TestCase):
 
 
 class DiscReuseTest(unittest.TestCase):
+    def test_writes_a_linux_start_script_with_the_same_settings(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            target = Path(scratch)
+            setup.write_launcher(target, improvements=False)
+            script = (target / setup.LINUX_LAUNCHER).read_bytes()
+            self.assertNotIn(b"\r", script)                       # sh needs LF line ends
+            text = script.decode("ascii")
+            self.assertTrue(text.startswith("#!/bin/sh\n"))
+            for name, value in setup.launch_settings(False).items():
+                self.assertIn(f"export {name}='{value}'\n", text)
+            self.assertIn('"${WINE:-wine}" ./mm3_recomp.exe > logs/last-run.log', text)
+            self.assertTrue((target / setup.LAUNCHER).is_file())
+
     def test_installs_game_with_bundled_visual_cpp_runtime(self):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)

@@ -1,6 +1,6 @@
 """Compile retail gearbox consumers against every active donor-based preset.
 
-Run after scripts/enter-env.ps1. No game process, save, GPU or driving input
+Run inside `python scripts/devenv.py --shell`. No game process, save, GPU or driving input
 is required. Controlled velocity tests gearbox decisions, not road top speed.
 The factory engine hook has its own integration contract; this suite verifies
 the shipped cars retain their retail shift boundaries and timing.
@@ -8,6 +8,8 @@ the shipped cars retain their retail shift boundaries and timing.
 import argparse
 import json
 from pathlib import Path
+import os
+import cc
 import re
 import shutil
 import subprocess
@@ -21,7 +23,7 @@ ACTIVE_IDS = {9004, 9005, 9006, 9009, 9010, 9011, 9012, 9013, 9014}
 
 
 def generated_function(name):
-    for path in (ROOT / "src/recomp/gen").glob("*.c"):
+    for path in (Path(os.environ.get("MM3_TEST_GENERATED_DIR", ROOT / "src/recomp/gen"))).glob("*.c"):
         text = path.read_text()
         match = re.search(r"^void " + name + r"\(void\)\n\{.*?^\}", text, re.M | re.S)
         if match:
@@ -115,22 +117,25 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=ROOT / "tools/car-mods/cars.json")
     args = parser.parse_args()
-    if not shutil.which("cl"):
-        raise SystemExit("Run scripts/enter-env.ps1 first so cl.exe is available.")
+    cc.require_compiler()
     shifter = generated_function("sub_001CC5D1")
     builder = generated_function("sub_001CF7B4")
     with tempfile.TemporaryDirectory(prefix="mm3-gearing-") as folder:
         folder = Path(folder)
         (folder / "gearing_cases.inc").write_text(case_definitions(args.config.resolve()))
+        # The generator's fallback flag variable is unused in these bodies: GCC
+        # warns under -Werror, MSVC does not. Silence it in the copied text only.
         (folder / "production_gearing.inc").write_text(
-            shifter + "\n" + threshold_builder_tail(builder))
+            (shifter + "\n" + threshold_builder_tail(builder)).replace(
+                "int _flags = 0; /*", "int _flags = 0; (void)_flags; /*"))
         shutil.copyfile(ROOT / "src/mm3_recomp_types.h", folder / "recomp_types.h")
-        executable = folder / "contract.exe"
-        subprocess.run(["cl", "/nologo", "/W3", "/WX", "/wd4102", "/Od", "/std:c11",
-                        "/I" + str(folder), "/I" + str(ROOT / "tools/xboxrecomp/include"),
-                        str(ROOT / "tests/mm3_gearing_contract.c"),
-                        "/Fo:" + str(folder / "contract.obj"), "/Fe:" + str(executable)],
-                       check=True, cwd=folder)
+        shutil.copyfile(ROOT / "tools/xboxrecomp/templates/runtime/recomp_types.h", folder / "recomp_base.h")
+        executable = folder / f"contract{cc.exe_suffix()}"
+        subprocess.run(cc.compile_command(
+            [ROOT / "tests/mm3_gearing_contract.c"], executable,
+            includes=[folder, ROOT / "tools/xboxrecomp/include"], std="c11", optimize="none",
+            warnings="normal", werror=True, disable_warnings=("4102",),
+            obj=folder / "contract.obj"), check=True, cwd=folder)
         subprocess.run([str(executable)], check=True)
 
 

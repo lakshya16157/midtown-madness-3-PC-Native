@@ -3,27 +3,31 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <wchar.h>
-#include <windows.h>
+#include "platform/xbox_winnt.h"
 
 #include <xbox/xboxrecomp.h>
 
 #include "recomp_types.h"
 #include "recomp_funcs.h"
-#include "mm3_debug_teleport.h"
+#include "crash_report.h"
+#include "mods/teleport.h"
 #include "mm3_asset_cache.h"
-#include "mm3_frame_limit.h"
+#include "nv2a_pb_recovery.h"
 #include "mm3_performance_profile.h"
 #include "mm3_display_settings.h"
+#include "mm3_frame_limit.h"
 #include "mm3_launcher.h"
 #include "mm3_crash_diagnostics.h"
 #include "mm3_world_lighting.h"
 #include "mm3_collision_profile.h"
 #include "mm3_direct_log.h"
 #include "mm3_cheat_keys.h"
+#include "mods/mods.h"
 #include <xbox_host.h>
 #include <xinput_xbox.h>
 #include <video/fb_present.h>
 #include <video/nv2a_d3d11.h>
+#include <net/net.h>
 
 #define MM3_XBE_PATH "game_files/default.xbe"
 #define MM3_GAME_DIR "game_files"
@@ -31,12 +35,104 @@
 #define MM3_KERNEL_THUNK_COUNT 151u
 #define MM3_MEMORY_MAP_SIZE (128u * 1024u * 1024u)
 
+/* Inherited MM3 guest identity is compatibility policy, not detected hardware.
+ * Keep credential input in the port; the shared kernel copies export bytes. */
+static void mm3_configure_kernel_identity(void)
+{
+    static char disk_model[]="XBOXRECOMP VIRTUAL HDD";
+    static char disk_serial[]="XR0000000000";
+    static char image_path[]="\\Device\\CdRom0\\default.xbe";
+    xbox_HalDiskCachePartitionCount=3;
+    xbox_HalDiskModelNumber=(XBOX_ANSI_STRING){sizeof(disk_model)-1,sizeof(disk_model),disk_model};
+    xbox_HalDiskSerialNumber=(XBOX_ANSI_STRING){sizeof(disk_serial)-1,sizeof(disk_serial),disk_serial};
+    xbox_XeImageFileName=(XBOX_ANSI_STRING){sizeof(image_path)-1,sizeof(image_path),image_path};
+    static const struct { const char *name; UCHAR *bytes; } keys[] = {
+        {"RECOMP_XBOX_HDKEY", xbox_HDKey},
+        {"RECOMP_XBOX_SIGKEY", xbox_SignatureKey},
+        {"RECOMP_XBOX_LANKEY", xbox_LANKey}
+    };
+    memset(&xbox_HardwareInfo,0,sizeof(xbox_HardwareInfo));
+    xbox_HardwareInfo.GpuRevision=0xA1;
+    xbox_HardwareInfo.McpRevision=0xB1;
+    xbox_kernel_set_version(1,0,5849,0);
+    for (unsigned i=0;i<sizeof(keys)/sizeof(keys[0]);i++) {
+        const char *text=getenv(keys[i].name);
+        memset(keys[i].bytes,0,16);
+        if (!text || !*text) continue;
+        if (strlen(text)!=32 || strspn(text,"0123456789abcdefABCDEF")!=32) {
+            fprintf(stderr,"ignoring invalid %s (expected 32 hex digits)\n",keys[i].name);
+            continue;
+        }
+        for (unsigned n=0;n<16;n++) {
+            unsigned byte;
+            if (sscanf(text+2*n,"%2x",&byte)==1) keys[i].bytes[n]=(UCHAR)byte;
+        }
+    }
+}
+
+/* Inherited port compatibility: references expose one finished thread object,
+ * not live per-handle KTHREAD state. Keep this approximation out of the runtime.
+ * Reset its guest address before each host-owned memory generation. */
+static uint32_t mm3_finished_thread_object;
+static void mm3_reference_object_bridge(void)
+{
+    uint32_t handle=MEM32(g_esp),type=MEM32(g_esp+4),output=MEM32(g_esp+8);
+    MEMORY_BASIC_INFORMATION region;
+    uintptr_t pointer=(uintptr_t)output+g_xbox_mem_offset;
+    if (output<0x1000 || (uint64_t)output+4>xbox_GetMappedSize() ||
+        !VirtualQuery((void *)pointer,&region,sizeof(region)) ||
+        region.State!=MEM_COMMIT || region.Protect!=PAGE_READWRITE ||
+        pointer+4>(uintptr_t)region.BaseAddress+region.RegionSize) {
+        g_eax=STATUS_INVALID_PARAMETER; return;
+    }
+    MEM32(output)=0;
+    if (!handle || handle==UINT32_MAX) { g_eax=STATUS_INVALID_HANDLE; return; }
+    if (type==XBOX_KERNEL_DATA_BASE+KDATA_THREAD_OBJ_TYPE) {
+        if (!mm3_finished_thread_object) {
+            mm3_finished_thread_object=xbox_HeapAlloc(0x124,16);
+            if (mm3_finished_thread_object) {
+                memset((void *)XBOX_PTR(mm3_finished_thread_object),0,0x124);
+                MEM32(mm3_finished_thread_object+4)=1;
+            }
+        }
+        MEM32(output)=mm3_finished_thread_object;
+        g_eax=mm3_finished_thread_object?STATUS_SUCCESS:STATUS_NO_MEMORY;
+    } else { MEM32(output)=handle; g_eax=STATUS_SUCCESS; }
+}
+
+/* Preserve the port's optional launch command-line interface. The identity
+ * comes from this XBE's certificate, never from a different title's capture. */
+static void mm3_configure_launch_data(const void *image, size_t size)
+{
+    static XBOX_LAUNCH_DATA_PAGE page;
+    const char *cmdline = getenv("RECOMP_CMDLINE");
+    uint32_t base, certificate, title_id;
+    size_t offset, length;
+    xbox_LaunchDataPage = NULL;
+    if (!cmdline || !*cmdline || size < 0x11Cu) return;
+    memcpy(&base, (const uint8_t *)image + 0x104, 4);
+    memcpy(&certificate, (const uint8_t *)image + 0x118, 4);
+    if (certificate < base) return;
+    offset = (size_t)(certificate - base);
+    if (offset > size || size - offset < 12) return;
+    memcpy(&title_id, (const uint8_t *)image + offset + 8, 4);
+    memset(&page, 0, sizeof(page));
+    page.LaunchDataType = 3;
+    page.TitleId = title_id;
+    length = strlen(cmdline);
+    if (length >= sizeof(page.LaunchData)) length = sizeof(page.LaunchData) - 1;
+    memcpy(page.LaunchData, cmdline, length);
+    xbox_LaunchDataPage = &page;
+    fprintf(stderr, "[MM3_LAUNCH] title=0x%08X command-line bytes=%zu\n",
+            (unsigned)title_id, length);
+}
+
 static HANDLE g_mm3_main_worker;
 static HANDLE g_mm3_main_worker_ready;
 static int g_mm3_inline_threads;
 extern void sub_00083A6C_original(void);
 extern void mm3_configure_diagnostics(void);
-extern void mm3_widescreen_init(void);
+extern void mm3_host_video_init(void);
 
 static void mm3_close_game(void)
 {
@@ -62,6 +158,7 @@ static BOOL WINAPI mm3_console_control(DWORD event)
     mm3_close_game();
     return TRUE;
 }
+int mm3_launcher(void);
 
 /* Register the first XAPI worker before it can create background workers.
  * The runtime's debug handle changes on every spawn and cannot determine
@@ -93,10 +190,6 @@ void sub_00083A6C(void)
 static LONG WINAPI mm3_crash_report(EXCEPTION_POINTERS *info)
 {
     const EXCEPTION_RECORD *record = info ? info->ExceptionRecord : NULL;
-    const CONTEXT *context = info ? info->ContextRecord : NULL;
-    ULONG_PTR fault = record && record->NumberParameters > 1
-        ? record->ExceptionInformation[1] : 0;
-    uintptr_t module_base = (uintptr_t)GetModuleHandleW(NULL);
     SYSTEMTIME now;
     const char *access = "unavailable";
     MM3CrashWord seh_object, fs_thread, manager, race;
@@ -117,39 +210,8 @@ static LONG WINAPI mm3_crash_report(EXCEPTION_POINTERS *info)
             now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute,
             now.wSecond, now.wMilliseconds, (unsigned long long)GetTickCount64(),
             GetCurrentThreadId(), access);
-    fprintf(stderr, "[CRASH] code=0x%08lX address=%p guest_esp=0x%08X eax=0x%08X\n",
-            record ? record->ExceptionCode : 0,
-            record ? record->ExceptionAddress : NULL,
-            g_esp, g_eax);
-    fprintf(stderr, "[CRASH] fault=%p rip=%p rsp=%p rax=%llX rdx=%llX\n",
-            (void *)fault,
-            context ? (void *)context->Rip : NULL,
-            context ? (void *)context->Rsp : NULL,
-            context ? context->Rax : 0,
-            context ? context->Rdx : 0);
-    {
-        void *frames[16];
-        USHORT count = CaptureStackBackTrace(0, 16, frames, NULL);
-        USHORT i;
-        for (i = 0; i < count; ++i)
-        {
-            HMODULE frame_module = NULL;
-            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                              (LPCWSTR)frames[i], &frame_module);
-            fprintf(stderr, "[CRASH_NATIVE] frame=%u address=%p module=%p rva=0x%llX\n",
-                    (unsigned)i, frames[i], (void *)frame_module,
-                    frame_module ? (unsigned long long)((uintptr_t)frames[i] -
-                                                        (uintptr_t)frame_module) : 0);
-        }
-    }
-    fprintf(stderr, "[CRASH] module=%p rip_rva=0x%llX\n",
-            (void *)module_base,
-            context ? (unsigned long long)((uintptr_t)context->Rip - module_base) : 0);
-    fprintf(stderr, "[CRASH] xbox_mem_offset=%lld memory_base=%p\n",
-            (long long)g_xbox_mem_offset, xbox_GetMemoryBase());
-    fprintf(stderr, "[CRASH] guest fs=0x%08X ebp=0x%08X seh_ebp=0x%08X ecx=0x%08X ebx=0x%08X esi=0x%08X edi=0x%08X\n",
-            g_fs_base, g_ebp, g_seh_ebp, g_ecx, g_ebx, g_esi, g_edi);
+    /* Generic host, native and guest register lines (and the minidump) come from the fork. */
+    xbox_CrashReport(info);
     mm3_crash_guest_frames(stderr, g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE, g_ebp);
     seh_object = mm3_crash_guest_word(stderr, g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
                                      "seh_frame+8", (uint64_t)g_seh_ebp + 8u);
@@ -184,7 +246,7 @@ static LONG WINAPI mm3_crash_report(EXCEPTION_POINTERS *info)
                              name, (uint64_t)g_esi + 0x184u + i * 8u);
     }
     /* Reuse the verified pause/engine globals and player-manager chain from
-     * mm3_debug_teleport.c; snapshot them without calling into the game. */
+     * src/mods/teleport.c; snapshot them without calling into the game. */
     pause_read = mm3_crash_guest_read(g_xbox_mem_offset, MM3_MEMORY_MAP_SIZE,
                                      0x00429DB2u, &paused, sizeof paused);
     if (pause_read)
@@ -321,25 +383,32 @@ int main(void)
     if (entered_directory)
         fprintf(stderr, "[MM3_CWD] game_files not in the launch folder; working directory is now %ls\n",
                 entered_directory);
+#ifdef _WIN32
     if (!mm3_launcher_run()) return 0;
+#endif
     /* Bootstrap capture uses the real audio engine without displaying a game
      * window or changing the user's device volume or saved preferences. */
     if (getenv("MM3_DSP_CAPTURE") && !strcmp(getenv("MM3_DSP_CAPTURE"), "1"))
         _putenv_s("RECOMP_FB_WINDOW", "");
+    /* The audio DSP programs the game runs are saved here; the next build
+     * recompiles them to C (CMakeLists.txt, XBOXRECOMP_DSP_PROGRAM_DIR). */
     if (!getenv("RECOMP_DSP_PROGRAM_DIR") &&
-        _putenv_s("RECOMP_DSP_PROGRAM_DIR", "game_files/dsp") != 0) {
+        _putenv_s("RECOMP_DSP_PROGRAM_DIR", MM3_GAME_DIR "/dsp") != 0) {
         fprintf(stderr, "cannot select MM3 DSP program directory\n");
         return 1;
     }
     nv2a_d3d_prepare_distance_fog(!getenv("MM3_NATIVE_FOG") || strcmp(getenv("MM3_NATIVE_FOG"), "0"));
     xbox_FramebufferSetCloseHandler(mm3_close_game);
-    nv2a_d3d_set_flare_depth_test(!getenv("MM3_MOD_FLARE_DEPTH") || strcmp(getenv("MM3_MOD_FLARE_DEPTH"), "0"));
+    /* Lamp flare depth (MM3_MOD_FLARE_DEPTH) is the render policy in
+     * src/mods/render_policy.c, not a runtime switch. */
     nv2a_d3d_set_night_glass(!getenv("MM3_NIGHT_GLASS") || strcmp(getenv("MM3_NIGHT_GLASS"), "0"));
     nv2a_d3d_set_paint_softness(mm3_paint_softness());
     mm3_world_lighting_apply_gain();
     if (!getenv("MM3_MOD_SKY") || strcmp(getenv("MM3_MOD_SKY"), "0"))
         nv2a_d3d_set_bspline_blend(0x304u, 0x305u);
     SetConsoleCtrlHandler(mm3_console_control, TRUE);
+    /* MM3 instances share read-only assets for system-link testing. */
+    xbox_SetReadOnlyFileSharing(TRUE);
 #ifndef MM3_VERSION
 #define MM3_VERSION "development build"
 #endif
@@ -366,6 +435,28 @@ int main(void)
         return 1;
     }
 
+    /* The Win32 launcher above is the settings window. The shared port's RmlUi
+     * launcher (mm3_launcher.cpp) is its only one off Windows, and on Windows
+     * an opt-in with MM3_RMLUI_LAUNCHER=1. Scripts set RECOMP_PB_EXEC themselves. */
+    const char *scripted = getenv("RECOMP_PB_EXEC");
+#ifdef _WIN32
+    const char *rmlui_setting = getenv("MM3_RMLUI_LAUNCHER");
+    const int use_rmlui_launcher = rmlui_setting && *rmlui_setting && strcmp(rmlui_setting, "0") != 0;
+#else
+    const int use_rmlui_launcher = 1;
+#endif
+    if (use_rmlui_launcher && (!scripted || !*scripted) && !mm3_launcher())
+        return 0;
+
+    /* Preserve MM3's inherited completion of authored partial mip chains.
+     * The renderer's generic default retains guest levels. Configure before
+     * the first texture upload; an explicit caller override takes priority. */
+    if (!getenv("RECOMP_COMPLETE_MIPS") &&
+        _putenv_s("RECOMP_COMPLETE_MIPS", "1") != 0) {
+        fprintf(stderr, "cannot configure MM3 mip completion\n");
+        return 1;
+    }
+
     /* MM3 releases large model buffers through NtFreeVirtualMemory when a
      * scene is destroyed. The shared runtime leaves NT heap reclamation
      * opt-in; without it each race/menu round trip retains those buffers
@@ -373,14 +464,6 @@ int main(void)
      * including direct executable launches. */
     if (_putenv_s("RECOMP_HEAP_RECLAIM", "1") != 0) {
         fprintf(stderr, "cannot enable MM3 guest memory reclamation\n");
-        return 1;
-    }
-
-    /* MM3 reads the triggers and left stick for driving. Keep the runtime's
-     * legacy keys available, with arrows also driving this title. */
-    if (!getenv("RECOMP_KEYBOARD_LAYOUT") &&
-        _putenv_s("RECOMP_KEYBOARD_LAYOUT", "mm3") != 0) {
-        fprintf(stderr, "cannot select MM3 keyboard controls\n");
         return 1;
     }
 
@@ -413,6 +496,24 @@ int main(void)
         return 1;
     }
 
+    /* MM3 keeps its inherited export-page address as explicit port policy. */
+    if (!xbox_ConfigureKernelData(0x00740000u)) {
+        fprintf(stderr, "cannot configure MM3 kernel data\n");
+        free(xbe_data);
+        return 1;
+    }
+    /* Preserve MM3's inherited worker headroom as an explicit minimum. */
+    if (!xbox_ConfigureThreadStack(512u*1024u)) {
+        fprintf(stderr,"cannot configure MM3 worker stack minimum\n");
+        free(xbe_data); return 1;
+    }
+    /* MM3 retains its inherited main-stack placement/budget as port policy.
+     * The shared runtime validates it and keeps callback slices separate. */
+    if (!xbox_ConfigureMainStack(0x00780000u, 8u * 1024u * 1024u)) {
+        fprintf(stderr, "cannot configure MM3 main stack\n");
+        free(xbe_data);
+        return 1;
+    }
     /* Keep the emulated RAM at 64 MB, but leave virtual address space above
      * it for MM3's large MEM_RESERVE requests. */
     xbox_SetMapSize(MM3_MEMORY_MAP_SIZE);
@@ -423,9 +524,17 @@ int main(void)
     }
 
     g_xbox_mem_offset = xbox_GetMemoryOffset();
-    mm3_widescreen_init();
-    xbox_InputSetKeyboardDrivingProbe(mm3_keyboard_driving);
-    mm3_debug_teleport_init();
+    /* Preserve the inherited application scratch chain in the port, not the
+     * generic loader. Its MM3 usage still needs a title-specific audit. */
+    *(uint32_t *)((uintptr_t)g_xbox_mem_offset + XBOX_FS_BASE + 0x28u) = 0x00760000u;
+    *(uint32_t *)((uintptr_t)g_xbox_mem_offset + 0x00760028u) = 0x00700000u;
+
+    /* Preserve the inherited empty-section PE probe response in MM3 only. */
+    void *kernel_probe = xbox_GetKernelMemoryBase();
+    if (kernel_probe)
+        *(uint32_t *)((uint8_t *)kernel_probe + 0x3Cu) = 0x80u;
+
+    mm3_mods_init();
     /* XPP submits stack-backed USB requests whose callback signals an inline
      * KEVENT. Its explicit wait treats an invalid handle as completion, so
      * the request can outlive its stack frame. Permit only the verified XPP
@@ -444,10 +553,20 @@ int main(void)
     }
     xbox_kernel_set_thunk_address(MM3_KERNEL_THUNK_ADDRESS,
                                    MM3_KERNEL_THUNK_COUNT);
+    mm3_configure_kernel_identity();
+    mm3_configure_launch_data(xbe_data, xbe_size);
     xbox_kernel_init();
     xbox_path_init(MM3_GAME_DIR, getenv("MM3_SAVE_DIR"));
     mm3_asset_cache_refresh();
+    mm3_finished_thread_object=0;
+    if (xbox_kernel_set_bridge_override(246,mm3_reference_object_bridge)!=0) {
+        fprintf(stderr,"cannot register MM3 object-reference bridge\n");
+        xbox_kernel_shutdown(); xbox_MemoryLayoutShutdown(); free(xbe_data); return 1;
+    }
     xbox_kernel_bridge_init();
+    /* MM3 reopens disc files while they are still open (streaming + loaders). */
+    xbox_SetReadOnlyFileSharing(TRUE);
+    nv2a_pb_set_stop_handler(nv2a_pb_recover_semaphore_stop);
     if (xbox_Nv2aMirrorFence(0x00351F48u, 0x2Cu, 0x30u) != 0 ||
         xbox_Nv2aCommandFence(0x00351F48u, 0xCu, 0u) != 0) {
         fprintf(stderr, "NV2A command fence registration failed\n");
@@ -456,9 +575,29 @@ int main(void)
         free(xbe_data);
         return 1;
     }
+    /* MM3's statically linked D3D device/channel layout, for diagnostics only. */
+    const XBOX_NV2A_CAPTURE_LAYOUT capture_layout = {
+        0x17C0u, 0x40u, 0x44u, 0x4F8u, 0x24u, 0x28u
+    };
+    if (xbox_Nv2aCaptureLayout(0x00351F48u, &capture_layout) != 0) {
+        fprintf(stderr, "NV2A capture layout registration failed\n");
+        xbox_kernel_shutdown();
+        xbox_MemoryLayoutShutdown();
+        free(xbe_data);
+        return 1;
+    }
     /* D3D's GPU-notify KEVENT (device+0x196C, waited on in 0x344640),
      * raised by the NOP(5) it patches into the push buffer */
     xbox_Nv2aNotifyEvent(0x00351F48u, 0x196Cu, 5u);
+    mm3_host_video_init();
+    /* Preserve MM3's existing online-service routing outside the runtime. */
+    static const XboxDnsAlias service_dns[] = {
+        {"macs.xboxlive.com", "macs.insig.uk"},
+        {"as.xboxlive.com", "as.insig.uk"},
+        {"tgs.xboxlive.com", "tgs.insig.uk"},
+        {"xds.xboxlive.com", "xexds.xboxlive.com"},
+    };
+    net_backend_set_dns_aliases(service_dns, sizeof service_dns / sizeof service_dns[0]);
     if (!xbox_HostHardwareInit()) {
         xbox_kernel_shutdown();
         xbox_MemoryLayoutShutdown();
@@ -493,11 +632,6 @@ int main(void)
 
     /* Optional RECOMP_WATCHDOG_SECS diagnostic; must run on the guest thread. */
     xbox_WatchdogStart();
-    fprintf(stderr, "[CALLBACK_INIT] 392834=%08X 392838=%08X 391F10=%08X 391F14=%08X 391F18=%08X\n",
-            MEM32(0x392834), MEM32(0x392838), MEM32(0x391F10),
-            MEM32(0x391F14), MEM32(0x391F18));
-    fprintf(stderr, "[CALLBACK_INIT] 391F00=%08X 391F04=%08X 391F08=%08X\n",
-            MEM32(0x391F00), MEM32(0x391F04), MEM32(0x391F08));
     if (getenv("MM3_TRACE_BOOT_STATE")) {
         fprintf(stderr,
                 "[BOOT_STATE] host_tid=%lu eax=%08X ebx=%08X ecx=%08X edx=%08X esi=%08X edi=%08X ebp=%08X esp=%08X fs=%08X stack=%08X,%08X,%08X fsdata=%08X,%08X,%08X,%08X kernel=%08X,%08X,%08X kdata=%08X\n",

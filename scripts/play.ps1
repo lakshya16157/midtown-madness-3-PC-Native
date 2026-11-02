@@ -439,7 +439,7 @@ try {
         executable = Get-LaunchFile $Exe
         build_configuration = (Split-Path (Split-Path $Exe -Parent) -Leaf)
         build_context_at_launch = @{ cmake_cache = Get-LaunchFile $cachePath; cmake_options = $cmakeOptions
-            source_files = @(@('CMakeLists.txt', 'src\mm3_render_distance.c', 'src\mm3_widescreen.c',
+            source_files = @(@('CMakeLists.txt', 'src\mods\draw_distance.c', 'src\mods\widescreen.c',
                 'src\mm3_performance_profile.h', 'src\mm3_display_config.c', 'src\mm3_display_settings.c',
                 'src\mm3_building_diagnostics.c', 'src\mm3_facade_capacity.c', 'src\mm3_facade_streams.c', 'src\main.c',
                 'src\recomp_manual.c', 'src\mm3_crash_diagnostics.h', 'src\mm3_map_zoom.c',

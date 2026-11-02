@@ -6,6 +6,7 @@
 #include <time.h>
 #include "recomp_types.h"
 #include "nv2a_minimap_projection.h"
+#include "../tools/xboxrecomp/src/kernel/guest_state.c"
 
 ptrdiff_t g_xbox_mem_offset;
 RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi, g_edi;
@@ -13,6 +14,9 @@ RECOMP_TLS uint32_t g_ebp, g_seh_ebp;
 RECOMP_TLS double g_fp_stack[8];
 RECOMP_TLS int g_fp_top, g_fp_cmp, g_df;
 RECOMP_TLS uint16_t g_fp_cc, g_fp_control_word;
+RECOMP_TLS uint32_t g_fs_base;
+RECOMP_TLS RecompXmm g_xmm0, g_xmm1, g_xmm2, g_xmm3, g_xmm4, g_xmm5, g_xmm6, g_xmm7;
+RECOMP_TLS RecompMmx g_mm0, g_mm1, g_mm2, g_mm3, g_mm4, g_mm5, g_mm6, g_mm7;
 static unsigned char memory[0x800000];
 static const uint32_t stack = 0x80000, node = 0x10000, property = 0x22000;
 static const uint32_t layout = 0x23000, markers = 0x24000, position = 0x28000;
@@ -195,7 +199,10 @@ void sub_001C1585(void) {
 #define edi g_edi
 #include "native_race_guidance.inc"
 
-static void near(float got, float expected) {
+static void near_check(float got, float expected);
+#undef near /* <windows.h> defines it empty */
+#define near(got, expected) near_check(got, expected)
+static void near_check(float got, float expected) {
     if (!isfinite(got) || fabsf(got - expected) > .001f) {
         fprintf(stderr, "%s: got %.9g expected %.9g\n", check, got, expected); abort();
     }
@@ -271,21 +278,21 @@ static void native_contract(void) {
         for (i = 0; i < 4; ++i) guided[order[3 - i]] = draws[3 + i];
         for (i = 0; i < 4; ++i) {
             assert(guided[i].texture == retail[i].texture);
-            for (axis = 0; axis < 4; ++axis) near(guided[i].color[axis], retail[i].color[axis]);
-            near(edge(&guided[i]), edge(&retail[i]));
+            for (axis = 0; axis < 4; ++axis) near_check(guided[i].color[axis], retail[i].color[axis]);
+            near_check(edge(&guided[i]), edge(&retail[i]));
             for (vertex = 0; vertex < 4; ++vertex) for (axis = 0; axis < 2; ++axis)
-                near(guided[i].xy[vertex][axis], retail[i].xy[vertex][axis]);
+                near_check(guided[i].xy[vertex][axis], retail[i].xy[vertex][axis]);
         }
         /* Course endpoints coincide with real native icons across small,
          * expanded, split-screen and rotated maps, independent of vector order. */
         for (i = 0; i < 3; ++i) {
             assert(draws[i].texture == 0);
-            near(draws[i].color[3], .8f);
+            near_check(draws[i].color[3], .8f);
             for (axis = 0; axis < 2; ++axis) {
                 check = "course start matches native checkpoint";
-                near(.5f * (draws[i].xy[0][axis] + draws[i].xy[3][axis]), centre(&guided[i], axis));
+                near_check(.5f * (draws[i].xy[0][axis] + draws[i].xy[3][axis]), centre(&guided[i], axis));
                 check = "course end matches native checkpoint";
-                near(.5f * (draws[i].xy[1][axis] + draws[i].xy[2][axis]), centre(&guided[i + 1], axis));
+                near_check(.5f * (draws[i].xy[1][axis] + draws[i].xy[2][axis]), centre(&guided[i + 1], axis));
             }
         }
         abi_start(1); sub_0011CAE8(); abi_end(); assert(draw_count == 0);
@@ -325,7 +332,7 @@ static void clipping_and_state_contract(void) {
     }
     mm3_race_guidance_end(0);
     abi_start(0); sub_0011CAE8(); abi_end(); assert(draw_count == 3);
-    for (i = 0; i < 3; ++i) near(draws[i].color[3], .8f);
+    for (i = 0; i < 3; ++i) near_check(draws[i].color[3], .8f);
     /* The real HUD boundary clears players skipped in Cruise/no-player HUDs. */
     publish(0, 2); publish(1, 0);
     abi_start(0); sub_00120091();
@@ -420,9 +427,9 @@ static void native_publication_lifecycle_contract(void) {
             float base = MEMF(node + 0x94 + 4 * axis);
             float player_position = axis ? player_z : player_x;
             float sign = axis ? 1.0f : -1.0f;
-            near(.5f * (draws[i].xy[0][axis] + draws[i].xy[3][axis]),
+            near_check(.5f * (draws[i].xy[0][axis] + draws[i].xy[3][axis]),
                  base + sign * (points[i][axis] - player_position));
-            near(.5f * (draws[i].xy[1][axis] + draws[i].xy[2][axis]),
+            near_check(.5f * (draws[i].xy[1][axis] + draws[i].xy[2][axis]),
                  base + sign * (points[i + 1][axis] - player_position));
         }
     }
@@ -609,11 +616,11 @@ static void road_navigation_contract(void) {
     assert(road_graph_edge(4,5)); assert(road_graph_edge(6,7));
     count = road_path(start, finish, route, 16);
     assert(count == 4);
-    near(route[0].x, -60); near(route[1].z, 40);
-    near(route[2].z, 40); near(route[3].x, 60);
+    near_check(route[0].x, -60); near_check(route[1].z, 40);
+    near_check(route[2].z, 40); near_check(route[3].x, 60);
     /* A crossing in screen space cannot connect unrelated roads. */
     assert(road_path(positions[4], finish, route, 16) == 0);
-    assert(road_snap((RoadPoint){-60,12,0}, &snap)); near(snap.position.y, 12);
+    assert(road_snap((RoadPoint){-60,12,0}, &snap)); near_check(snap.position.y, 12);
     assert(!road_snap((RoadPoint){1000,0,1000}, &snap));
     /* Capacity reserves both snapped endpoints and every intervening bend. */
     assert(road_path(start, finish, route, 3) == 0);
@@ -679,7 +686,7 @@ static float distance_to_draw(float x, float y, const Draw *draw) {
     float by = .5f*(draw->xy[1][1] + draw->xy[2][1]);
     float dx = bx - ax, dy = by - ay;
     float t = ((x-ax)*dx + (y-ay)*dy) / (dx*dx + dy*dy);
-    if (t < 0) t = 0; if (t > 1) t = 1;
+    t = t < 0 ? 0 : (t > 1 ? 1 : t);
     return hypotf(x - ax - t*dx, y - ay - t*dy);
 }
 static void route_draw_simplification_contract(void) {
@@ -698,8 +705,8 @@ static void route_draw_simplification_contract(void) {
     /* Coalesced chords can be much longer than one road sample. Square
      * intersections must remain inside the inset at both ends. */
     draw_test_polyline(long_chord, 2, 56); assert(draw_count == 1);
-    near(.5f*(draws[0].xy[0][0]+draws[0].xy[3][0]), 56);
-    near(.5f*(draws[0].xy[1][0]+draws[0].xy[2][0]), -56);
+    near_check(.5f*(draws[0].xy[0][0]+draws[0].xy[3][0]), 56);
+    near_check(.5f*(draws[0].xy[1][0]+draws[0].xy[2][0]), -56);
     /* Dense curves coalesce, while the independently captured quad
      * centreline remains within a quarter pixel of every original point. */
     for (i = 0; i < 201; ++i) {

@@ -41,6 +41,13 @@ uint64_t mcpx_apu_mmio_read(MCPXAPUState *state, uint64_t address, unsigned size
     return registers[address / 4];
 }
 
+/* apu_core.c's switch reader, which the production decoder now consults. */
+int apu_env_on(const char *name)
+{
+    const char *e = getenv(name);
+    return e && *e && *e != '0';
+}
+
 void mcpx_apu_mmio_write(MCPXAPUState *state, uint64_t address, uint64_t value, unsigned size)
 {
     CHECK(state == (MCPXAPUState *)(uintptr_t)0x12340000 && size == 4 && address < 0x80000);

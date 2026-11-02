@@ -20,7 +20,18 @@ C_TEST = r'''
 #define MM3_TREE_TEST_HELPERS
 #define MM3_TREE_LOG(...) ((void)0)
 #define MM3_TREE_FLUSH() ((void)0)
+#include "guest_state.c"
 #include "mm3_tree_diagnostics.c"
+RECOMP_TLS RecompMmx g_mm0,g_mm1,g_mm2,g_mm3,g_mm4,g_mm5,g_mm6,g_mm7;
+/* Test double for the runtime's xbox_GuestRead: the same host-checked read over this fixture's RAM. */
+int xbox_GuestRead(uint32_t va, void *out, size_t size)
+{
+    SIZE_T copied = 0;
+    uintptr_t host;
+    if (va < 0x10000u || size > UINT32_MAX || va > UINT32_MAX - size) return 0;
+    host = (uintptr_t)va + (uintptr_t)g_xbox_mem_offset;
+    return ReadProcessMemory(GetCurrentProcess(), (const void *)host, out, size, &copied) && copied == size;
+}
 #define CHECK(c) do{if(!(c)){fprintf(stderr,"FAIL native render line %d: %s\n",__LINE__,#c);exit(2);}}while(0)
 #define RAM_SIZE 0x1000000u
 #define STACK 0x700000u
@@ -203,8 +214,8 @@ def main():
     image = contact.common.common.Image(str(ROOT / 'game_files/default.xbe'))
     # Pin the genuine native dynamic render caller, rather than accepting an
     # arbitrary magic address supplied only by the test.
-    renderer_calls = (ROOT / 'src/recomp/gen/recomp_0014.c').read_text()
-    assert 'PUSH32(esp, 0x00167D94u); RECOMP_ABI_CALL(0x0016AEDBu, sub_0016AEDB)' in renderer_calls
+    caller = 'PUSH32(esp, 0x00167D94u); RECOMP_ABI_CALL(0x0016AEDBu, sub_0016AEDB)'
+    assert any(caller in path.read_text() for path in sorted((ROOT / 'src/recomp/gen').glob('recomp_0*.c')))
     with tempfile.TemporaryDirectory(prefix='mm3-tree-native-render-') as temporary:
         directory = Path(temporary)
         executables = {}
@@ -215,6 +226,8 @@ def main():
             subprocess.run(['cl', '/nologo', '/Od', '/MD', '/std:c11',
                             '/D_CRT_SECURE_NO_WARNINGS', '/I' + str(ROOT / 'src'),
                             '/I' + str(ROOT / 'tools/xboxrecomp/include'),
+                            '/I' + str(ROOT / 'tools/xboxrecomp/src'),
+                            '/I' + str(ROOT / 'tools/xboxrecomp/src/kernel'),
                             '/Fo' + str(directory / (name + '.obj')), '/Fe' + str(executable),
                             str(code)], check=True, cwd=directory)
             executables[patched] = executable

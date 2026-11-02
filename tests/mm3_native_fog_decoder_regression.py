@@ -43,9 +43,14 @@ void nv2a_d3d_sky_fog_ramp(uint32_t addr, uint32_t format, float row, float scal
     ramp_values[0]=row; ramp_values[1]=scale; ramp_values[2]=knee;
 }
 static unsigned holds;
+static int s_replaying; /* nv2a_pb_exec.c: a replayed frame ignores the hold tag */
 void nv2a_d3d_hold_frame(void) { ++holds; }
+static unsigned plain;
 static void feed(uint32_t subch,uint32_t method,uint32_t param) {
 DECODER
+    /* A plain NO_OPERATION outside a packet continues to the executor's NOP
+     * handling (software methods, the notify the title waits on). */
+    if (subch == 0 && method == NV097_NO_OPERATION) { ++plain; return; }
     ++ordinary; last_method=method; last_subch=subch;
 }
 static uint32_t word(float value) { uint32_t bits; memcpy(&bits,&value,4); return bits; }
@@ -60,7 +65,7 @@ static void packet(void) {
 }
 int main(void) {
     unsigned n;
-    feed(0,0x100,0); assert(!calls && !ordinary);
+    feed(0,0x100,0); assert(!calls && !ordinary && plain==1);
     feed(0,0x100,NV2A_HOST_FOG_TAG); feed(0,0x100,word(99));
     feed(0,0x2B4,1); assert(ordinary==1 && last_method==0x2B4 && !calls);
     for(n=0;n<10;++n) feed(0,0x100,word(1)); assert(!calls);

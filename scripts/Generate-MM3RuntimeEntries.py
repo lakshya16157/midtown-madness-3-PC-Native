@@ -85,7 +85,9 @@ def repair_runtime_body(body, entry):
         operand_address = f'0x{address(operand):X}'
         old = f'fp_push(MEMF({operand_address})); /* fld */'
         new = f'fp_push(MEMFP80({operand_address})); /* fld tbyte */'
-        if old not in body and new not in body:
+        # The current lifter loads 80-bit constants itself (recomp_f80_load).
+        lifted = f'recomp_f80_load(((uint64_t)MEM32(({operand_address}) + 4) << 32)'
+        if old not in body and new not in body and lifted not in body:
             raise RuntimeError(f'Missing extended load {operand}: {entry["start"]}')
         body = body.replace(old, new)
     if entry.get('x87_helper_unwinds_caller'):
@@ -180,8 +182,29 @@ def translate_bodies(repo, out, entries, functions):
             identified_json_path=str(tool / 'func_id/output/identified_functions.json'),
             abi_json_path=str(tool / 'abi_analysis/output/abi_functions.json'),
             seh_prolog=0x00097AA4)
-        return {address(entry['start']): repair_runtime_body(
-            translator.translate_single(address(entry['start'])), entry) for entry in entries}
+        # Pointer entries call hand-written replacements through recomp_lookup_manual, as the
+        # main pass does; the repair entries keep the direct calls their repairs patch.
+        manual_path = out / 'manual_functions.json'
+        manual = ({int(key, 16) for key in json.loads(manual_path.read_text(encoding='utf-8'))}
+                  if manual_path.exists() else set())
+        lifter = translator.translator.lifter
+        bodies = {}
+        image_end = max(address(item['end']) for item in functions)
+        for entry in entries:
+            lifter.manual_functions = manual if entry.get('optional') else set()
+            try:
+                body = translator.translate_single(address(entry['start']))
+            except Exception:
+                if not entry.get('optional'):
+                    raise
+                body = None
+            # A pointer-only entry the lifter cannot decode (data, unread section) is
+            # left out; a repair entry must lift.
+            if entry.get('optional') and (not has_body(body, address(entry['start'])) or any(
+                    int(target, 16) > image_end for target in re.findall(r'\bsub_([0-9A-F]{8})\b', body))):
+                continue  # data decoded as code calls outside the image
+            bodies[address(entry['start'])] = repair_runtime_body(body, entry)
+        return bodies
 
 
 def atomic_write(path, data):
@@ -230,7 +253,9 @@ def main(argv=None, repo=None):
     to_lift = [entry for entry in selected if source is None or
                not has_body(source, address(entry['start']))]
     bodies = translate_bodies(repo, out, to_lift, functions)
-    result = render_incremental(source, selected, bodies) if args.incremental else render_full(selected, bodies)
+    selected = [entry for entry in selected if address(entry['start']) in bodies
+                or (source is not None and has_body(source, address(entry['start'])))]
+    result =render_incremental(source, selected, bodies) if args.incremental else render_full(selected, bodies)
     # The existing source bytes survive an idempotent incremental invocation.
     atomic_write(source_path, result.encode('utf-8'))
     atomic_write(metadata, json.dumps(functions, indent=1).encode('utf-8'))

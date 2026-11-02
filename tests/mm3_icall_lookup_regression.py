@@ -65,8 +65,14 @@ def main():
         folder = Path(temporary)
         (folder / "contract.c").write_text(CONTRACT)
         executable = folder / "contract.exe"
-        subprocess.run(["cl", "/nologo", "/W4", "/WX", "/Od", "/std:c11", "/I" + str(ROOT / "src"), str(folder / "contract.c"),
-                        str(ROOT / "src/mm3_runtime_entries.c"), "/Fo:" + str(folder) + "\\",
+        # The per-thread memo of the manual answer is the toolkit's
+        # recomp_lookup_memoized: compile the real one beside the production file.
+        kernel = ROOT / "tools/xboxrecomp/src/kernel"
+        subprocess.run(["cl", "/nologo", "/W4", "/WX", "/Od", "/std:c11", "/I" + str(ROOT / "src"),
+                        "/I" + str(kernel), "/I" + str(ROOT / "tools/xboxrecomp/src"),
+                        "/I" + str(ROOT / "tools/xboxrecomp/include"), str(folder / "contract.c"),
+                        str(ROOT / "src/mm3_runtime_entries.c"), str(kernel / "recomp_lookup_cache.c"),
+                        "/Fo:" + str(folder) + "\\",
                         "/Fe:" + str(executable)], check=True, cwd=folder, stdout=subprocess.DEVNULL)
         subprocess.run([str(executable)], check=True, cwd=folder)
 

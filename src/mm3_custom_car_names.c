@@ -3,6 +3,8 @@
 #include "mm3_graphics_menu.h"
 #include "mm3_circuit_races.h"
 #include "mm3_dlc_races.h"
+#include "guest_state.h"
+#include "guest_strings.h"
 
 extern void sub_0011C194_original(void);
 extern void sub_00016148(void);
@@ -74,60 +76,31 @@ void sub_0011C194(void)
 
     /* The guest key is NUL-terminated by the existing locale API. Prefix
      * matching bounds every read to the exact custom key, including its NUL. */
-    for (i = 0; !value && i < sizeof car_names / sizeof car_names[0]; ++i) {
-        size_t j, length = strlen(car_names[i].key);
-        for (j = 0; j <= length; ++j)
-            if (MEM8(key + (uint32_t)j) != (unsigned char)car_names[i].key[j])
-                break;
-        if (j > length) {
+    for (i = 0; !value && i < sizeof car_names / sizeof car_names[0]; ++i)
+        if (xbox_guest_cstring_equals(key, car_names[i].key)) {
             value = car_names[i].value;
             break;
         }
-    }
     if (!value) {
         sub_0011C194_original();
         return;
     }
 
     {
-        uint32_t saved_ecx = g_ecx, saved_edx = g_edx;
-        uint32_t saved_ebx = g_ebx, saved_esi = g_esi, saved_edi = g_edi;
-        uint32_t saved_ebp = g_ebp, saved_seh = g_seh_ebp;
-        uint32_t saved_fs = g_fs_base;
-        double fp[8];
-        int top = g_fp_top, cmp = g_fp_cmp, df = g_df;
-        uint16_t cc = g_fp_cc, control = g_fp_control_word;
-        RecompXmm xmm[] = {g_xmm0, g_xmm1, g_xmm2, g_xmm3,
-                          g_xmm4, g_xmm5, g_xmm6, g_xmm7};
+        xbox_guest_state guest;
         size_t length = strlen(value);
         uint32_t text = entry_sp - (length < 32u ? 64u : 1024u);
 
-        memcpy(fp, g_fp_stack, sizeof fp);
+        xbox_guest_state_save(&guest);
         /* Reserve the text above the helper's argument/callee frames. */
         g_esp = text;
-        for (i = 0; i <= length; ++i)
-            MEM16(text + (uint32_t)i * 2u) = (unsigned char)value[i];
+        xbox_guest_write_utf16_ascii(text, value);
         g_eax = output;
         PUSH32(g_esp, text);
         PUSH32(g_esp, 0x0011C1BEu); /* original UTF-16 constructor return site */
         sub_00016148();
 
-        g_eax = output;
-        g_ecx = saved_ecx;
-        g_edx = saved_edx;
-        g_ebx = saved_ebx;
-        g_esi = saved_esi;
-        g_edi = saved_edi;
-        g_ebp = saved_ebp;
-        g_seh_ebp = saved_seh;
-        g_fs_base = saved_fs;
-        memcpy(g_fp_stack, fp, sizeof fp);
-        g_fp_top = top; g_fp_cmp = cmp; g_df = df;
-        g_fp_cc = cc; g_fp_control_word = control;
-        g_xmm0 = xmm[0]; g_xmm1 = xmm[1];
-        g_xmm2 = xmm[2]; g_xmm3 = xmm[3];
-        g_xmm4 = xmm[4]; g_xmm5 = xmm[5];
-        g_xmm6 = xmm[6]; g_xmm7 = xmm[7];
+        xbox_guest_state_restore(&guest, output);
         g_esp = entry_sp + 12u; /* lookup's RET 8 */
     }
 }

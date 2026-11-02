@@ -369,12 +369,20 @@ static void off_contract(void)
     InterlockedIncrement(&s_camera_presses);
     draw();
     assert(InterlockedCompareExchange(&s_active, 0, 0));                     /* the camera flies: the buttons are heard */
-    pad_state.wButtons = XINPUT_GAMEPAD_Y | XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_X;
+    pad_state.wButtons = XINPUT_GAMEPAD_Y | XINPUT_GAMEPAD_A;
+    draw();
+    Sleep(60);
+    assert(requests == 0 && mm3_cheat_pause_presses() == 0 && count_files(dir) == 0);
+    /* Hiding the HUD belongs to the free camera too: F4 works with photo mode off. */
+    pad_state.wButtons = 0;
     draw();
     tap(VK_F4);
     Sleep(60);
-    assert(requests == 0 && mm3_cheat_pause_presses() == 0 && !mm3_hud_hidden() && !renderer_hides());
-    puts("PASS MM3_PHOTO_MODE=0: F2, F3, F4 and the controller buttons do nothing");
+    assert(mm3_hud_hidden() && renderer_hides());
+    tap(VK_F4);
+    Sleep(60);
+    assert(!mm3_hud_hidden() && !renderer_hides());
+    puts("PASS MM3_PHOTO_MODE=0: F2, F3 and the controller's Y and A do nothing; F4 still hides the HUD for the free camera");
 }
 
 int main(int argc, char **argv)

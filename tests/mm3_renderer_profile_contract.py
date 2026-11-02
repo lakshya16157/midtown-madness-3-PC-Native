@@ -27,7 +27,7 @@ def main():
                         str(ROOT / "tests/mm3_renderer_profile_contract.c"),
                         "/Fo:" + str(folder / "contract.obj"), "/Fe:" + str(executable)],
                        check=True, cwd=folder)
-        for setting in ("unset", "", "0", "1", "yes"):
+        for setting in ("unset", "", "0", "1", "yes", "spike"):
             subprocess.run([str(executable), setting], check=True)
 
 

@@ -92,7 +92,7 @@ static int guest_range(uint32_t address, uint32_t size)
 
 /* The ring draw's texture argument is the map node's resource (+0x20):
  * resource+24 -> descriptor, +14 -> D3DTexture, +4 -> its Data, as
- * sub_0011C742 resolves it (mm3_widescreen.c). Data is a physical address
+ * sub_0011C742 resolves it (src/mods/widescreen.c). Data is a physical address
  * in contiguous memory, seen at 0x80000000 + Data (mm3_native_fog.c); the
  * guest page at Data itself is another page. */
 void mm3_map_ring_texture_pins(uint32_t resource)

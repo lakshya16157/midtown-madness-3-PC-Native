@@ -29,6 +29,10 @@ static unsigned dispatched, logged;
 static uint32_t log_words[256];
 static void nv2a_vsh_program_word(uint32_t word) { log_words[logged++ & 255] = 0x10000000u ^ word; }
 static void nv2a_vsh_constant_word(uint32_t word) { log_words[logged++ & 255] = 0x20000000u ^ word; }
+static void cap_exceeded(uint32_t site, const char *what, uint32_t limit, uint32_t lost)
+{ (void)site; (void)what; (void)limit; (void)lost; }
+/* The frame recorder is off: the bulk run takes its fast path. */
+static int interp_on(void) { return 0; }
 void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
 {
     (void)subch;
@@ -109,8 +113,10 @@ int main(void)
 
 
 def case_block(source, label):
+    # Up to the next label: a case may break early (`if (!s_gpu.prim) break;`).
     start = source.index(label, source.index("void nv2a_pb_exec_method("))
-    end = source.index("break;", start) + len("break;")
+    after = start + len(label)
+    end = min(source.index(stop, after) for stop in ("\n    case ", "\n    default:"))
     return source[start:end]
 
 

@@ -18,6 +18,7 @@ def main():
         subprocess.run(["cl", "/nologo", "/O2", "/Ob1", "/MD", "/std:c11",
                         "/I" + str(ROOT / "src"),
                         "/I" + str(ROOT / "tools/xboxrecomp/src/apu"),
+                        "/I" + str(ROOT / "tools/xboxrecomp/src"),
                         "/Fo:" + str(directory) + "/", "/Fe:" + str(executable),
                         str(ROOT / "tests/mm3_apu_mmio_contract.c"),
                         str(ROOT / "src/mm3_apu_mmio.c"),

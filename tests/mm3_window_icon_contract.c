@@ -18,6 +18,10 @@ static HWND WINAPI create_hidden_window(DWORD extended_style, LPCSTR class_name,
 
 #define CreateWindowExA create_hidden_window
 #include "../tools/xboxrecomp/src/video/fb_present.c"
+#include "../tools/xboxrecomp/src/video/fb_window_win32.c"
+#include "../tools/xboxrecomp/src/input/keyboard.c"
+#include "../tools/xboxrecomp/src/input/input_map.c"
+#include "../tools/xboxrecomp/src/input/keymap_spec.c"
 #undef CreateWindowExA
 
 ptrdiff_t xbox_GetMemoryOffset(void) { return 0; }

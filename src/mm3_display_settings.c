@@ -225,7 +225,7 @@ static void populate(HWND dialog, const MM3DisplaySettings *settings)
     static const int resolutions[][2] = { {800,600}, {1024,768}, {1280,720},
         {1280,800}, {1366,768}, {1536,960}, {1600,900}, {1920,1080},
         {1920,1200}, {2560,1440}, {2560,1600}, {3840,2160} };
-    static const int rates[] = { 15, 24, 30, 40, 45, 50, 60 };
+    static const int rates[] = { 15, 24, 30, 40, 45, 50, 60, 120 };
     static const float scales[] = { .5f, .75f, 1.f, 1.5f, 2.f, 2.5f, 3.f, 4.f };
     static const char *aspects[] = { "auto", "4:3", "16:10", "16:9", "21:9" };
     static const float distances[] = { 1.f, 1.5f, 2.f, 3.f, 4.f };

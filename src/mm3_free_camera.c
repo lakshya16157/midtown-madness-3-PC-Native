@@ -189,6 +189,11 @@ static void fly(uint32_t camera, float out[16])
     /* The right button looks; while the race is held the mouse alone does. */
     if (key(VK_RBUTTON) || (s_from_hold && focused())) {
         POINT p;
+        /* Physical pixels: in a DPI-unaware thread a scaled display (250%)
+         * rounds every Get/SetCursorPos round trip down a pixel, which
+         * turned the camera left on its own. */
+        DPI_AWARENESS_CONTEXT dpi =
+            SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         if (GetCursorPos(&p)) {
             /* The pointer goes back where the button was pressed each frame,
              * so turning never stops at the screen's edge. */
@@ -201,6 +206,8 @@ static void fly(uint32_t camera, float out[16])
             }
             s_mouse_held = 1;
         }
+        if (dpi)
+            SetThreadDpiAwarenessContext(dpi);
     } else {
         s_mouse_held = 0;
     }

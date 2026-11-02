@@ -21,14 +21,20 @@ def main():
     with tempfile.TemporaryDirectory(prefix='mm3-pvideo-') as temporary:
         folder = Path(temporary)
         (folder / 'pvideo_core.inc').write_text('\n'.join(bodies))
+        # fb_present.c's two outside dependencies: installed RAM bounds the
+        # scanout check (retail 64 MiB) and the window lives in fb_window_*.c.
+        (folder / 'host_stubs.c').write_text(
+            '#include <stddef.h>\n'
+            'size_t g_xbox_total_ram = 64u * 1024u * 1024u;\n'
+            'void *fbw_native_window(void) { return NULL; }\n')
         executable = folder / 'pvideo.exe'
         subprocess.run(['cl', '/nologo', '/O2', '/Ob1', '/MD', '/W3', '/std:c11',
             '/D_CRT_SECURE_NO_WARNINGS', '/I' + str(folder),
             '/I' + str(ROOT / 'tools/xboxrecomp/src'),
             str(ROOT / 'tools/xboxrecomp/tests/nv2a_pvideo_snapshot/test_main.c'),
-            str(ROOT / 'tools/xboxrecomp/src/input/xinput_device.c'),
+            str(folder / 'host_stubs.c'),
             '/Fo:' + str(folder) + '\\', '/Fe:' + str(executable),
-            '/link', 'user32.lib', 'gdi32.lib', 'xinput.lib'], cwd=folder, check=True)
+            '/link', 'user32.lib', 'gdi32.lib'], cwd=folder, check=True)
         subprocess.run([str(executable)] + (['benchmark'] if '--benchmark' in sys.argv else []), cwd=folder, check=True)
 
 

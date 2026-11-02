@@ -17,7 +17,18 @@ PREFIX = PREFIX.replace('#include "mm3_tree_audio.c"', '''#include "mm3_tree_aud
 #define MM3_TREE_CLOCK audio_clock
 #define MM3_TREE_LOG(...) ((void)0)
 #define MM3_TREE_FLUSH() ((void)0)
+#include "guest_state.c"
 #include "mm3_tree_diagnostics.c"
+RECOMP_TLS RecompMmx g_mm0,g_mm1,g_mm2,g_mm3,g_mm4,g_mm5,g_mm6,g_mm7;
+/* Test double for the runtime's xbox_GuestRead: the same host-checked read over this fixture's RAM. */
+int xbox_GuestRead(uint32_t va, void *out, size_t size)
+{
+    SIZE_T copied = 0;
+    uintptr_t host;
+    if (va < 0x10000u || size > UINT32_MAX || va > UINT32_MAX - size) return 0;
+    host = (uintptr_t)va + (uintptr_t)g_xbox_mem_offset;
+    return ReadProcessMemory(GetCurrentProcess(), (const void *)host, out, size, &copied) && copied == size;
+}
 /* Collision profiling is opt-in (RECOMP_COLLISION_PROFILE); keep it off. */
 int mm3_collision_profile_on;
 MM3CollisionSample mm3_collision_profile_begin(uint32_t car, uint32_t contacts)
@@ -124,6 +135,7 @@ def main():
         code.write_text(PREFIX + INTEGRATION)
         subprocess.run(['cl', '/nologo', '/Od', '/MD', '/std:c11',
                         '/I' + str(ROOT / 'src'), '/I' + str(ROOT / 'tools/xboxrecomp/include'),
+                        '/I' + str(ROOT / 'tools/xboxrecomp/src'), '/I' + str(ROOT / 'tools/xboxrecomp/src/kernel'),
                         '/Fo' + str(directory / 'contact.obj'), '/Fe' + str(executable), str(code)], check=True)
         subprocess.run([str(executable)], check=True)
 

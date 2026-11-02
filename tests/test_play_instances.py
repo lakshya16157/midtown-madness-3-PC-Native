@@ -19,11 +19,11 @@ SHELL = fixture.SHELL
 
 @unittest.skipUnless(SHELL, 'PowerShell is unavailable')
 class PlayInstances(unittest.TestCase):
-    tearDown = fixture.LauncherProfileTest.tearDown
-    run_launcher = fixture.LauncherProfileTest.run_launcher
+    tearDown = fixture.PowerShellLauncherProfileTest.tearDown
+    run_launcher = fixture.PowerShellLauncherProfileTest.run_launcher
 
     def setUp(self):
-        fixture.LauncherProfileTest.setUp(self)
+        fixture.PowerShellLauncherProfileTest.setUp(self)
         self.local_data = self.folder / 'isolated application data'
         self.environment['LOCALAPPDATA'] = str(self.local_data)
 

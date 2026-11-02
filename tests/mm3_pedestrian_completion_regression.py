@@ -44,8 +44,15 @@ def expected(machine, state, cursor):
 
 def source(old):
     if old:
-        generated = (ROOT / 'src/recomp/gen/recomp_0013.c').read_text()
-        body = re.search(r'void sub_001466D9\(void\)\n\{.*?\n\}', generated, re.S).group()
+        # Generated chunks are renumbered between translator versions: search them all.
+        for chunk in sorted((ROOT / 'src/recomp/gen').glob('recomp_*.c')):
+            generated = chunk.read_text()
+            body = re.search(r'void sub_001466D9\(void\)\n\{.*?\n\}', generated, re.S)
+            if body:
+                body = body.group()
+                break
+        else:
+            raise AssertionError('sub_001466D9 not found in generated code')
         body = 'void sub_001466FF(void){ SET_LO8(g_eax,1);g_esp+=4; }\n' + body
     else:
         body = (ROOT / 'src/mm3_pedestrian_compat.c').read_text()
@@ -88,6 +95,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='pedestrian-completion-', dir=ROOT / 'conformance_tmp') as tmp:
         folder = Path(tmp)
         shutil.copyfile(ROOT / 'src/mm3_recomp_types.h', folder / 'recomp_types.h')
+        shutil.copyfile(ROOT / 'tools/xboxrecomp/templates/runtime/recomp_types.h', folder / 'recomp_base.h')
         inputs = folder / 'cases.bin'
         inputs.write_bytes(b''.join(struct.pack('<II', *case) for case in cases))
         for old in (False, True):

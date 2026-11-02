@@ -11,7 +11,8 @@ static void clear_environment(void)
     static const char *const extra[] = {"RECOMP_USB_PADS", "RECOMP_USB_NDP", "MM3_FOV_DEGREES", "RECOMP_NET_PORT", "RECOMP_NET_PEERS",
         "RECOMP_KEYMAP", "MM3_DRIVE_KEYMAP", "RECOMP_PADMAP", "RECOMP_ASPECT", "RECOMP_DRAW_DISTANCE", "RECOMP_VIEW_DISTANCE",
         "MM3_GLOW_LIFT", "MM3_NIGHT_GLASS", "MM3_PAINT_SOFTNESS", "MM3_DAMAGE_PERCENT", "MM3_OWN_DAMAGE_PERCENT",
-        "MM3_TIME_PERCENT", "MM3_AI_LEVEL", "MM3_FREE_CAMERA_KEY"};
+        "MM3_TIME_PERCENT", "MM3_AI_LEVEL", "MM3_FREE_CAMERA_KEY", "RECOMP_KEYMAP2", "MM3_DRIVE_KEYMAP2",
+        "MM3_PLAYER1_INPUT", "MM3_PLAYER2_INPUT", "RECOMP_INPUT_P1", "RECOMP_INPUT_P2"};
     for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i) assert(!_putenv_s(mm3_launcher_options[i].key, ""));
     for (int i = 0; i < (int)(sizeof extra / sizeof extra[0]); ++i) assert(!_putenv_s(extra[i], ""));
 }
@@ -32,6 +33,51 @@ int main(int argc, char **argv)
     assert(config.option[MM3_LAUNCH_PHOTO_MODE]);                     /* photo mode starts on */
     assert(config.pad[4] == 5 && config.pad[5] == 4);
     assert(config.keys[0] == 'Z' && config.drive_keys[0] == VK_UP);
+    assert(config.keys2[0] == VK_SPACE && config.drive_keys2[0] == 'W' && !config.player1 && !config.player2);
+    /* Two keyboard players: the first set moves to the right half, sharing no key with the second. */
+    assert(mm3_launcher_players_share_keyboard(2, 3, 0) && mm3_launcher_players_share_keyboard(3, 2, 0));
+    assert(mm3_launcher_players_share_keyboard(0, 3, 1) && !mm3_launcher_players_share_keyboard(0, 3, 0));
+    assert(!mm3_launcher_players_share_keyboard(2, 0, 1) && !mm3_launcher_players_share_keyboard(0, 2, 1));
+    {
+        MM3LauncherConfig halves = config;
+        assert(mm3_launcher_keyboard1_is(&halves, 0) && !mm3_launcher_keyboard1_is(&halves, 1));
+        mm3_launcher_keyboard1_set(&halves, 1);
+        assert(mm3_launcher_keyboard1_is(&halves, 1) && halves.keys[0] == VK_RCONTROL && halves.drive_keys[0] == VK_UP);
+        for (int i = 0; i < MM3_LAUNCHER_KEYS + MM3_LAUNCHER_DRIVE_KEYS; ++i) {
+            int a = i < MM3_LAUNCHER_KEYS ? halves.keys[i] : halves.drive_keys[i - MM3_LAUNCHER_KEYS];
+            for (int k = 0; a && k < MM3_LAUNCHER_KEYS + MM3_LAUNCHER_DRIVE_KEYS; ++k)
+                assert(a != (k < MM3_LAUNCHER_KEYS ? halves.keys2[k] : halves.drive_keys2[k - MM3_LAUNCHER_KEYS]));
+        }
+        mm3_launcher_keyboard1_set(&halves, 0);
+        assert(!memcmp(halves.keys, config.keys, sizeof config.keys) && !memcmp(halves.drive_keys, config.drive_keys, sizeof config.drive_keys));
+    }
+    /* Players: a clash moves player 1 to its first free choice. */
+    assert(mm3_launcher_player1_for(0, 0) == 0 && mm3_launcher_player1_for(0, 2) == 0);   /* keyboard given up */
+    assert(mm3_launcher_player1_for(0, 1) == 2 && mm3_launcher_player1_for(1, 1) == 2);   /* controller 1 taken */
+    assert(mm3_launcher_player1_for(4, 0) == 0 && mm3_launcher_player1_for(3, 3) == 0);
+    assert(mm3_launcher_player1_for(2, 3) == 2 && mm3_launcher_player1_for(5, 0) == 0);
+    {
+        MM3LauncherConfig players = config;
+        char text[512];
+        assert(mm3_launcher_config_apply(&players, text, sizeof text));
+        assert(!getenv("RECOMP_INPUT_P1") && !getenv("RECOMP_INPUT_P2"));   /* as before */
+        assert(strstr(getenv("RECOMP_KEYMAP2"), "A:20") && strstr(getenv("MM3_DRIVE_KEYMAP2"), "THROTTLE:57"));
+        players.player1 = 2; players.player2 = 3; players.option[MM3_LAUNCH_KEYBOARD] = 0;
+        assert(mm3_launcher_config_apply(&players, text, sizeof text));
+        assert(!strcmp(getenv("RECOMP_INPUT_P1"), "KEYS1") && !strcmp(getenv("RECOMP_INPUT_P2"), "KEYS2"));
+        assert(!strcmp(getenv("RECOMP_KEYBOARD"), "1") && !strcmp(getenv("RECOMP_USB_PADS"), "2"));
+        players.player1 = 0; players.player2 = 2; players.option[MM3_LAUNCH_KEYBOARD] = 1;
+        assert(mm3_launcher_config_apply(&players, text, sizeof text));
+        assert(!strcmp(getenv("RECOMP_INPUT_P1"), "PAD1") && !strcmp(getenv("RECOMP_INPUT_P2"), "KEYS1"));
+        players.player1 = 4; players.player2 = 0;               /* both on controller 2: player 2 keeps it */
+        assert(mm3_launcher_config_apply(&players, text, sizeof text));
+        assert(!getenv("RECOMP_INPUT_P1") && !getenv("RECOMP_INPUT_P2"));   /* resolved to the first choices */
+        assert(!strcmp(getenv("RECOMP_USB_PADS"), "1"));
+        players.player1 = 5; assert(!mm3_launcher_config_valid(&players));
+        players.player1 = 0; players.player2 = 4; assert(!mm3_launcher_config_valid(&players));
+        players.player2 = 0; players.keys2[3] = VK_F10; assert(!mm3_launcher_config_valid(&players));
+        clear_environment();
+    }
     assert(mm3_launcher_config_path(path, sizeof path, error, sizeof error));
     assert(!strcmp(path, argv[1]));
     assert(mm3_launcher_config_load(&config, error, sizeof error)); /* Missing is harmless. */
@@ -217,9 +263,13 @@ int main(int argc, char **argv)
     assert(!loaded.option[MM3_LAUNCH_DRAFTING] && !loaded.option[MM3_LAUNCH_ROLL_GUARD]);
     assert(!loaded.option[MM3_LAUNCH_SKY]);
     loaded.option[MM3_LAUNCH_DRAFTING] = 1;
+    loaded.player1 = 2; loaded.player2 = 3;
+    assert(mm3_launcher_config_assign(&loaded, "RECOMP_KEYMAP2", "A:47"));
+    assert(!mm3_launcher_config_assign(&loaded, "MM3_PLAYER2_INPUT", "4"));
     assert(mm3_launcher_config_save(&loaded, error, sizeof error));
     mm3_launcher_config_defaults(&config);
     assert(mm3_launcher_config_load(&config, error, sizeof error) && !*error);
+    assert(config.player1 == 2 && config.player2 == 3 && config.keys2[0] == 'G' && config.drive_keys2[2] == 'A');
     assert(config.option[MM3_LAUNCH_DRAFTING] && !config.option[MM3_LAUNCH_ROLL_GUARD]);
     file = fopen(path, "rb"); assert(file);
     size = fread(saved, 1, sizeof saved - 1, file); saved[size] = 0; fclose(file);

@@ -23,8 +23,14 @@ GET_COUNT, ADVANCE, GET_NODE, GET_NEXT, GET_POINT, SET_POINT, GET_VELOCITY, ZERO
 
 
 def native_source():
-    generated = (ROOT / 'src/recomp/gen/recomp_0012.c').read_text()
-    body = re.search(r'void sub_00136ACA\(void\)\n\{.*?\n\}', generated, re.S).group()
+    # Generated chunks are renumbered between translator versions: search them all.
+    for chunk in sorted((ROOT / 'src/recomp/gen').glob('recomp_*.c')):
+        body = re.search(r'void sub_00136ACA\(void\)\n\{.*?\n\}', chunk.read_text(), re.S)
+        if body:
+            body = body.group()
+            break
+    else:
+        raise AssertionError('sub_00136ACA not found in generated code')
     return r'''
 #define RECOMP_GENERATED_CODE
 #include <stdio.h>

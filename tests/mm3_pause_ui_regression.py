@@ -1,12 +1,14 @@
 """Compile the real pause callback against the title's extracted state writes.
 
-The renderer's placement/seam contract is in test_menu_placement.py. This
+The title overlay placement contract is in mm3_overlay_regression.py. This
 contract checks its title-specific input: the real singleton address, native
 open/resume writes, callback registration, and mapping/startup order.
 """
 from pathlib import Path
+import os
 import re
 import shutil
+import cc
 import subprocess
 import tempfile
 
@@ -24,12 +26,11 @@ def between(source, start, end):
 
 
 def main():
-    if not shutil.which("cl"):
-        raise SystemExit("Run scripts/enter-env.ps1 first so cl.exe is available.")
+    cc.require_compiler()
     names = ("sub_001E25C1", "sub_001E2CD5", "sub_001E2BDA")
     native = {}
     # Generated translation-unit boundaries change after regeneration.
-    for path in sorted((ROOT / "src/recomp/gen").glob("recomp_*.c")):
+    for path in sorted((Path(os.environ.get("MM3_TEST_GENERATED_DIR", ROOT / "src/recomp/gen"))).glob("recomp_*.c")):
         source = path.read_text()
         for name in names:
             if re.search(r"^void " + name + r"\(void\)\s*\{", source, re.M):
@@ -45,13 +46,15 @@ def main():
     assert "esi = MEM32(ebp + 8);" in opened
     assert "ebp = MEM32(esp + 8);" in resumed
     startup = (ROOT / "src/main.c").read_text()
-    assert startup.count("    mm3_widescreen_init();") == 1
+    assert startup.count("    mm3_mods_init();") == 1
     assert (startup.index("if (!xbox_MemoryLayoutInit(") <
             startup.index("g_xbox_mem_offset = xbox_GetMemoryOffset();") <
-            startup.index("    mm3_widescreen_init();") <
+            startup.index("    mm3_mods_init();") <
             startup.index("if (!xbox_HostHardwareInit()") <
             startup.index("if (!xbox_HostGraphicsInit("))
-    assert "src/mm3_widescreen.c" in (ROOT / "CMakeLists.txt").read_text()
+    assert "src/mods/widescreen.c" in (ROOT / "CMakeLists.txt").read_text()
+    assert "mm3_pause_ui_active()" in (ROOT / "src/mods/widescreen_hud.c").read_text()
+    assert "nv2a_d3d_set_overlay_hooks(&mm3_hud_hooks);" in (ROOT / "src/mods/mods.c").read_text()
     harness = r'''
 #include <assert.h>
 #include <stdio.h>
@@ -66,20 +69,20 @@ RECOMP_TLS uint32_t g_fs_base;
 RECOMP_TLS RecompXmm g_xmm0, g_xmm1, g_xmm2, g_xmm3, g_xmm4, g_xmm5, g_xmm6, g_xmm7;
 static unsigned char memory[0x440000];
 static int (*registered_query)(void);
-static unsigned registrations;
-void nv2a_d3d_set_centered_ui_query(int (*query)(void)) {
-    assert(g_xbox_mem_offset == (ptrdiff_t)memory);
-    registered_query = query; ++registrations;
-}
 float nv2a_d3d_display_aspect(void) { return 1.6f; }
-void nv2a_d3d_set_edge_hud(int on) { (void)on; }
-void nv2a_d3d_set_hud_start(float a, float b, float c, float d) {
+void mm3_hud_set_edge(int on) { (void)on; }
+void mm3_hud_set_start(float a, float b, float c, float d) {
     (void)a; (void)b; (void)c; (void)d;
 }
 void sub_0025968E_original(void) { g_esp += 24; }
 void sub_001EEC53_original(void) { g_esp += 60; }
 void sub_000F4AC3(void) { g_esp += 20; }
 void sub_000F4BB1_original(void) { g_esp += 4; }
+void nv2a_d3d_set_edge_hud(int on) { (void)on; }
+void nv2a_d3d_set_hud_start(float a, float b, float c, float d) {
+    (void)a; (void)b; (void)c; (void)d;
+}
+void nv2a_d3d_set_centered_ui_query(int (*query)(void)) { (void)query; }
 void nv2a_d3d_set_map_texture_query(int (*query)(uint32_t)) { (void)query; }
 int mm3_minimap_improved(void) { return 1; }
 void nv2a_d3d_set_minimap_style_query(int (*query)(void)) { (void)query; }
@@ -87,10 +90,15 @@ float mm3_minimap_motion(float cx, float cy) { (void)cx; (void)cy; return 0; }
 void nv2a_d3d_set_minimap_motion_query(float (*query)(float, float)) { (void)query; }
 float mm3_minimap_expansion(float cx, float cy) { (void)cx; (void)cy; return 0; }
 void nv2a_d3d_set_minimap_expansion_query(float (*query)(float, float)) { (void)query; }
+void nv2a_d3d_set_split_screen_query(int (*query)(void)) { (void)query; }
 void sub_0011C742_original(void) { g_esp += 8; }
 void sub_0011CAAC_original(void) { g_esp += 12; }
 void sub_0007CEC3_original(void) { g_esp += 8; }
+#include "mods.h"
+int mm3_mod_on(int mod) { (void)mod; return 1; }
 #include "production_widescreen.c"
+#include "camera_math.c"
+#include "slot_publish.c"
 static uint32_t eax, esi, esp;
 static void native_singleton_return(void) { SINGLETON }
 static void native_pause_open(uint32_t singleton) {
@@ -105,8 +113,7 @@ static void native_pause_resume(uint32_t singleton) {
 }
 int main(void) {
     g_xbox_mem_offset = (ptrdiff_t)memory;
-    mm3_widescreen_init();
-    assert(registrations == 1 && registered_query);
+    registered_query = mm3_pause_ui_active;
     esp = 0x10000;
     native_singleton_return();
     uint32_t singleton = eax;
@@ -136,12 +143,18 @@ int main(void) {
     with tempfile.TemporaryDirectory(prefix="mm3-pause-ui-") as folder:
         folder = Path(folder)
         shutil.copyfile(ROOT / "src/mm3_recomp_types.h", folder / "recomp_types.h")
-        shutil.copyfile(ROOT / "src/mm3_widescreen.c", folder / "production_widescreen.c")
+        shutil.copyfile(ROOT / "tools/xboxrecomp/templates/runtime/recomp_types.h", folder / "recomp_base.h")
+        shutil.copyfile(ROOT / "src/mods/mods.h", folder / "mods.h")
+        shutil.copyfile(ROOT / "src/mods/widescreen.c", folder / "production_widescreen.c")
         (folder / "contract.c").write_text(harness)
-        subprocess.run(["cl", "/nologo", "/W3", "/WX", "/O2", "/std:c11",
-                        "/I" + str(ROOT / "tools/xboxrecomp/include"),
-                        "contract.c", "/Fe:contract.exe"], cwd=folder, check=True)
-        subprocess.run([str(folder / "contract.exe")], cwd=folder, check=True)
+        executable = folder / f"contract{cc.exe_suffix()}"
+        command = cc.compile_command(["contract.c"], executable,
+                                     includes=[ROOT / "tools/xboxrecomp/include"], std="c11",
+                                     optimize="speed", warnings="normal", werror=True)
+        if os.name != "nt":
+            command.append("-lm")  # tanf/atanf in widescreen.c; libm is separate on POSIX
+        subprocess.run(command, cwd=folder, check=True)
+        subprocess.run([str(executable)], cwd=folder, check=True)
 
 
 if __name__ == "__main__":

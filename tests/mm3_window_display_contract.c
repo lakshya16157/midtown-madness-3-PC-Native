@@ -10,7 +10,10 @@
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 
 static BOOL fixture_connected = TRUE;
-static DWORD WINAPI fixture_get_state(DWORD port, XINPUT_STATE *state)
+/* The production pad merge reads its host pad through host_pad_state; the
+ * test supplies it (the real one is the SDL3 gamepad path). */
+#define XBOX_INPUT_HOST_PAD 1
+static DWORD host_pad_state(DWORD port, XINPUT_STATE *state)
 {
     if (!fixture_connected || port != 0) return ERROR_DEVICE_NOT_CONNECTED;
     memset(state, 0, sizeof *state);
@@ -19,10 +22,6 @@ static DWORD WINAPI fixture_get_state(DWORD port, XINPUT_STATE *state)
     state->Gamepad.bRightTrigger = 255;
     return ERROR_SUCCESS;
 }
-static DWORD WINAPI fixture_set_state(DWORD port, XINPUT_VIBRATION *state)
-{ (void)port; (void)state; return ERROR_SUCCESS; }
-static DWORD WINAPI fixture_get_caps(DWORD port, DWORD flags, XINPUT_CAPABILITIES *caps)
-{ (void)port; (void)flags; memset(caps, 0, sizeof *caps); return ERROR_SUCCESS; }
 
 static HWND WINAPI create_hidden_window(DWORD extended, LPCSTR name, LPCSTR title,
     DWORD style, int x, int y, int width, int height, HWND parent, HMENU menu,
@@ -32,12 +31,10 @@ static HWND WINAPI create_hidden_window(DWORD extended, LPCSTR name, LPCSTR titl
         width, height, parent, menu, instance, parameter);
 }
 
-#define XInputGetState fixture_get_state
-#define XInputSetState fixture_set_state
-#define XInputGetCapabilities fixture_get_caps
 #include "../tools/xboxrecomp/src/input/xinput_device.c"
 #define CreateWindowExA create_hidden_window
 #include "../tools/xboxrecomp/src/video/fb_present.c"
+#include "../tools/xboxrecomp/src/video/fb_window_win32.c"
 #undef CreateWindowExA
 #include "../tools/xboxrecomp/src/usb/usb_gamepad.c"
 

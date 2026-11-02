@@ -50,7 +50,9 @@
  * 1/120 s steps and carries the rest of the frame's time to the next; above
  * eight steps a frame they are stretched.
  * The record keeps its real value for everything else (crash sounds). At
- * 30 fps or slower nothing changes. MM3_DAMAGE_FRAME_FIX=0 turns this off.
+ * 30 fps nothing changes; slower, a game frame's steps past the fourth apply
+ * no hit (the Xbox would be in its next frame). MM3_DAMAGE_FRAME_FIX=0 turns
+ * this off.
  *
  * The wreck jobs (Paris Career 05/01 Inga's escape and 06/02) also call
  * physicsCarToCarDamageScale(1, 50) (sub_00212D9D: 0x3C0330 and 0x3C0328) and
@@ -344,6 +346,14 @@ void sub_001CDB6C(void)
         seen = stronger(hit, s_car[slot].frame_steps == 1 ? s_car[slot].left_first : s_car[slot].left);
     else
         seen = s_car[slot].found;
+    /* Slower than 30 fps a game frame runs more than four steps (eight at
+     * 15 fps). Past the fourth the Xbox is in its next frame, where this
+     * frame's hit is no longer in the record: a crash at 15 fps was applied
+     * seven times instead of three (2.3x the damage). */
+    if (s_car[slot].frame_steps > CONSOLE_STEPS) {
+        static const Hit none = { 0.0f, 0.0f };
+        seen = none;
+    }
     if (damage_trace() && (impulse > 0.0f || seen.impulse > 0.0f)) {
         ++trace_lines;
         fprintf(stderr, "[MM3_DAMAGE_TRACE] frame %u part %d step %d car %08X raw %.1f factor %.4f "

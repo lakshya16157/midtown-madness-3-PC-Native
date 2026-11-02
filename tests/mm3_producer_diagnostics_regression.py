@@ -73,6 +73,9 @@ static int s_kick_stats,s_kick_wrap_sync;
 static int64_t s_kick_wait_ticks,s_kick_wait_max;
 static unsigned s_kick_count,s_kick_waits,s_kick_wraps;
 static void mm3_kick_report(int64_t now){(void)now;assert(!"Report without profiling");}
+/* The kick registers the render thread with the toolkit's spike sampler, once. */
+static unsigned sampler_watches;
+void recomp_sampler_watch_current_thread(void){++sampler_watches;}
 /* NATIVE_KICK */
 
 static void check_error(void){assert(errno==EDOM && GetLastError()==1234);}
@@ -159,6 +162,7 @@ static void abi(void){
  g_fp_control_word=0x027F;g_fp_cc=0x4500;
  for(unsigned i=0;i<8;i++)g_fp_stack[i]=fp[i]=100.25+i;
  fake_qpc+=50000;fake_cycles+=100;errno=EDOM;SetLastError(1234);sub_00344AB0();check_error();
+ assert(sampler_watches==1);
  assert(g_eax==0x20000 && g_ecx==0xABCDEF00 && g_esp==0x300004);
  assert(g_edx==3 && g_ebx==4 && g_esi==5 && g_edi==6 && g_ebp==7);
  assert(g_seh_ebp==8 && g_fs_base==9 && g_eflags==10);

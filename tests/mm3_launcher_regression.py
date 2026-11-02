@@ -25,7 +25,8 @@ def run(port):
     with tempfile.TemporaryDirectory(prefix="mm3-launcher-") as temporary:
         folder = Path(temporary)
         common = ["cl", "/nologo", "/W4", "/WX", "/Od", "/std:c11", "/utf-8",
-                  "/D_CRT_SECURE_NO_WARNINGS", "/I" + str(ROOT / "src")]
+                  "/D_CRT_SECURE_NO_WARNINGS", "/I" + str(ROOT / "src"),
+                  "/I" + str(ROOT / "tools/xboxrecomp/src")]
         config = folder / "config.exe"
         subprocess.run(common + [str(ROOT / "tests/mm3_launcher_config_contract.c"),
             str(ROOT / "src/mm3_launcher_config.c"), str(ROOT / "src/mm3_display_config.c"),

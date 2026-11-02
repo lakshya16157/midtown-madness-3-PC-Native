@@ -14,11 +14,13 @@ def main():
         folder = Path(temporary)
         executable = folder / "contract.exe"
         subprocess.run(["cl", "/nologo", "/W3", "/WX", "/O2", "/std:c11",
-                        "/D_CRT_SECURE_NO_WARNINGS",
+                        "/D_CRT_SECURE_NO_WARNINGS=",  # empty, as mkb_input.c defines it
                         "/I" + str(ROOT / "tools/xboxrecomp/src"),
                         str(ROOT / "tests/mm3_window_display_contract.c"),
-                        "/Fo:" + str(folder / "contract.obj"),
-                        "/Fe:" + str(executable), "user32.lib", "xinput.lib"],
+                        *[str(ROOT / "tools/xboxrecomp/src/input" / name) for name in
+                          ("mkb_input.c", "keyboard.c", "keymap_spec.c", "input_map.c")],
+                        "/Fo:" + str(folder) + "\\",
+                        "/Fe:" + str(executable), "user32.lib"],
                        cwd=folder, check=True)
         for arguments in ([], ["preconfigured"]):
             subprocess.run([str(executable), *arguments], cwd=folder,

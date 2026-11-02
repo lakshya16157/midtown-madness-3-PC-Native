@@ -5,6 +5,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "../tools/xboxrecomp/src/video/fb_present.c"
+#include "../tools/xboxrecomp/src/video/fb_window_win32.c"
+#include "../tools/xboxrecomp/src/input/keyboard.c"
+#include "../tools/xboxrecomp/src/input/input_map.c"
+#include "../tools/xboxrecomp/src/input/keymap_spec.c"
 
 ptrdiff_t xbox_GetMemoryOffset(void) { return 0; }
 bool nv2a_hook_pvideo_snapshot(uint32_t regs[0x1000 / 4])

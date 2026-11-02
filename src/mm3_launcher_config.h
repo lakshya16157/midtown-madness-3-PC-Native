@@ -5,6 +5,8 @@
 
 enum { MM3_LAUNCHER_KEYS = 24, MM3_LAUNCHER_DRIVE_KEYS = 8,
        MM3_LAUNCHER_PAD_INPUTS = 16, MM3_LAUNCHER_PAD_SOURCES = 17 };
+/* Who plays player 1 and player 2 (RECOMP_INPUT_P1/P2), mm3_launcher_player_names. */
+enum { MM3_LAUNCHER_PLAYER1_CHOICES = 5, MM3_LAUNCHER_PLAYER2_CHOICES = 4 };
 enum MM3LauncherOption {
     MM3_LAUNCH_KEYBOARD, MM3_LAUNCH_WIDESCREEN, MM3_LAUNCH_DISTANCE,
     MM3_LAUNCH_SKY, MM3_LAUNCH_CAR_LIGHT, MM3_LAUNCH_LAMP_LIGHT,
@@ -43,6 +45,10 @@ typedef struct MM3LauncherConfig {
     char peers[512];
     int keys[MM3_LAUNCHER_KEYS]; /* Win32 VK, zero = unbound. */
     int drive_keys[MM3_LAUNCHER_DRIVE_KEYS];
+    /* The second keyboard set, for a second player on the same keyboard. */
+    int keys2[MM3_LAUNCHER_KEYS];
+    int drive_keys2[MM3_LAUNCHER_DRIVE_KEYS];
+    int player1, player2; /* indices into mm3_launcher_player_names[0] and [1]; 0 = as before */
     int pad[MM3_LAUNCHER_PAD_INPUTS]; /* index into mm3_launcher_pad_sources. */
 } MM3LauncherConfig;
 
@@ -57,6 +63,19 @@ extern const char *const mm3_launcher_key_names[MM3_LAUNCHER_KEYS];
 extern const char *const mm3_launcher_drive_names[MM3_LAUNCHER_DRIVE_KEYS];
 extern const char *const mm3_launcher_pad_names[MM3_LAUNCHER_PAD_INPUTS];
 extern const char *const mm3_launcher_pad_sources[MM3_LAUNCHER_PAD_SOURCES];
+extern const char *const mm3_launcher_player_names[2][MM3_LAUNCHER_PLAYER1_CHOICES];
+/* Player 1's choice once player 2 has theirs: unchanged unless both would use
+ * the same controller or keyboard set, then player 1's first choice that does
+ * not (player 1's "controller 1 + keyboard" gives the keyboard up quietly). */
+int mm3_launcher_player1_for(int player1, int player2);
+/* 1 when both keyboard sets play (player 1's "controller 1 + keyboard"
+ * counts with keyboard controls on): the first set then belongs on the right
+ * half of the keyboard, beside the second set's left half. */
+int mm3_launcher_players_share_keyboard(int player1, int player2, int keyboard);
+/* The first keyboard set's own keys (right = 0) or its right half (right = 1):
+ * is it exactly that layout, and set it to it. */
+int mm3_launcher_keyboard1_is(const MM3LauncherConfig *config, int right);
+void mm3_launcher_keyboard1_set(MM3LauncherConfig *config, int right);
 
 void mm3_launcher_config_defaults(MM3LauncherConfig *config);
 int mm3_launcher_config_valid(const MM3LauncherConfig *config);

@@ -1,19 +1,22 @@
 """Verify retail numeric speed restoration and the native analog path offline.
 
-Run after scripts/enter-env.ps1. The test extracts the real generated code;
+Run inside `python scripts/devenv.py --shell`. The test extracts the real generated code;
 it requires no game process, GPU, XBE data changes or player save.
 """
 from pathlib import Path
+import os
 import re
 import shutil
 import subprocess
 import tempfile
 
+import cc
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def generated_function(name):
-    for path in (ROOT / "src/recomp/gen").glob("*.c"):
+    for path in (Path(os.environ.get("MM3_TEST_GENERATED_DIR", ROOT / "src/recomp/gen"))).glob("*.c"):
         text = path.read_text()
         match = re.search(r"^void " + name + r"\(void\)\n\{.*?^\}", text, re.M | re.S)
         if match:
@@ -74,8 +77,9 @@ loc_0023FB95: ;
 
 
 def main():
-    if not shutil.which("cl") or not shutil.which("cmake"):
-        raise SystemExit("Run scripts/enter-env.ps1 first so cl.exe and CMake are available.")
+    cc.require_compiler()
+    if not shutil.which("cmake"):
+        raise SystemExit("Run `python scripts/devenv.py --shell` first so CMake is available.")
     original = generated_function("sub_0023F09B")
     conversion = generated_function("sub_001F0399")
     with tempfile.TemporaryDirectory(prefix="mm3-speedometer-") as folder:
@@ -90,8 +94,8 @@ def main():
 
         def transform(text, reject=False):
             source.write_bytes(text.encode())
-            result = subprocess.run(["cmake", f"-DINPUT={source}", f"-DOUTPUT={output}",
-                                     "-P", str(cmake_script)], capture_output=True, text=True)
+            result = subprocess.run([cc.cmake_program(), f"-DINPUT={source.as_posix()}", f"-DOUTPUT={output.as_posix()}",
+                                     "-P", cmake_script.as_posix()], capture_output=True, text=True)
             if reject:
                 assert result.returncode != 0 and "MM3 speedometer readout" in result.stderr
                 return None
@@ -115,8 +119,6 @@ def main():
         # applying a HUD branch repair at the wrong location after regeneration.
         transform(original.replace("loc_0023F82D:", "loc_0023F82E:"), reject=True)
         transform(original + "\nloc_0023F82D: ;\n", reject=True)
-        transform(original.replace("goto loc_0023F8F8; /* jne: not equal / not zero */",
-                                   "goto loc_0023FB95; /* changed */"), reject=True)
         transform(original.replace("loc_0023F91B:", "loc_0023F91C:"), reject=True)
         transform(original.replace("loc_0023F8F8:", "loc_0023F8F9:"), reject=True)
         transform(original.replace("MEM32(ebp + -48) = 0x43200000;",
@@ -134,13 +136,15 @@ def main():
             needle_branch(original, "needle_original") + "\n" +
             needle_branch(modified, "needle_modified"))
         shutil.copyfile(ROOT / "src/mm3_recomp_types.h", folder / "recomp_types.h")
-        executable = folder / "contract.exe"
-        subprocess.run(["cl", "/nologo", "/W3", "/WX", "/wd4102", "/Od", "/std:c11",
-                        "/D_CRT_SECURE_NO_WARNINGS", "/I" + str(folder),
-                        "/I" + str(ROOT / "tools/xboxrecomp/include"),
-                        str(ROOT / "tests/mm3_speedometer_contract.c"),
-                        "/Fo:" + str(folder / "contract.obj"), "/Fe:" + str(executable)],
-                       check=True, cwd=folder)
+        shutil.copyfile(ROOT / "tools/xboxrecomp/templates/runtime/recomp_types.h", folder / "recomp_base.h")
+        executable = folder / f"contract{cc.exe_suffix()}"
+        subprocess.run(cc.compile_command(
+            [ROOT / "tests/mm3_speedometer_contract.c"], executable,
+            includes=[folder, ROOT / "tools/xboxrecomp/include"], defines=["_CRT_SECURE_NO_WARNINGS"],
+            std="c11", optimize="none", warnings="normal", werror=True,
+            # Generated production fixture: unused _flags/_icall_esp temporaries are emitted by the translator.
+            disable_warnings=("4101", "4102"),
+            obj=folder / "contract.obj"), check=True, cwd=folder)
         subprocess.run([str(executable)], check=True)
     print("PASS: exact CMake HUD seam, analog base atlas crop, retail numeric speed, unchanged added-car readout, analog fallback, override stack balance, LF/CRLF and rejected invalid anchors")
 

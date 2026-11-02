@@ -4,6 +4,10 @@
 #include <stdio.h>
 #include "recomp_types.h"
 #include "mm3_mod_flags.h"
+#include "guest_state.h"
+#include "kb_spline.h"
+#include "road_graph.h"
+#include "polyline.h"
 extern int mm3_minimap_improved(void);
 extern int mm3_minimap_origin(uint32_t, float *);
 extern int mm3_minimap_heading(uint32_t, float *);
@@ -12,7 +16,7 @@ extern int mm3_minimap_heading(uint32_t, float *);
  * the visible Undercover stops once per player HUD update. Copy positions
  * and identities; never dereference a saved guest object. */
 enum { RACE_PLAYERS = 2, RACE_CHECKPOINTS = 128 };
-typedef struct { float x, y, z; } RoadPoint;
+typedef GraphPoint RoadPoint;
 typedef struct { uint32_t object; RoadPoint position; } RaceCheckpoint;
 /* An Undercover stop the native HUD is showing. Its collection and class
  * identify the stops that share the selected target's course. */
@@ -74,17 +78,8 @@ static RacePaths s_paths[RACE_PLAYERS];
  * on the checkpoint update or putting a large point array on the stack. */
 static RacePaths s_previous_path;
 
-static float road_distance(RoadPoint a, RoadPoint b)
-{
-    float x = a.x - b.x, y = a.y - b.y, z = a.z - b.z;
-    return sqrtf(x*x + y*y + z*z);
-}
-
-static int road_point_valid(RoadPoint p)
-{
-    return isfinite(p.x) && isfinite(p.y) && isfinite(p.z) &&
-        fabsf(p.x) < 100000.0f && fabsf(p.y) < 100000.0f && fabsf(p.z) < 100000.0f;
-}
+#define road_distance graph_distance
+#define road_point_valid graph_point_valid
 
 static void road_map_areas_clear(void)
 {
@@ -809,26 +804,21 @@ static RoadPoint road_curve_point(const RoadCurve *curve, float t)
 {
     /* Native sub_000C191C: Kochanek–Bartels Hermite, with two ghost controls.
      * sub_00154FC8 uses this exact spline at zero lateral/vertical offset for
-     * the road centre, including hills and overpasses. */
-    float s = (curve->control_count - 3) * t, u, h00, h10, h01, h11;
-    float out0, out1, in0, in1, factor = .5f * (1 - curve->tension);
+     * the road centre, including hills and overpasses. The segment's Hermite
+     * evaluation is the fork's kb_segment_point. */
+    float s = (curve->control_count - 3) * t, u;
     unsigned segment = (unsigned)s;
-    RoadPoint p[4], result;
+    RoadPoint result;
+    KbPoint p[4], q;
     unsigned i;
     if (segment >= curve->control_count - 3) { segment = curve->control_count - 4; u = 1; }
     else u = s - segment;
-    for (i = 0; i < 4; ++i) p[i] = road_control(curve->controls, segment + i);
-    out0 = factor * (1 + curve->bias) * (1 + curve->continuity);
-    out1 = factor * (1 - curve->bias) * (1 - curve->continuity);
-    in0 = factor * (1 + curve->bias) * (1 - curve->continuity);
-    in1 = factor * (1 - curve->bias) * (1 + curve->continuity);
-    h00 = 2*u*u*u - 3*u*u + 1; h10 = u*u*u - 2*u*u + u;
-    h01 = -2*u*u*u + 3*u*u; h11 = u*u*u - u*u;
-#define ROAD_COMPONENT(axis) \
-    result.axis = h00*p[1].axis + h10*(out0*(p[1].axis-p[0].axis) + out1*(p[2].axis-p[1].axis)) + \
-                  h01*p[2].axis + h11*(in0*(p[2].axis-p[1].axis) + in1*(p[3].axis-p[2].axis))
-    ROAD_COMPONENT(x); ROAD_COMPONENT(y); ROAD_COMPONENT(z);
-#undef ROAD_COMPONENT
+    for (i = 0; i < 4; ++i) {
+        RoadPoint c = road_control(curve->controls, segment + i);
+        p[i].x = c.x; p[i].y = c.y; p[i].z = c.z;
+    }
+    q = kb_segment_point(p, u, curve->bias, curve->tension, curve->continuity);
+    result.x = q.x; result.y = q.y; result.z = q.z;
     return result;
 }
 
@@ -1120,6 +1110,52 @@ static void race_objective_course(unsigned player)
     s_race[player].order = order;
 }
 
+/* The last complete checkpoint list per player, for the debug pipe's "route"
+ * (a test harness drives the race through it). seq is odd while it is being
+ * written, so the reader copies without a lock and retries if it was caught. */
+static struct {
+    volatile unsigned seq;
+    RoadPoint points[RACE_CHECKPOINTS];
+    unsigned count, current;
+} s_snap[RACE_PLAYERS];
+
+static void race_snapshot(unsigned player)
+{
+    unsigned i;
+    if (!s_race[player].count) return;       /* keep the list through HUD frames with none */
+    s_snap[player].seq++;
+    for (i = 0; i < s_race[player].count; ++i)
+        s_snap[player].points[i] = s_race[player].checkpoints[i].position;
+    s_snap[player].count = s_race[player].count;
+    s_snap[player].current = s_race[player].current;
+    s_snap[player].seq++;
+}
+
+/* Copies a player's last checkpoint list as x,z pairs; returns how many there
+ * are (0 before the first). current is the index of the checkpoint the race is
+ * waiting for, equal to the count when it has none (the finish). closed is
+ * always 0: a circuit's repeated start gate is an explicit list entry here
+ * (see mm3_race_guidance_begin), so the course never wraps by itself. */
+unsigned mm3_race_snapshot(unsigned player, float (*xz)[2], unsigned capacity,
+                           unsigned *current, unsigned *closed)
+{
+    unsigned attempt, i, n = 0, before;
+    if (player >= RACE_PLAYERS) return 0;
+    for (attempt = 0; attempt < 8; ++attempt) {
+        before = s_snap[player].seq;
+        if (before & 1) continue;
+        n = s_snap[player].count < capacity ? s_snap[player].count : capacity;
+        for (i = 0; i < n; ++i) {
+            xz[i][0] = s_snap[player].points[i].x;
+            xz[i][1] = s_snap[player].points[i].z;
+        }
+        if (current) *current = s_snap[player].current;
+        if (closed) *closed = 0;
+        if (s_snap[player].seq == before) return n;
+    }
+    return 0;
+}
+
 void mm3_race_guidance_end(uint32_t player)
 {
     unsigned i;
@@ -1147,8 +1183,9 @@ void mm3_race_guidance_end(uint32_t player)
     for (i = 0; i < s_race[player].count; ++i)
         if (s_race[player].checkpoints[i].object == s_race[player].current_object) {
             s_race[player].current = i;
-            return;
+            break;
         }
+    race_snapshot(player);
 }
 
 static RoadPoint race_path_tangent(const RoadPoint *points, unsigned count)
@@ -1336,19 +1373,11 @@ static float road_map_alpha(const RoadLine *line, float factor, unsigned path)
 
 static void route_quad(uint32_t renderer, uint32_t clip, const float xy[4][2], float alpha)
 {
-    uint32_t saved_eax, saved_ecx, saved_edx, saved_esp, saved_ebx, saved_esi, saved_edi;
-    uint32_t saved_ebp, saved_seh_ebp, quad;
-    double saved_fp[8];
-    int saved_top, saved_cmp, saved_df;
-    uint16_t saved_cc, saved_control;
+    uint32_t quad;
+    xbox_guest_state saved;
     unsigned i;
     const int improved = mm3_minimap_improved();
-    saved_eax = g_eax; saved_ecx = g_ecx; saved_edx = g_edx; saved_esp = g_esp;
-    saved_ebx = g_ebx; saved_esi = g_esi; saved_edi = g_edi;
-    saved_ebp = g_ebp; saved_seh_ebp = g_seh_ebp;
-    saved_top = g_fp_top; saved_cmp = g_fp_cmp; saved_df = g_df;
-    saved_cc = g_fp_cc; saved_control = g_fp_control_word;
-    memcpy(saved_fp, g_fp_stack, sizeof saved_fp);
+    xbox_guest_state_save(&saved);
     /* Same 0xA0 native quad structure as 2DC95; scratch belongs to this
      * synchronous submission and is below the live guest stack frame. */
     g_esp -= 0xA0; quad = g_esp;
@@ -1368,12 +1397,7 @@ static void route_quad(uint32_t renderer, uint32_t clip, const float xy[4][2], f
     g_eax = clip; g_edx = renderer;
     PUSH32(g_esp, 0x0011CB45u);
     RECOMP_ABI_CALL(0x001C1585u, sub_001C1585);
-    g_eax = saved_eax; g_ecx = saved_ecx; g_edx = saved_edx; g_esp = saved_esp;
-    g_ebx = saved_ebx; g_esi = saved_esi; g_edi = saved_edi;
-    g_ebp = saved_ebp; g_seh_ebp = saved_seh_ebp;
-    g_fp_top = saved_top; g_fp_cmp = saved_cmp; g_df = saved_df;
-    g_fp_cc = saved_cc; g_fp_control_word = saved_control;
-    memcpy(g_fp_stack, saved_fp, sizeof saved_fp);
+    xbox_guest_state_restore(&saved, saved.eax);
 }
 
 static void route_segment(uint32_t renderer, uint32_t clip,
@@ -1394,41 +1418,14 @@ typedef struct { float x, y; } RoutePoint;
 static struct {
     RoutePoint points[COURSE_POINTS];
     unsigned char keep[COURSE_POINTS];
-    struct { unsigned first, last; } ranges[COURSE_POINTS];
+    PolylineRange ranges[COURSE_POINTS];
 } s_route_draw;
 
 static void route_simplify(unsigned count)
 {
-    unsigned pending = 1, inspected = 0;
-    memset(s_route_draw.keep, 0, count);
-    s_route_draw.keep[0] = s_route_draw.keep[count - 1] = 1;
-    s_route_draw.ranges[0].first = 0; s_route_draw.ranges[0].last = count - 1;
-    while (pending) {
-        unsigned first = s_route_draw.ranges[--pending].first;
-        unsigned last = s_route_draw.ranges[pending].last, i, furthest = first;
-        RoutePoint a = s_route_draw.points[first], b = s_route_draw.points[last];
-        double dx = (double)b.x - a.x, dy = (double)b.y - a.y;
-        double length2 = dx*dx + dy*dy, best = .25 * .25;
-        for (i = first + 1; i < last; ++i) {
-            double x = (double)s_route_draw.points[i].x - a.x;
-            double y = (double)s_route_draw.points[i].y - a.y;
-            double t = length2 ? (x*dx + y*dy) / length2 : 0, distance;
-            /* RDP can be quadratic on a pathological zigzag. Bound the
-             * extra CPU work, then safely draw all original samples. */
-            if (++inspected > count * 64) {
-                memset(s_route_draw.keep, 1, count); return;
-            }
-            if (t < 0) t = 0; if (t > 1) t = 1;
-            x -= t*dx; y -= t*dy; distance = x*x + y*y;
-            if (distance > best) { best = distance; furthest = i; }
-        }
-        if (furthest == first) continue;
-        s_route_draw.keep[furthest] = 1;
-        s_route_draw.ranges[pending].first = first;
-        s_route_draw.ranges[pending++].last = furthest;
-        s_route_draw.ranges[pending].first = furthest;
-        s_route_draw.ranges[pending++].last = last;
-    }
+    /* Quarter-unit tolerance on the course map; 64 distance tests per sample. */
+    polyline_simplify_2d((const float *)s_route_draw.points, count, .25f, count * 64u,
+                         s_route_draw.keep, s_route_draw.ranges);
 }
 
 static int route_clip_axis(double origin, double delta, double extent,

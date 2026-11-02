@@ -19,15 +19,32 @@ ROOT = common.ROOT
 ENTRY, RETURN, STACK, DATA, INIT = 0x253748, 0x600000, 0x700000, 0x610000, 0x620000
 
 
+# The former generated loop, frozen here: the translator now lifts this tail
+# through the toolkit's recomp_fprem and a SAHF parity bit, so the negative
+# control can no longer be taken from src/recomp/gen. FPREM was a plain fmod and
+# the JP tested g_fp_cmp, the last compare, instead of FPREM's own C2.
+FORMER_GENERATED_LOOP = r'''
+void sub_00253748(void)
+{
+    #define fp_pop() (g_fp_top = (g_fp_top + 1u) & 7u)
+    #define fp_top() g_fp_stack[g_fp_top]
+    #define fp_st1() g_fp_stack[(g_fp_top + 1u) & 7u]
+loc_00253748: ;
+    { double _t = fp_top(); fp_top() = fp_st1(); fp_st1() = _t; } /* fxch st(1) */
+loc_0025374A: ;
+    fp_top() = fmod(fp_top(), fp_st1()); /* fprem */
+    g_eax = (g_eax & 0xFFFF0000u) | (uint32_t)(uint16_t)(((g_fp_top & 7u) << 11) | g_fp_cc);
+    if ((g_fp_cmp == 2) /* sahf */) goto loc_0025374A; /* jp: parity */
+loc_00253753: ;
+    fp_st1() = fp_top(); fp_pop(); /* fstp st(1) */
+    g_esp += 4; return; /* ret */
+}
+'''
+
+
 def native_source(old=False):
     if old:
-        path = next(p for p in (ROOT / 'src/recomp/gen').glob('recomp_*.c')
-                    if 'void sub_00253748(void)' in p.read_text())
-        body = re.search(r'void sub_00253748\(void\)\n\{.*?\n\}',
-                         path.read_text(), re.S).group()
-        # Only unreachable embedded-data tails follow the real RET.
-        body = body[:body.index('    eax = 0x3867D8;')] + '\n}\n'
-        body = re.sub(r'\b(eax|esp|ebp)\b', r'g_\1', body)
+        body = FORMER_GENERATED_LOOP
     else:
         body = re.search(r'void sub_00253748\(void\)\n\{.*?\n\}',
                          (ROOT / 'src/mm3_cpu_compat.c').read_text(), re.S).group()

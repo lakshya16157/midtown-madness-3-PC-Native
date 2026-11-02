@@ -63,6 +63,66 @@ your image, destination and optional content, then:
    disc: copy it with a modded original Xbox (or a Kreon-firmware drive) and build the `.iso`
    with `extract-xiso -c`. Setup links to no game image downloads.
 
+8. **Finds and judges the game image** (`inspect_image`, `find_game_image`). On start Setup looks in
+   its own folder, Downloads, Desktop and Documents (and one folder level below) for `.iso`/`.xiso`
+   files over 1 GB and fills in the first one that really is Midtown Madness 3. The verdict is in plain
+   words: a folder or an archive instead of an image, a different Xbox game (title id read from
+   `default.xbe`), another release of this game, an image that stops early (the files' end is beyond
+   the file's end, found before extracting), or a file too small to be a disc.
+9. **Judges the install folder** (`check_destination`): refuses a drive root, a network path, Program
+   Files and the Windows folder (the game and saves are written next to the exe), warns about OneDrive,
+   and shows "N GB free, needs about M GB" next to the folder, with Install disabled when it cannot
+   fit. An install already in the folder is named ("Setup 2.2 is installed here with extra cars...
+   Install again to update or repair it").
+10. **Stops and continues** (Cancel install, or closing the window): the extraction writes each file
+   under a temporary name and renames it when whole, into `game_files.partial` with a marker naming the
+   image (size and time). The next Install from the same image continues file by file; another image
+   starts again. `game_files` is only ever the finished result.
+11. **Shortcuts** (default on, `--shortcuts` with `--cli`): `Midtown Madness 3` on the Desktop and in the
+    Start menu (current user, no administrator rights), running the start script minimised with the
+    game's icon. Made through PowerShell's WScript.Shell with the paths in environment variables;
+    the list is kept in `setup-options.json` and is what **Uninstall** removes.
+12. **Uninstall...** (shown when `setup-options.json` is in the folder; `--uninstall`, `--delete-game-files`
+    on the command line): removes the shortcuts, `mm3_recomp.exe`, the runtime DLL, the start script,
+    the credits file and `updates\`. `game_files` (saved games, DLC, Car Workshop backups) and `logs`
+    stay unless the user answers a second, default-No question; then `game_files` goes, never through
+    a link or junction. A folder without `setup-options.json` (the developer's build folder, a folder
+    picked by mistake) is refused untouched.
+13. **When something fails**: the window shows **Copy details**, **Open the log** and **Report a problem
+    on GitHub**. The log is `%TEMP%\MM3-Setup.log` (this run only); the details and the report link
+    hide the user's name (`%USERPROFILE%`).
+
+14. **Update this install** (no image, no DLC pack). When the chosen folder holds an install made by Setup
+    (`setup-options.json`) and `check_existing_install` finds it healthy, the window offers **Update
+    this install** as the main button (Install turns into "Install from image"); `--cli --update-game
+    [--dest ...]` does the same from the command line, with the extra-cars/improvements/shortcuts choices
+    the install already had. `install(None, dest, ...)` then reuses `game_files` and the DLC that are
+    there and refreshes only what Setup writes: `mm3_recomp.exe` (and `mm3_recomp.pdb` when this Setup
+    carries it), the runtime DLL, the extra cars, circuit races and DLC loading screens (`apply_cars`,
+    which also re-applies them over the existing data), the credits, the start script, the shortcuts and
+    `setup-options.json`. Saved games (`UDATA`), the DLC (`TDATA`), settings and Car Workshop edits are not
+    touched, and nothing is extracted or read from an image.
+    - *Validation:* `default.xbe` must be the retail program (code hash, and the title id tells "another
+      game" from "damaged or another release"), and every disc file the install recorded in
+      `setup-disc-files.json` (name and size, written by each install from an image) must be there and
+      not emptied. An install made before that file existed is judged by `default.xbe` and
+      `Data/Data_hd.zip`. Anything essential missing or damaged is named in plain words and ends in
+      "Choose your game image": the window then shows no Update button and Install from the image repairs it
+      (`restore_missing_files`, which puts back only the missing files).
+    - *Image search:* over a healthy install the automatic search for the image does not run (the box says
+      the image is not needed); over a damaged one, or a new folder, it runs once. **Find on this PC**
+      (beside "Make an image...") searches whenever asked.
+    - *Developer exe:* only a folder with `setup-options.json` is ever updated (the developer's build folder
+      has none and is refused untouched). Each install records the SHA-256 of the `mm3_recomp.exe` it wrote
+      (`exe_sha256`); an update that finds a different program there (a developer's or hand-made build)
+      leaves it and its symbols alone and says so. An install from the image always replaces it, and an
+      install made before the hash was recorded cannot tell and is refreshed.
+    - Uninstall also removes `mm3_recomp.pdb` and `setup-disc-files.json`.
+
+Tests: `tests/test_installer.py` and `tests/test_installer_experience.py` (fake discs, no network; the
+shortcut test makes a real .lnk in a temp folder; the window tests drive the real tkinter window with
+patched checks). `python -m unittest discover -s tests -p "test_installer*.py"`.
+
 **Look.** Setup's window and the launcher share one look: the game's own logo
 (`Menu/Gfx/mm3_logo.cdds`) on a dark header with a gold edge, a blue accent for the main button.
 The logo is game artwork, so it is **never committed**: `build.py` extracts it from the maintainer's

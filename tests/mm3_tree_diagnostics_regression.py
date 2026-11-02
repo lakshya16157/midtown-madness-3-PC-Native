@@ -1,13 +1,14 @@
 """Exercise production contact diagnostics with original-call state sentinels.
 
-Run after scripts/enter-env.ps1. This checks that opt-in observation leaves
+Run inside `python scripts/devenv.py --shell`. This checks that opt-in observation leaves
 every guest register, x87 value, memory byte and call sequence unchanged,
 including nested events, unreadable metadata and renewable line budgets.
 """
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+
+import cc
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = r'''
@@ -32,22 +33,34 @@ static void trace_log(const char *format,...){
 #define MM3_TREE_LOG trace_log
 #define MM3_TREE_FLUSH() (++flushes)
 #define MM3_TREE_TEST_HELPERS
+#include "guest_state.c"
 #include "mm3_tree_diagnostics.c"
 ptrdiff_t g_xbox_mem_offset;
-RECOMP_TLS uint32_t g_eax,g_ecx,g_edx,g_esp,g_ebx,g_esi,g_edi,g_ebp,g_seh_ebp,g_fs_base,g_eflags;
+RECOMP_TLS uint32_t g_eax,g_ecx,g_edx,g_esp,g_ebx,g_esi,g_edi,g_ebp,g_seh_ebp,g_fs_base,g_eflags,g_mxcsr;
 RECOMP_TLS int g_fp_top,g_df,g_fp_cmp;
 RECOMP_TLS uint16_t g_fp_control_word,g_fp_cc;
 RECOMP_TLS double g_fp_stack[8];
+RECOMP_TLS uint32_t g_fp_valid;
 RECOMP_TLS RecompXmm g_xmm0,g_xmm1,g_xmm2,g_xmm3,g_xmm4,g_xmm5,g_xmm6,g_xmm7;
+RECOMP_TLS RecompMmx g_mm0,g_mm1,g_mm2,g_mm3,g_mm4,g_mm5,g_mm6,g_mm7;
+/* Test double for the runtime's xbox_GuestRead: the same host-checked read over this fixture's RAM. */
+int xbox_GuestRead(uint32_t va, void *out, size_t size)
+{
+    SIZE_T copied = 0;
+    uintptr_t host;
+    if (va < 0x10000u || size > UINT32_MAX || va > UINT32_MAX - size) return 0;
+    host = (uintptr_t)va + (uintptr_t)g_xbox_mem_offset;
+    return ReadProcessMemory(GetCurrentProcess(), (const void *)host, out, size, &copied) && copied == size;
+}
 void sub_0016CABD(void){assert(0);}
 static unsigned char *ram,*expected;
 static unsigned calls,events;
 static int direct_call,unreadable;
 static const uint32_t stack=0x200000,object=0x120000,owner=0x130000,local=0x160000;
 static const uint32_t event=0x170000,velocity=0x180000,output=0x190000;
-typedef struct {uint32_t r[10];int m[3];uint16_t c[2];double fp[8];} State;
+typedef struct {uint32_t r[12];int m[3];uint16_t c[2];double fp[8];} State;
 static State state(void){
- State s={{g_eax,g_ecx,g_edx,g_esp,g_ebx,g_esi,g_edi,g_ebp,g_seh_ebp,g_fs_base},
+ State s={{g_eax,g_ecx,g_edx,g_esp,g_ebx,g_esi,g_edi,g_ebp,g_seh_ebp,g_fs_base,g_eflags,g_mxcsr},
  {g_fp_top,g_df,g_fp_cmp},{g_fp_control_word,g_fp_cc},{0}};
  memcpy(s.fp,g_fp_stack,sizeof s.fp);return s;
 }
@@ -55,6 +68,7 @@ static void result_state(void){
  g_eax=0xABCDEF01;g_ecx=0xBCDEF012;g_edx=0xCDEF0123;g_esp=stack+40;
  g_ebx=0x12345678;g_esi=0x23456789;g_edi=0x3456789A;
  g_ebp=0x456789AB;g_seh_ebp=0x56789ABC;g_fs_base=0x6789ABCD;
+ g_eflags=0x247;g_mxcsr=0x3F80;
  g_fp_top=3;g_df=1;g_fp_cmp=-1;g_fp_control_word=0x37F;g_fp_cc=0x4100;
  for(unsigned i=0;i<8;i++)g_fp_stack[i]=i*1.25-3.0;
 }
@@ -94,6 +108,16 @@ static void setup(int paris){
  MEM32(event+0x27)=0x1A0000;MEM32(event+9)=0x1A0080;
  MEM32(event+0xD)=1;MEMF(event+0x1A)=25;
  memcpy((void *)&MEM8(velocity),speed,sizeof speed);
+}
+static void solid_speed_cases(void){
+ /* Retail 1D137B gates flag-2 hops at 40 km/h. Trees must take the solid label
+  * at every speed (below: native solid; above: replaces the hop); other props must not. */
+ static const float speeds[]={0.0f,5.0f,11.0f,11.12f,20.0f};
+ unsigned i;
+ setup(0);MEM16(object+0x100)=2;MEM32(object+0x108)=local;
+ for(i=0;i<sizeof speeds/sizeof speeds[0];i++)assert(mm3_tree_use_solid_contact(object,speeds[i])==1);
+ setup(0);MEM8(local)=0;MEM32(local+0x10)=0x1A0080;MEM16(object+0x100)=2;MEM32(object+0x108)=local;
+ for(i=0;i<sizeof speeds/sizeof speeds[0];i++)assert(mm3_tree_use_solid_contact(object,speeds[i])==0);
 }
 static unsigned count(const char *needle){
  unsigned n=0;const char *p=logs;while((p=strstr(p,needle))){++n;p+=strlen(needle);}return n;
@@ -153,28 +177,28 @@ int main(int argc,char **argv){
  assert(memcmp(expected,ram,0x400000)==0 && MEM16(object+0x100)==2);
  assert(count("[TREE_BREAK_CONTACT]")-before==(tracing?1u:0u));
  if(tracing)assert(strstr(logs,"response=solid original_flags=preserved"));
+ solid_speed_cases();
  free(expected);VirtualFree(ram,0,MEM_RELEASE);
- printf("PASS: tree diagnostics tracing=%d, nested original call ABI/memory, both city tree identifiers, unreadable metadata, renewable budgets and render filtering\n",tracing);
+ printf("PASS: tree diagnostics tracing=%d, nested original call ABI/memory, solid tree contacts at 0-20 m/s, both city tree identifiers, unreadable metadata, renewable budgets and render filtering\n",tracing);
  return 0;
 }
 '''
 
 
 def main():
-    if not shutil.which('cl'):
-        raise SystemExit('Run scripts/enter-env.ps1 first.')
+    cc.skip_unless_windows('the contract includes windows.h')
+    cc.require_compiler()
     cmake = (ROOT / 'CMakeLists.txt').read_text()
     assert 'list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0016AEDB sub_000E1F49 sub_001D137B)' in cmake
     assert cmake.count('src/mm3_tree_diagnostics.c') == 1
     with tempfile.TemporaryDirectory(prefix='mm3-tree-diagnostics-') as path:
         folder = Path(path)
-        source, executable = folder / 'contract.c', folder / 'contract.exe'
+        source, executable = folder / 'contract.c', folder / ('contract' + cc.exe_suffix())
         source.write_text(SOURCE)
-        subprocess.run(['cl', '/nologo', '/W4', '/Od', '/std:c11',
-                        '/D_CRT_SECURE_NO_WARNINGS', '/I' + str(ROOT / 'src'),
-                        '/I' + str(ROOT / 'tools/xboxrecomp/include'),
-                        '/Fo:' + str(folder / 'contract.obj'), '/Fe:' + str(executable),
-                        str(source)], check=True, cwd=folder)
+        subprocess.run(cc.compile_command([source], executable,
+                                          includes=[ROOT / 'src', ROOT / 'tools/xboxrecomp/include', ROOT / 'tools/xboxrecomp/src', ROOT / 'tools/xboxrecomp/src/kernel'],
+                                          defines=['_CRT_SECURE_NO_WARNINGS'], std='c11', optimize='none',
+                                          warnings='high', obj=folder / 'contract.obj'), check=True, cwd=folder)
         for tracing in ('0', '1', '2'):
             subprocess.run([str(executable), tracing], check=True)
 

@@ -1,5 +1,6 @@
 """Exercise shared race guidance against the native marker projection/ABI."""
 from pathlib import Path
+import os
 import re
 import shutil
 import struct
@@ -355,12 +356,20 @@ def main():
         shutil.copyfile(ROOT / "src/mm3_recomp_types.h", folder / "recomp_types.h")
         shutil.copyfile(ROOT / "src/mm3_mod_flags.h", folder / "mm3_mod_flags.h")
         shutil.copyfile(ROOT / "src/mm3_race_guidance.c", folder / "production_race_guidance.c")
+        shutil.copyfile(ROOT / "tools/xboxrecomp/templates/runtime/recomp_types.h", folder / "recomp_base.h")
         executable = folder / "contract.exe"
+        # The production source builds its road graph, splines and route lines on the
+        # shared geometry helpers (the contract includes the runtime's guest_state.c).
         subprocess.run(["cl", "/nologo", "/W3", "/WX", "/wd4102", "/Od", "/std:c11",
                         "/I" + str(folder), "/I" + str(ROOT / "tools/xboxrecomp/include"),
                         "/I" + str(ROOT / "tools/xboxrecomp/src/video"),
+                        "/I" + str(ROOT / "tools/xboxrecomp/src"),
+                        "/I" + str(ROOT / "tools/xboxrecomp/src/kernel"),
+                        "/I" + str(ROOT / "src/geometry"),
+                        str(ROOT / "src/geometry/road_graph.c"), str(ROOT / "src/geometry/kb_spline.c"),
+                        str(ROOT / "src/geometry/polyline.c"),
                         str(ROOT / "tests/mm3_race_guidance_contract.c"),
-                        "/Fo:" + str(folder / "contract.obj"), "/Fe:" + str(executable)],
+                        "/Fo:" + str(folder) + os.sep, "/Fe:" + str(executable)],
                        check=True, cwd=folder)
         fixtures = [retail_city_fixture(city, folder / (city + ".bin")) for city in ("Paris", "Washington")]
         subprocess.run([str(executable), *(str(path) for path in fixtures)], check=True, cwd=folder)

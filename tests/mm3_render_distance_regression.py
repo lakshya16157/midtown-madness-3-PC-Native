@@ -26,8 +26,9 @@ def generated(name):
 def originals(loader):
     wanted = {'sub_000E2D5B', 'sub_000D9E2E', 'sub_000FE71E', 'sub_001661D0'}
     bodies = {}
-    for chunk in ('recomp_0010.c', 'recomp_0011.c', 'recomp_0014.c'):
-        text = (ROOT / 'src/recomp/gen' / chunk).read_text()
+    # The translator's chunk boundaries move between generator versions.
+    for chunk in sorted((ROOT / 'src/recomp/gen').glob('recomp_*.c')):
+        text = chunk.read_text()
         for name in wanted - bodies.keys():
             match = re.search(r'void ' + name + r'\(void\)\n\{.*?\n\}', text, re.S)
             if match:
@@ -103,12 +104,26 @@ def main():
         transform(modified, reject=True)
         assert modified.count('mm3_city_streaming_limit(eax);') == 1
         (folder / 'distance_original_setters.inc').write_text(originals(modified))
+        # Small street props: the size cull behind them (K = engine.occlusion's
+        # +0xE0, 85.0 from its constructor; 0.62 * depth / R > K drops a prop)
+        # is only reached through sub_0016AEDB's flag-1 call, and the hook sits
+        # on that constructor.
+        assert 'MEM32(edi + 0xE0) = 0x42AA0000;' in generated('sub_001A6CE3')
+        cull = generated('sub_001A67BA')
+        assert 'MEMF(0x36E1C4)' in cull and 'MEMF(esi + 0xE0)' in cull
+        assert re.search(r'PUSH32\(esp, 1\);\s+eax = eax \| 0xFFFFFFFFu;.*?RECOMP_ABI_CALL\(0x001A67BAu',
+                         generated('sub_0016AEDB'), re.S)
+        cmake = (ROOT / 'CMakeLists.txt').read_text()
+        hooks = cmake.split('set(MM3_DISTANCE_FUNCTIONS', 1)[1].split('set(MM3_DEFINITION_ONLY_FUNCTIONS', 1)[0]
+        assert 'sub_001A6CE3' in hooks
         executable = folder / 'contract.exe'
         def compile_contract(target, extra=()):
             subprocess.run(['cl', '/nologo', '/W3', '/wd4102', '/Od', '/std:c11',
                             '/D_CRT_SECURE_NO_WARNINGS', *extra, '/I' + str(folder),
-                            '/I' + str(ROOT / 'src'), '/I' + str(ROOT / 'src/recomp/gen'),
+                            '/I' + str(ROOT / 'src'), '/I' + str(ROOT / 'src/mods'),
+                            '/I' + str(ROOT / 'src/recomp/gen'),
                             '/I' + str(ROOT / 'tools/xboxrecomp/include'),
+                            '/I' + str(ROOT / 'tools/xboxrecomp/src'),
                             str(ROOT / 'tests/mm3_render_distance_contract.c'),
                             '/Fo:' + str(target.with_suffix('.obj')), '/Fe:' + str(target)],
                            check=True, cwd=folder)
@@ -121,7 +136,7 @@ def main():
                         raise AssertionError((case, mode, fog, result.stdout, result.stderr))
         # Retain the former custom-setter initialization omission in a scratch
         # hook. The same real-setter contract must catch its double scale.
-        source = (ROOT / 'src/mm3_render_distance.c').read_text()
+        source = (ROOT / 'src/mods/draw_distance.c').read_text()
         marker = 'Those globals are already effective and must not be scaled again. */\n        s_pedestrian_distances_initialized = 1;'
         assert source.count(marker) == 1
         (folder / 'distance_order_before.c').write_text(source.replace(marker, marker.rsplit('\n', 1)[0]))
@@ -130,6 +145,15 @@ def main():
         result = subprocess.run([str(before), '2', '2', '2', '2', 'custom-first'],
                                 capture_output=True, text=True, timeout=15)
         assert result.returncode and 'base[i] * scale' in result.stderr, (result.returncode, result.stderr)
+        # Without the constructor hook's scaling the clip distance stays at 85.
+        marker = '        MEMF(self + 0xE0u) *= mm3_draw_distance_scale();\n'
+        assert source.count(marker) == 1
+        (folder / 'distance_clip_before.c').write_text(source.replace(marker, ''))
+        before = folder / 'clip_before.exe'
+        compile_contract(before, ('/DMM3_DISTANCE_SOURCE="distance_clip_before.c"',))
+        result = subprocess.run([str(before), '2', '2', '2', '2', 'invalid-first'],
+                                capture_output=True, text=True, timeout=15)
+        assert result.returncode and '85 * object' in result.stderr, (result.returncode, result.stderr)
         # Restore the old cap scaling only in scratch. The real loader fragment
         # must reject its re-expansion beyond the resident neighborhood.
         marker = '    /* 0x224C4E already supplies the native resident-cell cap'
