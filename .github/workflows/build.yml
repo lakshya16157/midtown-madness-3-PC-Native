@@ -1,5 +1,7 @@
 name: Builder tests
-on: [push, pull_request, workflow_dispatch]
+# Started by hand only in this repository (Actions tab > Run workflow): releases here are
+# published by hand with MM3-Setup.exe, and pushes should not start jobs.
+on: [workflow_dispatch]
 jobs:
   builder:
     name: Builder tests (${{ matrix.os }})

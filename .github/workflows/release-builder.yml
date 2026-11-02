@@ -1,11 +1,7 @@
 name: Release builder
+# By hand only in this repository: on its own it would publish a "Builder" release on every
+# push to main and take "latest" from the MM3-Setup.exe release that Check for updates reads.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'scripts/**'
-      - 'tools/xboxrecomp'
-      - '.github/workflows/release-builder.yml'
   workflow_dispatch:
 permissions:
   contents: read
@@ -64,4 +60,4 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
         run: |
           version="$(date -u +%Y.%m.%d).${RUN_NUMBER}.${RUN_ATTEMPT}"
-          gh release create "v${version}" packages/mm3-builder-windows/mm3-builder-windows.exe packages/mm3-builder-linux/mm3-builder-linux --target "$TARGET_SHA" --title "Builder ${version}" --notes "Standalone builder for Windows and Linux. Game files are not included."
+          gh release create "v${version}" packages/mm3-builder-windows/mm3-builder-windows.exe packages/mm3-builder-linux/mm3-builder-linux --target "$TARGET_SHA" --title "Builder ${version}" --latest=false --notes "Standalone builder for Windows and Linux. Game files are not included."
