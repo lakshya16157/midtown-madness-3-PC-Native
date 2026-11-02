@@ -55,6 +55,7 @@ static int in_menu(void)
 }
 
 extern void xbox_InputSetMenuProbe(int (*in_menu)(void));
+extern void xbox_InputSetKeyboardDrivingProbe(int (*driving)(void));
 #include "nv2a_d3d11.h"
 extern const NvOverlayHooks mm3_hud_hooks;                        /* widescreen_hud.c */
 extern void mm3_menu_mouse_init(void);                           /* menu_mouse.c */
@@ -71,6 +72,9 @@ void mm3_mods_init(void)
     mm3_debug_overlay_init();
     mm3_render_commands_init();
     xbox_InputSetMenuProbe(in_menu);
+    /* The keyboard pad's arrows (MM3_DRIVE_KEYMAP) are the triggers and steering only
+     * while the player drives; without this they stay menu d-pad keys (2.3, 11-02). */
+    xbox_InputSetKeyboardDrivingProbe(mm3_keyboard_driving);
     /* Without the widescreen hooks the title draws 4:3; show it that way. */
     if (!mm3_mod_on(MM3_MOD_WIDESCREEN))
         _putenv_s("RECOMP_ASPECT", "4:3");

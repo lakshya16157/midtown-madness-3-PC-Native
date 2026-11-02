@@ -270,6 +270,15 @@ int main(int argc, char **argv)
     mm3_launcher_config_defaults(&config);
     assert(mm3_launcher_config_load(&config, error, sizeof error) && !*error);
     assert(config.player1 == 2 && config.player2 == 3 && config.keys2[0] == 'G' && config.drive_keys2[2] == 'A');
+    assert(config.keys2[1] == 'Q');                 /* only A was changed: not the first Keyboard 2 layout */
+    /* A saved copy of the first Keyboard 2 layout becomes today's left half. */
+    assert(mm3_launcher_config_assign(&loaded, "RECOMP_KEYMAP2",
+        "A:47,B:48,X:54,Y:59,WHITE:36,BLACK:56,LT:34,RT:35,START:09,BACK:32,UP:57,DOWN:53,LEFT:41,RIGHT:44,"
+        "LS:42,RS:4E,LX-:00,LX+:00,LY-:00,LY+:00,RX-:00,RX+:00,RY-:00,RY+:00"));
+    assert(mm3_launcher_config_save(&loaded, error, sizeof error));
+    mm3_launcher_config_defaults(&config);
+    assert(mm3_launcher_config_load(&config, error, sizeof error) && !*error);
+    assert(config.keys2[0] == VK_SPACE && config.keys2[1] == 'Q' && config.keys2[5] == VK_LSHIFT);
     assert(config.option[MM3_LAUNCH_DRAFTING] && !config.option[MM3_LAUNCH_ROLL_GUARD]);
     file = fopen(path, "rb"); assert(file);
     size = fread(saved, 1, sizeof saved - 1, file); saved[size] = 0; fclose(file);

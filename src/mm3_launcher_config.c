@@ -379,6 +379,20 @@ int mm3_launcher_config_path(char *path, size_t capacity, char *error, size_t er
     error_set(error, error_capacity, "Launcher settings path is too long."); return 0;
 }
 
+/* The first Keyboard 2 layout (G = A, H = B, T, Y, 6, V, 4, 5, Tab, 2, W/A/S/D, B, N) shared
+ * keys with the first keyboard; a saved copy of it exactly becomes today's left half. */
+static void keys2_first_layout_update(MM3LauncherConfig *config)
+{
+    static const int keys[MM3_LAUNCHER_KEYS] = {'G', 'H', 'T', 'Y', '6', 'V', '4', '5', 0x09, '2',
+                                                'W', 'S', 'A', 'D', 'B', 'N', 0, 0, 0, 0, 0, 0, 0, 0};
+    static const int drive[MM3_LAUNCHER_DRIVE_KEYS] = {'W', 'S', 'A', 'D', 0, 0, 0, 0};
+    XbInputBindings second;
+    if (memcmp(config->keys2, keys, sizeof keys) || memcmp(config->drive_keys2, drive, sizeof drive)) return;
+    xb_bindings_defaults_keys2(&second);
+    for (int i = 0; i < MM3_LAUNCHER_KEYS; ++i) config->keys2[i] = second.keys[i];
+    for (int i = 0; i < MM3_LAUNCHER_DRIVE_KEYS; ++i) config->drive_keys2[i] = second.drive[i];
+}
+
 int mm3_launcher_config_load(MM3LauncherConfig *config, char *error, size_t capacity)
 {
     char path[32768], line[2048];
@@ -418,7 +432,8 @@ int mm3_launcher_config_load(MM3LauncherConfig *config, char *error, size_t capa
     failed = ferror(file);
     if (fclose(file)) failed = 1;
     if (failed) error_set(error, capacity, "Cannot finish reading launcher settings.");
-    else if (revision < SETTINGS_REVISION)
+    else keys2_first_layout_update(config);
+    if (!failed && revision < SETTINGS_REVISION)
         for (size_t i = 0; i < sizeof revision_defaults / sizeof revision_defaults[0]; ++i)
             config->option[revision_defaults[i]] = mm3_launcher_options[revision_defaults[i]].default_value;
     return !failed;
