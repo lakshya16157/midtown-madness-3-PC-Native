@@ -142,7 +142,11 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
         SetDlgItemTextA(dialog, IDC_DISPLAY_FPS, "999");
         notify(dialog, IDC_DISPLAY_FPS, CBN_EDITCHANGE);
         GetDlgItemTextA(dialog, IDC_DISPLAY_STATUS, text, sizeof text);
-        CHECK(strstr(text, "1 to 60"));
+        CHECK(strstr(text, "1 to 120"));
+        SetDlgItemTextA(dialog, IDC_DISPLAY_FPS, "120");   /* the launcher's maximum */
+        notify(dialog, IDC_DISPLAY_FPS, CBN_EDITCHANGE);
+        GetDlgItemTextA(dialog, IDC_DISPLAY_STATUS, text, sizeof text);
+        CHECK(!strstr(text, "Enter a maximum FPS"));
         SetDlgItemTextA(dialog, IDC_DISPLAY_FPS, "60");
     } else {
         notify(dialog, IDC_DISPLAY_DEFAULTS, BN_CLICKED);

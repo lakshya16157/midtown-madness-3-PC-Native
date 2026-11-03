@@ -77,6 +77,9 @@ set(XBOXRECOMP_DSP_PROGRAM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/game_files/dsp" CACH
     "Local GP/EP program captures for native DSP compilation")
 # MM3 owns its depth-view compatibility shader; both host renderers use it.
 set(XBOXRECOMP_NV2A_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/mods/shaders/nv2a")
+# Combiner configurations whose specialised shaders are built with the game:
+# Wine/Proton (the Steam Deck) cannot compile them (tools/shader_states).
+set(XBOXRECOMP_PS_STATES "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/mm3_ps_states.txt")
 add_subdirectory(${XBOXRECOMP_DIR} ${CMAKE_BINARY_DIR}/xboxrecomp)
 # MM3 VP-only playback was measured about 10 dB above GP output (-10.7 vs
 # -20.7 dBFS in a race). Keep its existing calibration outside the runtime.

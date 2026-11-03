@@ -213,8 +213,8 @@ Rml::Vector<Option> g_options = {
     {"", "Aspect ratio", "Widescreen HUD follows it.", "RECOMP_ASPECT", "", "",
      {{"", "Window"}, {"16:10", "16:10"}, {"16:9", "16:9"}, {"4:3", "4:3"}}},
     {"", "Frame limit", "", "RECOMP_FPS_LIMIT", "60", "",
-     {{"auto", "Monitor"}, {"30", "30"}, {"60", "60"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"},
-      {"0", "Unlimited"}}},
+     /* main.c caps at 120 (mm3_frame_limit.h); anything else ran at 60. */
+     {{"30", "30"}, {"45", "45"}, {"60", "60"}, {"90", "90"}, {"120", "120"}}},
     {"", "Tick rate", "World updates a second, whatever the frame rate. The Xbox ran 30.",
      "MM3_SIM_HZ", "30", "", {{"30", "30 (Xbox)"}, {"60", "60"}, {"90", "90"}}},
     {"", "Draw every frame", "Also draw frames between world updates; they show the last update again.",

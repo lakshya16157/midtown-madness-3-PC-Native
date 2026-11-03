@@ -14,6 +14,7 @@
 #include <math.h>
 #include "mm3_launcher.h"
 #include "mm3_launcher_config.h"
+#include "mm3_display_choices.h"
 #include "mm3_display_config.h"
 #include "mm3_frame_limit.h"
 #include "mm3_controller_detection.h"
@@ -1249,11 +1250,11 @@ fail:
 static void settings_controls(Launcher *ui)
 {
     HWND c;
-    static const int sizes[][2] = {{960,540},{1280,720},{1600,900},{1920,1080},{2560,1440},{3840,2160}};
+    char name[64];
     c = combo(ui, 0, ID_RESOLUTION, "Window size", 42, 98, 150);
-    for (int i = 0; i < (int)(sizeof sizes / sizeof sizes[0]); ++i) {
-        char name[48]; snprintf(name, sizeof name, "%d x %d", sizes[i][0], sizes[i][1]);
-        combo_item(c, name, sizes[i][0] * 10000 + sizes[i][1]);
+    for (int i = 0; i < (int)(sizeof mm3_window_sizes / sizeof mm3_window_sizes[0]); ++i) {
+        snprintf(name, sizeof name, "%d x %d", mm3_window_sizes[i][0], mm3_window_sizes[i][1]);
+        combo_item(c, name, mm3_window_sizes[i][0] * 10000 + mm3_window_sizes[i][1]);
     }
     c = combo(ui, 0, ID_MODE, "Window mode", 212, 98, 150);
     combo_item(c, "Windowed", 0); combo_item(c, "Fullscreen", 1);
@@ -1261,39 +1262,46 @@ static void settings_controls(Launcher *ui)
     combo_item(c, "Windows main display", SCREEN_MAIN);
     screens_find(ui);
     for (int i = 0; i < ui->screen_count; ++i) {
-        char name[64];
         snprintf(name, sizeof name, "Screen %d: %d x %d%s", ui->screens[i].number,
                  ui->screens[i].width, ui->screens[i].height, ui->screens[i].primary ? " (main)" : "");
         combo_item(c, name, i + 1);
     }
     c = combo(ui, 0, ID_ASPECT, "Aspect ratio", 666, 98, 150);
-    for (int i = 0; i < 5; ++i) {
-        static const char *const ratios[] = {"auto", "4:3", "16:9", "16:10", "21:9"};
-        SendMessageA(c, CB_ADDSTRING, 0, (LPARAM)ratios[i]);
-    }
+    for (int i = 0; i < (int)(sizeof mm3_aspect_choices / sizeof mm3_aspect_choices[0]); ++i)
+        SendMessageA(c, CB_ADDSTRING, 0, (LPARAM)mm3_aspect_choices[i]);
     label(ui, 0, "Maximum FPS (1-120, engine limit)", 42, 166, 260);
-    c = add(ui, 0, "COMBOBOX", "", CBS_DROPDOWN | WS_TABSTOP, ID_FPS, 42, 190, 110, 120);
-    combo_item(c, "30", 30); combo_item(c, "60", 60); combo_item(c, "120", 120);
+    c = add(ui, 0, "COMBOBOX", "", CBS_DROPDOWN | WS_TABSTOP, ID_FPS, 42, 190, 110, 160);
+    for (int i = 0; i < (int)(sizeof mm3_fps_choices / sizeof mm3_fps_choices[0]); ++i) {
+        snprintf(name, sizeof name, "%d", mm3_fps_choices[i]);
+        combo_item(c, name, mm3_fps_choices[i]);
+    }
     check(ui, 0, ID_VSYNC, "VSync", 172, 190, 100);
     c = combo(ui, 0, ID_SCALE, "Internal resolution", 310, 166, 238);
-    combo_item(c, "Automatic + supersampling", 0); combo_item(c, "480p", 1000);
-    combo_item(c, "720p", 1500); combo_item(c, "960p", 2000); combo_item(c, "1440p", 3000);
-    combo_item(c, "1920p", 4000); combo_item(c, "3840p", 8000);
+    for (int i = 0; i < (int)(sizeof mm3_scale_choices / sizeof mm3_scale_choices[0]); ++i) {
+        snprintf(name, sizeof name, mm3_scale_choices[i] ? "%dp" : "Automatic + supersampling",
+                 (int)(480 * mm3_scale_choices[i]));
+        combo_item(c, name, (int)lroundf(mm3_scale_choices[i] * 1000.f));
+    }
     c = combo(ui, 0, ID_MSAA, "Anti-aliasing", 578, 166, 238);
     combo_item(c, "Off", 1); combo_item(c, "2x MSAA", 2); combo_item(c, "4x MSAA", 4); combo_item(c, "8x MSAA", 8);
     c = combo(ui, 0, ID_ANISO, "Texture filtering", 42, 234, 238);
     combo_item(c, "1x", 1); combo_item(c, "2x", 2); combo_item(c, "4x", 4);
     combo_item(c, "8x", 8); combo_item(c, "16x", 16);
-    c = combo(ui, 0, ID_DRAW, "Object detail distance", 310, 234, 238);
-    for (int i = 1; i <= 4; ++i) { char name[24]; snprintf(name, sizeof name, "%dx%s", i, i == 1 ? " (Xbox)" : ""); combo_item(c, name, i * 1000); }
-    c = combo(ui, 0, ID_VIEW, "Building view distance", 578, 234, 238);
-    for (int i = 1; i <= 4; ++i) { char name[24]; snprintf(name, sizeof name, "%dx%s", i, i == 1 ? " (Xbox)" : ""); combo_item(c, name, i * 1000); }
+    for (int view = 0; view < 2; ++view) {
+        c = combo(ui, 0, view ? ID_VIEW : ID_DRAW, view ? "Building view distance" : "Object detail distance",
+                  view ? 578 : 310, 234, 238);
+        for (int i = 0; i < (int)(sizeof mm3_distance_choices / sizeof mm3_distance_choices[0]); ++i) {
+            snprintf(name, sizeof name, mm3_distance_choices[i] == 1.f ? "1x (Xbox)" : "%.3gx",
+                     (double)mm3_distance_choices[i]);
+            combo_item(c, name, (int)lroundf(mm3_distance_choices[i] * 1000.f));
+        }
+    }
     c = combo(ui, 0, ID_PRESET, "Quick preset", 42, 302, 238);
     for (int i = 0; i < 4; ++i) combo_item(c, preset_labels[i], i);
     combo_select(c, 0);
     c = combo(ui, 0, ID_MINIMAP, "Minimap style", 310, 302, 238);
     combo_item(c, "Retail", 0); combo_item(c, "Improved perspective", 1);
-    check(ui, 0, ID_SHOW_FPS, "Show FPS in the title bar", 578, 328, 238);
+    check(ui, 0, ID_SHOW_FPS, "Show FPS in window title", 578, 328, 238);
     check(ui, 0, ID_OPTION + MM3_LAUNCH_DSP, mm3_launcher_options[MM3_LAUNCH_DSP].label, 42, 379, 390);
     EnableWindow(control(ui, ID_OPTION + MM3_LAUNCH_DSP), MM3_LAUNCHER_AUDIO);
     label(ui, 0, MM3_LAUNCHER_AUDIO ? "Console DSP effects and mixing." : "Sound-processor controls will be enabled when the audio update is installed.", 42, 407, 774);
