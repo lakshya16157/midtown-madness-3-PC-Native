@@ -81,13 +81,13 @@ int main(int argc, char **argv)
         end_frame(60);
         step(component, 900);
         assert(seen_factor == 1.25f * scale && MEMF(component + 0x8718) == 1.25f);
-        printf("PASS car damage %s%%: each crash's damage scaled for every car, its own factor kept\n", percent);
+        printf("PASS damage dealt %s%%: each crash's damage scaled for every other car, its own factor kept\n", percent);
         return 0;
     }
     if (own) {
-        /* Your car's damage: the primary player's car (player manager
+        /* Damage received: the primary player's car (player manager
          * 0x3C5CDC +0x54 -> +0xD8 player -> +0x19C vehicle -> +8 car) gets
-         * the factor once more, on top of Car damage; other cars do not. */
+         * its own factor in place of damage dealt; other cars keep that. */
         float scale = (float)atoi(own) / 100.0f;
         _putenv_s("MM3_DAMAGE_PERCENT", "200");
         _putenv_s("MM3_OWN_DAMAGE_PERCENT", own);
@@ -96,13 +96,13 @@ int main(int argc, char **argv)
         MEM32(0x3C5C90) = frame;
         end_frame(60);
         step(component, 900);
-        assert(seen_factor == 1.25f * 2.0f * scale && MEMF(component + 0x8718) == 1.25f);
+        assert(seen_factor == 1.25f * scale && MEMF(component + 0x8718) == 1.25f);
         step(other, 900);
         assert(seen_factor == 1.25f * 2.0f && MEMF(other + 0x8718) == 1.25f);
         MEM32(vehicle) = 0x383000;                    /* not a vehicle interface: no player car */
         step(component, 900);
         assert(seen_factor == 1.25f * 2.0f);
-        printf("PASS your car's damage %s%%: only the player's car, on top of car damage 200%%\n", own);
+        printf("PASS damage received %s%%: only the player's car, in place of damage dealt 200%%\n", own);
         return 0;
     }
     MEM32(0x3C5C90) = frame;

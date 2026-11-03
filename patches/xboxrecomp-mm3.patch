@@ -10220,7 +10220,7 @@ index d03b7cf..7cde0ba 100644
   *
   * The GPU is pointed at a buffer that stays zero, which says the data went
 diff --git a/src/kernel/nv2a_pb_scan.c b/src/kernel/nv2a_pb_scan.c
-index e4fc9c4..d1430cf 100644
+index e4fc9c4..779de58 100644
 --- a/src/kernel/nv2a_pb_scan.c
 +++ b/src/kernel/nv2a_pb_scan.c
 @@ -50,6 +50,7 @@ static uint32_t s_tot_refused;
@@ -10334,7 +10334,35 @@ index e4fc9c4..d1430cf 100644
      }
      PB_CAPTURE_JSON("]}");
  #undef PB_CAPTURE_JSON
-@@ -822,25 +884,25 @@ static uint32_t pb_walk(uint32_t va, uint32_t end_va,
+@@ -801,6 +863,19 @@ static void pb_capture_limit(uint32_t words)
+ /* Walk one PFIFO, including its single-level CALL/RETURN state. The work cap
+  * is a host scheduling bound, not an acknowledgment of unexecuted commands.
+  * A caller must retry the saved PC until it reaches the actual DMA_PUT. */
++/* How far the executor has got in the title's ring: the next packet it will
++ * read, or where it returns to while inside a CALL. DMA_GET moves only once a
++ * whole pass has run (and, behind a flip, been read back), so a title that
++ * bounds its run-ahead by GET stalls while the pass runs and the executor then
++ * idles while the title catches up. A title hook may bound by this instead
++ * (MM3: sub_00344AB0); GET keeps its meaning for ring reuse. */
++static volatile uint32_t s_exec_cursor;
++
++uint32_t nv2a_pb_exec_cursor(void)
++{
++    return s_exec_cursor;
++}
++
+ static uint32_t pb_walk(uint32_t va, uint32_t end_va,
+                         uint32_t *jumps, uint32_t *unknown, PB_HITCH *hitch)
+ {
+@@ -815,6 +890,7 @@ static uint32_t pb_walk(uint32_t va, uint32_t end_va,
+     while (va != end_va && words < 0x100000u) {
+         uint32_t count, subch, method, packet_va;
+         int noninc;
++        s_exec_cursor = in_call ? return_va : va;
+         if (s_packet.active) {
+             count = s_packet.remaining; subch = s_packet.subch;
+             method = s_packet.method; noninc = s_packet.noninc;
+@@ -822,25 +898,25 @@ static uint32_t pb_walk(uint32_t va, uint32_t end_va,
              s_packet.active = 0;
          } else {
              uint32_t w;
@@ -10366,7 +10394,7 @@ index e4fc9c4..d1430cf 100644
                  (*jumps)++;
                  va = last_target;
                  continue;
-@@ -853,11 +915,11 @@ static uint32_t pb_walk(uint32_t va, uint32_t end_va,
+@@ -853,11 +929,11 @@ static uint32_t pb_walk(uint32_t va, uint32_t end_va,
                  continue;
              }
              if ((w & 3u) == 2u) {                    /* CALL */
@@ -10380,7 +10408,7 @@ index e4fc9c4..d1430cf 100644
                  if (!in_call) {
                      s_tot_calls++;
                      return_va = va;
-@@ -877,11 +939,38 @@ static uint32_t pb_walk(uint32_t va, uint32_t end_va,
+@@ -877,11 +953,38 @@ static uint32_t pb_walk(uint32_t va, uint32_t end_va,
              noninc = (w & 0xE0000000u) == 0x40000000u;
          }
          {
@@ -10421,7 +10449,7 @@ index e4fc9c4..d1430cf 100644
                  uint32_t m = noninc ? method : (method + i * 4) & 0x1FFCu;
                  if (hitch && m == 0x0130) contains_flip = 1;
                  if (s_scan_enabled)  /* the inventory is a linear search: survey runs only */
-@@ -889,18 +978,18 @@ static uint32_t pb_walk(uint32_t va, uint32_t end_va,
+@@ -889,18 +992,18 @@ static uint32_t pb_walk(uint32_t va, uint32_t end_va,
                  /* Same walk, two consumers: the survey counts, the executor
                   * acts. Keeping them on one decode means they can never
                   * disagree about what the stream said. */
@@ -10443,7 +10471,15 @@ index e4fc9c4..d1430cf 100644
                  words++;
              }
              if (i < count) {
-@@ -972,6 +1061,11 @@ int nv2a_pb_scan_segment(uint32_t start_va, uint32_t end_va)
+@@ -952,6 +1055,7 @@ stop:   /* Discard malformed work. Recovery is explicit caller policy. */
+         }
+     }
+     s_fifo.pc = va; s_fifo.in_call = in_call; s_fifo.return_va = return_va;
++    s_exec_cursor = in_call ? return_va : va;
+     s_fifo.last_control = last_control; s_fifo.last_target = last_target;
+     if (va != end_va && words >= 0x100000u) pb_capture_limit(words);
+     if (hitch && va != end_va && words >= 0x100000u &&
+@@ -972,6 +1076,11 @@ int nv2a_pb_scan_segment(uint32_t start_va, uint32_t end_va)
      int completed;
      PB_HITCH trace, *hitch = NULL;
  
@@ -10455,7 +10491,7 @@ index e4fc9c4..d1430cf 100644
      /* GET and PUT must lie in the contiguous window. A value past it is not
       * an alias of a low address: the walk cannot read it (see pb_in_window),
       * and wrapping it would run whatever sits at the wrapped address. Refuse
-@@ -986,6 +1080,7 @@ int nv2a_pb_scan_segment(uint32_t start_va, uint32_t end_va)
+@@ -986,6 +1095,7 @@ int nv2a_pb_scan_segment(uint32_t start_va, uint32_t end_va)
                      start_va, end_va, s_tot_refused);
          return 1;
      }
@@ -10899,7 +10935,7 @@ index 408a10e..632d877 100644
  void nv2a_vsh_set_constant(uint32_t index, const float v[4]);
  const float *nv2a_vsh_constant(uint32_t index);   /* for traces */
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
-index b4a1fe0..11aefdd 100644
+index b4a1fe0..aa5578b 100644
 --- a/src/kernel/xbox_memory_layout.c
 +++ b/src/kernel/xbox_memory_layout.c
 @@ -23,6 +23,7 @@
@@ -10910,7 +10946,64 @@ index b4a1fe0..11aefdd 100644
  #include <stdio.h>
  #include <stdlib.h>
  #include <string.h>
-@@ -426,6 +427,7 @@ static size_t xbox_TiledApertureSize(void)
+@@ -304,13 +305,22 @@ int xbox_GuestRangeInWindow(uint32_t va, uint32_t bytes)
+ }
+ 
+ #ifdef _WIN32
+-/* Per-frame hooks ask about the same committed region many times a frame, and each VirtualQuery is a
+- * system call. The last region a thread found committed is remembered for a few milliseconds; a
+- * region that is not committed (MMIO windows, guard pages) is never remembered. The guest's RAM is one
+- * allocation that lives for the whole run, and a query followed by a read was never atomic anyway. */
+-static RECOMP_TLS uintptr_t s_mapped_lo, s_mapped_hi;
+-static RECOMP_TLS ULONGLONG s_mapped_stamp;
+-enum { MAPPED_CACHE_MS = 8 };
++/* Per-frame hooks ask about the same committed regions many times a frame,
++ * and each VirtualQuery is a system call: about 70 us over the guest RAM
++ * view, whose regions the texture write watch splits into many small runs
++ * by toggling pages between read-only and read-write. One remembered region
++ * was not enough -- the speedometer alone reads the title image, the heap
++ * and the stack in turn, and the misses cost ~7% of the game thread in dense
++ * streets. Each thread now remembers its last 16 readable regions for a
++ * quarter second. Read-only and read-write both stay readable, so the watch
++ * toggling a page cannot make an entry wrong; a region that is not
++ * committed (MMIO windows, guard pages) is never remembered. The guest's RAM
++ * is one allocation that lives for the whole run, and a query followed by a
++ * read was never atomic anyway. */
++enum { MAPPED_CACHE_MS = 250, MAPPED_CACHE_ENTRIES = 16 };
++static RECOMP_TLS uintptr_t s_mapped_lo[MAPPED_CACHE_ENTRIES], s_mapped_hi[MAPPED_CACHE_ENTRIES];
++static RECOMP_TLS ULONGLONG s_mapped_stamp[MAPPED_CACHE_ENTRIES];
++static RECOMP_TLS unsigned s_mapped_next;
+ #endif
+ 
+ int xbox_GuestMapped(uint32_t va, uint32_t bytes)
+@@ -323,16 +333,19 @@ int xbox_GuestMapped(uint32_t va, uint32_t bytes)
+     {
+         MEMORY_BASIC_INFORMATION info;
+         ULONGLONG now = GetTickCount64();
+-        if (host >= s_mapped_lo && host < s_mapped_hi && bytes <= s_mapped_hi - host &&
+-            now - s_mapped_stamp < MAPPED_CACHE_MS)
+-            return 1;
++        unsigned i;
++        for (i = 0; i < MAPPED_CACHE_ENTRIES; ++i)
++            if (host >= s_mapped_lo[i] && host < s_mapped_hi[i] && bytes <= s_mapped_hi[i] - host &&
++                now - s_mapped_stamp[i] < MAPPED_CACHE_MS)
++                return 1;
+         if (!VirtualQuery((void *)host, &info, sizeof info) || info.State != MEM_COMMIT ||
+             (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+             return 0;
+-        s_mapped_lo = (uintptr_t)info.BaseAddress;
+-        s_mapped_hi = s_mapped_lo + info.RegionSize;
+-        s_mapped_stamp = now;
+-        return host + bytes <= s_mapped_hi;
++        i = s_mapped_next++ % MAPPED_CACHE_ENTRIES;
++        s_mapped_lo[i] = (uintptr_t)info.BaseAddress;
++        s_mapped_hi[i] = s_mapped_lo[i] + info.RegionSize;
++        s_mapped_stamp[i] = now;
++        return host + bytes <= s_mapped_hi[i];
+     }
+ #else
+     {
+@@ -426,6 +439,7 @@ static size_t xbox_TiledApertureSize(void)
  }
  
  static HANDLE g_nv2a_ack_thread = NULL;
@@ -10918,10 +11011,82 @@ index b4a1fe0..11aefdd 100644
  static volatile LONG g_nv2a_ack_stop = 0;
  static XBOX_NV2A_WAKE g_nv2a_wake;
  
-@@ -1232,6 +1234,28 @@ void xbox_Nv2aDmaWait(uint32_t pfifo_base_va)
-     }
+@@ -1169,8 +1183,37 @@ void xbox_Nv2aNop(uint32_t param)
+     if (param && param == g_notify_param) ++s_notify_executed;
  }
  
++/* Time the title spends in each host wait for the GPU (0 notify, 1 fence,
++ * 2 DMA idle, 3 WBC kick), read and reset by xbox_Nv2aWaitStats. */
++static volatile LONG64 s_wait_ticks[4];
++static volatile LONG s_wait_count[4];
++
++static int64_t nv2a_wait_begin(void)
++{
++    LARGE_INTEGER t;
++    QueryPerformanceCounter(&t);
++    return t.QuadPart;
++}
++
++static void nv2a_wait_end(int kind, int64_t begin)
++{
++    LARGE_INTEGER t;
++    QueryPerformanceCounter(&t);
++    InterlockedAdd64(&s_wait_ticks[kind], t.QuadPart - begin);
++    InterlockedIncrement(&s_wait_count[kind]);
++}
++
++void xbox_Nv2aWaitStats(int64_t ticks[4], unsigned count[4])
++{
++    for (int i = 0; i < 4; ++i) {
++        ticks[i] = InterlockedExchange64(&s_wait_ticks[i], 0);
++        count[i] = (unsigned)InterlockedExchange(&s_wait_count[i], 0);
++    }
++}
++
+ int xbox_Nv2aNotifyWait(uint32_t object_va)
+ {
++    int64_t begin;
+     volatile uint32_t *put, *get;
+     uint32_t dev;
+     LONG notified = g_notify_count;
+@@ -1184,8 +1227,10 @@ int xbox_Nv2aNotifyWait(uint32_t object_va)
+     get = (volatile uint32_t *)((char *)g_nv2a_memory + NV2A_USER_DMA_GET);
+     /* The completed NOP sequence is published after its consumed GET;
+      * GET reaching PUT also covers a slot passed before it was patched. */
++    begin = nv2a_wait_begin();
+     xbox_nv2a_notify_wait(&g_nv2a_wake, get, put,
+                          &g_notify_count, notified, &g_nv2a_ack_stop);
++    nv2a_wait_end(0, begin);
+     return 1;
+ }
+ 
+@@ -1197,9 +1242,11 @@ void xbox_Nv2aFenceWait(uint32_t fence_va, uint32_t submitted,
+      * This helper changes host waiting only; the generated loop always makes
+      * its original final read and branch after this returns. */
+     if (!g_nv2a_ack_thread || !fence_readable(fence_va, 4)) return;
++    int64_t begin = nv2a_wait_begin();
+     completed = (volatile uint32_t *)((uintptr_t)fence_va + g_memory_offset);
+     xbox_nv2a_fence_wait(&g_nv2a_wake, completed, submitted, allowed_distance,
+                          &g_nv2a_ack_stop);
++    nv2a_wait_end(1, begin);
+ }
+ 
+ static int nv2a_dma_pending(volatile uint32_t *regs)
+@@ -1215,6 +1262,7 @@ void xbox_Nv2aDmaWait(uint32_t pfifo_base_va)
+     unsigned spins = 0;
+     if (!regs || !g_nv2a_dma_sync || !g_nv2a_ack_thread ||
+         pfifo_base_va != XBOX_NV2A_BASE) return;
++    int64_t begin = nv2a_wait_begin();
+     while (nv2a_dma_pending(regs) &&
+            !InterlockedCompareExchange(&g_nv2a_ack_stop, 0, 0)) {
+ #ifdef _WIN32
+@@ -1230,6 +1278,31 @@ void xbox_Nv2aDmaWait(uint32_t pfifo_base_va)
+             InterlockedCompareExchange(&g_nv2a_ack_stop, 0, 0)) break;
+         xbox_nv2a_wake_wait(&g_nv2a_wake, observed);
+     }
++    nv2a_wait_end(2, begin);
++}
++
 +void xbox_Nv2aWbcWait(uint32_t register_va)
 +{
 +    volatile uint32_t *flush;
@@ -10930,6 +11095,7 @@ index b4a1fe0..11aefdd 100644
 +        GetCurrentThreadId() == g_nv2a_ack_thread_id ||
 +        register_va != XBOX_NV2A_BASE + 0x100410u) return;
 +    flush = (volatile uint32_t *)((char *)g_nv2a_memory + 0x100410u);
++    int64_t begin = nv2a_wait_begin();
 +    while ((*flush & 0x10000u) &&
 +           !InterlockedCompareExchange(&g_nv2a_ack_stop, 0, 0)) {
 +#ifdef _WIN32
@@ -10942,12 +11108,11 @@ index b4a1fe0..11aefdd 100644
 +            InterlockedCompareExchange(&g_nv2a_ack_stop, 0, 0)) break;
 +        xbox_nv2a_wake_wait(&g_nv2a_wake, observed);
 +    }
-+}
-+
++    nv2a_wait_end(3, begin);
+ }
+ 
  static int s_nv2a_trace = 0;
- /* The per-kick DMA_PUT line, only on an explicit RECOMP_NV2A_TRACE. The
-  * executor sets s_nv2a_trace too, and a line plus an fflush per kick is
-@@ -1457,6 +1481,7 @@ static int64_t nv2a_ack_hitch_checkpoint(int64_t frequency, int64_t begin,
+@@ -1457,6 +1530,7 @@ static int64_t nv2a_ack_hitch_checkpoint(int64_t frequency, int64_t begin,
  static void nv2a_ack_busy_bits(int flip_held)
  {
      volatile uint32_t *regs = (volatile uint32_t *)g_nv2a_memory;
@@ -10955,7 +11120,7 @@ index b4a1fe0..11aefdd 100644
  
      if (!regs)
          return;
-@@ -1480,9 +1505,14 @@ static void nv2a_ack_busy_bits(int flip_held)
+@@ -1480,9 +1554,14 @@ static void nv2a_ack_busy_bits(int flip_held)
          }
          /* Interlocked: the vblank-ack thread and the guest change other
           * bits of the same word meanwhile. */
@@ -10971,7 +11136,7 @@ index b4a1fe0..11aefdd 100644
  }
  
  void xbox_Nv2aAckBusyBits(void)
-@@ -1500,12 +1530,26 @@ volatile uint32_t *xbox_Nv2aRegPtr(uint32_t offset)
+@@ -1500,12 +1579,26 @@ volatile uint32_t *xbox_Nv2aRegPtr(uint32_t offset)
      return (volatile uint32_t *)((char *)g_nv2a_memory + offset);
  }
  
@@ -10998,7 +11163,7 @@ index b4a1fe0..11aefdd 100644
      if (trace_env && *trace_env && *trace_env != '0')
          if (!QueryPerformanceFrequency(&trace_frequency) || trace_frequency.QuadPart <= 0)
              trace_frequency.QuadPart = 0;
-@@ -1635,7 +1679,7 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -1635,7 +1728,7 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
                      QueryPerformanceCounter(&t1);
                      if (nv2a_d3d_prof_enabled())
                          nv2a_d3d_prof_add(7, t1.QuadPart - t0.QuadPart, 0);
@@ -11007,7 +11172,7 @@ index b4a1fe0..11aefdd 100644
                          fprintf(stderr, " [NV2A] pushbuffer wrapped (0x%08X -> 0x%08X)\n",
                                  last_put, put);
                  }
-@@ -1730,7 +1774,8 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -1730,7 +1823,8 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
          }
          trace_begin = nv2a_ack_hitch_checkpoint(trace_frequency.QuadPart,
                                                 trace_begin, "ack_renderer_tick", 8);
@@ -11017,7 +11182,7 @@ index b4a1fe0..11aefdd 100644
          nv2a_ack_hitch_checkpoint(trace_frequency.QuadPart,
                                    trace_begin, "ack_yield", 8);
      }
-@@ -1745,7 +1790,7 @@ static void xbox_Nv2aAckStart(void)
+@@ -1745,7 +1839,7 @@ static void xbox_Nv2aAckStart(void)
      xbox_nv2a_wake_init(&g_nv2a_wake);
      g_nv2a_ack_stop = 0;
      g_nv2a_ack_thread = CreateThread(NULL, 0, nv2a_ack_thread,
@@ -11026,7 +11191,7 @@ index b4a1fe0..11aefdd 100644
      if (g_nv2a_ack_thread) {
          fprintf(stderr, "  NV2A busy-bit ack: %zu register(s) acknowledged\n",
                  sizeof(NV2A_ACK) / sizeof(NV2A_ACK[0]));
-@@ -3564,6 +3609,19 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+@@ -3564,6 +3658,19 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
          }
      }
  
@@ -11046,7 +11211,7 @@ index b4a1fe0..11aefdd 100644
      xbox_WatchInit();
  #ifndef _WIN32
      /* Dynamic aliases use free slots and refuse foreign mappings. Exclude
-@@ -4161,6 +4219,8 @@ uint32_t xbox_ContiguousAllocRange(uint32_t size, uint32_t alignment,
+@@ -4161,6 +4268,8 @@ uint32_t xbox_ContiguousAllocRange(uint32_t size, uint32_t alignment,
          if (tail)
              contig_insert(i + 1, start + size, tail, 0);
          result = XBOX_CONTIG_BASE + start;

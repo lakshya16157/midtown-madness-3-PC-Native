@@ -68,18 +68,37 @@ static mm3_recomp_func_t lookup_manual_cached(uint32_t va)
     return (mm3_recomp_func_t)recomp_lookup_memoized(va, lookup_manual_uncached);
 }
 
+/* The resolved table spans the whole code range (~28 MB of pointers), so a
+ * vtable call landed on a cold cache line and often a cold TLB entry: 2.8%
+ * of the game thread in dense streets. Each thread keeps the targets it calls
+ * in a small direct-mapped cache (64 KB) in front of it; an entry is only
+ * ever an answer the table gave, and the table's answers never change. */
+enum { RESOLVED_CACHE_BITS = 12 };
+#ifdef _WIN32
+#define RESOLVED_CACHE_TLS __declspec(thread)
+#else
+#define RESOLVED_CACHE_TLS _Thread_local
+#endif
+static RESOLVED_CACHE_TLS struct { uint32_t va; mm3_recomp_func_t fn; } t_resolved_cache[1u << RESOLVED_CACHE_BITS];
+
 mm3_recomp_func_t recomp_lookup_manual(uint32_t va)
 {
     mm3_recomp_func_t *table = s_resolved, fn;
-    uint32_t offset;
+    uint32_t offset, slot = (va * 0x9E3779B1u) >> (32 - RESOLVED_CACHE_BITS);
+    if (t_resolved_cache[slot].va == va && t_resolved_cache[slot].fn) return t_resolved_cache[slot].fn;
     if (!table) table = resolved_table();
     offset = va - s_resolved_base;
     if (!table || offset >= s_resolved_span) return lookup_manual_cached(va);
     fn = table[offset];
-    if (fn) return fn;
-    fn = lookup_manual_uncached(va);
-    if (!fn) fn = recomp_lookup(va);
-    /* Every thread that races here stores the same pointer. */
-    if (fn) table[offset] = fn;
+    if (!fn) {
+        fn = lookup_manual_uncached(va);
+        if (!fn) fn = recomp_lookup(va);
+        /* Every thread that races here stores the same pointer. */
+        if (fn) table[offset] = fn;
+    }
+    if (fn) {
+        t_resolved_cache[slot].va = va;
+        t_resolved_cache[slot].fn = fn;
+    }
     return fn;
 }

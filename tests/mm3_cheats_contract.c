@@ -19,7 +19,7 @@ static const uint32_t k_manager = 0x31000, k_camera = 0x32000, k_out = 0x33000, 
                       k_ai = 0x40000, k_personality = 0x41000, k_vehicle = 0x42000, k_car = 0x43000, k_state = 0x44000,
                       k_player = 0x45000, k_player_vehicle = 0x46000;
 static int held[256], blocked, frozen;
-static float seen[5];
+static float seen[8];
 
 int xbox_FramebufferKeyDown(int vk) { return vk >= 0 && vk < 256 && held[vk]; }
 void xbox_InputSetBlocked(int value) { blocked = value; }
@@ -45,8 +45,8 @@ void sub_001EA16C_original(void)
 
 void sub_0014194C_original(void)
 {
-    static const uint32_t fields[5] = {0xD4, 0xD0, 0x78, 0xB4, 0xB8};
-    for (int i = 0; i < 5; ++i) seen[i] = MEMF(k_personality + fields[i]);
+    static const uint32_t fields[8] = {0xD4, 0xD0, 0x78, 0xB4, 0xB8, 0xB0, 0xC0, 0xC4};
+    for (int i = 0; i < 8; ++i) seen[i] = MEMF(k_personality + fields[i]);
     g_esp += 8;
 }
 
@@ -183,6 +183,7 @@ static void ai_contract(void)
     MEMF(k_car + 0x90) = MEMF(k_car + 0x94) = 1.0f;
     MEMF(k_personality + 0xD4) = 22.0f; MEMF(k_personality + 0xD0) = 22.0f; MEMF(k_personality + 0x78) = 40.0f;
     MEMF(k_personality + 0xB4) = 0.5f; MEMF(k_personality + 0xB8) = 0.8f;
+    MEMF(k_personality + 0xB0) = 7.0f; MEMF(k_personality + 0xC0) = 53.33f; MEMF(k_personality + 0xC4) = 26.67f;
     MEM32(k_manager + 0x50) = 1;                   /* the human: player 1's car */
     MEM32(k_camera + 0xD8) = k_player; MEM32(k_player + 0x19C) = k_player_vehicle;
     MEM32(k_player_vehicle) = 0x383768; MEM32(k_player_vehicle + 8) = 0x47000;
@@ -207,7 +208,11 @@ static void ai_contract(void)
     assert(seen[0] == 22.0f && seen[3] == 0.5f);
     level("0"); step_ai();
     assert(fabsf(seen[0] - 22.0f * 0.7f) < 1e-4f && fabsf(seen[2] - 32.0f) < 1e-3f && seen[3] < 0.5f);
-    assert(fabsf(MEMF(k_car + 0x90) - 1.25f * 0.6f) < 1e-5f);
+    assert(fabsf(MEMF(k_car + 0x90) - 1.25f * 0.5f) < 1e-5f);
+    /* at 0: hold back from a fifth of the lead at 0.4x the cap, come back at 0.4x */
+    assert(fabsf(seen[3] - 0.2f) < 1e-5f && fabsf(seen[4] - 0.32f) < 1e-5f && fabsf(seen[5] - 1.4f) < 1e-4f);
+    assert(fabsf(seen[6] - 53.33f * 0.4f) < 1e-3f && fabsf(seen[7] - 26.67f * 0.7f) < 1e-3f);
+    assert(MEMF(k_personality + 0xB0) == 7.0f && MEMF(k_personality + 0xC0) == 53.33f);   /* put back */
     MEM32(k_vehicle + 8) = 0x47000;                /* an AI driving the player's car */
     level("9"); step_ai();
     assert(MEMF(0x47000 + 0x90) == 1.0f);

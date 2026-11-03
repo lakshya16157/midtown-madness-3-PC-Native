@@ -226,11 +226,12 @@ static void car_new_frame(unsigned slot, uint32_t frame)
     s_car[slot].now = none;
 }
 
-/* "Car damage" (launcher Gameplay mods, MM3_DAMAGE_PERCENT; 100 = the Xbox).
+/* "Damage Dealt" (launcher Gameplay mods, MM3_DAMAGE_PERCENT; 100 = the Xbox).
  * A hit adds its share times the car's damage factor (+0x8718 of the
  * component, 1.0 for the Audi TT) times 0.0287 to the nearest damage zone,
  * so that factor, scaled for the step and put back, scales every crash's
- * damage to every car; the game's own cap on each zone still applies. */
+ * damage to every car but the player's; the game's own cap on each zone
+ * still applies. */
 static float damage_scale(void)
 {
     static float scale = -1.0f;
@@ -238,13 +239,13 @@ static float damage_scale(void)
         const char *v = getenv("MM3_DAMAGE_PERCENT");
         int percent = v && *v ? atoi(v) : 100;
         scale = percent >= 0 && percent <= 1000 ? (float)percent / 100.0f : 1.0f;
-        if (scale != 1.0f) fprintf(stderr, "[MM3_DAMAGE] car damage x%.2f (launcher Gameplay mods)\n", scale);
+        if (scale != 1.0f) fprintf(stderr, "[MM3_DAMAGE] damage dealt x%.2f (launcher Gameplay mods)\n", scale);
     }
     return scale;
 }
 
-/* "Your car's damage" (MM3_OWN_DAMAGE_PERCENT; 100 = the Xbox): the same
- * factor once more, for the player's own car only, on top of Car damage.
+/* "Damage Received" (MM3_OWN_DAMAGE_PERCENT; 100 = the Xbox): the same
+ * factor for the player's own car, in place of Damage Dealt.
  * The damage step's component is the car (+0x3C simulation, its +4 the
  * body); the player's is [[[[0x3C5CDC]+0x54]+0xD8]+0x19C]+8, the vehicle
  * interface (vtable 0x383768) of the primary player, and in split screen
@@ -256,7 +257,7 @@ static float own_damage_scale(void)
         const char *v = getenv("MM3_OWN_DAMAGE_PERCENT");
         int percent = v && *v ? atoi(v) : 100;
         scale = percent >= 0 && percent <= 1000 ? (float)percent / 100.0f : 1.0f;
-        if (scale != 1.0f) fprintf(stderr, "[MM3_DAMAGE] your car's damage x%.2f (launcher Gameplay mods)\n", scale);
+        if (scale != 1.0f) fprintf(stderr, "[MM3_DAMAGE] damage received x%.2f (launcher Gameplay mods)\n", scale);
     }
     return scale;
 }
@@ -284,8 +285,8 @@ static void damage_step(uint32_t component, uint32_t record)
 {
     static unsigned lines;
     static clock_t first;
-    float impulse = MEMF(record + 0x1A4u), v, scale = damage_scale(), factor = 0.0f;
-    if (own_damage_scale() != 1.0f && own_car(component)) scale *= own_damage_scale();
+    float impulse = MEMF(record + 0x1A4u), v, scale, factor = 0.0f;
+    scale = own_damage_scale() != damage_scale() && own_car(component) ? own_damage_scale() : damage_scale();
     if (lines < HIT_LOG_LINES && damage_job()) {
         v = impulse * MEMF(component + 0x24u) * MEMF(record + 0x14u) * 1230.0f;
         if (v > 800.0f && v < 1.0e12f) {

@@ -209,15 +209,17 @@ int main(void)
     execute(GRAPHICS_BEGIN);
     get_native_label("SID_MM3_GRAPHICS_FPS", label, sizeof label);
     assert(!strcmp(label, "Maximum FPS: 60"));
-    execute(choice_action(SETTING_FPS, 2)); /* Directly select 30, not the next value. */
+    execute(choice_action(SETTING_FPS, 2)); /* Directly select 40, not the next value. */
     get_native_label("SID_MM3_GRAPHICS_FPS", label, sizeof label);
-    assert(!strcmp(label, "Maximum FPS: 30"));
+    assert(!strcmp(label, "Maximum FPS: 40"));
     execute(choice_action(SETTING_FPS, 2)); /* Choosing the same value is idempotent. */
-    assert(draft.fps_limit == 30 && commits == 0 && saved_settings.fps_limit == 60);
+    assert(draft.fps_limit == 40 && commits == 0 && saved_settings.fps_limit == 60);
     get_native_label("SID_MM3_GRAPHICS_CHOICE_FPS_2", label, sizeof label);
-    assert(!strcmp(label, "30 FPS  (Selected)"));
-    get_native_label("SID_MM3_GRAPHICS_CHOICE_FPS_6", label, sizeof label);
+    assert(!strcmp(label, "40 FPS  (Selected)"));
+    get_native_label("SID_MM3_GRAPHICS_CHOICE_FPS_4", label, sizeof label);
     assert(!strcmp(label, "60 FPS"));
+    get_native_label("SID_MM3_GRAPHICS_CHOICE_FPS_6", label, sizeof label);
+    assert(!strcmp(label, "120 FPS"));
     execute(GRAPHICS_DISCARD);
     assert(draft.fps_limit == 60);
 
@@ -242,7 +244,7 @@ int main(void)
         }
     }
     assert(draft.window_width == 3840 && draft.window_height == 2160);
-    assert(draft.fullscreen == 1 && draft.fps_limit == 60 && draft.vsync == 1 && draft.show_fps == 1);
+    assert(draft.fullscreen == 1 && draft.fps_limit == 120 && draft.vsync == 1 && draft.show_fps == 1);
     assert(draft.render_scale == 4 && !strcmp(draft.aspect, "21:9"));
     assert(draft.msaa == 8 && draft.aniso == 16 && draft.draw_distance == 4 && draft.view_distance == 4);
     assert(draft.minimap_improved == 1);
@@ -258,7 +260,7 @@ int main(void)
     execute(choice_action(SETTING_DISTANCE, 2));
     execute(choice_action(SETTING_VIEW_DISTANCE, 3));
     execute(choice_action(SETTING_MINIMAP, 0));
-    assert(draft.fps_limit == 24 && draft.fullscreen == 0 && draft.render_scale == .75f);
+    assert(draft.fps_limit == 30 && draft.fullscreen == 0 && draft.render_scale == .75f);
     assert(draft.vsync == 0 && draft.show_fps == 0 && !strcmp(draft.aspect, "16:9"));
     assert(draft.msaa == 4 && draft.aniso == 8 && draft.draw_distance == 2 && draft.view_distance == 3);
     get_native_label("SID_MM3_GRAPHICS_DISTANCE", label, sizeof label);
@@ -267,22 +269,22 @@ int main(void)
     assert(!strcmp(label, "Building View Distance: 3x"));
     assert(draft.minimap_improved == 0 && saved_settings.minimap_improved == 1);
     execute(GRAPHICS_APPLY);
-    assert(commits == 1 && saved_settings.fps_limit == 24 && saved_settings.window_width == 2560 && saved_settings.window_height == 1440);
+    assert(commits == 1 && saved_settings.fps_limit == 30 && saved_settings.window_width == 2560 && saved_settings.window_height == 1440);
     assert(saved_settings.minimap_improved == 0);
     assert(saved_settings.draw_distance == 2.f && saved_settings.view_distance == 3.f);
     get_native_label("SID_MM3_GRAPHICS_HELP_APPLY", label, sizeof label);
     assert(!strcmp(label, "Saved. Display changes applied."));
 
     execute(choice_action(SETTING_FPS, 5)); fail_commit = 1; execute(GRAPHICS_APPLY);
-    assert(commits == 2 && saved_settings.fps_limit == 24);
+    assert(commits == 2 && saved_settings.fps_limit == 30);
     get_native_label("SID_MM3_GRAPHICS_FPS", label, sizeof label);
-    assert(!strcmp(label, "Maximum FPS: 50"));
+    assert(!strcmp(label, "Maximum FPS: 90"));
     get_native_label("SID_MM3_GRAPHICS_STATUS", label, sizeof label);
     assert(!strcmp(label, "Could not save settings. Check the game log."));
     execute(GRAPHICS_DISCARD);
-    assert(draft.fps_limit == 24);
+    assert(draft.fps_limit == 30);
     execute(GRAPHICS_DEFAULTS);
-    assert(saved_settings.fps_limit == 24 && draft.fps_limit == 60);
+    assert(saved_settings.fps_limit == 30 && draft.fps_limit == 60);
     execute(GRAPHICS_DISCARD);
     /* Custom values from the host panel stay untouched on entering any picker.
      * Its presets show no misleading selected marker until a choice is made. */
@@ -335,7 +337,7 @@ int main(void)
     fail_commit = 0;
     execute(GRAPHICS_MINIMAP_IMPROVED);
     assert(commits == 3 && saved_settings.minimap_improved == 1);
-    assert(saved_settings.fps_limit == 24 && saved_settings.window_width == 2560);
+    assert(saved_settings.fps_limit == 30 && saved_settings.window_width == 2560);
     get_native_label("SID_MM3_GRAPHICS_HUD_MINIMAP_IMPROVED", label, sizeof label);
     assert(!strcmp(label, "Minimap: Improved  (Selected)"));
     fail_commit = 1;

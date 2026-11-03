@@ -35,7 +35,11 @@ int mm3_render_force_depth(const NvD3DState *st, uint32_t width, uint32_t height
             ((t->filter >> 24) & 15u) != 2u)
             reject |= 8u;
     }
-    if (traced < 4 && getenv("RECOMP_FLARE_TRACE") &&
+    /* Read once: getenv walks the whole environment, and this runs for
+     * every lamp flare draw (4% of the render thread in dense streets). */
+    static int trace = -1;
+    if (trace < 0) trace = getenv("RECOMP_FLARE_TRACE") != NULL;
+    if (traced < 4 && trace &&
         gpu_address(st->tex[1].addr) == address && gpu_address(st->tex[2].addr) == address) {
         fprintf(stderr, "[MM3_RENDER] lamp pass reject=%X clip=%ux%u mask=%ux%u depth=%u write=%u zeta=%08X wbuffer=%u tex_used=%X filter=%08X/%08X/%08X address=%08X/%08X/%08X\n",
                 reject, st->clip_w, st->clip_h, width, height,

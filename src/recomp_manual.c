@@ -26,9 +26,10 @@ static void mm3_icall_report(const XboxIcallReport *report);
 /* Producer run-ahead bound used by sub_00344AB0 (MM3_PRODUCER_LAG_KB,
  * 0..65536, default 256; 0 waits at every kick). With renderer profiling on,
  * kick waits are counted and reported once a second. MM3_PRODUCER_WRAP_SYNC=1
- * restores the full synchronization at every ring wrap. */
+ * restores the full synchronization at every ring wrap. The bound is measured
+ * from the executor's ring position (MM3_PRODUCER_CURSOR=0: from DMA_GET). */
 static uint32_t s_kick_lag = 0x40000u;
-static int s_kick_stats, s_kick_wrap_sync;
+static int s_kick_stats, s_kick_wrap_sync, s_kick_cursor = 1;
 static LARGE_INTEGER s_kick_frequency;
 static int64_t s_kick_window, s_kick_wait_ticks, s_kick_wait_max;
 static unsigned s_kick_count, s_kick_waits, s_kick_wraps;
@@ -38,7 +39,9 @@ static void mm3_configure_kick_bound(void)
     const char *setting = getenv("MM3_PRODUCER_LAG_KB");
     const char *profile = getenv("RECOMP_D3D_PROFILE");
     const char *wrap = getenv("MM3_PRODUCER_WRAP_SYNC");
+    const char *cursor = getenv("MM3_PRODUCER_CURSOR");
     s_kick_wrap_sync = wrap && !strcmp(wrap, "1");
+    s_kick_cursor = !(cursor && !strcmp(cursor, "0"));
     if (setting && *setting) {
         char *end;
         unsigned long kb = strtoul(setting, &end, 10);
@@ -49,7 +52,8 @@ static void mm3_configure_kick_bound(void)
                    QueryPerformanceFrequency(&s_kick_frequency) && s_kick_frequency.QuadPart > 0;
     if (s_kick_lag != 0x40000u || s_kick_stats || s_kick_wrap_sync)
         fprintf(stderr, "[MM3_PRODUCER] run-ahead bound %u KiB%s%s\n", s_kick_lag / 1024u,
-                s_kick_wrap_sync ? "; full sync at every ring wrap" : "; wrapped-ring distance",
+                s_kick_wrap_sync ? "; full sync at every ring wrap" :
+                s_kick_cursor ? "; wrapped-ring distance from the executor" : "; wrapped-ring distance from GET",
                 s_kick_stats ? "; kick waits reported once a second" : "");
 }
 
@@ -65,6 +69,15 @@ static void mm3_kick_report(int64_t now)
     fprintf(stderr, "[MM3_PRODUCER] kicks=%u waits=%u wrapped=%u wait_ms=%.2f max_wait_ms=%.2f per %.2f s (bound %u KiB)\n",
             s_kick_count, s_kick_waits, s_kick_wraps, s_kick_wait_ticks * ms, s_kick_wait_max * ms,
             (now - s_kick_window) * ms / 1000.0, s_kick_lag / 1024u);
+    {
+        extern void xbox_Nv2aWaitStats(int64_t ticks[4], unsigned count[4]);
+        int64_t ticks[4];
+        unsigned count[4];
+        xbox_Nv2aWaitStats(ticks, count);
+        fprintf(stderr, "[MM3_GPU_WAITS] notify %u/%.1f ms fence %u/%.1f ms dma %u/%.1f ms kick %u/%.1f ms\n",
+                count[0], ticks[0] * ms, count[1], ticks[1] * ms, count[2], ticks[2] * ms,
+                count[3], ticks[3] * ms);
+    }
     errno = saved_errno;
     SetLastError(saved_error);
     s_kick_window = now;
@@ -1199,6 +1212,20 @@ extern void xbox_Nv2aWbcWait(uint32_t register_va);
  * about once a frame. Layouts outside the ring keep the full synchronization.
  * MM3_PRODUCER_LAG_KB=0 waits at every kick, as the fork's xbox_Nv2aWbcFlush
  * does; the bound is this port's measured default. */
+extern uint32_t nv2a_pb_exec_cursor(void);
+
+/* Bytes from `consumed` to PUT along the ring; all ones when `consumed` is
+ * not a position behind PUT in this ring (then the caller waits). */
+static uint32_t kick_ring_lag(uint32_t device, uint32_t current, uint32_t consumed)
+{
+    uint32_t start, limit;
+    if (current >= consumed) return current - consumed;
+    start = MEM32(device + 0x24u) & 0x0FFFFFFFu;
+    limit = MEM32(device + 0x28u) & 0x0FFFFFFFu;
+    return !s_kick_wrap_sync && start < limit && current >= start && consumed < limit ?
+           (limit - consumed) + (current - start) : 0xFFFFFFFFu;
+}
+
 void sub_00344AB0(void)
 {
     {   /* D3D's kick runs on the game's render thread: the one spike
@@ -1214,12 +1241,14 @@ void sub_00344AB0(void)
     _mm_sfence();
     uint32_t current = MEM32(device) & 0x0FFFFFFFu;
     uint32_t consumed = MEM32(MEM32(device + 0x17C0u) + 0x44u);
-    uint32_t lag = current - consumed;
-    if (current < consumed) {
-        uint32_t start = MEM32(device + 0x24u) & 0x0FFFFFFFu;
-        uint32_t limit = MEM32(device + 0x28u) & 0x0FFFFFFFu;
-        lag = !s_kick_wrap_sync && start < limit && current >= start && consumed < limit ?
-              (limit - consumed) + (current - start) : 0xFFFFFFFFu;
+    uint32_t lag = kick_ring_lag(device, current, consumed);
+    if (s_kick_cursor) {
+        /* GET moves once a whole executor pass has run, so bounding by it
+         * alone stalled the game while each pass ran and left the executor
+         * idle afterwards (330 ms/s of waits in dense streets). The executor's
+         * own ring position gives the same bound on unexecuted commands. */
+        uint32_t executed = kick_ring_lag(device, current, nv2a_pb_exec_cursor() & 0x0FFFFFFFu);
+        if (executed < lag) lag = executed;
     }
     LARGE_INTEGER begin = {0}, end;
     if (s_kick_stats) {

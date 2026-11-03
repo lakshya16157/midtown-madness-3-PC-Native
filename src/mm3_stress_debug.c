@@ -66,15 +66,14 @@ static void increment_sample_count(uint32_t *value)
     if (*value!=UINT32_MAX) ++*value;
 }
 
+/* The toolkit's check remembers the last committed region: a VirtualQuery
+ * over the guest RAM view costs about 70 us, and this runs every frame. */
 static int readable(uint32_t address, size_t bytes)
 {
-    MEMORY_BASIC_INFORMATION info;
-    uintptr_t p = XBOX_PTR(address);
-    if (address < 0x10000 || address >= 0x08000000 || bytes > 0x08000000u-address)
+    extern int xbox_GuestMapped(uint32_t va, uint32_t bytes);
+    if (address < 0x10000 || address >= 0x08000000 || bytes > 0x08000000u - address)
         return 0;
-    return VirtualQuery((void *)p, &info, sizeof info) && info.State == MEM_COMMIT &&
-        !(info.Protect & (PAGE_NOACCESS|PAGE_GUARD)) &&
-        p+bytes <= (uintptr_t)info.BaseAddress+info.RegionSize;
+    return xbox_GuestMapped(address, (uint32_t)bytes);
 }
 
 /* Retail17BC0C creates64 spatial-output resources. 17BB4B searches the

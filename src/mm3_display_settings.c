@@ -194,12 +194,12 @@ static void float_choice(HWND dialog, int id, float value, const char *label)
     combo_add(dialog, id, label, float_value(value));
 }
 
-static void select_float(HWND dialog, int id, float value, const char *suffix)
+static void select_float(HWND dialog, int id, float value)
 {
     char text[80];
     combo_select(dialog, id, float_value(value));
     if (combo_value(dialog, id) != float_value(value)) {
-        snprintf(text, sizeof text, "%.3gx%s", value, suffix);
+        mm3_custom_label(value, text, sizeof text);
         float_choice(dialog, id, value, text);
         combo_select(dialog, id, float_value(value));
     }
@@ -213,7 +213,7 @@ static void resolution_add(HWND dialog, int width, int height)
     int count = (int)SendMessageA(control, CB_GETCOUNT, 0, 0), i;
     for (i = 0; i < count; ++i)
         if (SendMessageA(control, CB_GETITEMDATA, i, 0) == packed) return;
-    snprintf(label, sizeof label, "%d x %d", width, height);
+    mm3_window_label(width, height, label, sizeof label);
     combo_add(dialog, IDC_DISPLAY_RESOLUTION, label, packed);
 }
 
@@ -239,22 +239,20 @@ static void populate(HWND dialog, const MM3DisplaySettings *settings)
     resolution_add(dialog, settings->window_width, settings->window_height);
     combo_select(dialog, IDC_DISPLAY_RESOLUTION,
                  MAKELONG(settings->window_width, settings->window_height));
-    combo_add(dialog, IDC_DISPLAY_MODE, "Windowed", 0);
-    combo_add(dialog, IDC_DISPLAY_MODE, "Fullscreen", 1);
+    for (i = 0; i < 2; ++i) combo_add(dialog, IDC_DISPLAY_MODE, mm3_mode_names[i], i);
     combo_select(dialog, IDC_DISPLAY_MODE, settings->fullscreen);
-    for (i = 0; i < sizeof mm3_fps_choices / sizeof mm3_fps_choices[0]; ++i) {
-        snprintf(label, sizeof label, "%d", mm3_fps_choices[i]);
+    for (i = 0; i < (unsigned)MM3_CHOICE_COUNT(mm3_fps_choices); ++i) {
+        mm3_fps_label(mm3_fps_choices[i], label, sizeof label);
         combo_add(dialog, IDC_DISPLAY_FPS, label, mm3_fps_choices[i]);
     }
-    snprintf(label, sizeof label, "%d", settings->fps_limit);
+    mm3_fps_label(settings->fps_limit, label, sizeof label);
     SetDlgItemTextA(dialog, IDC_DISPLAY_FPS, label);
     SendDlgItemMessageA(dialog, IDC_DISPLAY_FPS, CB_LIMITTEXT, 3, 0);
-    for (i = 0; i < sizeof mm3_scale_choices / sizeof mm3_scale_choices[0]; ++i) {
-        snprintf(label, sizeof label, mm3_scale_choices[i] ? "%dp" : "Automatic + supersampling",
-                 (int)(480 * mm3_scale_choices[i]));
+    for (i = 0; i < (unsigned)MM3_CHOICE_COUNT(mm3_scale_choices); ++i) {
+        mm3_scale_label(mm3_scale_choices[i], label, sizeof label);
         float_choice(dialog, IDC_DISPLAY_SCALE, mm3_scale_choices[i], label);
     }
-    select_float(dialog, IDC_DISPLAY_SCALE, settings->render_scale, " (custom)");
+    select_float(dialog, IDC_DISPLAY_SCALE, settings->render_scale);
     for (i = 0; i < sizeof mm3_aspect_choices / sizeof mm3_aspect_choices[0]; ++i) {
         combo_add(dialog, IDC_DISPLAY_ASPECT, mm3_aspect_choices[i], i);
         if (strcmp(settings->aspect, mm3_aspect_choices[i]) == 0)
@@ -264,31 +262,31 @@ static void populate(HWND dialog, const MM3DisplaySettings *settings)
         combo_add(dialog, IDC_DISPLAY_ASPECT, settings->aspect, 5);
         combo_select(dialog, IDC_DISPLAY_ASPECT, 5);
     }
-    for (i = 1; i <= 16; i *= 2) {
-        snprintf(label, sizeof label, i == 1 ? "Off" : "%ux MSAA", i);
-        if (i <= 8) combo_add(dialog, IDC_DISPLAY_MSAA, label, i);
-        snprintf(label, sizeof label, "%ux", i);
-        combo_add(dialog, IDC_DISPLAY_ANISO, label, i);
+    for (i = 0; i < (unsigned)MM3_CHOICE_COUNT(mm3_msaa_choices); ++i) {
+        mm3_msaa_label(mm3_msaa_choices[i], label, sizeof label);
+        combo_add(dialog, IDC_DISPLAY_MSAA, label, mm3_msaa_choices[i]);
+    }
+    for (i = 0; i < (unsigned)MM3_CHOICE_COUNT(mm3_aniso_choices); ++i) {
+        mm3_aniso_label(mm3_aniso_choices[i], label, sizeof label);
+        combo_add(dialog, IDC_DISPLAY_ANISO, label, mm3_aniso_choices[i]);
     }
     combo_select(dialog, IDC_DISPLAY_MSAA, settings->msaa);
     combo_select(dialog, IDC_DISPLAY_ANISO, settings->aniso);
     if (combo_value(dialog, IDC_DISPLAY_ANISO) == CB_ERR) {
-        snprintf(label, sizeof label, "%dx", settings->aniso);
+        mm3_aniso_label(settings->aniso, label, sizeof label);
         combo_add(dialog, IDC_DISPLAY_ANISO, label, settings->aniso);
         combo_select(dialog, IDC_DISPLAY_ANISO, settings->aniso);
     }
-    for (i = 0; i < sizeof mm3_distance_choices / sizeof mm3_distance_choices[0]; ++i) {
-        snprintf(label, sizeof label, mm3_distance_choices[i] == 1.f ? "1x (Xbox)" : "%.3gx",
-                 mm3_distance_choices[i]);
+    for (i = 0; i < (unsigned)MM3_CHOICE_COUNT(mm3_distance_choices); ++i) {
+        mm3_distance_label(mm3_distance_choices[i], label, sizeof label);
         float_choice(dialog, IDC_DISPLAY_DISTANCE, mm3_distance_choices[i], label);
         float_choice(dialog, IDC_DISPLAY_VIEW_DISTANCE, mm3_distance_choices[i], label);
     }
-    select_float(dialog, IDC_DISPLAY_DISTANCE, settings->draw_distance, " (custom)");
-    select_float(dialog, IDC_DISPLAY_VIEW_DISTANCE, settings->view_distance, " (custom)");
+    select_float(dialog, IDC_DISPLAY_DISTANCE, settings->draw_distance);
+    select_float(dialog, IDC_DISPLAY_VIEW_DISTANCE, settings->view_distance);
     CheckDlgButton(dialog, IDC_DISPLAY_VSYNC, settings->vsync ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dialog, IDC_DISPLAY_SHOW_FPS, settings->show_fps ? BST_CHECKED : BST_UNCHECKED);
-    combo_add(dialog, IDC_DISPLAY_MINIMAP, "Retail", 0);
-    combo_add(dialog, IDC_DISPLAY_MINIMAP, "Improved perspective", 1);
+    for (i = 0; i < 2; ++i) combo_add(dialog, IDC_DISPLAY_MINIMAP, mm3_minimap_names[i], i);
     combo_select(dialog, IDC_DISPLAY_MINIMAP,
                  settings->minimap_improved && !mm3_display_setting_fixed(MM3_FIXED_MINIMAP));
     for (i = 0; i < sizeof night_lights / sizeof night_lights[0]; ++i) {

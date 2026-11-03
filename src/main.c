@@ -360,6 +360,20 @@ static float mm3_paint_softness(void)
     return value;
 }
 
+/* Opt out of Windows power throttling (EcoQoS): on laptops Windows may run a
+ * process's threads at efficiency clocks or on efficiency cores. The game
+ * thread is the frame-rate limit in dense streets and must run flat out. */
+static void mm3_full_speed(void)
+{
+#if defined(_WIN32) && defined(PROCESS_POWER_THROTTLING_CURRENT_VERSION)
+    PROCESS_POWER_THROTTLING_STATE state = {0};
+    state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    state.StateMask = 0;
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &state, sizeof state);
+#endif
+}
+
 int main(void)
 {
     void *xbe_data = NULL;
@@ -367,6 +381,7 @@ int main(void)
     const wchar_t *entered_directory = mm3_enter_game_directory();
 
     mm3_direct_launch_log();
+    mm3_full_speed();
     mm3_configure_diagnostics();
     mm3_collision_profile_init();
     setvbuf(stdout, NULL, _IONBF, 0);

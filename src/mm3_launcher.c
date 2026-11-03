@@ -666,32 +666,32 @@ static void help_show(Launcher *ui, int id)
             effect = "Every gameplay mod stays off. Your choices there are kept for when you choose Modded gameplay again.";
             break;
         case ID_DAMAGE:
-            title = "Car damage";
+            title = "Damage Dealt";
             selected = combo_value(control(ui, id));
-            body = "How much damage each crash does, to every car: yours, the opponents', the traffic's and the cars a job asks you to wreck. 100% is the Xbox game.";
+            body = "How much damage every other car takes in a crash: the opponents, the traffic, the police and the cars a job asks you to wreck. Your own car is set by Damage Received. 100% is the Xbox game.";
             effect = !checked(ui, ID_OPTION + MM3_LAUNCH_GAMEPLAY) ? "Xbox gameplay is selected, so crashes do the Xbox damage (100%). Choose Modded gameplay to change it." :
-                     selected == 0 ? "No car is ever damaged or wrecked, so jobs where you must wreck a car cannot be won." :
-                     selected < 100 ? "Cars take less damage: yours survives more crashes, and a car you must wreck needs more hits." :
-                     selected > 100 ? "Cars take more damage: yours wrecks sooner, and a car you must wreck goes down faster." :
-                     "Crashes do the Xbox damage.";
+                     selected == 0 ? "No other car is ever damaged or wrecked, so jobs where you must wreck a car cannot be won." :
+                     selected < 100 ? "Other cars take less damage: a car you must wreck needs more hits." :
+                     selected > 100 ? "Other cars take more damage: a car you must wreck goes down faster." :
+                     "Other cars take the Xbox damage.";
             break;
         case ID_OWN_DAMAGE:
-            title = "Your car's damage";
+            title = "Damage Received";
             selected = combo_value(control(ui, id));
-            body = "How much damage your own car takes, on top of Car damage. Only your car: the opponents, traffic and the cars a job asks you to wreck keep Car damage. 100% is the Xbox game.";
+            body = "How much damage your own car takes in a crash. Only your car: every other car is set by Damage Dealt. 100% is the Xbox game.";
             effect = !checked(ui, ID_OPTION + MM3_LAUNCH_GAMEPLAY) ? "Xbox gameplay is selected, so your car takes the Xbox damage (100%). Choose Modded gameplay to change it." :
                      selected == 0 ? "Your car is never damaged or wrecked, whatever it hits." :
                      selected < 100 ? "Your car takes less damage and survives more crashes." :
                      selected > 100 ? "Your car takes more damage and wrecks sooner." :
-                     "Your car takes the same damage as every other car.";
+                     "Your car takes the Xbox damage.";
             break;
         case ID_AI_LEVEL:
             title = "Opponents' difficulty";
             selected = combo_value(control(ui, id));
-            body = "How hard the race opponents drive, 0 to 9; 5 is the Xbox game. Higher: they accelerate and brake harder, brake later, corner a little faster and no longer wait for you in the first races. Lower: slower and more careful. Police and traffic are unchanged.";
+            body = "How hard the race opponents drive, 0 to 9; 5 is the Xbox game. Higher: they accelerate and brake harder, brake later, corner a little faster and no longer wait for you in the first races. Lower: slower and more careful, they ease off sooner and harder once they lead you, and come back from behind much more slowly. Police and traffic are unchanged.";
             effect = !checked(ui, ID_OPTION + MM3_LAUNCH_GAMEPLAY) ? "Xbox gameplay is selected, so the opponents drive as on the Xbox (5). Choose Modded gameplay to change it." :
                      selected > 5 ? "Harder races: opponents are quicker everywhere. At 8 and 9 they may overshoot some corners." :
-                     selected < 5 ? "Easier races: opponents are slower and give you more room." :
+                     selected < 5 ? "Easier races: opponents are slower, hold back as soon as they get ahead of you, and are slow to catch up when behind." :
                      "The opponents drive as on the Xbox.";
             break;
         case ID_CAMERA_KEY:
@@ -1108,7 +1108,7 @@ static void populate(Launcher *ui)
     set_checked(ui, ID_VSYNC, s->vsync); set_checked(ui, ID_SHOW_FPS, s->show_fps);
     combo_select(control(ui, ID_SCALE), (int)lroundf(s->render_scale * 1000.f));
     if (combo_value(control(ui, ID_SCALE)) < 0) {
-        snprintf(text, sizeof text, "Custom %.2fx", (double)s->render_scale);
+        mm3_custom_label(s->render_scale, text, sizeof text);
         combo_item(control(ui, ID_SCALE), text, (int)lroundf(s->render_scale * 1000.f));
         combo_select(control(ui, ID_SCALE), (int)lroundf(s->render_scale * 1000.f));
     }
@@ -1118,19 +1118,19 @@ static void populate(Launcher *ui)
       SendMessageA(aspect, CB_SETCURSEL, (WPARAM)at, 0); }
     combo_select(control(ui, ID_MSAA), s->msaa); combo_select(control(ui, ID_ANISO), s->aniso);
     if (combo_value(control(ui, ID_ANISO)) < 0) {
-        snprintf(text, sizeof text, "%dx", s->aniso);
+        mm3_aniso_label(s->aniso, text, sizeof text);
         combo_item(control(ui, ID_ANISO), text, s->aniso);
         combo_select(control(ui, ID_ANISO), s->aniso);
     }
     combo_select(control(ui, ID_DRAW), (int)lroundf(s->draw_distance * 1000.f));
     combo_select(control(ui, ID_VIEW), (int)lroundf(s->view_distance * 1000.f));
     if (combo_value(control(ui, ID_DRAW)) < 0) {
-        snprintf(text, sizeof text, "Custom %.2fx", (double)s->draw_distance);
+        mm3_custom_label(s->draw_distance, text, sizeof text);
         combo_item(control(ui, ID_DRAW), text, (int)lroundf(s->draw_distance * 1000.f));
         combo_select(control(ui, ID_DRAW), (int)lroundf(s->draw_distance * 1000.f));
     }
     if (combo_value(control(ui, ID_VIEW)) < 0) {
-        snprintf(text, sizeof text, "Custom %.2fx", (double)s->view_distance);
+        mm3_custom_label(s->view_distance, text, sizeof text);
         combo_item(control(ui, ID_VIEW), text, (int)lroundf(s->view_distance * 1000.f));
         combo_select(control(ui, ID_VIEW), (int)lroundf(s->view_distance * 1000.f));
     }
@@ -1252,12 +1252,12 @@ static void settings_controls(Launcher *ui)
     HWND c;
     char name[64];
     c = combo(ui, 0, ID_RESOLUTION, "Window size", 42, 98, 150);
-    for (int i = 0; i < (int)(sizeof mm3_window_sizes / sizeof mm3_window_sizes[0]); ++i) {
-        snprintf(name, sizeof name, "%d x %d", mm3_window_sizes[i][0], mm3_window_sizes[i][1]);
+    for (int i = 0; i < MM3_CHOICE_COUNT(mm3_window_sizes); ++i) {
+        mm3_window_label(mm3_window_sizes[i][0], mm3_window_sizes[i][1], name, sizeof name);
         combo_item(c, name, mm3_window_sizes[i][0] * 10000 + mm3_window_sizes[i][1]);
     }
     c = combo(ui, 0, ID_MODE, "Window mode", 212, 98, 150);
-    combo_item(c, "Windowed", 0); combo_item(c, "Fullscreen", 1);
+    for (int i = 0; i < 2; ++i) combo_item(c, mm3_mode_names[i], i);
     c = combo(ui, 0, ID_SCREEN, "Screen", 382, 98, 264);
     combo_item(c, "Windows main display", SCREEN_MAIN);
     screens_find(ui);
@@ -1271,28 +1271,31 @@ static void settings_controls(Launcher *ui)
         SendMessageA(c, CB_ADDSTRING, 0, (LPARAM)mm3_aspect_choices[i]);
     label(ui, 0, "Maximum FPS (1-120, engine limit)", 42, 166, 260);
     c = add(ui, 0, "COMBOBOX", "", CBS_DROPDOWN | WS_TABSTOP, ID_FPS, 42, 190, 110, 160);
-    for (int i = 0; i < (int)(sizeof mm3_fps_choices / sizeof mm3_fps_choices[0]); ++i) {
-        snprintf(name, sizeof name, "%d", mm3_fps_choices[i]);
+    for (int i = 0; i < MM3_CHOICE_COUNT(mm3_fps_choices); ++i) {
+        mm3_fps_label(mm3_fps_choices[i], name, sizeof name);
         combo_item(c, name, mm3_fps_choices[i]);
     }
     check(ui, 0, ID_VSYNC, "VSync", 172, 190, 100);
     c = combo(ui, 0, ID_SCALE, "Internal resolution", 310, 166, 238);
-    for (int i = 0; i < (int)(sizeof mm3_scale_choices / sizeof mm3_scale_choices[0]); ++i) {
-        snprintf(name, sizeof name, mm3_scale_choices[i] ? "%dp" : "Automatic + supersampling",
-                 (int)(480 * mm3_scale_choices[i]));
+    for (int i = 0; i < MM3_CHOICE_COUNT(mm3_scale_choices); ++i) {
+        mm3_scale_label(mm3_scale_choices[i], name, sizeof name);
         combo_item(c, name, (int)lroundf(mm3_scale_choices[i] * 1000.f));
     }
     c = combo(ui, 0, ID_MSAA, "Anti-aliasing", 578, 166, 238);
-    combo_item(c, "Off", 1); combo_item(c, "2x MSAA", 2); combo_item(c, "4x MSAA", 4); combo_item(c, "8x MSAA", 8);
+    for (int i = 0; i < MM3_CHOICE_COUNT(mm3_msaa_choices); ++i) {
+        mm3_msaa_label(mm3_msaa_choices[i], name, sizeof name);
+        combo_item(c, name, mm3_msaa_choices[i]);
+    }
     c = combo(ui, 0, ID_ANISO, "Texture filtering", 42, 234, 238);
-    combo_item(c, "1x", 1); combo_item(c, "2x", 2); combo_item(c, "4x", 4);
-    combo_item(c, "8x", 8); combo_item(c, "16x", 16);
+    for (int i = 0; i < MM3_CHOICE_COUNT(mm3_aniso_choices); ++i) {
+        mm3_aniso_label(mm3_aniso_choices[i], name, sizeof name);
+        combo_item(c, name, mm3_aniso_choices[i]);
+    }
     for (int view = 0; view < 2; ++view) {
         c = combo(ui, 0, view ? ID_VIEW : ID_DRAW, view ? "Building view distance" : "Object detail distance",
                   view ? 578 : 310, 234, 238);
-        for (int i = 0; i < (int)(sizeof mm3_distance_choices / sizeof mm3_distance_choices[0]); ++i) {
-            snprintf(name, sizeof name, mm3_distance_choices[i] == 1.f ? "1x (Xbox)" : "%.3gx",
-                     (double)mm3_distance_choices[i]);
+        for (int i = 0; i < MM3_CHOICE_COUNT(mm3_distance_choices); ++i) {
+            mm3_distance_label(mm3_distance_choices[i], name, sizeof name);
             combo_item(c, name, (int)lroundf(mm3_distance_choices[i] * 1000.f));
         }
     }
@@ -1300,7 +1303,7 @@ static void settings_controls(Launcher *ui)
     for (int i = 0; i < 4; ++i) combo_item(c, preset_labels[i], i);
     combo_select(c, 0);
     c = combo(ui, 0, ID_MINIMAP, "Minimap style", 310, 302, 238);
-    combo_item(c, "Retail", 0); combo_item(c, "Improved perspective", 1);
+    for (int i = 0; i < 2; ++i) combo_item(c, mm3_minimap_names[i], i);
     check(ui, 0, ID_SHOW_FPS, "Show FPS in window title", 578, 328, 238);
     check(ui, 0, ID_OPTION + MM3_LAUNCH_DSP, mm3_launcher_options[MM3_LAUNCH_DSP].label, 42, 379, 390);
     EnableWindow(control(ui, ID_OPTION + MM3_LAUNCH_DSP), MM3_LAUNCHER_AUDIO);
@@ -1432,14 +1435,14 @@ static void gameplay_controls(Launcher *ui)
     label(ui, 3, "F2 pause and fly, F3 photo, F4 hide HUD", 300, 540, 250);
     fixed = add(ui, 3, "STATIC", "Difficulty", 0, -1, 560, 270, 260, 26);
     SendMessageA(fixed, WM_SETFONT, (WPARAM)ui->section, TRUE);
-    c = combo(ui, 3, ID_DAMAGE, "Car damage", 560, 300, 260);
+    c = combo(ui, 3, ID_DAMAGE, "Damage Dealt", 560, 300, 260);
     for (int i = 0; i < (int)(sizeof damage / sizeof damage[0]); ++i) {
         char name[32];
         if (damage[i]) snprintf(name, sizeof name, "%d%%%s", damage[i], damage[i] == 100 ? " (Xbox)" : "");
         else snprintf(name, sizeof name, "No damage");
         combo_item(c, name, damage[i]);
     }
-    c = combo(ui, 3, ID_OWN_DAMAGE, "Your car's damage", 560, 356, 260);
+    c = combo(ui, 3, ID_OWN_DAMAGE, "Damage Received", 560, 356, 260);
     for (int i = 0; i < (int)(sizeof damage / sizeof damage[0]); ++i) {
         char name[32];
         if (damage[i]) snprintf(name, sizeof name, "%d%%%s", damage[i], damage[i] == 100 ? " (Xbox)" : "");

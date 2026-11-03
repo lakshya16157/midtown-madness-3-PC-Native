@@ -7,6 +7,7 @@
 #include "mm3_display_settings.h"
 #include "mm3_graphics_menu.h"
 #include "mm3_circuit_races.h"
+#include "mm3_display_choices.h"
 
 extern void sub_001C5E11_original(void);
 extern void sub_0006B3EF_original(void);
@@ -73,7 +74,10 @@ static const int resolutions[][2] = {
     {1536, 960}, {1600, 900}, {1920, 1080}, {1920, 1200},
     {2560, 1440}, {2560, 1600}, {3840, 2160}
 };
-static const int rates[] = {15, 24, 30, 40, 45, 50, 60};
+/* The shared list (mm3_display_choices.h); its 7 entries are the FPS picker's
+ * rows here and in tools/native-menu/generate.py (PICKER_COUNTS). */
+#define rates mm3_fps_choices
+typedef char fps_picker_rows_match[sizeof mm3_fps_choices / sizeof mm3_fps_choices[0] == 7 ? 1 : -1];
 static const int msaa[] = {1, 2, 4, 8};
 static const int aniso[] = {1, 2, 4, 8, 16};
 static const float scales[] = {0.f, .5f, .75f, 1.f, 1.5f, 2.f, 2.5f, 3.f, 4.f};

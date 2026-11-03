@@ -99,6 +99,7 @@ void mm3_map_ring_texture_pins(uint32_t resource)
 {
     static uint8_t ring[RING_BYTES], out[RING_BYTES];
     static unsigned reported;
+    static uint32_t hidden_at;
     uint32_t descriptor, texture, data, crc;
     if (!mm3_map_ring_pins_hidden() || !guest_range(resource, 0x28u)) return;
     descriptor = MEM32(resource + 0x24u);
@@ -108,11 +109,15 @@ void mm3_map_ring_texture_pins(uint32_t resource)
     data = MEM32(texture + 4u) & 0x7FFFFFFFu;
     if (data >= 0x04000000u || RING_BYTES > 0x04000000u - data) return;
     data += 0x80000000u;
+    /* Every frame the ring is drawn: once hidden, a compare against what was
+     * written (vectorised) answers instead of a byte-wise CRC of 16 KB. */
+    if (data == hidden_at && !memcmp((const void *)XBOX_PTR(data), out, RING_BYTES)) return;
     memcpy(ring, (const void *)XBOX_PTR(data), RING_BYTES);
     crc = crc32(ring, RING_BYTES);
     if (crc != RING_CRC) return;          /* hidden already, not loaded yet, or not the retail ring */
     hide_pins(ring, out);
     memcpy((void *)XBOX_PTR(data), out, RING_BYTES);
+    hidden_at = data;
     if (!reported) {
         reported = 1;
         fprintf(stderr, "[MM3_HUD] minimap compass pins hidden: N sprite collapsed, E/S/W cleared from the ring at %08X\n",
