@@ -878,7 +878,6 @@ if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE /bigobj)
 endif()
 if(MM3_PGO)
-    target_sources(${PROJECT_NAME} PRIVATE src/mm3_pgo_link_stubs.c)
     file(TO_NATIVE_PATH "${MM3_PGO_PGD}" pgo_database)
     if(MM3_PGO STREQUAL "GEN")
         # Fast counters keep the instrumented build playable for training.
