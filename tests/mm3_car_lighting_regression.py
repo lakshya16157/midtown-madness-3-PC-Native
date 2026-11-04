@@ -216,18 +216,15 @@ static void time_of_day_checks(void)
                     assert(MEMF(entry(0)+0x40)==diameter);
                     assert(MEMF(entry(0)+0x44)==diameter && MEMF(entry(0)+0x48)==diameter);
                 }
+            } else if(times[i]==2) {
+                uint32_t red=(MEM32(entry(0)+0x4c)>>16)&255u;
+                assert(red && red<((night_color>>16)&255u));
             } else {
-                if(!dark) assert(MEM32(entry(0)+0x4c)==0xff080000u);
-                else if(times[i]==2) {
-                    uint32_t red=(MEM32(entry(0)+0x4c)>>16)&255u;
-                    assert(red && red<((night_color>>16)&255u));
-                } else assert(MEM32(entry(0)+0x4c)==night_color);
-                if(kind!=3) {
-                    float r=dark?CAR_SIREN_RADIUS_NIGHT:CAR_SIREN_RADIUS_DAY;
-                    if(times[i]==2) r*=MM3_EVENING_LIGHT_REACH;
-                    assert(MEMF(entry(0)+0x40)==r*2 && MEMF(entry(0)+0x44)==r*2 &&
-                           MEMF(entry(0)+0x48)==r*2);
-                }
+                /* Emergency light bars keep their full field by day. */
+                assert(MEM32(entry(0)+0x4c)==night_color);
+                if(kind==4 || kind==9)
+                    assert(MEMF(entry(0)+0x40)==CAR_SIREN_RADIUS*2 && MEMF(entry(0)+0x44)==CAR_SIREN_RADIUS*2 &&
+                           MEMF(entry(0)+0x48)==CAR_SIREN_RADIUS*2);
             }
         }
     }
@@ -1188,9 +1185,26 @@ int main(void)
      * active (0x290), and red/blue alternate phases when the clock runs so
      * they never sum into pink (#FF00FF). */
     setup(9,0xff0000ffu,.8f,0x290,0);run();assert(MEM32(QUEUE+0x5810)==0);
-    setup(4,0xffff0000u,.8f,0x290,0);MEMF(WORLD+0x1c0)=.1f;run();
-    MEM32(NODE+0x64)=0xff0000ffu;again(4,0x290);
-    assert(MEM32(QUEUE+0x5810)==1 && ((MEM32(entry(0)+0x4c)&0xff0000u)==0 || (MEM32(entry(0)+0x4c)&0xffu)==0));
+    /* The light bar keeps its authored beacon mode (+0xF4) and brightness:
+     * forcing the flash mode aimed every flare along the car's nose, so the
+     * flares vanished whenever the police car drove ahead of the camera. */
+    { unsigned i; for(i=0;i<2;++i) {
+        setup(4,0xffff0000u,.8f,1u<<4,0);MEM32(OWNER+0xf4)=i;run();
+        assert(MEM32(OWNER+0xf4)==i && MEM8(OWNER+0xf3)==1);
+        if(i) assert(MEMF(NODE+0x54)==.8f && MEM32(QUEUE+0x5810)==1);
+        setup(9,0xff0000ffu,.8f,1u<<9,0);MEM32(OWNER+0xf4)=1;run();
+        assert(MEM32(OWNER+0xf4)==1 && MEM8(OWNER+0xf3)==1);
+    } }
+    /* With the race clock running, red and blue take turns (never pink),
+     * at full strength by day as well as at night. */
+    { unsigned i; for(i=0;i<4;++i) {
+        uint32_t times_of_day[]={0,1,3,4};
+        setup(4,0xffff0000u,.8f,0x290,0);MEM32(OWNER+0xf4)=1;MEM32(0x407c30)=times_of_day[i];
+        MEMF(WORLD+0x1bc)=1.0f/60;run();
+        MEM32(NODE+0x64)=0xff0000ffu;again(4,0x290);
+        assert(MEM32(QUEUE+0x5810)==1 && MEMF(entry(0)+0x40)==CAR_SIREN_RADIUS*2);
+        assert((MEM32(entry(0)+0x4c)&0xff0000u)==0 || (MEM32(entry(0)+0x4c)&0xffu)==0);
+    } }
     puts("PASS: warm/dim native lenses and fields; current-frame steering and traversal; smooth brightness/paired-source fades; eight headings; banked near-field gradient; stable paired lamps; close traffic/street/color independence; real native resets, skipped/env-only stamp wraps, foreign-queue isolation and full-queue reuse; 80 traffic cars; activation, queue bounds and ABI");
     return 0;
 }

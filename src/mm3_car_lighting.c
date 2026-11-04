@@ -76,10 +76,12 @@ extern void sub_000DFE0E_original(void);
 #define CAR_SIGNAL_RADIUS_NIGHT 1.4f
 #define CAR_SIGNAL_GAIN_DAY 0.03f
 #define CAR_SIGNAL_GAIN_NIGHT 0.15f
-#define CAR_SIREN_RADIUS_DAY 0.4f
-#define CAR_SIREN_RADIUS_NIGHT 3.0f
-#define CAR_SIREN_GAIN_DAY 0.03f
-#define CAR_SIREN_GAIN_NIGHT 0.25f
+/* Emergency light bars keep a full field in every period. Their red and blue
+ * lamps share one roof centre: submitted together, the two fields add up to
+ * magenta over the whole car and road. They take turns instead (2 Hz). */
+#define CAR_SIREN_RADIUS 3.0f
+#define CAR_SIREN_GAIN 0.25f
+#define CAR_SIREN_RATE 12.566371f
 /* Reversing lamps face rearward (every model turns their nodes 180 degrees).
  * A 9m cube around the bumper also lit both sides of the car and the road
  * beneath it. Instead, a ground-level field starting just ahead of the lamps
@@ -926,6 +928,26 @@ static void car_light_align(uint32_t owner, const float source[12])
     }
 }
 
+/* The light bar's red/blue alternation: +1 red only, -1 blue only. Wall
+ * time while the race runs (split screen draws each car more than once a
+ * frame, so a per-pass counter would run fast); held while paused (no frame
+ * time) so a paused frame never shows both colors. Each car has its own phase.
+ * Before the first running frame there is no phase and both colors show. */
+static int s_siren_started;
+static float s_siren_time;
+
+static int car_siren_wave(uint32_t owner, uint32_t world, float *wave)
+{
+    float dt = world ? MEMF(world + 0x1BC) : 0.0f;
+    if (isfinite(dt) && dt > 0.0f) {
+        s_siren_time = (float)(clock() % CLOCKS_PER_SEC) / (float)CLOCKS_PER_SEC;
+        s_siren_started = 1;
+    }
+    if (!s_siren_started) return 0;
+    *wave = sinf(s_siren_time * CAR_SIREN_RATE + (float)((owner >> 4) & 63u));
+    return 1;
+}
+
 void mm3_car_lighting_emit(uint32_t node, uint32_t mask, const float source[12])
 {
     if (!mm3_mod_car_lighting()) return;
@@ -1005,19 +1027,18 @@ void mm3_car_lighting_emit(uint32_t node, uint32_t mask, const float source[12])
                           brightness * (dark ? CAR_REVERSE_GAIN_NIGHT : CAR_REVERSE_GAIN_DAY),
                           dark ? 0 : CAR_REVERSE_RADIUS_DAY);
     } else if (kind == 4 || kind == 9) {
-        int dark = mm3_car_lighting_dark_period(time_of_day);
-        float clock = MEMF(world + 0x1C0);
+        int red = (color & 0xFF0000u) != 0 && (color & 0xFFu) == 0;
+        int blue = (color & 0xFFu) != 0 && (color & 0xFF0000u) == 0;
+        float wave;
+        /* SirenEnv repeats the light bar's own lamps: one field per color. */
         if (kind == 9 && (mask & 0x10u)) return;
-        if (clock > 0.0f) {
-            float wave = sinf(clock * 12.566371f + (float)((owner >> 4) & 63u));
-            int red = (color & 0xFF0000u) != 0 && (color & 0xFFu) == 0;
-            int blue = (color & 0xFFu) != 0 && (color & 0xFF0000u) == 0;
-            if ((red && wave <= 0.0f) || (blue && wave >= 0.0f)) return;
-            if (red || blue) brightness *= fabsf(wave);
+        if ((red || blue) && car_siren_wave(owner, world, &wave)) {
+            float share = red ? wave : -wave;
+            if (share <= 0.0f) return;
+            brightness *= share;
         }
         car_light_submit(owner, node, kind, source, NULL, color,
-                          brightness * (dark ? CAR_SIREN_GAIN_NIGHT : CAR_SIREN_GAIN_DAY),
-                          dark ? CAR_SIREN_RADIUS_NIGHT : CAR_SIREN_RADIUS_DAY);
+                          brightness * CAR_SIREN_GAIN, CAR_SIREN_RADIUS);
     } else {
         int dark = mm3_car_lighting_dark_period(time_of_day);
         car_light_submit(owner, node, kind, source, NULL, color,
@@ -1066,9 +1087,16 @@ static void car_light_hook(void)
      * returning to an evening/night race immediately restores the lights.
      * The replacement fields always supersede the native road projector. */
     if (kind == 8) draw_mask &= ~0x100u;
-    if ((kind == 4 || kind == 9) && car_light_owner_address(owner, 0xF8)) {
-        MEM32(owner + 0xF4) = 0;
-        if (kind == 9) { saved_f3 = MEM8(owner + 0xF3); MEM8(owner + 0xF3) = 0; }
+    /* SirenEnv's native colored projector is superseded by the alternating
+     * field below, as kind 8's road projector is. The light bar keeps its
+     * authored mode (+0xF4): the rotating beacon sweeps its flares through
+     * every direction, so they show from behind the car as well as ahead.
+     * Forcing the flash mode aimed every flare along the car's nose (culled
+     * whenever the police car drove ahead of the camera) and overwrote the
+     * lamp's brightness with a heading-dependent value. */
+    if (kind == 9 && car_light_owner_address(owner, 0xF8)) {
+        saved_f3 = MEM8(owner + 0xF3);
+        MEM8(owner + 0xF3) = 0;
     }
     if (draw_mask != mask) MEM32(stack + 12) = draw_mask;
     if (kind == 0) MEM32(node + 0x64) = car_light_color(car_light_front_color(color), .82f);

@@ -14495,7 +14495,7 @@ index 0000000..ba782e5
 +#endif /* NV2A_BLACK_FRAME_LOGIC_ONLY */
 +#endif /* NV2A_BLACK_FRAME_H */
 diff --git a/src/video/nv2a_d3d11.c b/src/video/nv2a_d3d11.c
-index f4432e7..fad6764 100644
+index f4432e7..5e4c4b8 100644
 --- a/src/video/nv2a_d3d11.c
 +++ b/src/video/nv2a_d3d11.c
 @@ -19,9 +19,10 @@
@@ -17887,12 +17887,14 @@ index f4432e7..fad6764 100644
  }
  
  /* Last presentation rectangle, normalized to client coordinates. */
-@@ -2931,11 +5243,30 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -2930,12 +5242,31 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+     D3D11_MAPPED_SUBRESOURCE m;
      uint8_t *p;
      UINT total = 0, at = 0, ib_bytes = ni * 4;
-     float squeeze = 1.0f, shift = 0.0f, yscale = 1.0f;
+-    float squeeze = 1.0f, shift = 0.0f, yscale = 1.0f;
 -    int use_dx = 0;
 -    int64_t t_draw;
++    float squeeze = 1.0f, shift = 0.0f, yscale = 1.0f, map_clip_top = 0.0f;
 +    int use_dx = 0, use_dy = 0, direct = 0;
 +    int suppress_map_base = 0, hide_hud = 0;
 +    float *dy = NULL;
@@ -17969,7 +17971,7 @@ index f4432e7..fad6764 100644
                  if (nd) { dx = nd; dx_cap = count; }
              }
              d.pos = pos; d.idx = idx; d.attrib = attr; d.ni = ni; d.lo = lo; d.count = count;
-@@ -3006,43 +5355,413 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3006,43 +5355,434 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
              use_dx = s_overlay.place(&d, count <= dx_cap ? dx : NULL, &squeeze, &shift);
          }
      }
@@ -18266,6 +18268,22 @@ index f4432e7..fad6764 100644
 +                        dy[k] += (py - pos[k][1]) * ynarrow / yscale;
 +                        use_dx = use_dy = 1;
 +                    }
++                    /* Split screen: the bottom player's grown map rises from
++                     * its corner past the divider onto the top player's map.
++                     * Clip it below the divider by its own bottom inset (both
++                     * maps then keep the same gap); the overview stays whole.
++                     * Mixed batches holding other HUD above the divider (a
++                     * full-screen dimmer, a world name tag) stay unclipped. */
++                    if (use_dy && s_split_screen_query && s_split_screen_query() &&
++                        s_frame_map_cy >= (float)gh * 0.5f) {
++                        float inset = (float)gh - (s_frame_map_cy + s_frame_map_half_height);
++                        map_clip_top = (float)gh * 0.5f + fmaxf(inset, 0.0f) * ynarrow *
++                                       (1.0f - s_frame_map_expansion);
++                        for (k = 0; k < count; ++k)
++                            if ((map_part == 2 ? world_name_vertex(route_uv, lo + k) :
++                                 !map_route_vertex(route_uv, lo + k)) &&
++                                pos[k][1] < (float)gh * 0.5f) { map_clip_top = 0.0f; break; }
++                    }
 +                }
 +            }
 +            if (name_n && map_part == 2 && count <= dx_cap && dy) {
@@ -18297,17 +18315,22 @@ index f4432e7..fad6764 100644
 -    if (!(p = ring_map(s_raw, &s_raw_pos, VB_BYTES, total + (use_dx ? count * 4 : 0), &m))) {
 +    if (suppress_map_base || hide_hud) {
 +        slow_frame_end(SF_DRAW_SCOPE, slow_draw);
-+        RECOMP_PROFILE_END();
-+        return;
+         RECOMP_PROFILE_END();
+         return;
+     }
++    if (map_clip_top > 0.0f && s_bound_scissors_valid && s_bound_scissor_count == 1) {
++        D3D11_RECT r = s_bound_scissors[0];
++        LONG top = (LONG)(map_clip_top * s_aa_y * s_cur_sy + 0.5f);
++        if (r.top < top) { r.top = top; bind_scissor_rects(1, &r); }
 +    }
 +
 +    /* Vertex data for [lo, hi], then optional X/Y translations. Mixed UI
 +     * batches keep tagged routes/names independent of ordinary HUD text. */
 +    if (total + (use_dx ? count * 4 : 0) + (use_dy ? count * 4 : 0) > VB_BYTES) {
 +        slow_frame_end(SF_DRAW_SCOPE, slow_draw);
-         RECOMP_PROFILE_END();
-         return;
-     }
++        RECOMP_PROFILE_END();
++        return;
++    }
 +    if (!s_raw_nooverwrite) s_raw_pos = 0;
      {
 -        UINT goff[16];
@@ -18395,7 +18418,7 @@ index f4432e7..fad6764 100644
  
      uc.info[1] = program ? 1u : 0u;
      if (program) {
-@@ -3051,11 +5770,14 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3051,11 +5791,14 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
          const float (*consts)[4] = nv2a_vsh_constants(&cver);
          uc.info[0] = start;
          if (!prog || !consts) {
@@ -18412,7 +18435,7 @@ index f4432e7..fad6764 100644
                  RECOMP_PROFILE_END();
                  return;
              }
-@@ -3063,7 +5785,9 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3063,7 +5806,9 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
              s_prog_valid = 1;
          }
          if (!s_vconst_valid || cver != s_vconst_version) {
@@ -18422,7 +18445,7 @@ index f4432e7..fad6764 100644
                  RECOMP_PROFILE_END();
                  return;
              }
-@@ -3075,27 +5799,92 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3075,27 +5820,92 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      uc.map[1] = 2.0f / (float)gh;
      uc.map[2] = 1.0f / (float)zmax;
      uc.map[3] = squeeze;
@@ -18520,7 +18543,7 @@ index f4432e7..fad6764 100644
      RECOMP_PROFILE_END();
  }
  
-@@ -3134,7 +5923,6 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3134,7 +5944,6 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
          hitch_trace_report("clear_submit", trace_begin);
          return;
      }
@@ -18528,7 +18551,7 @@ index f4432e7..fad6764 100644
      zf = (st->surface_format >> 4) & 0xF;
      unpack4(color, cc);
      if (s && (s->color_fmt & 0xF) == 0x3) {
-@@ -3146,7 +5934,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3146,7 +5955,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      memset(cc + 4, 0, 16);
      cc[4] = zf == 1 ? (float)(zstencil & 0xFFFF) / 65535.0f
                      : (float)(zstencil >> 8) / 16777215.0f;
@@ -18540,7 +18563,7 @@ index f4432e7..fad6764 100644
      if (x1 >= gw) x1 = gw - 1;
      if (y1 >= gh) y1 = gh - 1;
      if (x0 > x1 || y0 > y1) {
-@@ -3157,18 +5948,24 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3157,18 +5969,24 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      r.top = (LONG)(y0 * s_aa_y * s_cur_sy + 0.5f);
      r.right = (LONG)((x1 + 1) * s_aa_x * s_cur_sx + 0.5f);
      r.bottom = (LONG)((y1 + 1) * s_aa_y * s_cur_sy + 0.5f);
@@ -18571,7 +18594,7 @@ index f4432e7..fad6764 100644
      hitch_trace_report("clear_submit", trace_begin);
  }
  
-@@ -3191,8 +5988,259 @@ static int s_wb_pending;
+@@ -3191,8 +6009,259 @@ static int s_wb_pending;
  static uint32_t s_wb_mask;
  static ID3D11Query *s_wb_event;
  static int s_wb_event_pending;
@@ -18831,7 +18854,7 @@ index f4432e7..fad6764 100644
  
  /* A readback belongs to the surface that queued it, not the reusable cache
   * slot. A replacement of the same size must not inherit old GPU pixels. */
-@@ -3204,8 +6252,12 @@ static void writeback_drop_surface(Surface *s)
+@@ -3204,8 +6273,12 @@ static void writeback_drop_surface(Surface *s)
      s_wb_pending = s_wb_mask != 0;
      if (!s_wb_pending) {
          s_wb_event_pending = 0;
@@ -18844,7 +18867,7 @@ index f4432e7..fad6764 100644
      }
  }
  
-@@ -3287,6 +6339,7 @@ typedef struct {
+@@ -3287,6 +6360,7 @@ typedef struct {
      unsigned surfaces, copied_rows, cpu_rows;
      HRESULT query_hr;
      BOOL query_done;
@@ -18852,7 +18875,7 @@ index f4432e7..fad6764 100644
  } WbTraceParts;
  
  static void writeback_trace_parts(int wait, int64_t begin, const WbTraceParts *p)
-@@ -3298,35 +6351,126 @@ static void writeback_trace_parts(int wait, int64_t begin, const WbTraceParts *p
+@@ -3298,35 +6372,126 @@ static void writeback_trace_parts(int wait, int64_t begin, const WbTraceParts *p
      fprintf(stderr, "[HITCH] phase=readback_parts qpc_ms=%.3f start_qpc_ms=%.3f "
                      "duration_ms=%.3f thread=%lu wait=%d query_ms=%.3f map_ms=%.3f "
                      "copy_ms=%.3f unmap_ms=%.3f surfaces=%u copied_rows=%u cpu_rows=%u "
@@ -18983,7 +19006,7 @@ index f4432e7..fad6764 100644
              writeback_trace_parts(0, trace_begin, &parts);
              writeback_trace_finish(0, 1, trace_begin);
              return 0;
-@@ -3339,9 +6483,10 @@ static int writeback_finish(int wait)
+@@ -3339,9 +6504,10 @@ static int writeback_finish(int wait)
          Surface *s = &s_surf[i];
          WbSlot *k = &s_wb[i];
          D3D11_MAPPED_SUBRESOURCE m;
@@ -18996,7 +19019,7 @@ index f4432e7..fad6764 100644
          HRESULT hr;
          int64_t part_begin;
          if (!(s_wb_mask & (1u << i)))
-@@ -3363,12 +6508,15 @@ static int writeback_finish(int wait)
+@@ -3363,12 +6529,15 @@ static int writeback_finish(int wait)
          if (trace_begin) ++parts.surfaces;
          part_begin = trace_begin ? qpc() : 0;
          dst = (uint8_t *)guest(s->va);
@@ -19012,7 +19035,7 @@ index f4432e7..fad6764 100644
              /* A row the CPU changed since the executor last looked holds
               * writes made after this frame was submitted (the title runs
               * ahead): they win, and the next sync uploads them. */
-@@ -3379,13 +6527,13 @@ static int writeback_finish(int wait)
+@@ -3379,13 +6548,13 @@ static int writeback_finish(int wait)
              if (trace_begin) ++parts.copied_rows;
              if (s->bpp == 4) {
                  if (amode < 0) {
@@ -19029,7 +19052,7 @@ index f4432e7..fad6764 100644
                  for (x = 0; x < s->w; x++) {
                      uint32_t c = src[x];
                      o[x] = r565 ? (uint16_t)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07E0) | ((c >> 3) & 0x1F))
-@@ -3394,7 +6542,11 @@ static int writeback_finish(int wait)
+@@ -3394,7 +6563,11 @@ static int writeback_finish(int wait)
                  }
              }
              memcpy(s->shadow + (size_t)y * rowb, row, rowb);
@@ -19041,7 +19064,7 @@ index f4432e7..fad6764 100644
          if (trace_begin) parts.copy += qpc() - part_begin;
          part_begin = trace_begin ? qpc() : 0;
          ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)k->stage, 0);
-@@ -3402,7 +6554,12 @@ static int writeback_finish(int wait)
+@@ -3402,7 +6575,12 @@ static int writeback_finish(int wait)
      }
      RECOMP_PROFILE_END();
      s_wb_pending = left;
@@ -19055,7 +19078,7 @@ index f4432e7..fad6764 100644
      writeback_trace_parts(wait, trace_begin, &parts);
      writeback_trace_finish(wait, left, trace_begin);
      return !left;
-@@ -3410,22 +6567,26 @@ static int writeback_finish(int wait)
+@@ -3410,22 +6588,26 @@ static int writeback_finish(int wait)
  
  int nv2a_d3d_writeback_busy(void)
  {
@@ -19085,7 +19108,7 @@ index f4432e7..fad6764 100644
      RECOMP_PROFILE_BEGIN("D3D11 write-back issue");
      for (i = 0; i < MAX_SURFACES; i++) {
          Surface *s = &s_surf[i];
-@@ -3438,9 +6599,10 @@ static void writeback_surfaces(void)
+@@ -3438,9 +6620,10 @@ static void writeback_surfaces(void)
              continue;
          surface_resolve(s);
          if (scaled) {
@@ -19099,7 +19122,7 @@ index f4432e7..fad6764 100644
              ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)k->stage,
                                               (ID3D11Resource *)k->down);
          } else {
-@@ -3461,9 +6623,11 @@ static void writeback_surfaces(void)
+@@ -3461,9 +6644,11 @@ static void writeback_surfaces(void)
              ID3D11DeviceContext_End(s_ctx, (ID3D11Asynchronous *)s_wb_event);
              s_wb_event_pending = 1;
          }
@@ -19111,7 +19134,7 @@ index f4432e7..fad6764 100644
  }
  
  /* ----------------------------------------------------- visibility tests */
-@@ -3532,10 +6696,43 @@ static ID3D11ShaderResourceView *s_ovl_srv;
+@@ -3532,10 +6717,43 @@ static ID3D11ShaderResourceView *s_ovl_srv;
  static UINT s_ovl_w, s_ovl_h;
  static uint32_t s_ovl_serial = 0xFFFFFFFFu;
  static DWORD s_last_present, s_last_flip;
@@ -19155,7 +19178,7 @@ index f4432e7..fad6764 100644
  static int ensure_swapchain(void)
  {
      HWND h = xbox_FramebufferWindowHandle();
-@@ -3547,6 +6744,8 @@ static int ensure_swapchain(void)
+@@ -3547,6 +6765,8 @@ static int ensure_swapchain(void)
      hh = (UINT)(rc.bottom - rc.top);
      if (!w || !hh) return 0;                    /* minimised */
      if (s_swap && s_swap_hwnd != h) {
@@ -19164,7 +19187,7 @@ index f4432e7..fad6764 100644
          IDXGISwapChain1_Release(s_swap);
          s_swap = NULL;
      }
-@@ -3564,8 +6763,31 @@ static int ensure_swapchain(void)
+@@ -3564,8 +6784,31 @@ static int ensure_swapchain(void)
          d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
          d.SampleDesc.Count = 1;
          d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -19197,7 +19220,7 @@ index f4432e7..fad6764 100644
          hr = fac ? IDXGIFactory2_CreateSwapChainForHwnd(fac, (IUnknown *)s_dev, h, &d,
                                                          NULL, NULL, &s_swap) : E_FAIL;
          if (fac) {
-@@ -3576,10 +6798,14 @@ static int ensure_swapchain(void)
+@@ -3576,10 +6819,14 @@ static int ensure_swapchain(void)
          if (dxdev) IDXGIDevice_Release(dxdev);
          if (FAILED(hr)) { fail("CreateSwapChainForHwnd", hr); return 0; }
          s_swap_hwnd = h; s_swap_w = w; s_swap_h = hh;
@@ -19214,7 +19237,7 @@ index f4432e7..fad6764 100644
              return 0;
          s_swap_w = w; s_swap_h = hh;
      }
-@@ -3642,6 +6868,7 @@ static void write_bmp(ID3D11Texture2D *bb, const char *path)
+@@ -3642,6 +6889,7 @@ static void write_bmp(ID3D11Texture2D *bb, const char *path)
   * seconds and 200 in a session; every spike is still logged. */
  static const char *s_spike_prefix = (const char *)-1;
  static double s_spike_ms = 50.0;
@@ -19222,7 +19245,7 @@ index f4432e7..fad6764 100644
  static unsigned s_spike_pending, s_spike_id, s_spike_shot;
  static int64_t s_spike_split[PROF_COUNT];
  static LONG s_spec_recent;
-@@ -3662,6 +6889,7 @@ static void spike_check(int64_t interval, int64_t pace)
+@@ -3662,6 +6910,7 @@ static void spike_check(int64_t interval, int64_t pace)
                  buf[c - buf] = 0;
              }
              s_spike_prefix = buf;
@@ -19230,7 +19253,7 @@ index f4432e7..fad6764 100644
              fprintf(stderr, "[SPIKE] capturing frames after flips over %.1f ms to %s-*\n",
                      s_spike_ms, s_spike_prefix);
          }
-@@ -3689,7 +6917,7 @@ static void spike_check(int64_t interval, int64_t pace)
+@@ -3689,7 +6938,7 @@ static void spike_check(int64_t interval, int64_t pace)
      s_spike_id++;
      fprintf(stderr, "[SPIKE] #%u frame %u: %.1f ms between flips (%.1f ms not pacing)%s\n",
              s_spike_id, s_frame, ms, work,
@@ -19239,7 +19262,7 @@ index f4432e7..fad6764 100644
      {
          int i;
          fprintf(stderr, "[SPIKE]   ms:");
-@@ -3698,7 +6926,7 @@ static void spike_check(int64_t interval, int64_t pace)
+@@ -3698,7 +6947,7 @@ static void spike_check(int64_t interval, int64_t pace)
          fprintf(stderr, " | %ld new shaders in 1 s\n", (long)s_spec_recent);
          recomp_sampler_report(ms);
      }
@@ -19248,7 +19271,7 @@ index f4432e7..fad6764 100644
          last_capture = GetTickCount();
          s_spike_pending = 2;
          s_spike_shot = 0;
-@@ -3720,19 +6948,99 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
+@@ -3720,19 +6969,99 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
      if (!prefix) return;
      if (!remaining) {
          int count = 0;
@@ -19351,7 +19374,7 @@ index f4432e7..fad6764 100644
  
  /* Draw surface `s` (with the overlay described in *pc) into a w x h target,
   * letterboxed to the display aspect when asked. */
-@@ -3767,10 +7075,18 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3767,10 +7096,18 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
      pc->src_size[0] = (float)s->w; pc->src_size[1] = (float)s->h;
      pc->src_size[2] = (float)s->iw; pc->src_size[3] = (float)s->ih;
      pc->force_alpha[0] = 1.0f;
@@ -19370,7 +19393,7 @@ index f4432e7..fad6764 100644
      upload_cb(s_cb_present, pc, sizeof *pc);
      unbind_textures();
      unbind_targets();
-@@ -3781,11 +7097,11 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3781,11 +7118,11 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
      vp.MinDepth = 0; vp.MaxDepth = 1;
      sc.left = 0; sc.top = 0; sc.right = (LONG)w; sc.bottom = (LONG)h;
      ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
@@ -19387,7 +19410,7 @@ index f4432e7..fad6764 100644
      bind_vertex_shader(s_present_vs);
      bind_vertex_constants(s_cb_present);
      bind_pixel_shader(s_present_ps);
-@@ -3846,6 +7162,15 @@ static void prepare_overlay(PresentConsts *pc)
+@@ -3846,6 +7183,15 @@ static void prepare_overlay(PresentConsts *pc)
      pc->ovl_in[2] = 1.0f;
  }
  
@@ -19403,7 +19426,7 @@ index f4432e7..fad6764 100644
  /* RECOMP_CAPTURE_SURFACE: the composited guest image at internal resolution
   * (no window scaling or letterbox), for pixel comparisons. */
  static ID3D11Texture2D *s_cap_tex;
-@@ -3882,31 +7207,19 @@ static void keep_image(ID3D11Texture2D *bb)
+@@ -3882,31 +7228,19 @@ static void keep_image(ID3D11Texture2D *bb)
  /* The kept image presented again; 0 if there is none to show. */
  static int present_kept(void)
  {
@@ -19444,7 +19467,7 @@ index f4432e7..fad6764 100644
      s_last_present = GetTickCount();
      return 1;
  }
-@@ -3931,25 +7244,40 @@ static int pace_after_present(void)
+@@ -3931,25 +7265,40 @@ static int pace_after_present(void)
  
  static void pace_flip(FlipPacing *pacing)
  {
@@ -19486,7 +19509,7 @@ index f4432e7..fad6764 100644
          if (!s_cap_tex || s_cap_w != s->iw || s_cap_h != s->ih) {
              if (s_cap_rtv) ID3D11RenderTargetView_Release(s_cap_rtv);
              if (s_cap_tex) ID3D11Texture2D_Release(s_cap_tex);
-@@ -3965,45 +7293,108 @@ static void present_surface(Surface *s, FlipPacing *pacing)
+@@ -3965,45 +7314,108 @@ static void present_surface(Surface *s, FlipPacing *pacing)
              composite(s_cap_rtv, s->iw, s->ih, s, &pc, 0);
              capture_backbuffer(s_cap_tex);
          }
@@ -19617,7 +19640,7 @@ index f4432e7..fad6764 100644
  /* The flip completes at the display's next vertical blank, as it does on the
   * NV2A: FLIP_STALL holds the GPU until then, and the title, waiting on the
   * GPU, is paced by it. Completing it at once let menus run at hundreds of
-@@ -4015,23 +7406,31 @@ static void pace_vblank(void)
+@@ -4015,23 +7427,31 @@ static void pace_vblank(void)
      static LARGE_INTEGER freq;
      static int64_t next;
      static HANDLE timer;
@@ -19655,7 +19678,7 @@ index f4432e7..fad6764 100644
          return;
      {
          RECOMP_PROFILE_BEGIN("D3D11 pace");
-@@ -4046,30 +7445,46 @@ static void pace_vblank(void)
+@@ -4046,30 +7466,46 @@ static void pace_vblank(void)
   * the monitor's native resolution and shape). A resize applies once it has
   * settled for RESIZE_SETTLE_MS, by dropping every host surface; they are
   * rebuilt at the new size from guest memory, which the flip just updated.
@@ -19707,7 +19730,7 @@ index f4432e7..fad6764 100644
          scale = (float)atof(e);
      } else {
          /* RECOMP_SUPERSAMPLE=N (1..4) renders N x N host pixels per window
-@@ -4084,7 +7499,11 @@ static void display_config(int now)
+@@ -4084,7 +7520,11 @@ static void display_config(int now)
          if (scale < 1.0f) scale = 1.0f;
          if (scale > 8.0f) scale = 8.0f;
      }
@@ -19720,7 +19743,7 @@ index f4432e7..fad6764 100644
      if (!now && fabsf(scale - s_scale) < 1e-3f && fabsf(aspect - s_aspect) < 1e-4f)
          return;
      if (!now) {
-@@ -4098,6 +7517,11 @@ static void display_config(int now)
+@@ -4098,6 +7538,11 @@ static void display_config(int now)
      }
      s_scale = scale;
      s_aspect = aspect;
@@ -19732,7 +19755,7 @@ index f4432e7..fad6764 100644
      fprintf(stderr, "[D3D11] rendering %ux%u (window %ux%u, aspect %.3f)\n",
              (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
              w, h, aspect);
-@@ -4138,27 +7562,66 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
+@@ -4138,27 +7583,66 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
      return s;
  }
  
@@ -19801,7 +19824,7 @@ index f4432e7..fad6764 100644
          if (s_prof_on > 0) {
              s_prof[PROF_WRITEBACK] += t1 - t0;
              s_prof[PROF_PRESENT] += qpc() - t1 - pacing.ticks;
-@@ -4169,12 +7632,16 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
+@@ -4169,12 +7653,16 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
           * still completes exactly one paced guest flip. A failed Present has
           * already waited before the attempt and must not wait a second time. */
          pace_flip(&pacing);
@@ -19818,7 +19841,7 @@ index f4432e7..fad6764 100644
      s_frame++;
  }
  
-@@ -4252,6 +7719,8 @@ void nv2a_d3d_tick(void)
+@@ -4252,6 +7740,8 @@ void nv2a_d3d_tick(void)
  {
      DWORD now;
      uint32_t va, pitch;
@@ -19827,7 +19850,7 @@ index f4432e7..fad6764 100644
      /* CPU scanout and PVIDEO can precede the first pushbuffer flip. */
      if (s_init_state <= 0 && !nv2a_d3d_init())
          return;
-@@ -4287,13 +7756,19 @@ void nv2a_d3d_tick(void)
+@@ -4287,13 +7777,19 @@ void nv2a_d3d_tick(void)
      now = GetTickCount();
      if (now - s_last_present < 16)
          return;
@@ -19850,7 +19873,7 @@ index f4432e7..fad6764 100644
          s_frame++;
          return;
      }
-@@ -4307,23 +7782,35 @@ void nv2a_d3d_tick(void)
+@@ -4307,23 +7803,35 @@ void nv2a_d3d_tick(void)
           * Force the check because the submission epoch stops with the flips. */
          if (!s_wb_pending)
              surface_sync(s_shown, 1);
@@ -19890,7 +19913,7 @@ index f4432e7..fad6764 100644
  int nv2a_d3d_prof_enabled(void) { return 0; }
  void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
  { (void)slot; (void)ticks; (void)verts; }
-@@ -4349,4 +7836,43 @@ void nv2a_d3d_zpass_clear(void) {}
+@@ -4349,4 +7857,43 @@ void nv2a_d3d_zpass_clear(void) {}
  uint32_t nv2a_d3d_zpass_read(void) { return 0; }
  float nv2a_d3d_display_aspect(void) { return 4.0f / 3.0f; }
  int nv2a_d3d_host_draw(const NvD3DState *st, int (*draw)(const NvHostTarget *, void *), void *user) { (void)st; (void)draw; (void)user; return 0; }
@@ -40360,10 +40383,10 @@ index 0000000..8a9d4ae
 +}
 diff --git a/tests/test_menu_placement.py b/tests/test_menu_placement.py
 new file mode 100644
-index 0000000..8d6c4e4
+index 0000000..d250fda
 --- /dev/null
 +++ b/tests/test_menu_placement.py
-@@ -0,0 +1,1205 @@
+@@ -0,0 +1,1211 @@
 +"""Exercise real HUD placement/clustering without a D3D device (MSVC prompt)."""
 +from pathlib import Path
 +import subprocess
@@ -40497,7 +40520,7 @@ index 0000000..8d6c4e4
 +    return texture == map_base ? 1 : texture == map_marker ? 2 : 0;
 +}
 +typedef struct { float sx, sy; } Surface;
-+typedef struct { float x[16], y[16], squeeze, shift, y_offset, yscale; int use_dx, use_dy, suppressed, hidden; } Result;
++typedef struct { float x[16], y[16], squeeze, shift, y_offset, yscale, clip_top; int use_dx, use_dy, suppressed, hidden; } Result;
 +
 +#define near(a, b) near_at(a, b, __LINE__)
 +static void near_at(float a, float b, int line) {
@@ -40516,7 +40539,7 @@ index 0000000..8d6c4e4
 +    uint32_t gw = 640, gh = 480, i;
 +    int topology = NV_D3D_TRIANGLES, use_dx = 0, use_dy = 0;
 +    int suppress_map_base = 0, hide_hud = 0;
-+    float squeeze = 1.0f, shift = 0.0f, yscale = 1.0f;
++    float squeeze = 1.0f, shift = 0.0f, yscale = 1.0f, map_clip_top = 0.0f;
 +    static float *dx;
 +    float *dy = NULL;
 +    static uint32_t dx_cap;
@@ -40540,7 +40563,7 @@ index 0000000..8d6c4e4
 +    }
 +    result.squeeze = squeeze; result.shift = shift; result.use_dx = use_dx;
 +    result.use_dy = use_dy; result.y_offset = use_dy ? dy[0] : 0.0f;
-+    result.yscale = yscale;
++    result.yscale = yscale; result.clip_top = map_clip_top;
 +    result.suppressed = suppress_map_base;
 +    result.hidden = hide_hud;
 +    return result;
@@ -40880,6 +40903,7 @@ index 0000000..8d6c4e4
 +        quad(p,480,560,140,156); quad(p+4,110,126,374,390);
 +        tag_name(17,4);
 +        mixed=draw(p,8,idx,12,17,aspect,2,1,0,map_marker);
++        near(mixed.clip_top,0); /* its name tag above the divider stays whole */
 +        near((mixed.x[0]+mixed.x[1])*.5f,520);
 +        near((mixed.y[0]+mixed.y[2])*.5f,148);
 +        near(mixed.x[1]-mixed.x[0],80*narrow);
@@ -41369,6 +41393,11 @@ index 0000000..8d6c4e4
 +        }
 +        assert(top_marker.y[2]<=240.0f && top_marker.y[0]>0.0f);
 +        assert(bottom_marker.y[0]>=240.0f && bottom_marker.y[2]<=480.0f);
++        /* The improved bottom map grows up past the divider onto the top
++         * player's map: it is clipped below the divider by its own bottom
++         * inset (470 -> 480). The top map is never clipped. */
++        near(bottom_marker.clip_top,style ? 240+10*ynarrow : 0);
++        near(top_marker.clip_top,0);
 +        /* A later frame's map starts afresh from its own half. */
 +        next_map_frame();
 +        top=box(17,137,130,220,aspect,2,1,0,map_base);
