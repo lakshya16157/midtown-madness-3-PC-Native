@@ -50,7 +50,8 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"MM3_MENU_QUIT", "Quit in the main menu", 1},
     {"MM3_SAME_CAR", "Opponents drive your car", 0},
     {"MM3_FREE_CAMERA", "Free camera", 1},
-    {"MM3_PHOTO_MODE", "Photo mode", 1}
+    {"MM3_PHOTO_MODE", "Photo mode", 1},
+    {"MM3_AI_STOP_FINISH", "Opponents wait at finish", 0}
 };
 
 typedef struct { int option; const char *value; } MM3ForcedOption;
@@ -73,7 +74,7 @@ static const MM3ForcedOption xbox_gameplay[] = {
     {MM3_LAUNCH_UNLOCK, "0"}, {MM3_LAUNCH_ROUTE_NAVIGATION, "0"}, {MM3_LAUNCH_RACE_ARROW, "1"},
     {MM3_LAUNCH_DEV_TOOLS, "0"}, {MM3_LAUNCH_DEV_HUD, "0"}, {MM3_LAUNCH_DEBUG_MENU, "0"},
     {MM3_LAUNCH_CAMERAS, "0"}, {MM3_LAUNCH_E3, "0"}, {MM3_LAUNCH_SAME_CAR, "0"},
-    {MM3_LAUNCH_FREE_CAMERA, "0"}
+    {MM3_LAUNCH_FREE_CAMERA, "0"}, {MM3_LAUNCH_AI_STOP_FINISH, "0"}
 };
 
 /* The launcher saves every option, so a changed default would never reach a

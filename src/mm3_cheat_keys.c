@@ -139,6 +139,12 @@ int mm3_cheat_ai_level(void)
     return v && *v >= '0' && *v <= '9' && !v[1] ? *v - '0' : 5;
 }
 
+int mm3_cheat_ai_stop_finish(void)
+{
+    const char *v = getenv("MM3_AI_STOP_FINISH");
+    return v && !strcmp(v, "1");
+}
+
 int mm3_cheat_camera_presses(void)
 {
     return (int)InterlockedExchange(&s_camera_presses, 0);

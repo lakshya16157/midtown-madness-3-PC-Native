@@ -216,10 +216,19 @@ static void time_of_day_checks(void)
                     assert(MEMF(entry(0)+0x40)==diameter);
                     assert(MEMF(entry(0)+0x44)==diameter && MEMF(entry(0)+0x48)==diameter);
                 }
-            } else if(times[i]==2) {
-                uint32_t red=(MEM32(entry(0)+0x4c)>>16)&255u;
-                assert(red && red<((night_color>>16)&255u));
-            } else assert(MEM32(entry(0)+0x4c)==night_color);
+            } else {
+                if(!dark) assert(MEM32(entry(0)+0x4c)==0xff080000u);
+                else if(times[i]==2) {
+                    uint32_t red=(MEM32(entry(0)+0x4c)>>16)&255u;
+                    assert(red && red<((night_color>>16)&255u));
+                } else assert(MEM32(entry(0)+0x4c)==night_color);
+                if(kind!=3) {
+                    float r=dark?CAR_SIREN_RADIUS_NIGHT:CAR_SIREN_RADIUS_DAY;
+                    if(times[i]==2) r*=MM3_EVENING_LIGHT_REACH;
+                    assert(MEMF(entry(0)+0x40)==r*2 && MEMF(entry(0)+0x44)==r*2 &&
+                           MEMF(entry(0)+0x48)==r*2);
+                }
+            }
         }
     }
     /* Retain authored parameters and masks across successive races. Native
@@ -1175,6 +1184,13 @@ int main(void)
     setup(4,0xffff0000u,.8f,1u<<4,0);run();assert(MEM32(QUEUE+0x5810)==1);
     setup(9,0xff0000ffu,.8f,1u<<9,0);run();assert(MEM32(QUEUE+0x5810)==1);
     assert((MEM32(entry(0)+0x4c)&0xffff00)==0);
+    /* Police sirens: SirenEnv (kind 9) does not stack on kind 4 when both are
+     * active (0x290), and red/blue alternate phases when the clock runs so
+     * they never sum into pink (#FF00FF). */
+    setup(9,0xff0000ffu,.8f,0x290,0);run();assert(MEM32(QUEUE+0x5810)==0);
+    setup(4,0xffff0000u,.8f,0x290,0);MEMF(WORLD+0x1c0)=.1f;run();
+    MEM32(NODE+0x64)=0xff0000ffu;again(4,0x290);
+    assert(MEM32(QUEUE+0x5810)==1 && ((MEM32(entry(0)+0x4c)&0xff0000u)==0 || (MEM32(entry(0)+0x4c)&0xffu)==0));
     puts("PASS: warm/dim native lenses and fields; current-frame steering and traversal; smooth brightness/paired-source fades; eight headings; banked near-field gradient; stable paired lamps; close traffic/street/color independence; real native resets, skipped/env-only stamp wraps, foreign-queue isolation and full-queue reuse; 80 traffic cars; activation, queue bounds and ABI");
     return 0;
 }

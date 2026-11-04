@@ -189,7 +189,28 @@ static void ai_contract(void)
     MEM32(k_player_vehicle) = 0x383768; MEM32(k_player_vehicle + 8) = 0x47000;
     MEMF(0x47000 + 0x90) = 1.0f;
 
-    level(""); assert(mm3_cheat_ai_level() == 5);
+    level("");
+    /* Opponents wait at finish (MM3_AI_STOP_FINISH=1): zeroes the active road
+     * segment's target velocities, zeroes off-screen speeds, and holds full
+     * brakes before the final checkpoint on the final lap. */
+    MEM32(k_ai) = 0x37FAB0; MEM32(k_vehicle + 8) = k_car;
+    MEM32(k_ai + 0xB4) = 0x48000; MEM32(k_ai + 0xB8) = 0x48000 + 2 * 0x7C;
+    MEM32(k_ai + 0xA0) = 1; MEM32(k_ai + 0xA4) = 0; MEM32(k_ai + 0xA8) = 1;
+    MEMF(0x48000 + 0x7C + 0x28) = 100.0f; MEMF(0x48000 + 0x7C + 0x2C) = 0.0f;
+    MEMF(0x48000 + 0x7C + 0x30) = 200.0f; MEMF(0x48000 + 0x7C + 0x34) = 15.0f;
+    MEMF(k_ai + 0x60) = 100.0f; MEMF(k_ai + 0x64) = 0.0f; MEMF(k_ai + 0x68) = 175.0f;
+    MEM32(k_ai + 0x140) = 0x49000; MEM32(k_ai + 0x144) = 0; MEM32(k_ai + 0x148) = 0;
+    MEM32(0x49000 + 0x20) = 0x49400; MEM32(0x49400 + 0x64) = 0x49800;
+    MEMF(0x49800 + 0x68) = 35.0f; MEMF(0x49800 + 0x6C) = 35.0f;
+    MEMF(k_state + 0x08) = 1.0f; MEMF(k_state + 0x0C) = 0.0f;
+    _putenv_s("MM3_AI_STOP_FINISH", "1");
+    assert(mm3_cheat_ai_stop_finish() == 1);
+    step_ai();
+    assert(MEMF(0x49800 + 0x68) == 0.0f && MEMF(0x49800 + 0x6C) == 0.0f);
+    assert(seen[6] == 0.0f && seen[7] == 0.0f && MEMF(k_personality + 0xC0) == 53.33f);
+    assert(MEMF(k_state + 0x08) == 0.0f && MEMF(k_state + 0x0C) == 1.0f && g_eax == k_state);
+    _putenv_s("MM3_AI_STOP_FINISH", "0");
+    assert(mm3_cheat_ai_stop_finish() == 0); assert(mm3_cheat_ai_level() == 5);
     level("x"); assert(mm3_cheat_ai_level() == 5);
     level("10"); assert(mm3_cheat_ai_level() == 5);
     level("9"); assert(mm3_cheat_ai_level() == 9);
@@ -220,6 +241,27 @@ static void ai_contract(void)
     step_ai();
     assert(seen[0] == 22.0f && MEMF(0x47000 + 0x90) == 1.0f);
     level("");
+    /* Opponents wait at finish (MM3_AI_STOP_FINISH=1): zeroes the active road
+     * segment's target velocities, zeroes off-screen speeds, and holds full
+     * brakes before the final checkpoint on the final lap. */
+    MEM32(k_ai) = 0x37FAB0; MEM32(k_vehicle + 8) = k_car;
+    MEM32(k_ai + 0xB4) = 0x48000; MEM32(k_ai + 0xB8) = 0x48000 + 2 * 0x7C;
+    MEM32(k_ai + 0xA0) = 1; MEM32(k_ai + 0xA4) = 0; MEM32(k_ai + 0xA8) = 1;
+    MEMF(0x48000 + 0x7C + 0x28) = 100.0f; MEMF(0x48000 + 0x7C + 0x2C) = 0.0f;
+    MEMF(0x48000 + 0x7C + 0x30) = 200.0f; MEMF(0x48000 + 0x7C + 0x34) = 15.0f;
+    MEMF(k_ai + 0x60) = 100.0f; MEMF(k_ai + 0x64) = 0.0f; MEMF(k_ai + 0x68) = 175.0f;
+    MEM32(k_ai + 0x140) = 0x49000; MEM32(k_ai + 0x144) = 0; MEM32(k_ai + 0x148) = 0;
+    MEM32(0x49000 + 0x20) = 0x49400; MEM32(0x49400 + 0x64) = 0x49800;
+    MEMF(0x49800 + 0x68) = 35.0f; MEMF(0x49800 + 0x6C) = 35.0f;
+    MEMF(k_state + 0x08) = 1.0f; MEMF(k_state + 0x0C) = 0.0f;
+    _putenv_s("MM3_AI_STOP_FINISH", "1");
+    assert(mm3_cheat_ai_stop_finish() == 1);
+    step_ai();
+    assert(MEMF(0x49800 + 0x68) == 0.0f && MEMF(0x49800 + 0x6C) == 0.0f);
+    assert(seen[6] == 0.0f && seen[7] == 0.0f && MEMF(k_personality + 0xC0) == 53.33f);
+    assert(MEMF(k_state + 0x08) == 0.0f && MEMF(k_state + 0x0C) == 1.0f && g_eax == k_state);
+    _putenv_s("MM3_AI_STOP_FINISH", "0");
+    assert(mm3_cheat_ai_stop_finish() == 0);
     puts("PASS opponents' difficulty: MM3_AI_LEVEL sets the level; above 5 later braking, faster corners, no holding back, "
          "engine and brakes on top of the scripts' own factors; 5 restores; 0 slower; police and your car untouched");
 }

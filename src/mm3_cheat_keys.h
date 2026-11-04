@@ -8,6 +8,8 @@ void mm3_cheat_keys_start(void);
 /* The race opponents' difficulty, 0..9 (5 = the Xbox): MM3_AI_LEVEL, the
  * launcher's Opponents' difficulty, else 5. */
 int mm3_cheat_ai_level(void);
+/* 1 when MM3_AI_STOP_FINISH=1: race opponents stop before the final checkpoint. */
+int mm3_cheat_ai_stop_finish(void);
 /* Presses of the free camera key (MM3_FREE_CAMERA_KEY, F8 by default) since
  * the last call; none with MM3_FREE_CAMERA=0. */
 int mm3_cheat_camera_presses(void);

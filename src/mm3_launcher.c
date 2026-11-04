@@ -453,7 +453,8 @@ static void help_show(Launcher *ui, int id)
             "Put Quit in the main menu, in place of Sign In (Xbox Live, which no longer exists). Quit closes the game, as closing its window does. Off shows Sign In, as on the Xbox.",
             "Changes the gameplay. In Checkpoint and circuit races every opponent drives the same car as you, whichever car you pick. Career jobs keep their own cars. Off: the opponents get the game's own cars.",
             "In a race, the Free camera key flies the view away from your car: W/A/S/D or the left stick move, Q/E or the triggers go down and up, the arrows, right stick or mouse with its right button look. Shift/RB faster, Ctrl/LB slower. Your car gets no input meanwhile.",
-            "Photo mode. In a race, F2 holds everything still and flies the camera: W/A/S/D move, Q/E down and up, the mouse looks (or the sticks and triggers). F3 (pad A) saves a PNG to Pictures\\Midtown Madness 3, F4 (pad X) hides the HUD. F2 again goes back to your car. Off: these keys do nothing."
+            "Photo mode. In a race, F2 holds everything still and flies the camera: W/A/S/D move, Q/E down and up, the mouse looks (or the sticks and triggers). F3 (pad A) saves a PNG to Pictures\\Midtown Madness 3, F4 (pad X) hides the HUD. F2 again goes back to your car. Off: these keys do nothing.",
+            "Changes the gameplay. Race opponents drive the full course normally, then brake to a halt just before the final checkpoint so they never cross the finish line ahead of you. Off: opponents finish the race as on the Xbox."
         };
         int option = id - ID_OPTION, on = checked(ui, id), master = mm3_launcher_option_master(option);
         title = option_caption(option);
@@ -1412,7 +1413,7 @@ static void gameplay_controls(Launcher *ui)
         {42, 240, "Driving", "Developer tools", {MM3_LAUNCH_DRAFTING, MM3_LAUNCH_ROLL_GUARD, MM3_LAUNCH_TREES, -1,
             MM3_LAUNCH_DEV_TOOLS, MM3_LAUNCH_DEV_HUD, MM3_LAUNCH_DEBUG_MENU, MM3_LAUNCH_CAMERAS, MM3_LAUNCH_E3, 0}},
         {300, 250, "Races and cars", NULL, {MM3_LAUNCH_CIRCUITS, MM3_LAUNCH_EXTRA_CARS, MM3_LAUNCH_AI_ALL_CARS,
-            MM3_LAUNCH_SAME_CAR, MM3_LAUNCH_UNLOCK, 0}},
+            MM3_LAUNCH_SAME_CAR, MM3_LAUNCH_AI_STOP_FINISH, MM3_LAUNCH_UNLOCK, 0}},
         {560, 260, "Navigation", NULL, {MM3_LAUNCH_ROUTE_NAVIGATION, MM3_LAUNCH_RACE_ARROW, 0}}
     };
     static const int damage[] = {0, 25, 50, 75, 100, 150, 200, 300}, time[] = {50, 75, 100, 125, 150, 200, 300};
@@ -1421,18 +1422,18 @@ static void gameplay_controls(Launcher *ui)
     check(ui, 3, ID_OPTION + MM3_LAUNCH_GAMEPLAY, mm3_launcher_options[MM3_LAUNCH_GAMEPLAY].label, 300, 92, 250);
     label(ui, 3, "Xbox gameplay plays as the Xbox game did. Modded gameplay uses the mods ticked below.", 42, 122, 774);
     option_columns(ui, 3, columns, (int)(sizeof columns / sizeof columns[0]));
-    fixed = add(ui, 3, "STATIC", "Camera and photos", 0, -1, 300, 384, 250, 26);
+    fixed = add(ui, 3, "STATIC", "Camera and photos", 0, -1, 300, 398, 250, 26);
     SendMessageA(fixed, WM_SETFONT, (WPARAM)ui->section, TRUE);
-    check(ui, 3, ID_OPTION + MM3_LAUNCH_FREE_CAMERA, option_caption(MM3_LAUNCH_FREE_CAMERA), 300, 416, 250);
-    c = combo(ui, 3, ID_CAMERA_KEY, "Free camera key", 300, 448, 250);
+    check(ui, 3, ID_OPTION + MM3_LAUNCH_FREE_CAMERA, option_caption(MM3_LAUNCH_FREE_CAMERA), 300, 426, 250);
+    c = combo(ui, 3, ID_CAMERA_KEY, "Free camera key", 300, 456, 250);
     for (int i = 0; i < MM3_LAUNCHER_CAMERA_KEYS; ++i) {
         char name[32];
         snprintf(name, sizeof name, "%s%s", mm3_launcher_camera_key_names[i],
                  mm3_launcher_camera_keys[i] == 0x77 ? " (default)" : "");
         combo_item(c, name, mm3_launcher_camera_keys[i]);
     }
-    check(ui, 3, ID_OPTION + MM3_LAUNCH_PHOTO_MODE, option_caption(MM3_LAUNCH_PHOTO_MODE), 300, 512, 250);
-    label(ui, 3, "F2 pause and fly, F3 photo, F4 hide HUD", 300, 540, 250);
+    check(ui, 3, ID_OPTION + MM3_LAUNCH_PHOTO_MODE, option_caption(MM3_LAUNCH_PHOTO_MODE), 300, 514, 250);
+    label(ui, 3, "F2 pause and fly, F3 photo, F4 hide HUD", 300, 542, 250);
     fixed = add(ui, 3, "STATIC", "Difficulty", 0, -1, 560, 270, 260, 26);
     SendMessageA(fixed, WM_SETFONT, (WPARAM)ui->section, TRUE);
     c = combo(ui, 3, ID_DAMAGE, "Damage Dealt", 560, 300, 260);

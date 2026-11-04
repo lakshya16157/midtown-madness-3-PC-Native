@@ -28,6 +28,7 @@ enum MM3LauncherOption {
     MM3_LAUNCH_SAME_CAR,         /* race opponents drive the player's car */
     MM3_LAUNCH_FREE_CAMERA,      /* a key in a race flies the view away from the car */
     MM3_LAUNCH_PHOTO_MODE,       /* F2 holds the race and flies the camera, F3 saves a picture (not a gameplay mod) */
+    MM3_LAUNCH_AI_STOP_FINISH,   /* race opponents stop just before the final checkpoint */
     MM3_LAUNCH_OPTION_COUNT
 };
 

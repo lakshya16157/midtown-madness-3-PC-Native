@@ -76,6 +76,10 @@ extern void sub_000DFE0E_original(void);
 #define CAR_SIGNAL_RADIUS_NIGHT 1.4f
 #define CAR_SIGNAL_GAIN_DAY 0.03f
 #define CAR_SIGNAL_GAIN_NIGHT 0.15f
+#define CAR_SIREN_RADIUS_DAY 0.4f
+#define CAR_SIREN_RADIUS_NIGHT 3.0f
+#define CAR_SIREN_GAIN_DAY 0.03f
+#define CAR_SIREN_GAIN_NIGHT 0.25f
 /* Reversing lamps face rearward (every model turns their nodes 180 degrees).
  * A 9m cube around the bumper also lit both sides of the car and the road
  * beneath it. Instead, a ground-level field starting just ahead of the lamps
@@ -1001,7 +1005,19 @@ void mm3_car_lighting_emit(uint32_t node, uint32_t mask, const float source[12])
                           brightness * (dark ? CAR_REVERSE_GAIN_NIGHT : CAR_REVERSE_GAIN_DAY),
                           dark ? 0 : CAR_REVERSE_RADIUS_DAY);
     } else if (kind == 4 || kind == 9) {
-        car_light_submit(owner, node, kind, source, NULL, color, brightness * .25f, 3.0f);
+        int dark = mm3_car_lighting_dark_period(time_of_day);
+        float clock = MEMF(world + 0x1C0);
+        if (kind == 9 && (mask & 0x10u)) return;
+        if (clock > 0.0f) {
+            float wave = sinf(clock * 12.566371f + (float)((owner >> 4) & 63u));
+            int red = (color & 0xFF0000u) != 0 && (color & 0xFFu) == 0;
+            int blue = (color & 0xFFu) != 0 && (color & 0xFF0000u) == 0;
+            if ((red && wave <= 0.0f) || (blue && wave >= 0.0f)) return;
+            if (red || blue) brightness *= fabsf(wave);
+        }
+        car_light_submit(owner, node, kind, source, NULL, color,
+                          brightness * (dark ? CAR_SIREN_GAIN_NIGHT : CAR_SIREN_GAIN_DAY),
+                          dark ? CAR_SIREN_RADIUS_NIGHT : CAR_SIREN_RADIUS_DAY);
     } else {
         int dark = mm3_car_lighting_dark_period(time_of_day);
         car_light_submit(owner, node, kind, source, NULL, color,
@@ -1017,6 +1033,8 @@ static void car_light_hook(void)
     uint32_t transform = MEM32(stack + 4), time_of_day = MEM32(0x00407C30u);
     uint32_t draw_mask = mm3_car_lighting_mask(MEM32(node + 4), mask, time_of_day);
     int day_reverse = kind == 3 && !mm3_car_lighting_dark_period(time_of_day);
+    uint32_t owner = MEM32(node + 4);
+    uint8_t saved_f3 = 0;
     float source[12];
     memcpy(source, (const void *)XBOX_PTR(transform), sizeof source);
     {
@@ -1048,12 +1066,17 @@ static void car_light_hook(void)
      * returning to an evening/night race immediately restores the lights.
      * The replacement fields always supersede the native road projector. */
     if (kind == 8) draw_mask &= ~0x100u;
+    if ((kind == 4 || kind == 9) && car_light_owner_address(owner, 0xF8)) {
+        MEM32(owner + 0xF4) = 0;
+        if (kind == 9) { saved_f3 = MEM8(owner + 0xF3); MEM8(owner + 0xF3) = 0; }
+    }
     if (draw_mask != mask) MEM32(stack + 12) = draw_mask;
     if (kind == 0) MEM32(node + 0x64) = car_light_color(car_light_front_color(color), .82f);
     else if (day_reverse) MEM32(node + 0x64) = car_light_color(color, CAR_REVERSE_GLOW_DAY);
     mm3_glow_driver_scope(car_light_driver(MEM32(node + 4)));
     sub_000CF2DA_original();
     mm3_glow_driver_scope(0);
+    if (kind == 9 && car_light_owner_address(owner, 0xF8)) MEM8(owner + 0xF3) = saved_f3;
     if (kind == 0 || day_reverse) MEM32(node + 0x64) = color;
     if (draw_mask != mask) MEM32(stack + 12) = mask;
     mm3_car_lighting_emit(node, mask, source);

@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <stdio.h>
+#include <math.h>
 #include "recomp_types.h"
 #include "mm3_cheat_keys.h"
 
@@ -125,11 +126,42 @@ static float holding_back(float factor, float share, float below)
     return share >= 0.0f ? factor + (1.0f - factor) * share : factor * below;
 }
 
+static int stop_before_finish(uint32_t ai, int *hold_brake)
+{
+    uint32_t cp_idx = MEM32(ai + 0xA0u), lap = MEM32(ai + 0xA4u), laps = MEM32(ai + 0xA8u);
+    uint32_t cp_begin = MEM32(ai + 0xB4u), cp_end = MEM32(ai + 0xB8u), cp_count;
+    uint32_t cp;
+    *hold_brake = 0;
+    cp_count = (guest(cp_begin) && cp_end >= cp_begin + 0x7Cu) ? (cp_end - cp_begin) / 0x7Cu : 0u;
+    if (!cp_count || cp_idx + 1u < cp_count || (laps > 1u && lap + 1u < laps)) return 0;
+    cp = cp_begin + cp_idx * 0x7Cu;
+    if (guest(cp)) {
+        float dx = MEMF(ai + 0x60u) - MEMF(cp + 0x28u);
+        float dy = MEMF(ai + 0x64u) - MEMF(cp + 0x2Cu);
+        float dz = MEMF(ai + 0x68u) - MEMF(cp + 0x30u);
+        float cr = MEMF(cp + 0x34u);
+        float r = (cr > 0.0f && cr < 100.0f ? cr : 15.0f) + 25.0f;
+        if (dx * dx + dy * dy + dz * dz <= r * r) {
+            uint32_t mgr = MEM32(ai + 0x140u), road_idx = MEM32(ai + 0x144u), seg_idx = MEM32(ai + 0x148u);
+            uint32_t roads, segs;
+            if (guest(mgr) && guest(roads = MEM32(mgr + 0x20u)) &&
+                guest(segs = MEM32(roads + road_idx * 0xA4u + 0x64u)) &&
+                guest(segs + seg_idx * 0x74u + 0x6Cu)) {
+                MEMF(segs + seg_idx * 0x74u + 0x68u) = 0.0f;
+                MEMF(segs + seg_idx * 0x74u + 0x6Cu) = 0.0f;
+            }
+            *hold_brake = 1;
+        }
+    }
+    return 1;
+}
+
 void sub_0014194C(void)
 {
     static int logged = -1;
-    uint32_t ai = MEM32(g_ecx + 4u), personality, vehicle, car;
-    int level = mm3_cheat_ai_level();
+    uint32_t state = g_ecx, ai = MEM32(g_ecx + 4u), personality, vehicle, car = 0;
+    int level = mm3_cheat_ai_level(), is_player = 0, final_cp = 0, hold_brake = 0;
+    /* merged into line above */
     float saved[8];
     Factors f;
     if (!guest(ai) || MEM32(ai) != RACE_AI_VTABLE || !guest(personality = MEM32(ai + 0x94u))) {
@@ -138,8 +170,12 @@ void sub_0014194C(void)
     }
     f = factors(level);
     vehicle = MEM32(ai + 0x28u);
-    if (guest(vehicle) && MEM32(vehicle) == VEHICLE_VTABLE && guest(car = MEM32(vehicle + 8u)) && !own_car(car))
-        car_factors(car, &f);
+    if (guest(vehicle) && MEM32(vehicle) == VEHICLE_VTABLE && guest(car = MEM32(vehicle + 8u))) {
+        is_player = own_car(car);
+        if (!is_player) car_factors(car, &f);
+    }
+    if (!is_player && mm3_cheat_ai_stop_finish()) final_cp = stop_before_finish(ai, &hold_brake);
+        /* handled above */
     if (logged != level) {
         logged = level;
         if (f.catch_up >= 0.0f)
@@ -153,7 +189,7 @@ void sub_0014194C(void)
                     f.lead, f.hold, f.come_back, f.unseen_behind, f.unseen_ahead);
         fflush(stderr);
     }
-    if (level == 5) {
+    if (level == 5 && !final_cp) {
         sub_0014194C_original();
         return;
     }
@@ -173,7 +209,20 @@ void sub_0014194C(void)
     if (saved[5] > 0.0f) MEMF(personality + 0xB0u) = saved[5] * f.lead;
     if (saved[6] > 0.0f) MEMF(personality + 0xC0u) = saved[6] * f.unseen_behind;
     if (saved[7] > 0.0f) MEMF(personality + 0xC4u) = saved[7] * f.unseen_ahead;
+    if (final_cp) {
+        MEMF(personality + 0xC0u) = 0.0f;
+        MEMF(personality + 0xC4u) = 0.0f;
+    }
     sub_0014194C_original();
+    if (hold_brake) {
+        MEMF(ai + 0x15Cu) = 0.0f;
+        MEMF(ai + 0x164u) = 0.0f;
+        MEMF(ai + 0x168u) = 1.0f;
+        MEMF(state + 0x08u) = 0.0f;
+        MEMF(state + 0x0Cu) = 1.0f;
+        MEMF(state + 0x10u) = 0.0f;
+        g_eax = state;
+    }
     MEMF(personality + 0xD4u) = saved[0];
     MEMF(personality + 0xD0u) = saved[1];
     MEMF(personality + 0x78u) = saved[2];
