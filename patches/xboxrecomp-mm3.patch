@@ -6174,7 +6174,7 @@ index 0000000..693c782
 +
 +#endif
 diff --git a/src/input/xinput_device.c b/src/input/xinput_device.c
-index 4bffbb4..3de2c4d 100644
+index 4bffbb4..d5f6f79 100644
 --- a/src/input/xinput_device.c
 +++ b/src/input/xinput_device.c
 @@ -32,8 +32,59 @@ void xbox_InputSetKeyboardHook(XBOX_KEYBOARD_HOOK hook)
@@ -6238,7 +6238,19 @@ index 4bffbb4..3de2c4d 100644
  #endif
  
  /* A contract test defines XBOX_INPUT_HOST_PAD and supplies host_pad_state itself;
-@@ -120,10 +171,15 @@ static DWORD host_pad_state_locked(DWORD port, XINPUT_STATE *state)
+@@ -92,6 +143,11 @@ static SDL_Gamepad *sdl_pad(DWORD port)
+     }
+     if (SDL_GetTicks() < next_scan[port])
+         return NULL;
++#ifndef XBOX_INPUT_HOST_PAD
++    /* Without a window (headless runs) nothing has started the subsystem. */
++    if (!SDL_WasInit(SDL_INIT_GAMEPAD))
++        SDL_InitSubSystem(SDL_INIT_GAMEPAD);
++#endif
+     next_scan[port] = SDL_GetTicks() + 1000; /* hot-plug check, not every poll */
+     {
+         int count = 0;
+@@ -120,10 +176,15 @@ static DWORD host_pad_state_locked(DWORD port, XINPUT_STATE *state)
          { SDL_GAMEPAD_BUTTON_EAST, XINPUT_GAMEPAD_B },
          { SDL_GAMEPAD_BUTTON_WEST, XINPUT_GAMEPAD_X },
          { SDL_GAMEPAD_BUTTON_NORTH, XINPUT_GAMEPAD_Y } };
@@ -6255,7 +6267,7 @@ index 4bffbb4..3de2c4d 100644
      if (!pad)
          return ERROR_DEVICE_NOT_CONNECTED;
      memset(state, 0, sizeof *state);
-@@ -159,6 +215,11 @@ static DWORD host_pad_state(DWORD port, XINPUT_STATE *state)
+@@ -159,6 +220,11 @@ static DWORD host_pad_state(DWORD port, XINPUT_STATE *state)
  static int host_pad_present(DWORD port)
  {
      int present;
@@ -6267,7 +6279,7 @@ index 4bffbb4..3de2c4d 100644
      pad_lock();
      present = sdl_pad(port) != NULL;
      pad_unlock();
-@@ -168,6 +229,14 @@ static int host_pad_present(DWORD port)
+@@ -168,6 +234,14 @@ static int host_pad_present(DWORD port)
  static void host_pad_rumble(DWORD port, WORD left, WORD right)
  {
      SDL_Gamepad *pad;
@@ -6282,7 +6294,7 @@ index 4bffbb4..3de2c4d 100644
      pad_lock();
      pad = sdl_pad(port);
      /* SDL rumble runs for a duration; titles resend it continuously. */
-@@ -188,6 +257,8 @@ static void host_pad_rumble(DWORD port, WORD left, WORD right)
+@@ -188,6 +262,8 @@ static void host_pad_rumble(DWORD port, WORD left, WORD right)
  }
  #endif
  
@@ -6291,7 +6303,7 @@ index 4bffbb4..3de2c4d 100644
  static BOOL  g_controller_connected[XBOX_MAX_CONTROLLERS] = { FALSE };
  static DWORD g_last_packet[XBOX_MAX_CONTROLLERS] = { 0 };
  static DWORD g_packet_bias[XBOX_MAX_CONTROLLERS];
-@@ -205,7 +276,88 @@ static DWORD finish_state(DWORD port, XBOX_INPUT_STATE *state)
+@@ -205,7 +281,88 @@ static DWORD finish_state(DWORD port, XBOX_INPUT_STATE *state)
      return ERROR_SUCCESS;
  }
  
@@ -6381,7 +6393,7 @@ index 4bffbb4..3de2c4d 100644
   *
   * The keys come from keyboard.c (RECOMP_KEYBOARD=1, the map, RECOMP_KEYMAP
   * and RECOMP_MENU_KEYS); the windows record them. Here, beside the pad: a
-@@ -230,6 +382,141 @@ static BOOL keyboard_enabled(void)
+@@ -230,6 +387,141 @@ static BOOL keyboard_enabled(void)
      return on ? TRUE : FALSE;
  }
  
@@ -6523,7 +6535,7 @@ index 4bffbb4..3de2c4d 100644
  static int menu_press(float x, float y)
  {
      return keyboard_enabled() && xbox_InputKeyboardMenu() &&
-@@ -257,16 +544,33 @@ static BOOL menu_click(void)
+@@ -257,16 +549,33 @@ static BOOL menu_click(void)
      return now < a_until;
  }
  
@@ -6564,7 +6576,7 @@ index 4bffbb4..3de2c4d 100644
          s_keyboard_hook(s, menu ? TRUE : FALSE);
      return 1;
  }
-@@ -283,12 +587,12 @@ static int keyboard_pad(XBOX_INPUT_STATE *s)
+@@ -283,12 +592,12 @@ static int keyboard_pad(XBOX_INPUT_STATE *s)
   * Merging is also the better rule. A real pad keeps working -- its
   * buttons are already in pState and the keyboard only adds to them --
   * and there is no special case left to get wrong. */
@@ -6579,7 +6591,7 @@ index 4bffbb4..3de2c4d 100644
          return;
      pState->Gamepad.wButtons |= kb.Gamepad.wButtons;
      for (i = 0; i < 8; i++)
-@@ -308,81 +612,55 @@ static void keyboard_merge(XBOX_INPUT_STATE *pState)
+@@ -308,81 +617,55 @@ static void keyboard_merge(XBOX_INPUT_STATE *pState)
   * names, except that the pad's shoulders are LB/RB and the Xbox's are
   * BLACK/WHITE; unnamed inputs keep their own button. A trigger used as a
   * button counts past a third of its travel. */
@@ -6695,7 +6707,7 @@ index 4bffbb4..3de2c4d 100644
      }
  }
  
-@@ -390,13 +668,16 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+@@ -390,13 +673,16 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
  {
      XINPUT_STATE xi_state;
      DWORD result;
@@ -6714,7 +6726,7 @@ index 4bffbb4..3de2c4d 100644
              return connected;
          memset(pState, 0, sizeof *pState);
          /* Neutralization must be a new packet, even when the physical pad
-@@ -407,25 +688,38 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+@@ -407,25 +693,38 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
          return ERROR_SUCCESS;
      }
  
@@ -6760,7 +6772,7 @@ index 4bffbb4..3de2c4d 100644
      memset(pState, 0, sizeof(XBOX_INPUT_STATE));
      pState->dwPacketNumber = xi_state.dwPacketNumber;
      pad_buttons(&xi_state.Gamepad, &pState->Gamepad);
-@@ -435,13 +729,15 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+@@ -435,13 +734,15 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
      pState->Gamepad.sThumbRX = xi_state.Gamepad.sThumbRX;
      pState->Gamepad.sThumbRY = xi_state.Gamepad.sThumbRY;
  
@@ -6779,7 +6791,7 @@ index 4bffbb4..3de2c4d 100644
      return finish_state(dwPort, pState);
  }
  
-@@ -451,8 +747,10 @@ uint32_t xbox_InputHostPad(uint32_t port, uint16_t *buttons,
+@@ -451,8 +752,10 @@ uint32_t xbox_InputHostPad(uint32_t port, uint16_t *buttons,
  {
      XINPUT_STATE state;
  #ifndef XBOX_INPUT_HOST_PAD
@@ -6791,7 +6803,7 @@ index 4bffbb4..3de2c4d 100644
  #endif
      if (port >= XBOX_MAX_CONTROLLERS || host_pad_state(port, &state) != ERROR_SUCCESS)
          return ERROR_DEVICE_NOT_CONNECTED;
-@@ -470,9 +768,9 @@ DWORD xbox_InputSetState(DWORD dwPort, const XBOX_VIBRATION *pVibration)
+@@ -470,9 +773,9 @@ DWORD xbox_InputSetState(DWORD dwPort, const XBOX_VIBRATION *pVibration)
  {
      if (dwPort >= XBOX_MAX_CONTROLLERS || !pVibration)
          return ERROR_DEVICE_NOT_CONNECTED;
@@ -6803,7 +6815,7 @@ index 4bffbb4..3de2c4d 100644
      return ERROR_SUCCESS;
  }
  
-@@ -487,7 +785,7 @@ DWORD xbox_InputGetCapabilities(DWORD dwPort, DWORD dwFlags, XBOX_INPUT_CAPABILI
+@@ -487,7 +790,7 @@ DWORD xbox_InputGetCapabilities(DWORD dwPort, DWORD dwFlags, XBOX_INPUT_CAPABILI
      if (dwPort >= XBOX_MAX_CONTROLLERS || !pCaps)
          return ERROR_DEVICE_NOT_CONNECTED;
      (void)dwFlags;
@@ -13274,6 +13286,30 @@ index 491e287..1acf6f9 100644
  /* The window module's native window (HWND or SDL_Window *), or NULL. */
  void *fbw_native_window(void);
  
+diff --git a/src/video/fb_window_sdl.c b/src/video/fb_window_sdl.c
+index 3a78248..f0ba7ce 100644
+--- a/src/video/fb_window_sdl.c
++++ b/src/video/fb_window_sdl.c
+@@ -177,6 +177,19 @@ SDL_Window *fbw_sdl_open(SDL_WindowFlags extra_flags)
+         fprintf(stderr, "  [FBWIN] SDL video: %s\n", SDL_GetError());
+         return NULL;
+     }
++    /* Controllers: nothing else starts SDL's gamepad subsystem (xbox_InputInit
++     * has no caller), so on SDL builds every pad read nothing. Started here, on
++     * the thread that pumps this window's events, which also update the pads. */
++    if (!SDL_WasInit(SDL_INIT_GAMEPAD)) {
++        if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
++            fprintf(stderr, "  [FBWIN] SDL gamepads: %s\n", SDL_GetError());
++        } else {
++            int pads = 0;
++            SDL_JoystickID *ids = SDL_GetGamepads(&pads);
++            SDL_free(ids);
++            fprintf(stderr, "  [FBWIN] SDL gamepads: %d connected\n", pads);
++        }
++    }
+     memset(&usable, 0, sizeof usable);
+     SDL_GetDisplayUsableBounds(SDL_GetPrimaryDisplay(), &usable);
+     fbw_initial_size(usable.w, usable.h, &cw, &ch);
 diff --git a/src/video/fb_window_win32.c b/src/video/fb_window_win32.c
 index f5b517f..2acc468 100644
 --- a/src/video/fb_window_win32.c
