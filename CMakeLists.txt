@@ -80,6 +80,11 @@ set(XBOXRECOMP_NV2A_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/mods/shaders/nv2
 # Combiner configurations whose specialised shaders are built with the game:
 # Wine/Proton (the Steam Deck) cannot compile them (tools/shader_states).
 set(XBOXRECOMP_PS_STATES "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/mm3_ps_states.txt")
+if(NOT WIN32)
+    # The MM3 runtime patch includes <windows.h> in a few runtime files too: give them the
+    # runtime's own POSIX Win32 layer (src/compat/posix/windows.h).
+    include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/src/compat/posix)
+endif()
 add_subdirectory(${XBOXRECOMP_DIR} ${CMAKE_BINARY_DIR}/xboxrecomp)
 # MM3 VP-only playback was measured about 10 dB above GP output (-10.7 vs
 # -20.7 dBFS in a race). Keep its existing calibration outside the runtime.
@@ -783,6 +788,10 @@ if(WIN32)
     target_sources(${PROJECT_NAME} PRIVATE src/mm3.rc)
 endif()
 if(XBOXRECOMP_RENDERER STREQUAL "SDL3_GPU")
+    # Renderer entry points the MM3 runtime patch adds to D3D11 only (DESIGN.md).
+    target_sources(${PROJECT_NAME} PRIVATE src/compat/sdlgpu_d3d11_only.c)
+endif()
+if(XBOXRECOMP_RENDERER STREQUAL "SDL3_GPU")
     set_property(SOURCE ${MM3_RMLUI_BACKEND} src/mm3_launcher.cpp src/ui/rmlui_host.cpp APPEND PROPERTY
         COMPILE_DEFINITIONS RMLUI_SDL_VERSION_MAJOR=3)
 endif()
@@ -811,6 +820,19 @@ if(MM3_FRONTEND_WATCH)
     target_sources(${PROJECT_NAME} PRIVATE src/mm3_frontend_watch.c)
 endif()
 
+if(NOT WIN32)
+    # <windows.h> for the port's own sources: the runtime's POSIX Win32 layer.
+    # Force-included too, since some files use Win32 names without including it.
+    target_include_directories(${PROJECT_NAME} BEFORE PRIVATE src/compat/posix)
+    get_target_property(_mm3_sources ${PROJECT_NAME} SOURCES)
+    foreach(_src IN LISTS _mm3_sources)
+        # C only: mm3_launcher.cpp and the overlay bring their own Win32 stand-ins off Windows.
+        if(_src MATCHES "^src/.*\\.c$" AND NOT _src MATCHES "^src/recomp/")
+            set_property(SOURCE ${_src} APPEND PROPERTY COMPILE_OPTIONS
+                -include "${CMAKE_CURRENT_SOURCE_DIR}/src/compat/posix/windows.h")
+        endif()
+    endforeach()
+endif()
 target_include_directories(${PROJECT_NAME} PRIVATE
     src
     "${CMAKE_CURRENT_BINARY_DIR}/native_menu"

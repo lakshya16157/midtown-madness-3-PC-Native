@@ -1,4 +1,6 @@
 #define COBJMACROS
+/* Photos are saved as PNG through WIC on Windows. Off Windows: not yet (DESIGN.md open items). */
+#ifdef _WIN32
 #include <windows.h>
 #include <shlobj.h>
 #include <wincodec.h>
@@ -179,3 +181,17 @@ void mm3_photo_take(void)
     MessageBeep(MB_ICONASTERISK);       /* the game shows nothing: a sound says it was taken */
     nv2a_d3d_request_screenshot(serve);
 }
+
+#else /* !_WIN32 */
+#include <stdio.h>
+#include "mm3_photo.h"
+void mm3_photo_take(void)
+{
+    fprintf(stderr, "[MM3_PHOTO] photos are not saved on this platform yet\n");
+}
+int mm3_photo_save_png(const wchar_t *path, const void *bgra, uint32_t width, uint32_t height, uint32_t pitch)
+{
+    (void)path; (void)bgra; (void)width; (void)height; (void)pitch;
+    return 0;
+}
+#endif /* _WIN32 */

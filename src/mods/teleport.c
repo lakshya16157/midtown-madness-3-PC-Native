@@ -211,6 +211,7 @@ static HANDLE s_prof_thread;
 static struct { int seconds; char path[200]; } s_prof_job;
 /* The first frame of the (suspended) thread's stack that lies inside the executable: the code that
  * made the call it is blocked in. 0 when the stack has no such frame within 48 levels. */
+#ifdef _WIN32 /* the sampling profiler suspends the game thread through Win32 */
 static unsigned long long prof_exe_caller(CONTEXT c, unsigned long long base, unsigned long long size)
 {
     for (int depth = 0; depth < 48; ++depth) {
@@ -272,12 +273,15 @@ static DWORD WINAPI prof_run(void *arg)
     }
     return 0;
 }
+#endif /* _WIN32 */
 
 void sub_002203E5(void)
 {
+#ifdef _WIN32
     if (!s_prof_thread)
         DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &s_prof_thread,
                         THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, 0);
+#endif
     uint32_t primary = primary_player();
     if (primary && g_ecx == primary) {
         uint32_t car, vehicle;
@@ -460,7 +464,9 @@ static void teleport_answer(const char *command, char *reply, size_t size)
         if (sscanf(command + 8, "%d %n", &secs, &off) >= 1 && secs > 0 && s_prof_thread) {
             s_prof_job.seconds = secs;
             snprintf(s_prof_job.path, sizeof s_prof_job.path, "%s", command + 8 + off);
+#ifdef _WIN32
             CloseHandle(CreateThread(NULL, 0, prof_run, NULL, 0, NULL));
+#endif
             snprintf(reply, size, "{\"result\":\"started\"}");
         } else snprintf(reply, size, "{\"result\":\"no game thread yet\"}");
     } else if (strcmp(command, "cars") == 0) {
