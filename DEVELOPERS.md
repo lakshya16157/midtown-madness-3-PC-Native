@@ -593,10 +593,21 @@ there (`$XDG_RUNTIME_DIR/MM3Teleport-<pid>.sock`).
 On Linux the port's own sources see `<windows.h>` through `src/compat/posix/`, which maps
 the Win32 calls they use onto the runtime's POSIX layer (`platform/win32_compat.h`). Not
 available there yet: the Win32 settings window and updater (the RmlUi launcher is the
-settings window), the F10 Display Settings dialog (use the in-game Graphics menu), saving
-photos, the free camera's mouse look and the power-source log. The renderer entry points
-the runtime patch adds to the Direct3D 11 renderer only are accepted without effect on SDL3
-GPU (`src/compat/sdlgpu_d3d11_only.c`), so the game keeps the shared mm3-recomp look there.
+settings window), the F10 Display Settings dialog (use the in-game Graphics menu), the free
+camera's mouse look and the power-source log. Photos are saved as PNG through SDL3_image
+into `MM3_PHOTO_DIR` or `~/Pictures/Midtown Madness 3`.
+
+The SDL3 GPU renderer has the runtime patch's Direct3D 11 additions that the game's look
+depends on: live render scale, aspect, VSync and frame limit; photo-mode HUD hide and
+screenshots; the local-light shaping (gain, softness, overlap, energy sum, falloff, shape,
+exposure; the maths is in the shared combiner shader); the skyline blend; night glass and
+car-paint softness over the display copy; the frame hold; the improved map's square mask;
+and the exhaust smoke (`src/mods/world_tris_sdlgpu.c`, drawn through the host-draw hook when
+its packet arrives). Still Direct3D 11 only (`src/compat/sdlgpu_d3d11_only.c`): the sky fog
+ramp and tree fog (the distance fog itself draws through `src/mods/render_fog.c`), the
+read-back fence, and the renderer's own HUD placement (the improved map's window, its
+motion and expansion, vertical placement on tall windows); SDL3 GPU places the HUD through
+`src/mods/widescreen_hud.c`.
 
 ## Running
 

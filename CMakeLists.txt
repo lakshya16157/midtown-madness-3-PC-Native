@@ -790,6 +790,7 @@ endif()
 if(XBOXRECOMP_RENDERER STREQUAL "SDL3_GPU")
     # Renderer entry points the MM3 runtime patch adds to D3D11 only (DESIGN.md).
     target_sources(${PROJECT_NAME} PRIVATE src/compat/sdlgpu_d3d11_only.c)
+    target_sources(${PROJECT_NAME} PRIVATE src/mods/world_tris_sdlgpu.c)
 endif()
 if(XBOXRECOMP_RENDERER STREQUAL "SDL3_GPU")
     set_property(SOURCE ${MM3_RMLUI_BACKEND} src/mm3_launcher.cpp src/ui/rmlui_host.cpp APPEND PROPERTY
