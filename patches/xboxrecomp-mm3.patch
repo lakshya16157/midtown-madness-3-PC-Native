@@ -8300,10 +8300,10 @@ index ad51f9c..22415be 100644
      for (i = 0; i + 8 <= OutputLength; i += 8) {
 diff --git a/src/kernel/kernel_delay.h b/src/kernel/kernel_delay.h
 new file mode 100644
-index 0000000..86541e7
+index 0000000..162d4a3
 --- /dev/null
 +++ b/src/kernel/kernel_delay.h
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,152 @@
 +/*
 + * kernel_delay.h - guest delays (KeDelayExecutionThread) at Xbox precision
 + *
@@ -8358,6 +8358,21 @@ index 0000000..86541e7
 +/* Wait `relative_100ns` on this thread's high-resolution timer: 1 waited,
 + * 2 alerted (a user APC ran during an alertable wait), 0 unavailable (the
 + * caller falls back to Sleep). */
++#if !defined(_WIN32)
++#include <time.h>
++#include <errno.h>
++/* POSIX: nanosleep already waits the requested interval at high resolution. Alertable
++ * waits fall back to SleepEx, which runs queued APCs (win32_compat.c). */
++static int kdelay_precise_wait(LONGLONG relative_100ns, BOOLEAN alertable)
++{
++    struct timespec ts;
++    if (alertable) return 0;
++    ts.tv_sec = (time_t)(relative_100ns / 10000000);
++    ts.tv_nsec = (long)(relative_100ns % 10000000) * 100;
++    while (nanosleep(&ts, &ts) && errno == EINTR) {}
++    return 1;
++}
++#else
 +static int kdelay_precise_wait(LONGLONG relative_100ns, BOOLEAN alertable)
 +{
 +    LARGE_INTEGER due;
@@ -8375,6 +8390,7 @@ index 0000000..86541e7
 +    CancelWaitableTimer(s_kdelay_timer);
 +    return result == WAIT_IO_COMPLETION ? 2 : 0;
 +}
++#endif
 +
 +static void kdelay_account(LONGLONG requested_100ns, LONGLONG start_qpc, int precise)
 +{
@@ -9385,7 +9401,7 @@ index d5f0ef5..89aadc8 100644
  }
  
 diff --git a/src/kernel/kernel_path.c b/src/kernel/kernel_path.c
-index 6c74c41..192b633 100644
+index 6c74c41..8ea7661 100644
 --- a/src/kernel/kernel_path.c
 +++ b/src/kernel/kernel_path.c
 @@ -7,6 +7,9 @@
@@ -9556,7 +9572,104 @@ index 6c74c41..192b633 100644
          }
  
          /* An empty remainder means the title opened the device itself, so
-@@ -707,6 +718,7 @@ static void mkdir_p(const char* path)
+@@ -685,6 +696,96 @@ static void strip_trailing_slash(char* s)
+ }
+ 
+ /* Recursively create a directory and all missing parents. */
++/* Xbox (and Windows) paths are case-insensitive; Linux file names are not.
++ * Titles ask for "d:\data\shared\WMV\intro.bik" while the disc has
++ * Data/Shared/Wmv/intro.bik. After translation, each component below the base
++ * directory that does not exist with the asked-for case is replaced by the
++ * entry of the same name in another case, if there is one; the first component
++ * with no match and everything after it stay as asked (a file being created).
++ * Resolved paths are cached, so a hit costs one lookup. */
++#include <dirent.h>
++#include <pthread.h>
++#define CASE_CACHE_SLOTS 8192u
++static struct { char *key, *value; } s_case_cache[CASE_CACHE_SLOTS];
++static pthread_mutex_t s_case_lock = PTHREAD_MUTEX_INITIALIZER;
++
++static uint32_t case_hash(const char *s)
++{
++    uint32_t h = 2166136261u;
++    for (; *s; s++) h = (h ^ (uint8_t)*s) * 16777619u;
++    return h;
++}
++
++static void fold_case_existing(char *path, size_t size, size_t base_len)
++{
++    struct stat st;
++    char resolved[MAX_PATH];
++    uint32_t slot;
++    if (!stat(path, &st)) return;          /* already exact */
++    slot = case_hash(path) & (CASE_CACHE_SLOTS - 1);
++    pthread_mutex_lock(&s_case_lock);
++    for (uint32_t i = 0; i < 16; i++) {
++        uint32_t k = (slot + i) & (CASE_CACHE_SLOTS - 1);
++        if (!s_case_cache[k].key) break;
++        if (!strcmp(s_case_cache[k].key, path)) {
++            snprintf(path, size, "%s", s_case_cache[k].value);
++            pthread_mutex_unlock(&s_case_lock);
++            return;
++        }
++    }
++    pthread_mutex_unlock(&s_case_lock);
++
++    snprintf(resolved, sizeof resolved, "%s", path);
++    size_t pos = base_len;
++    while (resolved[pos] == '/') pos++;
++    while (resolved[pos]) {
++        char *end = strchr(resolved + pos, '/');
++        char saved = end ? *end : 0;
++        if (end) *end = 0;
++        if (stat(resolved, &st)) {
++            /* Look in the parent for the same name in another case. */
++            char *slash = strrchr(resolved, '/');
++            const char *name = slash ? slash + 1 : resolved;
++            DIR *dir;
++            int found = 0;
++            if (slash) *slash = 0;
++            dir = opendir(slash ? (resolved[0] ? resolved : "/") : ".");
++            if (slash) *slash = '/';
++            if (dir) {
++                struct dirent *e;
++                while ((e = readdir(dir))) {
++                    if (!strcasecmp(e->d_name, name) && strlen(e->d_name) == strlen(name)) {
++                        memcpy((char *)name, e->d_name, strlen(name));
++                        found = 1;
++                        break;
++                    }
++                }
++                closedir(dir);
++            }
++            if (!found) { if (end) *end = saved; break; }
++        }
++        if (!end) break;
++        *end = saved;
++        pos = (size_t)(end - resolved) + 1;
++    }
++    if (!strcmp(resolved, path)) return;
++    if (stat(resolved, &st)) {             /* only part of it exists: no caching */
++        snprintf(path, size, "%s", resolved);
++        return;
++    }
++    pthread_mutex_lock(&s_case_lock);
++    for (uint32_t i = 0; i < 16; i++) {
++        uint32_t k = (slot + i) & (CASE_CACHE_SLOTS - 1);
++        if (!s_case_cache[k].key) {
++            s_case_cache[k].key = strdup(path);
++            s_case_cache[k].value = strdup(resolved);
++            break;
++        }
++    }
++    pthread_mutex_unlock(&s_case_lock);
++    snprintf(path, size, "%s", resolved);
++}
++
+ static void mkdir_p(const char* path)
+ {
+     char tmp[MAX_PATH];
+@@ -707,6 +808,7 @@ static void mkdir_p(const char* path)
  
  void xbox_path_init(const char* game_dir, const char* save_dir)
  {
@@ -9564,7 +9677,7 @@ index 6c74c41..192b633 100644
      if (game_dir) {
          snprintf(s_game_dir, sizeof(s_game_dir), "%s", game_dir);
      } else {
-@@ -717,7 +729,7 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
+@@ -717,7 +819,7 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
          snprintf(s_game_dir, sizeof(s_game_dir), "%s/game", cwd);
      }
  
@@ -9573,7 +9686,7 @@ index 6c74c41..192b633 100644
          snprintf(s_save_dir, sizeof(s_save_dir), "%s", save_dir);
      } else {
          /* XDG base-directory spec: $XDG_DATA_HOME or ~/.local/share */
-@@ -733,6 +745,13 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
+@@ -733,6 +835,13 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
  
      strip_trailing_slash(s_game_dir);
      strip_trailing_slash(s_save_dir);
@@ -9587,7 +9700,7 @@ index 6c74c41..192b633 100644
  
      /* The save-side directories and the partition device images, as the
       * Win32 backend makes them. Without Partition0.img a title's
-@@ -794,21 +813,15 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
+@@ -794,21 +903,15 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
              snprintf(s_user_dir, sizeof(s_user_dir), "%s", s_save_dir);
          }
  
@@ -9618,7 +9731,7 @@ index 6c74c41..192b633 100644
      }
  
      s_initialized = TRUE;
-@@ -829,6 +842,11 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+@@ -829,6 +932,11 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
      if (!s_initialized)
          xbox_path_init(NULL, NULL);
  
@@ -9630,7 +9743,7 @@ index 6c74c41..192b633 100644
      {
          char linked[512];
          if (resolve_symlink(xbox_path, linked, sizeof(linked)))
-@@ -840,8 +858,7 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+@@ -840,8 +948,7 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
          if (digit) {
              snprintf(host_path_buf, buf_size, "%s/Partition%c.img",
                       s_save_dir, digit);
@@ -9640,7 +9753,7 @@ index 6c74c41..192b633 100644
              return TRUE;
          }
      }
-@@ -872,17 +889,20 @@ translate:
+@@ -872,17 +979,20 @@ translate:
          /* Xbox paths use backslashes -> POSIX slashes. */
          for (char* p = remainder_posix; *p; p++)
              if (*p == '\\') *p = '/';
@@ -9663,6 +9776,14 @@ index 6c74c41..192b633 100644
          }
  
          {
+@@ -890,6 +1000,7 @@ translate:
+             while (n > 1 && host_path_buf[n - 1] == '/')
+                 host_path_buf[--n] = '\0';
+         }
++        fold_case_existing(host_path_buf, buf_size, strlen(base_dir));
+ 
+         XBOX_TRACE(XBOX_LOG_PATH, "%s -> %s", xbox_path, host_path_buf);
+         /* As the Win32 backend does: the bridge reads back the host path
 diff --git a/src/kernel/kernel_rtl.c b/src/kernel/kernel_rtl.c
 index ec55c51..fa2d569 100644
 --- a/src/kernel/kernel_rtl.c
@@ -10935,7 +11056,7 @@ index 408a10e..632d877 100644
  void nv2a_vsh_set_constant(uint32_t index, const float v[4]);
  const float *nv2a_vsh_constant(uint32_t index);   /* for traces */
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
-index b4a1fe0..aa5578b 100644
+index b4a1fe0..60b7363 100644
 --- a/src/kernel/xbox_memory_layout.c
 +++ b/src/kernel/xbox_memory_layout.c
 @@ -23,6 +23,7 @@
@@ -10946,7 +11067,42 @@ index b4a1fe0..aa5578b 100644
  #include <stdio.h>
  #include <stdlib.h>
  #include <string.h>
-@@ -304,13 +305,22 @@ int xbox_GuestRangeInWindow(uint32_t va, uint32_t bytes)
+@@ -31,6 +32,11 @@ void nv2a_d3d_prof_add(int slot, long long ticks, unsigned verts);
+ #include <setjmp.h>
+ #if !defined(_WIN32)
+ #include <unistd.h>   /* _exit */
++#include <sys/uio.h>
++#include <time.h>
++/* glibc declares it only under _GNU_SOURCE; Linux 3.2+. */
++ssize_t process_vm_readv(pid_t pid, const struct iovec *local, unsigned long liovcnt,
++                         const struct iovec *remote, unsigned long riovcnt, unsigned long flags);
+ #endif
+ 
+ /* XBE header field offsets (per xboxdevwiki.net/Xbe) */
+@@ -293,8 +299,20 @@ int xbox_GuestRead(uint32_t va, void *out, size_t size)
+     return ReadProcessMemory(GetCurrentProcess(), (const void *)host, out, size, &copied)
+            && copied == size;
+ #else
+-    (void)va; (void)out; (void)size;
+-    return 0;
++    /* POSIX: process_vm_readv on our own pid copies like ReadProcessMemory and
++     * reports a short read instead of faulting on an unmapped or PROT_NONE page. */
++    uintptr_t host;
++    struct iovec local, remote;
++    if (va < 0x10000u || size > UINT32_MAX || va > UINT32_MAX - size)
++        return 0;
++    if (!size)
++        return 1;
++    host = (uintptr_t)va + (uintptr_t)xbox_GetMemoryOffset();
++    if (host > UINTPTR_MAX - size)
++        return 0;
++    local.iov_base = out; local.iov_len = size;
++    remote.iov_base = (void *)host; remote.iov_len = size;
++    return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == (ssize_t)size;
+ #endif
+ }
+ 
+@@ -304,13 +322,22 @@ int xbox_GuestRangeInWindow(uint32_t va, uint32_t bytes)
  }
  
  #ifdef _WIN32
@@ -10976,7 +11132,7 @@ index b4a1fe0..aa5578b 100644
  #endif
  
  int xbox_GuestMapped(uint32_t va, uint32_t bytes)
-@@ -323,16 +333,19 @@ int xbox_GuestMapped(uint32_t va, uint32_t bytes)
+@@ -323,32 +350,51 @@ int xbox_GuestMapped(uint32_t va, uint32_t bytes)
      {
          MEMORY_BASIC_INFORMATION info;
          ULONGLONG now = GetTickCount64();
@@ -11003,7 +11159,52 @@ index b4a1fe0..aa5578b 100644
      }
  #else
      {
-@@ -426,6 +439,7 @@ static size_t xbox_TiledApertureSize(void)
+-        FILE *maps = fopen("/proc/self/maps", "r");
+-        char line[256], access[5];
+-        unsigned long long lo, hi;
+-        int mapped = 0;
+-        if (!maps)
+-            return 0;
+-        while (!mapped && fgets(line, sizeof line, maps))
+-            if (sscanf(line, "%llx-%llx %4s", &lo, &hi, access) == 3 &&
+-                access[0] == 'r' && access[1] == 'w' &&
+-                host >= lo && host + bytes <= hi)
+-                mapped = 1;
+-        fclose(maps);
+-        return mapped;
++        /* Readable, as on Windows (committed, not no-access): one byte of each
++         * page is copied with process_vm_readv, which fails instead of faulting.
++         * Each thread remembers its last 16 readable page runs for a quarter
++         * second, as the Windows path does, since per-frame hooks ask often. */
++        enum { PAGE = 4096 };
++        static RECOMP_TLS uintptr_t lo_cache[16], hi_cache[16];
++        static RECOMP_TLS uint64_t stamp_cache[16];
++        static RECOMP_TLS unsigned next_slot;
++        struct timespec ts;
++        uint64_t now;
++        uintptr_t first = host & ~(uintptr_t)(PAGE - 1), last = (host + bytes - 1) & ~(uintptr_t)(PAGE - 1);
++        clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
++        now = (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
++        if (!bytes) return 1;
++        for (unsigned i = 0; i < 16; ++i)
++            if (host >= lo_cache[i] && host + bytes <= hi_cache[i] && now - stamp_cache[i] < 250)
++                return 1;
++        for (uintptr_t page = first; ; page += PAGE) {
++            char probe;
++            struct iovec local = {&probe, 1}, remote = {(void *)page, 1};
++            if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) != 1)
++                return 0;
++            if (page == last) break;
++        }
++        {
++            unsigned i = next_slot++ % 16;
++            lo_cache[i] = first; hi_cache[i] = last + PAGE; stamp_cache[i] = now;
++        }
++        return 1;
+     }
+ #endif
+ }
+@@ -426,6 +472,7 @@ static size_t xbox_TiledApertureSize(void)
  }
  
  static HANDLE g_nv2a_ack_thread = NULL;
@@ -11011,7 +11212,7 @@ index b4a1fe0..aa5578b 100644
  static volatile LONG g_nv2a_ack_stop = 0;
  static XBOX_NV2A_WAKE g_nv2a_wake;
  
-@@ -1169,8 +1183,37 @@ void xbox_Nv2aNop(uint32_t param)
+@@ -1169,8 +1216,37 @@ void xbox_Nv2aNop(uint32_t param)
      if (param && param == g_notify_param) ++s_notify_executed;
  }
  
@@ -11049,7 +11250,7 @@ index b4a1fe0..aa5578b 100644
      volatile uint32_t *put, *get;
      uint32_t dev;
      LONG notified = g_notify_count;
-@@ -1184,8 +1227,10 @@ int xbox_Nv2aNotifyWait(uint32_t object_va)
+@@ -1184,8 +1260,10 @@ int xbox_Nv2aNotifyWait(uint32_t object_va)
      get = (volatile uint32_t *)((char *)g_nv2a_memory + NV2A_USER_DMA_GET);
      /* The completed NOP sequence is published after its consumed GET;
       * GET reaching PUT also covers a slot passed before it was patched. */
@@ -11060,7 +11261,7 @@ index b4a1fe0..aa5578b 100644
      return 1;
  }
  
-@@ -1197,9 +1242,11 @@ void xbox_Nv2aFenceWait(uint32_t fence_va, uint32_t submitted,
+@@ -1197,9 +1275,11 @@ void xbox_Nv2aFenceWait(uint32_t fence_va, uint32_t submitted,
       * This helper changes host waiting only; the generated loop always makes
       * its original final read and branch after this returns. */
      if (!g_nv2a_ack_thread || !fence_readable(fence_va, 4)) return;
@@ -11072,7 +11273,7 @@ index b4a1fe0..aa5578b 100644
  }
  
  static int nv2a_dma_pending(volatile uint32_t *regs)
-@@ -1215,6 +1262,7 @@ void xbox_Nv2aDmaWait(uint32_t pfifo_base_va)
+@@ -1215,6 +1295,7 @@ void xbox_Nv2aDmaWait(uint32_t pfifo_base_va)
      unsigned spins = 0;
      if (!regs || !g_nv2a_dma_sync || !g_nv2a_ack_thread ||
          pfifo_base_va != XBOX_NV2A_BASE) return;
@@ -11080,7 +11281,7 @@ index b4a1fe0..aa5578b 100644
      while (nv2a_dma_pending(regs) &&
             !InterlockedCompareExchange(&g_nv2a_ack_stop, 0, 0)) {
  #ifdef _WIN32
-@@ -1230,6 +1278,31 @@ void xbox_Nv2aDmaWait(uint32_t pfifo_base_va)
+@@ -1230,6 +1311,31 @@ void xbox_Nv2aDmaWait(uint32_t pfifo_base_va)
              InterlockedCompareExchange(&g_nv2a_ack_stop, 0, 0)) break;
          xbox_nv2a_wake_wait(&g_nv2a_wake, observed);
      }
@@ -11112,7 +11313,7 @@ index b4a1fe0..aa5578b 100644
  }
  
  static int s_nv2a_trace = 0;
-@@ -1457,6 +1530,7 @@ static int64_t nv2a_ack_hitch_checkpoint(int64_t frequency, int64_t begin,
+@@ -1457,6 +1563,7 @@ static int64_t nv2a_ack_hitch_checkpoint(int64_t frequency, int64_t begin,
  static void nv2a_ack_busy_bits(int flip_held)
  {
      volatile uint32_t *regs = (volatile uint32_t *)g_nv2a_memory;
@@ -11120,7 +11321,7 @@ index b4a1fe0..aa5578b 100644
  
      if (!regs)
          return;
-@@ -1480,9 +1554,14 @@ static void nv2a_ack_busy_bits(int flip_held)
+@@ -1480,9 +1587,14 @@ static void nv2a_ack_busy_bits(int flip_held)
          }
          /* Interlocked: the vblank-ack thread and the guest change other
           * bits of the same word meanwhile. */
@@ -11136,7 +11337,7 @@ index b4a1fe0..aa5578b 100644
  }
  
  void xbox_Nv2aAckBusyBits(void)
-@@ -1500,12 +1579,26 @@ volatile uint32_t *xbox_Nv2aRegPtr(uint32_t offset)
+@@ -1500,12 +1612,26 @@ volatile uint32_t *xbox_Nv2aRegPtr(uint32_t offset)
      return (volatile uint32_t *)((char *)g_nv2a_memory + offset);
  }
  
@@ -11163,7 +11364,7 @@ index b4a1fe0..aa5578b 100644
      if (trace_env && *trace_env && *trace_env != '0')
          if (!QueryPerformanceFrequency(&trace_frequency) || trace_frequency.QuadPart <= 0)
              trace_frequency.QuadPart = 0;
-@@ -1635,7 +1728,7 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -1635,7 +1761,7 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
                      QueryPerformanceCounter(&t1);
                      if (nv2a_d3d_prof_enabled())
                          nv2a_d3d_prof_add(7, t1.QuadPart - t0.QuadPart, 0);
@@ -11172,7 +11373,7 @@ index b4a1fe0..aa5578b 100644
                          fprintf(stderr, " [NV2A] pushbuffer wrapped (0x%08X -> 0x%08X)\n",
                                  last_put, put);
                  }
-@@ -1730,7 +1823,8 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -1730,7 +1856,8 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
          }
          trace_begin = nv2a_ack_hitch_checkpoint(trace_frequency.QuadPart,
                                                 trace_begin, "ack_renderer_tick", 8);
@@ -11182,7 +11383,7 @@ index b4a1fe0..aa5578b 100644
          nv2a_ack_hitch_checkpoint(trace_frequency.QuadPart,
                                    trace_begin, "ack_yield", 8);
      }
-@@ -1745,7 +1839,7 @@ static void xbox_Nv2aAckStart(void)
+@@ -1745,7 +1872,7 @@ static void xbox_Nv2aAckStart(void)
      xbox_nv2a_wake_init(&g_nv2a_wake);
      g_nv2a_ack_stop = 0;
      g_nv2a_ack_thread = CreateThread(NULL, 0, nv2a_ack_thread,
@@ -11191,7 +11392,7 @@ index b4a1fe0..aa5578b 100644
      if (g_nv2a_ack_thread) {
          fprintf(stderr, "  NV2A busy-bit ack: %zu register(s) acknowledged\n",
                  sizeof(NV2A_ACK) / sizeof(NV2A_ACK[0]));
-@@ -3564,6 +3658,19 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+@@ -3564,6 +3691,19 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
          }
      }
  
@@ -11211,7 +11412,7 @@ index b4a1fe0..aa5578b 100644
      xbox_WatchInit();
  #ifndef _WIN32
      /* Dynamic aliases use free slots and refuse foreign mappings. Exclude
-@@ -4161,6 +4268,8 @@ uint32_t xbox_ContiguousAllocRange(uint32_t size, uint32_t alignment,
+@@ -4161,6 +4301,8 @@ uint32_t xbox_ContiguousAllocRange(uint32_t size, uint32_t alignment,
          if (tail)
              contig_insert(i + 1, start + size, tail, 0);
          result = XBOX_CONTIG_BASE + start;
@@ -12468,6 +12669,23 @@ index 0000000..e20e4d2
 +}
 +
 +#endif
+diff --git a/src/platform/win32_compat.h b/src/platform/win32_compat.h
+index 994b256..453e9df 100644
+--- a/src/platform/win32_compat.h
++++ b/src/platform/win32_compat.h
+@@ -95,6 +95,12 @@ LONG InterlockedAnd(volatile LONG *Destination, LONG Value);
+ LONG InterlockedOr(volatile LONG *Destination, LONG Value);
+ LONG InterlockedCompareExchange(volatile LONG *Dest, LONG Exchange, LONG Comparand);
+ LONGLONG InterlockedCompareExchange64(volatile LONGLONG *Dest, LONGLONG Exchange, LONGLONG Comparand);
++static inline LONGLONG InterlockedIncrement64(volatile LONGLONG *Addend)
++{ return __atomic_add_fetch(Addend, 1, __ATOMIC_SEQ_CST); }
++static inline LONGLONG InterlockedAdd64(volatile LONGLONG *Addend, LONGLONG Value)
++{ return __atomic_add_fetch(Addend, Value, __ATOMIC_SEQ_CST); }
++static inline LONGLONG InterlockedExchange64(volatile LONGLONG *Target, LONGLONG Value)
++{ return __atomic_exchange_n(Target, Value, __ATOMIC_SEQ_CST); }
+ PVOID InterlockedCompareExchangePointer(PVOID volatile *Dest, PVOID Exchange, PVOID Comparand);
+ 
+ /* ---- Critical sections ------------------------------------------------- */
 diff --git a/src/usb/ohci.c b/src/usb/ohci.c
 index 9da018e..531bf80 100644
 --- a/src/usb/ohci.c
@@ -21298,6 +21516,22 @@ index e40d0bc..b197e10 100644
  } PresentConsts;
  
  static uint32_t surface_color_bpp(uint32_t fmt)
+diff --git a/src/video/nv2a_sdlgpu.c b/src/video/nv2a_sdlgpu.c
+index fffccd5..31b85f0 100644
+--- a/src/video/nv2a_sdlgpu.c
++++ b/src/video/nv2a_sdlgpu.c
+@@ -2481,6 +2481,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+                     s_overlay.sanitize_vertex_upload(p + uc.at[i][0] - s_vpos, &attr[i], i, lo, count);
+     }
+     uc.info[2] = 0xFFFFFFFFu;
++    /* The shared vertex shader (nv2a_vertex.hlsl) also adds a per-vertex y offset
++     * when info[3] names one (the MM3 runtime patch's D3D11 HUD placement). This
++     * backend has no y offsets: leaving info[3] at 0 read the vertex buffer's
++     * first bytes as offsets and threw vertices down the screen in streaks. */
++    uc.info[3] = 0xFFFFFFFFu;
+     if (use_dx) {
+         memcpy(p + at, dx, count * 4);
+         uc.info[2] = s_vpos + at;
 diff --git a/src/video/nv2a_shader_cache.h b/src/video/nv2a_shader_cache.h
 index b1b85c0..ca0f979 100644
 --- a/src/video/nv2a_shader_cache.h
