@@ -250,7 +250,7 @@ void mm3_launcher_config_defaults(MM3LauncherConfig *config)
     for (int i = 0; i < MM3_LAUNCHER_PAD_INPUTS; ++i) config->pad[i] = bindings.pad[i];
     for (int i = 0; i < MM3_LAUNCHER_KEYS; ++i) config->keys2[i] = second.keys[i];
     for (int i = 0; i < MM3_LAUNCHER_DRIVE_KEYS; ++i) config->drive_keys2[i] = second.drive[i];
-    config->controller_count = 1;
+    config->controller_count = 0;   /* automatic: one per connected controller */
     config->network_port = 3075;
     config->damage_percent = config->own_damage_percent = config->time_percent = 100;
     config->ai_level = 5;
@@ -261,7 +261,7 @@ static int key_valid(int vk) { return vk >= 0 && vk <= 255 && vk != VK_F10 && vk
 
 int mm3_launcher_config_valid(const MM3LauncherConfig *config)
 {
-    if (!config || config->controller_count < 1 || config->controller_count > 4 ||
+    if (!config || config->controller_count < 0 || config->controller_count > 4 ||
         (config->fov_degrees != 0 &&
         (config->fov_degrees < 60 || config->fov_degrees > 110)) ||
         config->damage_percent < 0 || config->damage_percent > 400 ||
@@ -333,7 +333,8 @@ int mm3_launcher_config_assign(MM3LauncherConfig *config, const char *key, const
         config->time_percent = number; return 1;
     }
     if (!strcmp(key, "RECOMP_USB_PADS")) {
-        if (!integer(value, 1, 4, &number)) return 0;
+        if (!strncmp(value, "auto", 4)) { config->controller_count = 0; return 1; }
+        if (!integer(value, 0, 4, &number)) return 0;
         config->controller_count = number; return 1;
     }
     if (!strcmp(key, "RECOMP_NET_PORT")) {
@@ -608,7 +609,9 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
     }
     /* OHCI automatically exposes at least this many root-hub ports. Keep an
      * explicitly supplied RECOMP_USB_NDP (and the default two-port hub). */
-    snprintf(number, sizeof number, "%d", config->controller_count); SET("RECOMP_USB_PADS", number);
+    if (config->controller_count) snprintf(number, sizeof number, "%d", config->controller_count);
+    else snprintf(number, sizeof number, "auto");
+    SET("RECOMP_USB_PADS", number);
     snprintf(number, sizeof number, "%d", config->fov_degrees); SET("MM3_FOV_DEGREES", number);
     snprintf(number, sizeof number, "%d", config->option[MM3_LAUNCH_GAMEPLAY] ? config->damage_percent : 100);
     SET("MM3_DAMAGE_PERCENT", number);
@@ -640,7 +643,8 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
         SET("RECOMP_INPUT_P2", player1 || player2 ? player_sources[1][player2].text : "");
         if ((player1 && player_sources[0][player1].keys) || player_sources[1][player2].keys)
             SET(mm3_launcher_options[MM3_LAUNCH_KEYBOARD].key, "1");
-        if (player2 && config->controller_count < 2) SET("RECOMP_USB_PADS", "2");
+        if (player2 && config->controller_count == 0) SET("RECOMP_USB_PADS", "auto:2");
+        else if (player2 && config->controller_count < 2) SET("RECOMP_USB_PADS", "2");
     }
     if (!config->option[MM3_LAUNCH_IMPROVED]) {
         for (size_t i = 0; i < sizeof original_look / sizeof original_look[0]; ++i)

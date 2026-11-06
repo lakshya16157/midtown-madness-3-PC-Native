@@ -26,7 +26,7 @@ int main(int argc, char **argv)
     clear_environment();
     mm3_launcher_config_defaults(&config);
     assert(mm3_launcher_config_valid(&config));
-    assert(config.controller_count == 1);
+    assert(config.controller_count == 0);                            /* automatic */
     assert(config.damage_percent == 100 && config.own_damage_percent == 100 && config.time_percent == 100);
     assert(config.ai_level == 5 && config.free_camera_key == 0x77);
     assert(config.option[MM3_LAUNCH_FREE_CAMERA]);
@@ -65,14 +65,18 @@ int main(int argc, char **argv)
         players.player1 = 2; players.player2 = 3; players.option[MM3_LAUNCH_KEYBOARD] = 0;
         assert(mm3_launcher_config_apply(&players, text, sizeof text));
         assert(!strcmp(getenv("RECOMP_INPUT_P1"), "KEYS1") && !strcmp(getenv("RECOMP_INPUT_P2"), "KEYS2"));
-        assert(!strcmp(getenv("RECOMP_KEYBOARD"), "1") && !strcmp(getenv("RECOMP_USB_PADS"), "2"));
+        assert(!strcmp(getenv("RECOMP_KEYBOARD"), "1") && !strcmp(getenv("RECOMP_USB_PADS"), "auto:2"));
         players.player1 = 0; players.player2 = 2; players.option[MM3_LAUNCH_KEYBOARD] = 1;
         assert(mm3_launcher_config_apply(&players, text, sizeof text));
         assert(!strcmp(getenv("RECOMP_INPUT_P1"), "PAD1") && !strcmp(getenv("RECOMP_INPUT_P2"), "KEYS1"));
         players.player1 = 4; players.player2 = 0;               /* both on controller 2: player 2 keeps it */
         assert(mm3_launcher_config_apply(&players, text, sizeof text));
         assert(!getenv("RECOMP_INPUT_P1") && !getenv("RECOMP_INPUT_P2"));   /* resolved to the first choices */
-        assert(!strcmp(getenv("RECOMP_USB_PADS"), "1"));
+        assert(!strcmp(getenv("RECOMP_USB_PADS"), "auto"));
+        players.controller_count = 1; players.player2 = 3;
+        assert(mm3_launcher_config_apply(&players, text, sizeof text));
+        assert(!strcmp(getenv("RECOMP_USB_PADS"), "2"));       /* a fixed count still gains player 2's port */
+        players.controller_count = 0; players.player2 = 0;
         players.player1 = 5; assert(!mm3_launcher_config_valid(&players));
         players.player1 = 0; players.player2 = 4; assert(!mm3_launcher_config_valid(&players));
         players.player2 = 0; players.keys2[3] = VK_F10; assert(!mm3_launcher_config_valid(&players));
@@ -82,15 +86,17 @@ int main(int argc, char **argv)
     assert(!strcmp(path, argv[1]));
     assert(mm3_launcher_config_load(&config, error, sizeof error)); /* Missing is harmless. */
     before = config;
-    static const char *const invalid_counts[] = {"", "0", "5", "-1", "two", "2x", "99999999999999999999"};
+    static const char *const invalid_counts[] = {"", "5", "-1", "two", "2x", "99999999999999999999"};
     for (unsigned i = 0; i < sizeof invalid_counts / sizeof invalid_counts[0]; ++i) {
         assert(!mm3_launcher_config_assign(&config, "RECOMP_USB_PADS", invalid_counts[i]));
         assert(!memcmp(&before, &config, sizeof config));
     }
+    assert(mm3_launcher_config_assign(&config, "RECOMP_USB_PADS", "auto") && config.controller_count == 0);
+    assert(mm3_launcher_config_assign(&config, "RECOMP_USB_PADS", "0") && config.controller_count == 0);
     assert(mm3_launcher_config_assign(&config, "RECOMP_USB_PADS", "4"));
     assert(config.controller_count == 4);
     before = config;
-    config.controller_count = 0; assert(!mm3_launcher_config_valid(&config));
+    config.controller_count = -1; assert(!mm3_launcher_config_valid(&config));
     config.controller_count = 5; assert(!mm3_launcher_config_valid(&config)); config = before;
     assert(mm3_launcher_config_assign(&config, "RECOMP_KEYMAP", "A:20,START:0D,LX-:00"));
     assert(config.keys[0] == VK_SPACE && config.keys[16] == 0);
@@ -249,7 +255,7 @@ int main(int argc, char **argv)
     assert(mm3_launcher_config_load(&loaded, error, sizeof error));
     assert(loaded.fov_degrees == 0 && !loaded.option[MM3_LAUNCH_KEYBOARD]);
     assert(loaded.keys[0] == 'Z' && !loaded.option[MM3_LAUNCH_SKY]);
-    assert(loaded.controller_count == 1); /* Old or invalid files retain the default. */
+    assert(loaded.controller_count == 0); /* "0" is Automatic, also the default. */
     /* Driving assists start off, as on the Xbox. A file saved before settings
      * revision 2 had them on by default: they go off once; later choices stay. */
     mm3_launcher_config_defaults(&loaded);

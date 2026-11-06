@@ -6174,7 +6174,7 @@ index 0000000..693c782
 +
 +#endif
 diff --git a/src/input/xinput_device.c b/src/input/xinput_device.c
-index 4bffbb4..d5f6f79 100644
+index 4bffbb4..de4e502 100644
 --- a/src/input/xinput_device.c
 +++ b/src/input/xinput_device.c
 @@ -32,8 +32,59 @@ void xbox_InputSetKeyboardHook(XBOX_KEYBOARD_HOOK hook)
@@ -6772,7 +6772,7 @@ index 4bffbb4..d5f6f79 100644
      memset(pState, 0, sizeof(XBOX_INPUT_STATE));
      pState->dwPacketNumber = xi_state.dwPacketNumber;
      pad_buttons(&xi_state.Gamepad, &pState->Gamepad);
-@@ -435,13 +734,15 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+@@ -435,24 +734,58 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
      pState->Gamepad.sThumbRX = xi_state.Gamepad.sThumbRX;
      pState->Gamepad.sThumbRY = xi_state.Gamepad.sThumbRY;
  
@@ -6791,7 +6791,39 @@ index 4bffbb4..d5f6f79 100644
      return finish_state(dwPort, pState);
  }
  
-@@ -451,8 +752,10 @@ uint32_t xbox_InputHostPad(uint32_t port, uint16_t *buttons,
++int xbox_InputHostPadCount(void)
++{
++#ifndef XBOX_INPUT_HOST_PAD
++    static Uint64 next;
++    static int count;
++    Uint64 now = SDL_GetTicks();
++    if (now >= next) {
++        int sdl = 0;
++        if (SDL_WasInit(SDL_INIT_GAMEPAD)) {
++            SDL_JoystickID *ids = SDL_GetGamepads(&sdl);
++            SDL_free(ids);
++        }
++        count = sdl;
++#ifdef XBOX_INPUT_XINPUT_FIRST
++        {   /* Windows D3D11 builds read XInput pads first. */
++            XINPUT_STATE x;
++            int xi = 0;
++            for (DWORD i = 0; i < 4; ++i)
++                if (XInputGetState(i, &x) == ERROR_SUCCESS) xi = (int)i + 1;
++            if (xi > count) count = xi;
++        }
++#endif
++        next = now + 500;
++    }
++    return count;
++#else
++    return 1;
++#endif
++}
++
+ uint32_t xbox_InputHostPad(uint32_t port, uint16_t *buttons,
+                            uint8_t *left_trigger, uint8_t *right_trigger,
+                            int16_t *lx, int16_t *ly, int16_t *rx, int16_t *ry)
  {
      XINPUT_STATE state;
  #ifndef XBOX_INPUT_HOST_PAD
@@ -6803,7 +6835,7 @@ index 4bffbb4..d5f6f79 100644
  #endif
      if (port >= XBOX_MAX_CONTROLLERS || host_pad_state(port, &state) != ERROR_SUCCESS)
          return ERROR_DEVICE_NOT_CONNECTED;
-@@ -470,9 +773,9 @@ DWORD xbox_InputSetState(DWORD dwPort, const XBOX_VIBRATION *pVibration)
+@@ -470,9 +803,9 @@ DWORD xbox_InputSetState(DWORD dwPort, const XBOX_VIBRATION *pVibration)
  {
      if (dwPort >= XBOX_MAX_CONTROLLERS || !pVibration)
          return ERROR_DEVICE_NOT_CONNECTED;
@@ -6815,7 +6847,7 @@ index 4bffbb4..d5f6f79 100644
      return ERROR_SUCCESS;
  }
  
-@@ -487,7 +790,7 @@ DWORD xbox_InputGetCapabilities(DWORD dwPort, DWORD dwFlags, XBOX_INPUT_CAPABILI
+@@ -487,7 +820,7 @@ DWORD xbox_InputGetCapabilities(DWORD dwPort, DWORD dwFlags, XBOX_INPUT_CAPABILI
      if (dwPort >= XBOX_MAX_CONTROLLERS || !pCaps)
          return ERROR_DEVICE_NOT_CONNECTED;
      (void)dwFlags;
@@ -6825,7 +6857,7 @@ index 4bffbb4..d5f6f79 100644
      memset(pCaps, 0, sizeof(XBOX_INPUT_CAPABILITIES));
      pCaps->Type = 1;      /* XINPUT_DEVTYPE_GAMEPAD */
 diff --git a/src/input/xinput_xbox.h b/src/input/xinput_xbox.h
-index 151c298..1d23233 100644
+index 151c298..d6881d7 100644
 --- a/src/input/xinput_xbox.h
 +++ b/src/input/xinput_xbox.h
 @@ -92,6 +92,19 @@ void xbox_InputInit(void);
@@ -6848,6 +6880,17 @@ index 151c298..1d23233 100644
  /**
   * Get the state of a controller.
   * Port: 0-3 (Xbox controller ports)
+@@ -119,6 +132,10 @@ BOOL xbox_InputIsConnected(DWORD dwPort);
+  * title's state merges in. For launchers and overlays that need the raw pad
+  * through the same SDL3 path. Returns 0 when read, ERROR_DEVICE_NOT_CONNECTED
+  * (1167) when the port has no pad. Starts SDL's gamepad subsystem on first use. */
++/* How many host controllers are connected now (SDL gamepads; checked at most
++ * twice a second). 0 when there are none or the gamepad subsystem is off. */
++int xbox_InputHostPadCount(void);
++
+ uint32_t xbox_InputHostPad(uint32_t port, uint16_t *buttons,
+                            uint8_t *left_trigger, uint8_t *right_trigger,
+                            int16_t *lx, int16_t *ly, int16_t *rx, int16_t *ry);
 diff --git a/src/kernel/CMakeLists.txt b/src/kernel/CMakeLists.txt
 index 1f0dc4c..8ab0027 100644
 --- a/src/kernel/CMakeLists.txt
@@ -12699,7 +12742,7 @@ index 994b256..453e9df 100644
  
  /* ---- Critical sections ------------------------------------------------- */
 diff --git a/src/usb/ohci.c b/src/usb/ohci.c
-index 9da018e..531bf80 100644
+index 9da018e..79e189c 100644
 --- a/src/usb/ohci.c
 +++ b/src/usb/ohci.c
 @@ -12,7 +12,6 @@
@@ -12710,7 +12753,19 @@ index 9da018e..531bf80 100644
  
  #include <stdio.h>
  #include <stdlib.h>
-@@ -610,40 +609,27 @@ static uint32_t ohci_do_td(OhciController *hc, uint32_t ed0, uint32_t td)
+@@ -183,6 +182,11 @@ static int s_device_hc;
+  * 1-4). Which slot XAPI gives a pad is decided by its port: see OHCI_PORTS. */
+ static unsigned s_ndp = OHCI_PORTS;
+ static int s_npads = 1;          /* RECOMP_USB_PADS */
++/* RECOMP_USB_PADS unset, "auto" or "0": one pad per connected host controller
++ * (at least s_npads_min, at most four), plugged in as host controllers arrive,
++ * as an Xbox has a controller per port; "auto:2" keeps at least two. */
++static int s_auto_pads = 1, s_npads_min = 1;
++extern int xbox_InputHostPadCount(void);
+ static int s_enabled;
+ static int s_trace;
+ 
+@@ -610,40 +614,27 @@ static uint32_t ohci_do_td(OhciController *hc, uint32_t ed0, uint32_t td)
              moved = n;
          }
      } else {
@@ -12766,6 +12821,41 @@ index 9da018e..531bf80 100644
 +                usb_gamepad_output(pad, data, len);
              s_n_out_other++;
          }
+     }
+@@ -1075,7 +1066,15 @@ static DWORD WINAPI ohci_thread(LPVOID unused)
+         /* More pads, one at a time: each arrives after the previous one is
+          * configured, on the next port, so the driver enumerates them in
+          * turn and there is only ever one device at the default address.
+-         * RECOMP_USB_PADS sets how many (1-4). */
++         * RECOMP_USB_PADS sets how many (1-4), or one per connected host
++         * controller (the default). A pad unplugged later stays plugged in
++         * here and reports nothing pressed. */
++        if (s_auto_pads) {
++            int want = xbox_InputHostPadCount();
++            if (want < s_npads_min) want = s_npads_min;
++            if (want > USB_GAMEPAD_MAX) want = USB_GAMEPAD_MAX;
++            s_npads = want;     /* only ever grows the plugged set: see below */
++        }
+         if (plugged && s_plugged_pads < s_npads
+             && usb_gamepad_configured(s_plugged_pads - 1)) {
+             if (++settle > 50) {                 /* ~1 s after the last */
+@@ -1288,10 +1287,15 @@ void xbox_OhciInit(void)
+             int n = atoi(ndpspec);
+             if (n >= 1 && n <= 4) s_ndp = (unsigned)n;
+         }
+-        if (padspec) {
++        if (padspec && *padspec && strncmp(padspec, "auto", 4) != 0 && strcmp(padspec, "0") != 0) {
+             int n = atoi(padspec);
+-            if (n >= 1 && n <= USB_GAMEPAD_MAX) s_npads = n;
++            if (n >= 1 && n <= USB_GAMEPAD_MAX) { s_npads = n; s_auto_pads = 0; }
++        } else if (padspec && !strncmp(padspec, "auto:", 5)) {
++            int n = atoi(padspec + 5);
++            if (n >= 1 && n <= USB_GAMEPAD_MAX) s_npads_min = s_npads = n;
+         }
++        if (s_auto_pads && s_ndp < USB_GAMEPAD_MAX)
++            s_ndp = USB_GAMEPAD_MAX;        /* a port for every pad that may arrive */
+         if ((unsigned)s_npads > s_ndp)
+             s_ndp = (unsigned)s_npads;      /* a port for every pad */
      }
 diff --git a/src/usb/usb_gamepad.c b/src/usb/usb_gamepad.c
 index 612b8c1..a64d646 100644
