@@ -28,7 +28,7 @@ def main():
         raise SystemExit("Run scripts/enter-env.ps1 first so cl.exe is available.")
     source = (ROOT / "src/main.c").read_text()
     begin = source.index("static int mm3_is_file(")
-    end = source.index("\nint main(void)", begin)
+    end = source.index("\n#else", begin)  # the POSIX search after the Windows one is not under test
     # Non-ASCII and a space, like a real install under a user's Desktop.
     with tempfile.TemporaryDirectory(prefix="mm3-game-directory-") as temporary:
         folder = Path(temporary)

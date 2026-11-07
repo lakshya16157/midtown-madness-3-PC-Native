@@ -567,6 +567,48 @@ through a play session yet; try it with `MM3_GENERATOR_DIR=tools\xboxrecomp`. Th
 `CMakeLists.txt` find each wrapped function's chunk themselves, so any regeneration builds
 without edits.
 
+### Linux (SDL3 GPU renderer, Vulkan)
+
+The game also builds and runs as a native Linux program on the SDL3 GPU renderer
+(Vulkan), without Wine. Tested on Ubuntu 24.04 (glibc 2.39) with Clang 20, CMake 3.28
+and Ninja; the result also runs on newer distributions. Build dependencies (Ubuntu
+package names): `clang cmake ninja-build python3 python3-venv pkg-config libssl-dev
+libepoxy-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev
+libxfixes-dev libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libegl-dev
+libvulkan-dev libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev libudev-dev`.
+SDL3, SDL3_image, DXC, FreeType, RmlUi and ImGui are fetched by CMake as on Windows.
+
+```sh
+python3 scripts/setup.py --iso "/path/to/Midtown Madness 3 (USA).iso"
+```
+
+or, step by step: extract the disc (`scripts/extract_disc.py`), apply the runtime fixes
+(`scripts/apply_runtime_patch.py`), generate (`scripts/generate_mm3.py`), then
+`cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DXBOXRECOMP_RENDERER=SDL3_GPU
+-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++` and build the `mm3_recomp` target.
+Run `build/mm3_recomp` from the repository folder (it also finds `game_files/` above its
+own folder). `tools/game_test/run.py` works on Linux too: the teleport pipe is a Unix socket
+there (`$XDG_RUNTIME_DIR/MM3Teleport-<pid>.sock`).
+
+On Linux the port's own sources see `<windows.h>` through `src/compat/posix/`, which maps
+the Win32 calls they use onto the runtime's POSIX layer (`platform/win32_compat.h`). Not
+available there yet: the Win32 settings window and updater (the RmlUi launcher is the
+settings window), the F10 Display Settings dialog (use the in-game Graphics menu), the free
+camera's mouse look and the power-source log. Photos are saved as PNG through SDL3_image
+into `MM3_PHOTO_DIR` or `~/Pictures/Midtown Madness 3`.
+
+The SDL3 GPU renderer has the runtime patch's Direct3D 11 additions that the game's look
+depends on: live render scale, aspect, VSync and frame limit; photo-mode HUD hide and
+screenshots; the local-light shaping (gain, softness, overlap, energy sum, falloff, shape,
+exposure; the maths is in the shared combiner shader); the skyline blend; night glass and
+car-paint softness over the display copy; the frame hold; the improved map's square mask;
+and the exhaust smoke (`src/mods/world_tris_sdlgpu.c`, drawn through the host-draw hook when
+its packet arrives). Still Direct3D 11 only (`src/compat/sdlgpu_d3d11_only.c`): the sky fog
+ramp and tree fog (the distance fog itself draws through `src/mods/render_fog.c`), the
+read-back fence, and the renderer's own HUD placement (the improved map's window, its
+motion and expansion, vertical placement on tall windows); SDL3 GPU places the HUD through
+`src/mods/widescreen_hud.c`.
+
 ## Running
 
 Create a **Midtown Madness 3** desktop shortcut with the game icon:

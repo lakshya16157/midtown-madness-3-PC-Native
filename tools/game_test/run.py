@@ -73,14 +73,42 @@ def link_assets(source, destination):
         destination.symlink_to(source, target_is_directory=True)
 
 
+def socket_request(pid, payload, timeout):
+    """POSIX: the runtime's line server listens on a Unix socket
+    ($XDG_RUNTIME_DIR or /tmp)/MM3Teleport-<pid>.sock; one line in, the reply to EOF."""
+    import socket
+    path = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", f"MM3Teleport-{pid}.sock")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(max(.001, deadline - time.monotonic()))
+                sock.connect(path)
+                sock.sendall(payload + b"\n")
+                sock.shutdown(socket.SHUT_WR)
+                chunks = []
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                return b"".join(chunks).decode("ascii")
+        except (FileNotFoundError, ConnectionRefusedError):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"MM3 pipe {pid} not available")
+            time.sleep(.01)
+        except socket.timeout:
+            raise TimeoutError(f"MM3 pipe reply timed out for {payload!r}")
+
+
 def pipe_request(pid, command, timeout=1.0):
     """One overlapped transaction: connection AND reply share a real deadline."""
-    if os.name != "nt":
-        raise OSError("MM3 named pipes require Windows")
     number(timeout, "pipe timeout", .001, 600)
     payload = command.encode("ascii")
     if not payload or len(payload) > 127 or b"\0" in payload:
         raise ValueError("Invalid MM3 pipe command")
+    if os.name != "nt":
+        return socket_request(pid, payload, timeout)
     k = ctypes.WinDLL("kernel32", use_last_error=True)
 
     class Overlapped(ctypes.Structure):

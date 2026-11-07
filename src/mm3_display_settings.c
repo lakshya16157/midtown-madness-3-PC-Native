@@ -91,11 +91,14 @@ static float display_aspect(const char *value)
 
 void mm3_display_settings_get(MM3DisplaySettings *settings)
 {
+#ifdef _WIN32
     HWND window = xbox_FramebufferWindowHandle();
     RECT client;
+#endif
     AcquireSRWLockShared(&s_settings_lock);
     *settings = s_current;
     ReleaseSRWLockShared(&s_settings_lock);
+#ifdef _WIN32
     if (window) {
         settings->fullscreen = !(GetWindowLongA(window, GWL_STYLE) & WS_OVERLAPPEDWINDOW);
         if (!settings->fullscreen && GetClientRect(window, &client) &&
@@ -105,6 +108,7 @@ void mm3_display_settings_get(MM3DisplaySettings *settings)
             settings->window_height = client.bottom;
         }
     }
+#endif
 }
 
 int mm3_display_settings_commit(const MM3DisplaySettings *requested,
@@ -149,6 +153,9 @@ int mm3_display_settings_commit(const MM3DisplaySettings *requested,
     return 1;
 }
 
+/* The F10 Display Settings dialog is a Win32 dialog resource (mm3.rc). Off Windows the
+ * game's own Graphics menu (mm3_graphics_menu.c) is the settings page. */
+#ifdef _WIN32
 static void combo_add(HWND dialog, int id, const char *label, LPARAM value)
 {
     HWND control = GetDlgItem(dialog, id);
@@ -478,6 +485,8 @@ static void open_settings(HWND window)
                     "Display Settings", MB_OK | MB_ICONERROR);
 }
 
+#endif /* _WIN32 */
+
 void mm3_display_settings_init(void)
 {
     char warning[512] = "";
@@ -492,6 +501,8 @@ void mm3_display_settings_init(void)
     nv2a_d3d_set_present_options(s_current.vsync, s_current.fps_limit);
     nv2a_d3d_set_render_scale(s_current.render_scale);
     nv2a_d3d_set_display_aspect(display_aspect(s_current.aspect));
+#ifdef _WIN32
     xbox_FramebufferSetSettingsHandler(open_settings);
     puts("Display Settings: press F10 (F11 toggles fullscreen).");
+#endif
 }

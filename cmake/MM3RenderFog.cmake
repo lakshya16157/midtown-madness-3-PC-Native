@@ -6,6 +6,30 @@ function(mm3_render_fog_shaders target backend)
     file(MAKE_DIRECTORY "${_gen}")
     target_include_directories(${target} PRIVATE "${_gen}")
     if(backend STREQUAL "SDL3_GPU")
+        # Exhaust smoke (src/mods/world_tris_sdlgpu.c): SPIR-V, and DXIL on Windows.
+        set(_tris_formats spirv)
+        if(WIN32)
+            list(APPEND _tris_formats dxil)
+        endif()
+        foreach(_stage vs ps)
+            string(TOUPPER "${_stage}" _STAGE)
+            foreach(_format IN LISTS _tris_formats)
+                set(_out "${_gen}/mm3_tris_${_stage}.${_format}.h")
+                set(_flags)
+                if(_format STREQUAL "spirv")
+                    set(_flags -spirv -fspv-target-env=vulkan1.0 -fvk-use-dx-layout)
+                endif()
+                add_custom_command(OUTPUT "${_out}"
+                    COMMAND "${XBOXRECOMP_DXC}" -nologo -HV 2018 -Wno-ignored-attributes
+                        -T ${_stage}_6_0 -E tris_${_stage} -D SDLGPU -D STAGE_${_STAGE}
+                        -I "${XBOXRECOMP_DIR}/src/video/shaders" ${_flags}
+                        -Fh "${_out}" -Vn mm3_tris_${_stage}_${_format} "${_mm3}/src/mods/shaders/world_tris.hlsl"
+                    DEPENDS "${_mm3}/src/mods/shaders/world_tris.hlsl"
+                        "${XBOXRECOMP_DIR}/src/video/shaders/nv2a_bindings.hlsli"
+                    VERBATIM)
+                target_sources(${target} PRIVATE "${_out}")
+            endforeach()
+        endforeach()
         set(_formats spirv)
         if(WIN32)
             list(APPEND _formats dxil)

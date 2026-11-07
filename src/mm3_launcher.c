@@ -1,3 +1,6 @@
+/* Windows only: the Win32 settings window and its updater. Off Windows the RmlUi launcher
+ * (mm3_launcher.cpp) is the settings window, and AntRecomp/the player handles updates. */
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #ifndef COBJMACROS
 #define COBJMACROS
@@ -620,7 +623,7 @@ static void help_show(Launcher *ui, int id)
         }
         case ID_PAD_COUNT:
             title = "Controllers in game";
-            body = "Expose 1-4 Xbox controller ports to the game. This is separate from the connected-controller status: choosing 4 does not create four physical controllers.";
+            body = "Automatic gives the game one Xbox controller per connected controller, as the Xbox did, so whoever presses Start plays. 1-4 exposes that many ports instead; choosing 4 does not create four physical controllers.";
             effect = "Player 1 and Player 2 use the controller or keyboard chosen above; players 3 and 4 use controllers 3 and 4.";
             break;
         case ID_GROUP:
@@ -881,7 +884,7 @@ static void players_changed(Launcher *ui, int id)
     combo_select(control(ui, ID_PLAYER1), player1);
     combo_select(control(ui, ID_PLAYER2), player2);
     if (player1 == 2 || player1 == 3 || player2 >= 2) set_checked(ui, ID_KEYBOARD, 1);
-    if (player2 && combo_value(control(ui, ID_PAD_COUNT)) < 2) combo_select(control(ui, ID_PAD_COUNT), 2);
+    if (player2 && combo_value(control(ui, ID_PAD_COUNT)) == 1) combo_select(control(ui, ID_PAD_COUNT), 2);
     keyboard_layout_follow(ui);
     help_show(ui, id);
 }
@@ -1330,6 +1333,7 @@ static void controls_controls(Launcher *ui)
     c = combo(ui, 1, ID_PLAYER2, "Player 2 plays with", 42, 186, 165);
     for (int i = 0; i < MM3_LAUNCHER_PLAYER2_CHOICES; ++i) combo_item(c, mm3_launcher_player_names[1][i], i);
     c = combo(ui, 1, ID_PAD_COUNT, "Controllers in game", 222, 186, 165);
+    combo_item(c, "Automatic", 0);
     for (int i = 1; i <= 4; ++i) { char text[16]; snprintf(text, sizeof text, "%d", i); combo_item(c, text, i); }
     add(ui, 1, "STATIC", "Detecting controllers...", 0, ID_PAD_STATUS, 417, 130, 399, 92);
     add(ui, 1, "STATIC", "", 0, ID_PAD_HINT, 42, 242, 345, 48);
@@ -1659,7 +1663,7 @@ static void poll_pads(Launcher *ui)
     } else {
         snprintf(summary, sizeof summary, "%s detected: %d connected. Test sticks/triggers in Controls.",
             count == 1 ? "Controller" : "Controllers", count);
-        if (highest_port > combo_value(control(ui, ID_PAD_COUNT)))
+        if (combo_value(control(ui, ID_PAD_COUNT)) && highest_port > combo_value(control(ui, ID_PAD_COUNT)))
             snprintf(hint, sizeof hint, "P%d detected outside enabled game ports.\r\nSet Controllers in game to %d to use it.", highest_port, highest_port);
         else snprintf(hint, sizeof hint, "%d connected. Move a stick or squeeze a trigger to test.", count);
     }
@@ -2427,3 +2431,5 @@ int mm3_launcher_run(void)
     if (!bootstrap(warning, sizeof warning)) { fprintf(stderr, "[MM3_LAUNCHER] %s\n", warning); return 0; }
     return 1;
 }
+
+#endif /* _WIN32 */

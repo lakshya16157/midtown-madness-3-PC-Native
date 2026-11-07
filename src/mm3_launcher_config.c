@@ -1,6 +1,11 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#ifdef _WIN32
 #include <io.h>
+#else
+#include <unistd.h>
+#include <sys/stat.h>
+#endif
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -245,7 +250,7 @@ void mm3_launcher_config_defaults(MM3LauncherConfig *config)
     for (int i = 0; i < MM3_LAUNCHER_PAD_INPUTS; ++i) config->pad[i] = bindings.pad[i];
     for (int i = 0; i < MM3_LAUNCHER_KEYS; ++i) config->keys2[i] = second.keys[i];
     for (int i = 0; i < MM3_LAUNCHER_DRIVE_KEYS; ++i) config->drive_keys2[i] = second.drive[i];
-    config->controller_count = 1;
+    config->controller_count = 0;   /* automatic: one per connected controller */
     config->network_port = 3075;
     config->damage_percent = config->own_damage_percent = config->time_percent = 100;
     config->ai_level = 5;
@@ -256,7 +261,7 @@ static int key_valid(int vk) { return vk >= 0 && vk <= 255 && vk != VK_F10 && vk
 
 int mm3_launcher_config_valid(const MM3LauncherConfig *config)
 {
-    if (!config || config->controller_count < 1 || config->controller_count > 4 ||
+    if (!config || config->controller_count < 0 || config->controller_count > 4 ||
         (config->fov_degrees != 0 &&
         (config->fov_degrees < 60 || config->fov_degrees > 110)) ||
         config->damage_percent < 0 || config->damage_percent > 400 ||
@@ -328,7 +333,8 @@ int mm3_launcher_config_assign(MM3LauncherConfig *config, const char *key, const
         config->time_percent = number; return 1;
     }
     if (!strcmp(key, "RECOMP_USB_PADS")) {
-        if (!integer(value, 1, 4, &number)) return 0;
+        if (!strncmp(value, "auto", 4)) { config->controller_count = 0; return 1; }
+        if (!integer(value, 0, 4, &number)) return 0;
         config->controller_count = number; return 1;
     }
     if (!strcmp(key, "RECOMP_NET_PORT")) {
@@ -362,15 +368,23 @@ int mm3_launcher_config_assign(MM3LauncherConfig *config, const char *key, const
 
 int mm3_launcher_config_path(char *path, size_t capacity, char *error, size_t error_capacity)
 {
-    const wchar_t *override = _wgetenv(L"MM3_LAUNCHER_CONFIG");
     char display[32768], *separator;
     int length;
     error_set(error, error_capacity, "");
+#ifdef _WIN32
+    const wchar_t *override = _wgetenv(L"MM3_LAUNCHER_CONFIG");
     if (override && *override) {
         if (capacity <= INT_MAX && WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
             override, -1, path, (int)capacity, NULL, NULL)) return 1;
         error_set(error, error_capacity, "Launcher settings path is too long or invalid."); return 0;
     }
+#else
+    const char *override = getenv("MM3_LAUNCHER_CONFIG");
+    if (override && *override) {
+        if (strlen(override) < capacity) { strcpy(path, override); return 1; }
+        error_set(error, error_capacity, "Launcher settings path is too long."); return 0;
+    }
+#endif
     if (!mm3_display_settings_path(display, sizeof display, error, error_capacity)) return 0;
     separator = strrchr(display, '\\');
     { char *other = strrchr(display, '/'); if (other && (!separator || other > separator)) separator = other; }
@@ -397,13 +411,17 @@ static void keys2_first_layout_update(MM3LauncherConfig *config)
 int mm3_launcher_config_load(MM3LauncherConfig *config, char *error, size_t capacity)
 {
     char path[32768], line[2048];
-    wchar_t wide[32768];
     FILE *file;
     int failed, revision = 1;
     error_set(error, capacity, "");
     if (!mm3_launcher_config_path(path, sizeof path, error, capacity)) return 0;
+#ifdef _WIN32
+    wchar_t wide[32768];
     if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, 32768)) return 0;
     file = _wfopen(wide, L"rb");
+#else
+    file = fopen(path, "rb");
+#endif
     if (!file) {
         if (errno == ENOENT) return 1;
         error_set(error, capacity, "Cannot read launcher settings."); return 0;
@@ -458,6 +476,7 @@ static int format_map(char *text, size_t capacity, const int *map, int count,
 int mm3_launcher_config_save(const MM3LauncherConfig *config, char *error, size_t capacity)
 {
     char path[32768], keys[1024], drive[512], pad[512], keys2[1024], drive2[512];
+#ifdef _WIN32
     wchar_t wide[32768], temporary[32768], parent[32768], *slash;
     static volatile LONG sequence;
     HANDLE handle;
@@ -486,6 +505,25 @@ int mm3_launcher_config_save(const MM3LauncherConfig *config, char *error, size_
         if (descriptor >= 0) _close(descriptor); else CloseHandle(handle);
         DeleteFileW(temporary); error_set(error, capacity, "Cannot write launcher settings."); return 0;
     }
+#else
+    static volatile LONG sequence;
+    FILE *file;
+    int failed = 0;
+    char temporary[32800], parent[32768], *slash;
+    error_set(error, capacity, "");
+    if (!mm3_launcher_config_valid(config)) {
+        error_set(error, capacity, "Invalid launcher settings; preferences were not saved."); return 0;
+    }
+    if (!mm3_launcher_config_path(path, sizeof path, error, capacity)) return 0;
+    strcpy(parent, path); slash = strrchr(parent, '/');
+    if (slash) { *slash = 0; mkdir(parent, 0755); }
+    if (snprintf(temporary, sizeof temporary, "%s.%lu.%lu.tmp", path, (unsigned long)getpid(),
+                 (unsigned long)InterlockedIncrement(&sequence)) >= (int)sizeof temporary) {
+        error_set(error, capacity, "Launcher settings path is too long."); return 0;
+    }
+    file = fopen(temporary, "wbx");
+    if (!file) { error_set(error, capacity, "Cannot create temporary launcher settings."); return 0; }
+#endif
     format_map(keys, sizeof keys, config->keys, MM3_LAUNCHER_KEYS, mm3_launcher_key_names, 0);
     format_map(drive, sizeof drive, config->drive_keys, MM3_LAUNCHER_DRIVE_KEYS, mm3_launcher_drive_names, 0);
     format_map(pad, sizeof pad, config->pad, MM3_LAUNCHER_PAD_INPUTS, mm3_launcher_pad_names, 1);
@@ -505,11 +543,19 @@ int mm3_launcher_config_save(const MM3LauncherConfig *config, char *error, size_
                 config->controller_count, config->fov_degrees, config->network_port, config->peers, keys, drive, pad) < 0) failed = 1;
     if (fprintf(file, "MM3_PLAYER1_INPUT=%d\nMM3_PLAYER2_INPUT=%d\nRECOMP_KEYMAP2=%s\nMM3_DRIVE_KEYMAP2=%s\n",
                 config->player1, config->player2, keys2, drive2) < 0) failed = 1;
+#ifdef _WIN32
     if (fflush(file) || _commit(_fileno(file))) failed = 1;
     if (fclose(file)) failed = 1;
     if (!failed && !MoveFileExW(temporary, wide, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) failed = 1;
     if (failed) {
         DeleteFileW(temporary);
+#else
+    if (fflush(file) || fsync(fileno(file))) failed = 1;
+    if (fclose(file)) failed = 1;
+    if (!failed && rename(temporary, path)) failed = 1;
+    if (failed) {
+        remove(temporary);
+#endif
         error_set(error, capacity, "Cannot replace launcher settings; the previous file was preserved.");
     }
     return !failed;
@@ -563,7 +609,9 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
     }
     /* OHCI automatically exposes at least this many root-hub ports. Keep an
      * explicitly supplied RECOMP_USB_NDP (and the default two-port hub). */
-    snprintf(number, sizeof number, "%d", config->controller_count); SET("RECOMP_USB_PADS", number);
+    if (config->controller_count) snprintf(number, sizeof number, "%d", config->controller_count);
+    else snprintf(number, sizeof number, "auto");
+    SET("RECOMP_USB_PADS", number);
     snprintf(number, sizeof number, "%d", config->fov_degrees); SET("MM3_FOV_DEGREES", number);
     snprintf(number, sizeof number, "%d", config->option[MM3_LAUNCH_GAMEPLAY] ? config->damage_percent : 100);
     SET("MM3_DAMAGE_PERCENT", number);
@@ -595,7 +643,8 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
         SET("RECOMP_INPUT_P2", player1 || player2 ? player_sources[1][player2].text : "");
         if ((player1 && player_sources[0][player1].keys) || player_sources[1][player2].keys)
             SET(mm3_launcher_options[MM3_LAUNCH_KEYBOARD].key, "1");
-        if (player2 && config->controller_count < 2) SET("RECOMP_USB_PADS", "2");
+        if (player2 && config->controller_count == 0) SET("RECOMP_USB_PADS", "auto:2");
+        else if (player2 && config->controller_count < 2) SET("RECOMP_USB_PADS", "2");
     }
     if (!config->option[MM3_LAUNCH_IMPROVED]) {
         for (size_t i = 0; i < sizeof original_look / sizeof original_look[0]; ++i)

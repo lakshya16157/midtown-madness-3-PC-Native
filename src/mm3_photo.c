@@ -1,4 +1,6 @@
 #define COBJMACROS
+/* Photos are saved as PNG through WIC on Windows and SDL3_image elsewhere. */
+#ifdef _WIN32
 #include <windows.h>
 #include <shlobj.h>
 #include <wincodec.h>
@@ -179,3 +181,135 @@ void mm3_photo_take(void)
     MessageBeep(MB_ICONASTERISK);       /* the game shows nothing: a sound says it was taken */
     nv2a_d3d_request_screenshot(serve);
 }
+
+#else /* !_WIN32 */
+/* Linux: the same photo mode, PNG through SDL3_image, saved to MM3_PHOTO_DIR or
+ * ~/Pictures/Midtown Madness 3 (XDG_PICTURES_DIR when set). */
+#include <errno.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <wchar.h>
+#include <SDL3/SDL.h>
+#include <SDL3_image/SDL_image.h>
+#include "mm3_photo.h"
+
+typedef void (*nv2a_screenshot_fn)(const void *bgra, uint32_t width, uint32_t height, uint32_t pitch);
+extern void nv2a_d3d_request_screenshot(nv2a_screenshot_fn take);
+
+typedef struct { uint8_t *pixels; uint32_t width, height, stride; char path[4096]; } Job;
+static char s_path[4096];
+static volatile int s_busy;
+static uint64_t s_last_ms;
+
+static int save_png_utf8(const char *path, const void *bgra, uint32_t width, uint32_t height, uint32_t pitch)
+{
+    /* BGRA bytes are SDL's ARGB8888 on a little-endian host; alpha is forced opaque. */
+    SDL_Surface *surface = SDL_CreateSurface((int)width, (int)height, SDL_PIXELFORMAT_XRGB8888);
+    int ok = 0;
+    if (!surface) return 0;
+    for (uint32_t y = 0; y < height; ++y)
+        memcpy((uint8_t *)surface->pixels + (size_t)y * surface->pitch,
+               (const uint8_t *)bgra + (size_t)y * pitch, (size_t)width * 4);
+    ok = IMG_SavePNG(surface, path);
+    SDL_DestroySurface(surface);
+    return ok;
+}
+
+int mm3_photo_save_png(const wchar_t *path, const void *bgra, uint32_t width, uint32_t height, uint32_t pitch)
+{
+    char narrow[4096];
+    if (!path || wcstombs(narrow, path, sizeof narrow) == (size_t)-1) return 0;
+    narrow[sizeof narrow - 1] = 0;
+    return save_png_utf8(narrow, bgra, width, height, pitch);
+}
+
+static void *save_thread(void *argument)
+{
+    Job *job = (Job *)argument;
+    if (save_png_utf8(job->path, job->pixels, job->width, job->height, job->stride))
+        fprintf(stderr, "[MM3_PHOTO] saved %s (%ux%u)\n", job->path, job->width, job->height);
+    else
+        fprintf(stderr, "[MM3_PHOTO] could not write %s: %s\n", job->path, SDL_GetError());
+    fflush(stderr);
+    free(job->pixels);
+    free(job);
+    return NULL;
+}
+
+/* The renderer's thread, inside the frame: keep a copy and go. */
+static void serve(const void *bgra, uint32_t width, uint32_t height, uint32_t pitch)
+{
+    Job *job = NULL;
+    pthread_t thread;
+    if (bgra && width && height && pitch >= width * 4 && width <= 16384 && height <= 16384)
+        job = (Job *)calloc(1, sizeof *job);
+    if (job) {
+        job->width = width;
+        job->height = height;
+        job->stride = width * 4;
+        job->pixels = (uint8_t *)malloc((size_t)job->stride * height);
+        if (job->pixels) {
+            for (uint32_t y = 0; y < height; ++y)
+                memcpy(job->pixels + (size_t)y * job->stride, (const uint8_t *)bgra + (size_t)y * pitch, job->stride);
+            snprintf(job->path, sizeof job->path, "%s", s_path);
+        } else {
+            free(job);
+            job = NULL;
+        }
+    }
+    __atomic_store_n(&s_busy, 0, __ATOMIC_SEQ_CST);
+    if (job && !pthread_create(&thread, NULL, save_thread, job)) {
+        pthread_detach(thread);
+        return;
+    }
+    if (job) { free(job->pixels); free(job); }
+    fprintf(stderr, "[MM3_PHOTO] the picture could not be taken\n");
+    fflush(stderr);
+}
+
+static int folder(char *out, size_t size)
+{
+    const char *custom = getenv("MM3_PHOTO_DIR"), *pictures = getenv("XDG_PICTURES_DIR"),
+               *home = getenv("HOME");
+    char parent[4096];
+    if (custom && *custom) snprintf(out, size, "%s", custom);
+    else {
+        if (pictures && *pictures) snprintf(parent, sizeof parent, "%s", pictures);
+        else if (home && *home) snprintf(parent, sizeof parent, "%s/Pictures", home);
+        else return 0;
+        mkdir(parent, 0755);
+        snprintf(out, size, "%s/Midtown Madness 3", parent);
+    }
+    if (mkdir(out, 0755) && errno != EEXIST) return 0;
+    return 1;
+}
+
+void mm3_photo_take(void)
+{
+    char dir[4096];
+    struct timespec ts;
+    struct tm local;
+    uint64_t now;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    now = (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+    if (s_last_ms && now - s_last_ms < 500u) return;          /* a double press is one picture */
+    if (__atomic_exchange_n(&s_busy, 1, __ATOMIC_SEQ_CST) && now - s_last_ms < 5000u) return;
+    s_last_ms = now;
+    if (!folder(dir, sizeof dir)) {
+        fprintf(stderr, "[MM3_PHOTO] no folder to save the picture in\n");
+        fflush(stderr);
+        __atomic_store_n(&s_busy, 0, __ATOMIC_SEQ_CST);
+        return;
+    }
+    clock_gettime(CLOCK_REALTIME, &ts);
+    localtime_r(&ts.tv_sec, &local);
+    snprintf(s_path, sizeof s_path, "%s/MM3-%04d%02d%02d-%02d%02d%02d-%03ld.png", dir,
+             local.tm_year + 1900, local.tm_mon + 1, local.tm_mday, local.tm_hour, local.tm_min,
+             local.tm_sec, ts.tv_nsec / 1000000L);
+    nv2a_d3d_request_screenshot(serve);
+}
+#endif /* _WIN32 */

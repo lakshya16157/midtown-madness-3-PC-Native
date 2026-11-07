@@ -305,6 +305,7 @@ fail:
     return 0;
 }
 
+#ifdef _WIN32
 static int mm3_is_file(const wchar_t *path)
 {
     DWORD attributes = GetFileAttributesW(path);
@@ -339,6 +340,38 @@ static const wchar_t *mm3_enter_game_directory(void)
     }
     return NULL;
 }
+
+#else
+#include <unistd.h>
+#include <sys/stat.h>
+/* POSIX: the same search as below, from /proc/self/exe. */
+static const wchar_t *mm3_enter_game_directory(void)
+{
+    static wchar_t wide[4096];
+    char directory[4096], probe[4200];
+    struct stat st;
+    ssize_t length;
+    if (!stat("game_files/default.xbe", &st) && S_ISREG(st.st_mode))
+        return NULL;
+    length = readlink("/proc/self/exe", directory, sizeof directory - 1);
+    if (length <= 0)
+        return NULL;
+    directory[length] = 0;
+    for (int level = 0; level < 5; ++level) {
+        char *slash = strrchr(directory, '/');
+        if (!slash || slash == directory)
+            return NULL;
+        *slash = 0;
+        snprintf(probe, sizeof probe, "%s/game_files/default.xbe", directory);
+        if (!stat(probe, &st) && S_ISREG(st.st_mode) && !chdir(directory)) {
+            mbstowcs(wide, directory, 4095);
+            return wide;
+        }
+    }
+    return NULL;
+}
+
+#endif
 
 /* Car paint mirrors the screen copy as sharply as glass, so lamps showed on
  * it as hard bright spots. A slightly rough finish (user, 10-29: "slightly

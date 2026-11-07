@@ -5,7 +5,7 @@
 #include "imgui_impl_sdlgpu3.h"
 #else
 #include <windows.h>
-#include <Xinput.h>
+#include <xinput.h>
 #include <d3d11.h>
 #include "imgui.h"
 #include "imgui_impl_win32.h"

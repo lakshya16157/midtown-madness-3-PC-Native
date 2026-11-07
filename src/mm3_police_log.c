@@ -35,8 +35,24 @@
  * folder, or -1 when it is not there (a folder of that name counts as not
  * there). The tests supply their own. */
 #ifndef MM3_POLICE_FILE_SIZE
+#ifdef _WIN32
 BOOL xbox_translate_path(const char *xbox_path, WCHAR *host_path_buf, DWORD buf_size);
+#else
+BOOL xbox_translate_path(const char *xbox_path, char *host_path_buf, DWORD buf_size);
+#endif
 
+#ifndef _WIN32
+#include <sys/stat.h>
+static long long disc_file_size(const char *root, const char *relative)
+{
+    char guest[MAX_PATH], host[4096];
+    struct stat st;
+    if (snprintf(guest, sizeof guest, "D:\\Data\\%s\\%s", root, relative) >= (int)sizeof guest ||
+        !xbox_translate_path(guest, host, sizeof host) || stat(host, &st) || S_ISDIR(st.st_mode))
+        return -1;
+    return (long long)st.st_size;
+}
+#else
 static long long disc_file_size(const char *root, const char *relative)
 {
     char guest[MAX_PATH];
@@ -49,6 +65,7 @@ static long long disc_file_size(const char *root, const char *relative)
         return -1;
     return ((long long)data.nFileSizeHigh << 32) | data.nFileSizeLow;
 }
+#endif
 #define MM3_POLICE_FILE_SIZE(root, relative) disc_file_size(root, relative)
 #endif
 

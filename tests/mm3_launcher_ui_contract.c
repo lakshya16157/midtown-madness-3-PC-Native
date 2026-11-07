@@ -861,16 +861,16 @@ static DWORD WINAPI exercise(void *unused)
     select_page(window, 1);
     controllers_layout(window);
     HWND count = GetDlgItem(window, ID_PAD_COUNT);
-    CHECK(SendMessageA(count, CB_GETCOUNT, 0, 0) == 4 && combo_value(count) == 1);
+    CHECK(SendMessageA(count, CB_GETCOUNT, 0, 0) == 5 && combo_value(count) == 0);   /* Automatic, 1-4 */
     combo_select(count, 4);
     SendMessageA(window, WM_COMMAND, ID_DEFAULTS, 0);
-    CHECK(combo_value(count) == 1);
+    CHECK(combo_value(count) == 0);
     {   /* Players: two keyboards split it into halves; a taken controller moves the other player on. */
         Launcher *players = (Launcher *)GetWindowLongPtrA(window, GWLP_USERDATA);
         CHECK(players->config.keys[0] == 'Z');
         choose(window, ID_PLAYER1, 2); choose(window, ID_PLAYER2, 3);
         CHECK(players->config.keys[0] == VK_RCONTROL && players->config.drive_keys[0] == VK_UP);
-        CHECK(combo_value(count) == 2 && checked(players, ID_KEYBOARD));
+        CHECK(combo_value(count) == 0 && checked(players, ID_KEYBOARD));   /* Automatic already keeps two ports */
         choose(window, ID_GROUP, 1); help_show(players, ID_PLAYER1);
         capture_page(window, "players-two-keyboards");
         choose(window, ID_GROUP, 3); capture_page(window, "players-keyboard2");
@@ -1104,7 +1104,7 @@ static void smaller_layout(void)
     focus_control(window, ID_MSAA);
     capture_page(window, "settings-720p");
     page_show(&ui, 1); controllers_layout(window); help_layout(window);
-    CHECK(combo_value(GetDlgItem(window, ID_PAD_COUNT)) == 1);
+    CHECK(combo_value(GetDlgItem(window, ID_PAD_COUNT)) == 0);
     choose(window, ID_GROUP, 2);
     HWND list = GetDlgItem(window, ID_BINDINGS);
     SendMessageA(list, LB_SETCURSEL, 0, 0);
