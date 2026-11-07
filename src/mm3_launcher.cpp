@@ -152,7 +152,7 @@ static int vk_of_key(Rml::Input::KeyIdentifier k)
 #else
 #include <windows.h>
 #include <dwmapi.h>
-#include <Xinput.h>   /* the XINPUT_STATE type only: the pad itself is read through the runtime */
+#include <xinput.h>   /* the XINPUT_STATE type only: the pad itself is read through the runtime */
 #endif
 
 /* The launcher's controller reads use the runtime's one host pad path (SDL3,
