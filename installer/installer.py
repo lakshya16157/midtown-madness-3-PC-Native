@@ -1450,7 +1450,7 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
 
     root = tk.Tk()
     root.title(TITLE)
-    root.resizable(False, False)
+    root.resizable(True, True)
     scale = max(1.0, root.winfo_fpixels("1i") / 96.0)
 
     def px(value: float) -> int:
@@ -1526,9 +1526,76 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
     banner.create_text(width - px(26), height * 66 // 100, anchor="e", text=f"Version {VERSION}", fill="#9db4d6",
                        font=("Segoe UI", 10))
 
-    frame = tk.Frame(root, bg=page)
+    # The form sits in a scrollable area: the window can be resized, and on a short or oddly scaled
+    # screen (Install hidden under the taskbar) it is capped to the work area and scrolls instead.
+    holder = tk.Frame(root, bg=page)
+    holder.pack(fill="both", expand=True)
+    scroller = tk.Canvas(holder, bg=page, highlightthickness=0, width=width)
+    vbar = ttk.Scrollbar(holder, orient="vertical", command=scroller.yview)
+    scroller.configure(yscrollcommand=vbar.set)
+    scroller.pack(side="left", fill="both", expand=True)
+    outer_frame = tk.Frame(scroller, bg=page)
+    scroller_window = scroller.create_window(0, 0, window=outer_frame, anchor="nw")
+    frame = tk.Frame(outer_frame, bg=page)
     frame.pack(fill="both", expand=True, padx=px(22), pady=(px(16), px(14)))
     frame.columnconfigure(0, weight=1)
+
+    def work_area() -> tuple:
+        """(left, top, width, height) of the screen minus the taskbar."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            rect = wintypes.RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(48, 0, ctypes.byref(rect), 0):  # SPI_GETWORKAREA
+                return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+        except Exception:
+            pass
+        return 0, 0, root.winfo_screenwidth(), root.winfo_screenheight() - px(48)
+
+    def fit(_event=None):
+        """Show the whole form when it fits; otherwise cap the window to the work area and scroll."""
+        wanted = outer_frame.winfo_reqheight()
+        scroller.configure(scrollregion=(0, 0, outer_frame.winfo_reqwidth(), wanted))
+        if state["user_sized"]:
+            shown = scroller.winfo_height()          # the user's window: only scroll if it is too short
+        else:
+            shown = min(wanted, max(px(200), work_area()[3] - px(60) - banner.winfo_reqheight()))
+            scroller.configure(height=shown, width=max(width, outer_frame.winfo_reqwidth()))
+        if wanted > shown:
+            if not vbar.winfo_ismapped():
+                vbar.pack(side="right", fill="y", before=scroller)
+        elif vbar.winfo_ismapped():
+            vbar.pack_forget()
+            scroller.yview_moveto(0)
+
+    def place_in_work_area():
+        root.update_idletasks()
+        left, top, area_w, area_h = work_area()
+        w, h = root.winfo_reqwidth(), root.winfo_reqheight()
+        x = left + max(0, (area_w - w) // 2)
+        y = top + max(0, (area_h - h - px(40)) // 2)
+        root.geometry(f"+{x}+{y}")
+
+    state["user_sized"] = False
+    state["ready"] = False
+    scroller.bind("<Configure>", lambda event: (scroller.itemconfigure(scroller_window, width=event.width),
+                                                state["user_sized"] and fit()), add="+")
+    outer_frame.bind("<Configure>", fit, add="+")
+
+    def on_resize(event):
+        # A window height other than the one Setup asked for: the user resized or maximised it.
+        if (event.widget is root and state["ready"] and not state["user_sized"]
+                and abs(event.height - root.winfo_reqheight()) > 4):
+            state["user_sized"] = True
+            fit()
+
+    root.bind("<Configure>", on_resize, add="+")
+
+    def on_wheel(event):
+        if vbar.winfo_ismapped():
+            scroller.yview_scroll(int(-event.delta / 120) or (-1 if event.delta > 0 else 1), "units")
+
+    root.bind_all("<MouseWheel>", on_wheel)
 
     def card(row: int, number: int, title: str):
         """A white section with a numbered badge; returns the frame to fill, and its heading row."""
@@ -2051,6 +2118,10 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
     refresh_cars_colour()
     refresh_existing()
     root.protocol("WM_DELETE_WINDOW", on_close)
+    root.minsize(px(560), px(360))
+    fit()
+    place_in_work_area()
+    root.after(400, lambda: state.update(ready=True))
     root.after(100, poll)
     if FROZEN:  # what an earlier update left behind; the old copy may still be closing, so twice
         for delay in (500, 6000):
