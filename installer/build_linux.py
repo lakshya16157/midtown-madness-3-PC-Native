@@ -89,6 +89,7 @@ def main() -> int:
         except (ImportError, OSError) as error:
             print(f"WARNING: no menu icon ({error})")
     (payload / "branding" / "mm3.ico").unlink(missing_ok=True)
+    shutil.copy2(HERE / "mm3_settings.py", payload / "mm3_settings.py")   # the Settings window
     shutil.copy2(HERE / "installer.py", stage / "installer.py")
     (stage / "install.sh").write_text(INSTALL_SH, encoding="ascii", newline="\n")
     (stage / "README-Linux.txt").write_text(README, encoding="ascii", newline="\n")

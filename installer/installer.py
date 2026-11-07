@@ -49,7 +49,7 @@ from pathlib import Path
 # PyInstaller see and include them (it only analyses this file's own imports).
 _PAYLOAD_STDLIB = (argparse, collections, copy, hashlib, math, re, struct, tempfile, zipfile, zlib)
 
-VERSION = "2.6.1"
+VERSION = "2.6.2"
 TITLE = "Midtown Madness 3 - Setup"
 # "Check for updates" asks GitHub for the newest release and downloads the MM3-Setup.exe attached to it.
 RELEASES_API = "https://api.github.com/repos/lakshya16157/midtown-madness-3-PC-Native/releases/latest"
@@ -637,6 +637,8 @@ def install_game_exe(dest: Path, log, replace_exe: bool = True) -> None:
         sources.append(runtime)
     if NATIVE_LINUX and (PAYLOAD / "mm3.png").is_file():
         sources.append(PAYLOAD / "mm3.png")      # the menu entry's icon
+    if NATIVE_LINUX and (PAYLOAD / "mm3_settings.py").is_file():
+        sources.append(PAYLOAD / "mm3_settings.py")      # the Settings window
     if not NATIVE_LINUX and (PAYLOAD / "branding" / "mm3.ico").is_file():
         sources.append(PAYLOAD / "branding" / "mm3.ico")      # the shortcuts' icon
     libraries = PAYLOAD / "lib"        # Linux: the few shared libraries the build ships (found through the start script)
@@ -899,7 +901,16 @@ def write_native_launcher(dest: Path, settings: dict, improvements: bool) -> Non
         "fi",
         'export LD_LIBRARY_PATH="$PWD/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"',
     ]
-    lines += [f"export {name}={quoted(value)}" for name, value in settings.items()]
+    # The Settings window (mm3_settings.py, the Windows launcher's mod choices) opens first; its Play
+    # button runs this script again with MM3_NO_SETTINGS set. What it exports wins over the values below,
+    # and the keyboard switch is launcher.ini's (default on) rather than pinned here.
+    lines += [
+        'if [ -z "$MM3_NO_SETTINGS" ] && [ -f mm3_settings.py ] && [ -n "$DISPLAY$WAYLAND_DISPLAY" ] && python3 -c "import tkinter" >/dev/null 2>&1; then',
+        "  exec python3 mm3_settings.py",
+        "fi",
+    ]
+    lines += [f'[ -n "${{{name}:-}}" ] || export {name}={quoted(value)}'
+              for name, value in settings.items() if name != "RECOMP_KEYBOARD"]
     lines += [
         "mkdir -p logs",
         f"./{GAME_EXE} > logs/last-run.log 2>&1 || echo 'The game stopped with an error. Details: logs/last-run.log'",
@@ -1267,7 +1278,7 @@ def uninstall(dest, log, delete_game_files: bool = False) -> list[str]:
     if NATIVE_LINUX:
         shutil.rmtree(dest / "lib", ignore_errors=True)
     for name in (GAME_EXE, GAME_EXE + ".new", Path(GAME_EXE).stem + ".pdb", "vcruntime140.dll", LAUNCHER, LINUX_LAUNCHER,
-                 "mm3.png", "mm3.ico", "Extra cars - credits.txt", DISC_FILES):
+                 "mm3.png", "mm3.ico", "mm3_settings.py", "Extra cars - credits.txt", DISC_FILES):
         try:
             (dest / name).unlink()
             removed.append(name)

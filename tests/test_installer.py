@@ -513,8 +513,11 @@ class NativeLinuxTest(unittest.TestCase):
             self.assertIn('export LD_LIBRARY_PATH="$PWD/lib', text)
             self.assertIn("./mm3_recomp > logs/last-run.log", text)
             self.assertNotIn("wine", text.lower())
+            # The Settings window's choices (exported before this script runs again) win over these defaults.
             for name, value in setup.launch_settings(False).items():
-                self.assertIn(f"export {name}='{value}'\n", text)
+                if name != "RECOMP_KEYBOARD":          # launcher.ini's keyboard switch, default on
+                    self.assertIn(f"[ -n \"${{{name}:-}}\" ] || export {name}='{value}'\n", text)
+            self.assertIn("exec python3 mm3_settings.py", text)
             self.assertFalse((target / "Play Midtown Madness 3.cmd").exists())   # no Windows script
 
     def test_desktop_entries_quote_the_path_and_are_removed_again(self):

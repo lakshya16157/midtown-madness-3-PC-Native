@@ -17,6 +17,7 @@
 #include "mm3_display_settings.h"
 #include "mm3_frame_limit.h"
 #include "mm3_launcher.h"
+#include "mm3_launcher_config.h"
 #include "mm3_crash_diagnostics.h"
 #include "mm3_world_lighting.h"
 #include "mm3_collision_profile.h"
@@ -433,6 +434,19 @@ int main(void)
                 entered_directory);
 #ifdef _WIN32
     if (!mm3_launcher_run()) return 0;
+#else
+    {
+        /* Linux: launcher.ini (written by the Settings window, mm3_launcher.py, or by hand)
+         * holds the same mod choices as on Windows; explicit environment wins. */
+        MM3LauncherConfig saved;
+        char note[512] = "";
+        if (!mm3_launcher_config_startup(&saved, note, sizeof note) || *note)
+            fprintf(stderr, "[MM3_LAUNCHER] %s\n", note);
+        if (!mm3_launcher_config_apply(&saved, note, sizeof note)) {
+            fprintf(stderr, "[MM3_LAUNCHER] %s\n", note);
+            return 0;
+        }
+    }
 #endif
     /* Bootstrap capture uses the real audio engine without displaying a game
      * window or changing the user's device volume or saved preferences. */
