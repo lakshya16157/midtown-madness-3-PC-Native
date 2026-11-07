@@ -14495,7 +14495,7 @@ index 0000000..ba782e5
 +#endif /* NV2A_BLACK_FRAME_LOGIC_ONLY */
 +#endif /* NV2A_BLACK_FRAME_H */
 diff --git a/src/video/nv2a_d3d11.c b/src/video/nv2a_d3d11.c
-index f4432e7..5e4c4b8 100644
+index f4432e7..2ffd991 100644
 --- a/src/video/nv2a_d3d11.c
 +++ b/src/video/nv2a_d3d11.c
 @@ -19,9 +19,10 @@
@@ -14814,7 +14814,7 @@ index f4432e7..5e4c4b8 100644
  }
  
  /* Internal resolution relative to the guest's: s_scale vertically, and
-@@ -289,6 +493,145 @@ static UINT s_msaa = 4, s_aniso = 16;
+@@ -289,6 +493,150 @@ static UINT s_msaa = 4, s_aniso = 16;
  
  /* A title's placement of screen-space 2D on a widened target (header). */
  static NvOverlayHooks s_overlay;
@@ -14849,6 +14849,11 @@ index f4432e7..5e4c4b8 100644
 +static float (*s_minimap_expansion_query)(float cx, float cy);
 +static float s_frame_map_shift;     /* renderer thread only, shared by all map draws */
 +static float s_frame_map_y_offset;  /* guest pixels, shared by map and tagged routes */
++/* hud_split follow == 3 (a map-atlas draw): only vertices whose cluster lies
++ * away from the minimap window are placed, keeping the position the title
++ * projected; s_hud_far marks them (valid after a call that returns nonzero). */
++#define HUD_MAP_MARGIN 24.0f
++static uint8_t *s_hud_far;
 +static float s_frame_map_cx, s_frame_map_cy;
 +static float s_frame_map_half_width, s_frame_map_half_height;
 +static float s_frame_map_motion;
@@ -14960,7 +14965,7 @@ index f4432e7..5e4c4b8 100644
  
  void nv2a_d3d_set_overlay_hooks(const NvOverlayHooks *hooks)
  {
-@@ -296,11 +639,56 @@ void nv2a_d3d_set_overlay_hooks(const NvOverlayHooks *hooks)
+@@ -296,11 +644,56 @@ void nv2a_d3d_set_overlay_hooks(const NvOverlayHooks *hooks)
      if (hooks) s_overlay = *hooks;
  }
  
@@ -15021,7 +15026,7 @@ index f4432e7..5e4c4b8 100644
  
  /* The window's client size; 0 if there is no window or it is minimised. */
  static int client_size(UINT *w, UINT *h)
-@@ -319,12 +707,12 @@ float nv2a_d3d_display_aspect(void)
+@@ -319,12 +712,12 @@ float nv2a_d3d_display_aspect(void)
      float a = s_aspect;
      UINT w, h;
      if (a) return a;
@@ -15036,7 +15041,7 @@ index f4432e7..5e4c4b8 100644
              mi.rcMonitor.bottom > mi.rcMonitor.top)
              return clamp_aspect((float)(mi.rcMonitor.right - mi.rcMonitor.left) /
                                  (float)(mi.rcMonitor.bottom - mi.rcMonitor.top));
-@@ -345,6 +733,10 @@ static ID3D11PixelShader  *s_y16_ps[2];      /* [msaa] */
+@@ -345,6 +738,10 @@ static ID3D11PixelShader  *s_y16_ps[2];      /* [msaa] */
  static ID3D11PixelShader  *s_y16d_ps[2];     /* [msaa], from a depth buffer */
  /* s_raw: the vertex-data ring ub_vs reads (raw view s_raw_srv) */
  static ID3D11Buffer *s_raw, *s_ib, *s_cb_ub, *s_cb_prog, *s_cb_vconst, *s_cb_ps, *s_cb_present, *s_cb_clear;
@@ -15047,7 +15052,7 @@ index f4432e7..5e4c4b8 100644
  static ID3D11ShaderResourceView *s_raw_srv;
  static UINT s_raw_pos, s_ib_pos;
  static int s_raw_nooverwrite;
-@@ -365,6 +757,15 @@ static ID3D11PixelShader *s_bound_ps;
+@@ -365,6 +762,15 @@ static ID3D11PixelShader *s_bound_ps;
  static ID3D11SamplerState *s_bound_ps_samplers[4];
  static int s_bound_ps_valid;
  static uint32_t s_bound_ps_samplers_valid;
@@ -15063,7 +15068,7 @@ index f4432e7..5e4c4b8 100644
  
  static void bind_vertex_shader(ID3D11VertexShader *shader)
  {
-@@ -415,6 +816,73 @@ static void bind_pixel_samplers(UINT count, ID3D11SamplerState *const *samplers)
+@@ -415,6 +821,73 @@ static void bind_pixel_samplers(UINT count, ID3D11SamplerState *const *samplers)
      }
  }
  
@@ -15137,7 +15142,7 @@ index f4432e7..5e4c4b8 100644
  /* No other pass writes VS t0/b1-b3 or PS b1. The raw buffer is input-only
   * and cannot overlap any texture output, so D3D11's output hazard handling
   * cannot unbind it. DISCARD changes its storage, not its resource binding.
-@@ -429,6 +897,8 @@ static void bind_fixed_resources(void)
+@@ -429,6 +902,8 @@ static void bind_fixed_resources(void)
      s_bound_vs_valid = s_bound_vs_b0_valid = 0;
      s_bound_ps_valid = 0;
      s_bound_ps_samplers_valid = 0;
@@ -15146,7 +15151,7 @@ index f4432e7..5e4c4b8 100644
  }
  
  static void fail(const char *what, HRESULT hr)
-@@ -464,6 +934,16 @@ static uint32_t phys(uint32_t va)
+@@ -464,6 +939,16 @@ static uint32_t phys(uint32_t va)
  
  /* The renderer's HLSL (src/video/shaders, concatenated by CMake). */
  #include "nv2a_hlsl.inc"
@@ -15163,7 +15168,7 @@ index f4432e7..5e4c4b8 100644
  
  
  
-@@ -504,13 +984,7 @@ static ID3DBlob *compile(const char *entry, const char *target)
+@@ -504,13 +989,7 @@ static ID3DBlob *compile(const char *entry, const char *target)
   * use the ubershader until it is ready, so output never changes. Only the
   * control words are keyed; factors and other floats stay in the cbuffer.
   * RECOMP_PS_SPEC=0 disables this. */
@@ -15178,7 +15183,7 @@ index f4432e7..5e4c4b8 100644
  #include "nv2a_ps_manifest.h"
  typedef char PsKeySizeCheck[sizeof(PsKey) == NV_PS_MANIFEST_WORDS * 4 ? 1 : -1];
  
-@@ -531,7 +1005,7 @@ static unsigned s_spec_warm_head, s_spec_warm_tail;
+@@ -531,7 +1010,7 @@ static unsigned s_spec_warm_head, s_spec_warm_tail;
  static CRITICAL_SECTION s_spec_cs;
  static CONDITION_VARIABLE s_spec_cv;
  static volatile LONG s_spec_ready;
@@ -15187,7 +15192,7 @@ index f4432e7..5e4c4b8 100644
  static wchar_t s_spec_manifest_path[NV_SHADER_CACHE_PATH];
  static uint8_t s_spec_family[32];
  static PsKey s_spec_known[NV_PS_MANIFEST_LIMIT];
-@@ -683,6 +1157,17 @@ static void spec_hitch_report(const char *phase, int64_t start, uint32_t variant
+@@ -683,6 +1162,17 @@ static void spec_hitch_report(const char *phase, int64_t start, uint32_t variant
              ms, (unsigned long)GetCurrentThreadId(), variant, cache_hit, (unsigned long)hr);
  }
  
@@ -15205,7 +15210,7 @@ index f4432e7..5e4c4b8 100644
  static DWORD WINAPI spec_worker(LPVOID arg)
  {
      (void)arg;
-@@ -706,39 +1191,17 @@ static DWORD WINAPI spec_worker(LPVOID arg)
+@@ -706,39 +1196,17 @@ static DWORD WINAPI spec_worker(LPVOID arg)
          }
          LeaveCriticalSection(&s_spec_cs);
          k = &e->key;
@@ -15250,7 +15255,7 @@ index f4432e7..5e4c4b8 100644
          spec_hitch_report("shader_compile_def", start, k->variant, cache_hit, b ? S_OK : E_FAIL);
          hr = E_FAIL;
          if (b) {
-@@ -769,7 +1232,13 @@ static void spec_init(void)
+@@ -769,7 +1237,13 @@ static void spec_init(void)
      uint32_t records[NV_PS_MANIFEST_LIMIT][NV_PS_MANIFEST_WORDS];
      if (s_spec_enabled >= 0) return;
      v = getenv("RECOMP_PS_SPEC");
@@ -15265,7 +15270,7 @@ index f4432e7..5e4c4b8 100644
      if (s_spec_enabled) s_spec = (PsSpec *)calloc(PS_SPEC_SLOTS, sizeof *s_spec);
      if (!s_spec) { s_spec_enabled = 0; return; }
      InitializeCriticalSection(&s_spec_cs);
-@@ -848,18 +1317,68 @@ static ID3D11Buffer *make_buffer(UINT bytes, UINT bind)
+@@ -848,18 +1322,68 @@ static ID3D11Buffer *make_buffer(UINT bytes, UINT bind)
      return b;
  }
  
@@ -15337,7 +15342,7 @@ index f4432e7..5e4c4b8 100644
  /* The pixel constant buffer has one writer and process-lifetime storage.
   * Repeated draws often keep exactly the same constants. Compare all bytes,
   * including dynamic factors/fog/alpha values, and remember only successful
-@@ -881,6 +1400,19 @@ static int upload_ps_constants(const PSConsts *pc)
+@@ -881,6 +1405,19 @@ static int upload_ps_constants(const PSConsts *pc)
      return 0;
  }
  
@@ -15357,7 +15362,7 @@ index f4432e7..5e4c4b8 100644
  int nv2a_d3d_init(void)
  {
      static const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
-@@ -942,6 +1474,18 @@ int nv2a_d3d_init(void)
+@@ -942,6 +1479,18 @@ int nv2a_d3d_init(void)
          }
      }
      MAKE("ub_vs", "vs_5_0", VertexShader, &s_ub_vs)
@@ -15376,7 +15381,7 @@ index f4432e7..5e4c4b8 100644
      MAKE("present_vs", "vs_5_0", VertexShader, &s_present_vs)
      MAKE("present_ps", "ps_5_0", PixelShader, &s_present_ps)
      MAKE("clear_vs", "vs_5_0", VertexShader, &s_clear_vs)
-@@ -992,11 +1536,13 @@ int nv2a_d3d_init(void)
+@@ -992,11 +1541,13 @@ int nv2a_d3d_init(void)
      }
      s_ib = make_buffer(IB_BYTES, D3D11_BIND_INDEX_BUFFER);
      s_cb_ub = make_buffer(sizeof(UbConsts), D3D11_BIND_CONSTANT_BUFFER);
@@ -15391,7 +15396,7 @@ index f4432e7..5e4c4b8 100644
      if (!s_raw_srv || !s_ib || !s_cb_ub || !s_cb_prog || !s_cb_vconst || !s_cb_ps || !s_cb_present || !s_cb_clear) {
          fail("buffer creation", E_FAIL);
          return 0;
-@@ -1040,6 +1586,8 @@ int nv2a_d3d_init(void)
+@@ -1040,6 +1591,8 @@ int nv2a_d3d_init(void)
          if (qc && qd) break;
      }
      if (s_msaa < 1) s_msaa = 1;
@@ -15400,7 +15405,7 @@ index f4432e7..5e4c4b8 100644
      spec_init();
      bind_fixed_resources();
      s_init_state = 1;
-@@ -1055,6 +1603,40 @@ int nv2a_d3d_active(void)
+@@ -1055,6 +1608,40 @@ int nv2a_d3d_active(void)
      return s_init_state > 0;
  }
  
@@ -15441,7 +15446,7 @@ index f4432e7..5e4c4b8 100644
  /* --------------------------------------------------------------- surfaces */
  
  typedef struct {
-@@ -1062,6 +1644,7 @@ typedef struct {
+@@ -1062,6 +1649,7 @@ typedef struct {
      uint32_t color_fmt;             /* SURFACE_FORMAT colour code */
      float sx, sy;                   /* host pixels per guest pixel */
      int swizzled;
@@ -15449,7 +15454,7 @@ index f4432e7..5e4c4b8 100644
      ID3D11Texture2D *tex;           /* single-sample; what srv reads */
      ID3D11Texture2D *ms;            /* MSAA target rtv draws into, or NULL */
      int ms_dirty;                   /* ms drawn since the last resolve */
-@@ -1080,10 +1663,21 @@ typedef struct {
+@@ -1080,10 +1668,21 @@ typedef struct {
      ID3D11RenderTargetView *rtv;
      ID3D11ShaderResourceView *srv;
      uint8_t *shadow;                /* guest bytes as of the last sync */
@@ -15472,7 +15477,7 @@ index f4432e7..5e4c4b8 100644
  } Surface;
  
  typedef struct {
-@@ -1095,11 +1689,18 @@ typedef struct {
+@@ -1095,11 +1694,18 @@ typedef struct {
      ID3D11ShaderResourceView *y16_srv;
      ID3D11RenderTargetView *y16_rtv;
      uint32_t zf, w, h;                      /* zeta format code, guest size last bound with */
@@ -15493,7 +15498,7 @@ index f4432e7..5e4c4b8 100644
  #define MAX_SURFACES 32
  #define MAX_DEPTHS 16
  static Surface s_surf[MAX_SURFACES];
-@@ -1165,16 +1766,18 @@ static void unbind_textures(void)
+@@ -1165,16 +1771,18 @@ static void unbind_textures(void)
  
  /* Draw columns [u0, u1) of `srv` into columns [x0, x1) of `rtv` (fractions
   * of each width), full height. */
@@ -15516,7 +15521,7 @@ index f4432e7..5e4c4b8 100644
      pc.src_size[0] = pc.src_size[1] = pc.src_size[2] = pc.src_size[3] = 1;
      pc.force_alpha[0] = alpha;
      pc.ovl_flags[3] = mask ? 1 : 0;
-@@ -1183,11 +1786,11 @@ static int blit_span(ID3D11ShaderResourceView *srv, ID3D11ShaderResourceView *ma
+@@ -1183,11 +1791,11 @@ static int blit_span(ID3D11ShaderResourceView *srv, ID3D11ShaderResourceView *ma
      unbind_targets();
      ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &rtv, NULL);
      ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
@@ -15533,7 +15538,7 @@ index f4432e7..5e4c4b8 100644
      bind_vertex_shader(s_present_vs);
      bind_vertex_constants(s_cb_present);
      bind_pixel_shader(s_present_ps);
-@@ -1204,6 +1807,13 @@ static int blit_span(ID3D11ShaderResourceView *srv, ID3D11ShaderResourceView *ma
+@@ -1204,6 +1812,13 @@ static int blit_span(ID3D11ShaderResourceView *srv, ID3D11ShaderResourceView *ma
      return 1;
  }
  
@@ -15547,7 +15552,7 @@ index f4432e7..5e4c4b8 100644
  static void blit(ID3D11ShaderResourceView *srv, ID3D11RenderTargetView *rtv,
                   UINT dst_w, UINT dst_h, float alpha)
  {
-@@ -1221,6 +1831,30 @@ static void guest_span(const Surface *s, float *x0, float *x1)
+@@ -1221,6 +1836,30 @@ static void guest_span(const Surface *s, float *x0, float *x1)
      *x1 = (1.0f + f) * 0.5f;
  }
  
@@ -15578,7 +15583,7 @@ index f4432e7..5e4c4b8 100644
  /* Guest rows of a surface as BGRA, with the format's fixed alpha. */
  static void surface_rows_to_bgra(const Surface *s, const uint8_t *src,
                                   uint32_t pitch, uint32_t *out)
-@@ -1304,11 +1938,11 @@ static uint32_t *scratch_pixels(size_t count)
+@@ -1304,11 +1943,11 @@ static uint32_t *scratch_pixels(size_t count)
  
  /* The shadow and change mask describe logical pixels. Swizzled targets
   * need the same CPU-write detection after undoing their Morton layout. */
@@ -15592,7 +15597,7 @@ index f4432e7..5e4c4b8 100644
      *pitch = s->w * s->bpp;
      bytes = (size_t)*pitch * s->h;
      if (bytes > s_swz_cap) {
-@@ -1317,10 +1951,149 @@ static const uint8_t *surface_guest_rows(const Surface *s, uint32_t *pitch)
+@@ -1317,10 +1956,149 @@ static const uint8_t *surface_guest_rows(const Surface *s, uint32_t *pitch)
          s_swz_cap = s_swz_rows ? bytes : 0;
      }
      if (!s_swz_rows) return NULL;
@@ -15743,7 +15748,7 @@ index f4432e7..5e4c4b8 100644
  /* A single reusable pending shadow keeps CPU writes made during submission
   * visible to the next sync. Only successfully submitted bytes become the
   * surface shadow; swapping buffers avoids copying them again on commit. */
-@@ -1335,25 +2108,62 @@ static void surface_sync_impl(Surface *s, int force)
+@@ -1335,25 +2113,62 @@ static void surface_sync_impl(Surface *s, int force)
  {
      uint32_t rowb = s->w * s->bpp, y, x, x0 = 0xFFFFFFFFu, x1 = 0, y0 = 0xFFFFFFFFu, y1 = 0;
      uint32_t pitch;
@@ -15814,7 +15819,7 @@ index f4432e7..5e4c4b8 100644
      }
      if (bytes > s_sync_cap) {
          uint8_t *rows = (uint8_t *)realloc(s_sync_rows, bytes);
-@@ -1381,14 +2191,22 @@ static void surface_sync_impl(Surface *s, int force)
+@@ -1381,14 +2196,22 @@ static void surface_sync_impl(Surface *s, int force)
              for (x = 0; x < s->w; x++)
                  if (memcmp(row + x * s->bpp, sh + x * s->bpp, s->bpp)) {
                      mask[x] = 0xFFFFFFFFu;
@@ -15838,7 +15843,7 @@ index f4432e7..5e4c4b8 100644
      }
      px = scratch_pixels(count);
      if (!px) return;
-@@ -1399,8 +2217,9 @@ static void surface_sync_impl(Surface *s, int force)
+@@ -1399,8 +2222,9 @@ static void surface_sync_impl(Surface *s, int force)
          msk = upload_slot(1, s_mask_pixels, s->w, s->h);
          if (!msk) return;
      }
@@ -15850,7 +15855,7 @@ index f4432e7..5e4c4b8 100644
          return;
      {
          uint8_t *old_shadow = s->shadow;
-@@ -1408,6 +2227,23 @@ static void surface_sync_impl(Surface *s, int force)
+@@ -1408,6 +2232,23 @@ static void surface_sync_impl(Surface *s, int force)
          s_sync_rows = old_shadow;
          s_sync_cap = old_shadow ? bytes : 0;
      }
@@ -15874,7 +15879,7 @@ index f4432e7..5e4c4b8 100644
      s->synced_frame = s_epoch;
      s->ms_dirty = 1;
      s->gen++;
-@@ -1441,6 +2277,7 @@ static void surface_release(Surface *s)
+@@ -1441,6 +2282,7 @@ static void surface_release(Surface *s)
      if (s->chain) ID3D11Texture2D_Release(s->chain);
      if (s->tex) ID3D11Texture2D_Release(s->tex);
      free(s->shadow);
@@ -15882,7 +15887,7 @@ index f4432e7..5e4c4b8 100644
      memset(s, 0, sizeof *s);
  }
  
-@@ -1494,6 +2331,14 @@ static Surface *surface_get(uint32_t va, uint32_t pitch, uint32_t fmt,
+@@ -1494,6 +2336,14 @@ static Surface *surface_get(uint32_t va, uint32_t pitch, uint32_t fmt,
                      victim = &s_surf[i];
          if (!victim) victim = &s_surf[0];
      }
@@ -15897,7 +15902,7 @@ index f4432e7..5e4c4b8 100644
      surface_release(victim);
      s = victim;
      s->phys = p; s->va = va; s->pitch = pitch; s->bpp = bpp;
-@@ -1553,6 +2398,41 @@ static Depth *depth_find(uint32_t p)
+@@ -1553,6 +2403,41 @@ static Depth *depth_find(uint32_t p)
      return best;
  }
  
@@ -15939,7 +15944,7 @@ index f4432e7..5e4c4b8 100644
  static Depth *depth_get(uint32_t va, uint32_t iw, uint32_t ih, UINT samples)
  {
      uint32_t p = phys(va);
-@@ -1666,8 +2546,12 @@ static int bind_targets(const NvD3DState *st, int want_depth, Surface **out,
+@@ -1666,8 +2551,12 @@ static int bind_targets(const NvD3DState *st, int want_depth, Surface **out,
          target_refused(why, st->zeta_addr, fmt, w, h, 0);
          d = NULL;
      }
@@ -15954,7 +15959,7 @@ index f4432e7..5e4c4b8 100644
      if (s != s_cur_rt || d != s_cur_ds) {
          ID3D11RenderTargetView *rtv = s ? s->rtv : NULL;
          unbind_textures();
-@@ -1703,6 +2587,13 @@ typedef struct TexEntry {
+@@ -1703,6 +2592,13 @@ typedef struct TexEntry {
      uint32_t phys, format, pitch, w, h, palette, palette_len, used;
      uint64_t hash, pal_hash;
      uint32_t checked_epoch;
@@ -15968,7 +15973,7 @@ index f4432e7..5e4c4b8 100644
      size_t bytes;
      ID3D11Resource *tex;
      ID3D11ShaderResourceView *srv;
-@@ -1714,6 +2605,86 @@ static TexEntry *s_tex_bucket[TEX_BUCKETS];
+@@ -1714,6 +2610,86 @@ static TexEntry *s_tex_bucket[TEX_BUCKETS];
  static size_t s_tex_bytes, s_tex_count;
  #define TEX_BUDGET ((size_t)768 << 20)
  
@@ -16055,7 +16060,7 @@ index f4432e7..5e4c4b8 100644
  
  /* Opt-in stream diagnostics: cache hits stay quiet, while real uploads,
   * rejected resources and allocation failures carry a common host timestamp.
-@@ -1744,6 +2715,9 @@ static void texture_trace_event(const NvD3DTexture *t, const char *event,
+@@ -1744,6 +2720,9 @@ static void texture_trace_event(const NvD3DTexture *t, const char *event,
  {
      uint64_t now;
      double duration = 0;
@@ -16065,7 +16070,7 @@ index f4432e7..5e4c4b8 100644
      if (!texture_trace_enabled()) return;
      now = GetTickCount64();
      if (!s_tex_trace_window || now - s_tex_trace_window >= 1000) {
-@@ -1759,7 +2733,7 @@ static void texture_trace_event(const NvD3DTexture *t, const char *event,
+@@ -1759,7 +2738,7 @@ static void texture_trace_event(const NvD3DTexture *t, const char *event,
      if (s_tex_trace_emitted >= 80) { ++s_tex_trace_dropped; return; }
      ++s_tex_trace_emitted;
      if (start && s_tex_trace_freq.QuadPart)
@@ -16074,7 +16079,7 @@ index f4432e7..5e4c4b8 100644
      fprintf(stderr, "[TEXTURE_STREAM] tick_ms=%llu frame=%u epoch=%u event=%s addr=%08X phys=%08X size=%ux%u format=%08X palette=%08X guest_bytes=%zu guest_mips=%d host_mips=%d previous=%016llX content=%016llX duration_ms=%.3f cache_count=%zu cache_bytes=%zu evictions=%llu\n",
              (unsigned long long)now, s_frame, s_epoch, event, t->addr, phys(t->addr),
              t->width, t->height, t->format, t->palette, bytes, levels, host_mips,
-@@ -1835,8 +2809,9 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t, int *gu
+@@ -1835,8 +2814,9 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t, int *gu
      uint64_t h, ph = 0, previous = 0;
      uint32_t *pal = NULL, *px = NULL;
      DXGI_FORMAT host_format;
@@ -16085,7 +16090,7 @@ index f4432e7..5e4c4b8 100644
      const char *failure = "cache_allocation_failed";
  
      if (guest_levels) *guest_levels = 1;
-@@ -1862,7 +2837,6 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t, int *gu
+@@ -1862,7 +2842,6 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t, int *gu
          e->used = s_frame;
          return e->srv;
      }
@@ -16093,7 +16098,7 @@ index f4432e7..5e4c4b8 100644
      if (t->color == 0x0B) {
          /* I8 without its palette has no colours to decode to; refuse rather
           * than substitute a greyscale ramp. */
-@@ -1874,10 +2848,22 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t, int *gu
+@@ -1874,10 +2853,22 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t, int *gu
              texture_refused(t, "palette_outside_ram", t->palette_len * 4);
              return NULL;
          }
@@ -16116,7 +16121,7 @@ index f4432e7..5e4c4b8 100644
          e->checked_epoch = s_epoch;
          e->used = s_frame;
          return e->srv;
-@@ -1896,7 +2882,7 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t, int *gu
+@@ -1896,7 +2887,7 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t, int *gu
              texture_trace_event(t, "scratch_allocation_failed", L.total, L.levels, hl,
                                  previous, h, trace_start);
              texture_refused(t, "scratch_allocation_failed", L.total);
@@ -16125,7 +16130,7 @@ index f4432e7..5e4c4b8 100644
              return e ? e->srv : NULL;
          }
      }
-@@ -1988,6 +2974,7 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t, int *gu
+@@ -1988,6 +2979,7 @@ static ID3D11ShaderResourceView *texture_get_impl(const NvD3DTexture *t, int *gu
              }
          }
      }
@@ -16133,7 +16138,7 @@ index f4432e7..5e4c4b8 100644
      e->hash = h;
      e->pal_hash = ph;
      e->checked_epoch = s_epoch;
-@@ -2092,12 +3079,12 @@ static D3D11_BLEND_OP blend_op(uint32_t e)
+@@ -2092,12 +3084,12 @@ static D3D11_BLEND_OP blend_op(uint32_t e)
      }
  }
  
@@ -16149,7 +16154,7 @@ index f4432e7..5e4c4b8 100644
      void **slot = state_slot(s_blend_cache, key);
      if (!*slot) {
          D3D11_BLEND_DESC d;
-@@ -2105,7 +3092,9 @@ static ID3D11BlendState *blend_state(int enable, uint32_t sf, uint32_t df,
+@@ -2105,7 +3097,9 @@ static ID3D11BlendState *blend_state(int enable, uint32_t sf, uint32_t df,
          memset(&d, 0, sizeof d);
          r->BlendEnable = enable ? TRUE : FALSE;
          r->SrcBlend = blend_factor(sf, 0);
@@ -16160,7 +16165,7 @@ index f4432e7..5e4c4b8 100644
          r->SrcBlendAlpha = blend_factor(sf, 1);
          r->DestBlendAlpha = blend_factor(df, 1);
          r->BlendOp = r->BlendOpAlpha = blend_op(eq);
-@@ -2115,6 +3104,12 @@ static ID3D11BlendState *blend_state(int enable, uint32_t sf, uint32_t df,
+@@ -2115,6 +3109,12 @@ static ID3D11BlendState *blend_state(int enable, uint32_t sf, uint32_t df,
      return (ID3D11BlendState *)*slot;
  }
  
@@ -16173,7 +16178,7 @@ index f4432e7..5e4c4b8 100644
  static D3D11_COMPARISON_FUNC cmp(uint32_t f)
  {
      switch (f) {
-@@ -2143,6 +3138,15 @@ static D3D11_STENCIL_OP sop(uint32_t o)
+@@ -2143,6 +3143,15 @@ static D3D11_STENCIL_OP sop(uint32_t o)
      }
  }
  
@@ -16189,7 +16194,7 @@ index f4432e7..5e4c4b8 100644
  static ID3D11DepthStencilState *ds_state(int zt, uint32_t zf, int zw, int st,
                                           uint32_t sf, uint32_t rmask, uint32_t wmask,
                                           uint32_t fail_, uint32_t zfail, uint32_t zpass)
-@@ -2344,34 +3348,77 @@ static ID3D11ShaderResourceView *feedback_copy(Surface *s)
+@@ -2344,34 +3353,77 @@ static ID3D11ShaderResourceView *feedback_copy(Surface *s)
      return s_feedback_srv;
  }
  
@@ -16286,7 +16291,7 @@ index f4432e7..5e4c4b8 100644
  }
  
  static uint32_t write_mask(const NvD3DState *st, Surface *s)
-@@ -2385,18 +3432,278 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
+@@ -2385,18 +3437,278 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
      return m;
  }
  
@@ -16569,7 +16574,7 @@ index f4432e7..5e4c4b8 100644
  static int draw_forces_depth(const NvD3DState *st)
  {
      Surface *source;
-@@ -2530,11 +3837,11 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
+@@ -2530,11 +3842,11 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
          unbind_targets();
          ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &s->y16_rtv, NULL);
          ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
@@ -16586,7 +16591,7 @@ index f4432e7..5e4c4b8 100644
          bind_vertex_shader(s_y16_vs);
          bind_pixel_shader(s_y16_ps[s->ms ? 1 : 0]);
          ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, &src);
-@@ -2546,8 +3853,11 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
+@@ -2546,8 +3858,11 @@ static ID3D11ShaderResourceView *surface_y16(Surface *s)
      return s->y16_srv;
  }
  
@@ -16600,7 +16605,7 @@ index f4432e7..5e4c4b8 100644
  {
  #ifndef XBOXRECOMP_DEPTH_VIEW_SHADER
      static int noted;
-@@ -2555,12 +3865,17 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
+@@ -2555,12 +3870,17 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
      if (!noted) { noted=1; fprintf(stderr,"[NV2A] depth texture conversion unavailable; supply a port shader\n"); }
      return NULL;
  #else
@@ -16619,7 +16624,7 @@ index f4432e7..5e4c4b8 100644
          ID3D11ShaderResourceView *src[1] = { d->zsrv };
          D3D11_VIEWPORT vp = { 0, 0, (float)(2 * d->iw), (float)d->ih, 0, 1 };
          D3D11_RECT sc = { 0, 0, (LONG)(2 * d->iw), (LONG)d->ih };
-@@ -2568,30 +3883,544 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
+@@ -2568,30 +3888,544 @@ static ID3D11ShaderResourceView *depth_y16(Depth *d)
          unbind_targets();
          ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &d->y16_rtv, NULL);
          ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
@@ -17171,7 +17176,7 @@ index f4432e7..5e4c4b8 100644
  static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                            uint32_t *out_gw, uint32_t *out_gh, uint32_t *out_zmax)
  {
-@@ -2601,11 +4430,29 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2601,11 +4435,29 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      PSConsts pc;
      ID3D11ShaderResourceView *srv[13] = { 0 };
      ID3D11SamplerState *smp[4] = { 0 };
@@ -17203,7 +17208,7 @@ index f4432e7..5e4c4b8 100644
  
      {
          /* Bring-up switches: RECOMP_D3D_SKIP_CMASK / _SKIP_SFACTOR (hex) drop
-@@ -2626,6 +4473,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2626,6 +4478,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          cull = st->cull_face == 0x404 ? 1 : st->cull_face == 0x405 ? 2 : 3;
      if (cull == 3 && topology == NV_D3D_TRIANGLES)
          return 0;                                /* front and back culled */
@@ -17214,7 +17219,7 @@ index f4432e7..5e4c4b8 100644
      /* Y16 views of 32-bit targets are drawn before this draw's targets go
       * on; see y16_ps. */
      for (n = 0; n < 4; n++) {
-@@ -2634,23 +4485,50 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2634,23 +4490,50 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          Depth *zt;
          if (t->color != 0x35 || t->cube || !t->addr) continue;
          /* A depth buffer wins over a colour surface at the same address:
@@ -17273,7 +17278,7 @@ index f4432e7..5e4c4b8 100644
      for (n = 0; n < 4; n++) {
          const NvD3DTexture *t = &st->tex[n];
          uint32_t mode = (st->rc.stage_program >> (n * 5)) & 31;
-@@ -2671,13 +4549,50 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2671,13 +4554,50 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          rt = !tex_volume(t) && !t->cube && kind != K_DXT && t->color != 0x0B
               ? surface_find(phys(t->addr)) : NULL;
          s_draw_textured = 1;
@@ -17327,7 +17332,7 @@ index f4432e7..5e4c4b8 100644
          } else if (rt) {
              surface_sync(rt, 0);
              surface_resolve(rt);
-@@ -2704,7 +4619,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2704,7 +4624,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                  }
              }
          } else {
@@ -17337,7 +17342,7 @@ index f4432e7..5e4c4b8 100644
              if (kind == K_LIN) {
                  pc.tex_scale[n][0] = 1.0f / (float)t->width;
                  pc.tex_scale[n][1] = 1.0f / (float)t->height;
-@@ -2717,11 +4633,30 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2717,11 +4638,30 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
              pc.tex_scale[n][2] = pc.tex_scale[n][3] = 1.0f;
          }
          if (!view) continue;
@@ -17370,7 +17375,7 @@ index f4432e7..5e4c4b8 100644
              s_draw_bspline = 1;
          pc.tex_info[n][0] = (t->control0 >> 2) & 1;
          pc.tex_info[n][1] = (t->filter >> 28) | (tex_volume(t) ? 256u : 0u);
-@@ -2767,6 +4702,41 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2767,6 +4707,41 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      pc.alpha_ref = st->alpha_ref;
      pc.ps_flags = (st->rc_seen ? 1u : 0u) | (st->alpha_test ? 2u : 0u) |
                    (s_draw_bspline ? 4u : 0u);
@@ -17412,7 +17417,7 @@ index f4432e7..5e4c4b8 100644
      pc.clip_plane = st->clip_plane_mode;
      pc.other_input = st->other_stage_input;
      pc.dot_map = st->dot_rgb_mapping;
-@@ -2775,7 +4745,13 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2775,7 +4750,13 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      pc.fog_color[1] = ((st->fog_color >> 8) & 0xFF) / 255.0f;
      pc.fog_color[2] = ((st->fog_color >> 16) & 0xFF) / 255.0f;
      pc.fog_color[3] = (st->fog_color >> 24) / 255.0f;
@@ -17427,7 +17432,7 @@ index f4432e7..5e4c4b8 100644
          uint32_t zm = zf == 1 ? 0xFFFFu : 0xFFFFFFu;
          if (st->poly_offset_fill) {
              pc.zp0[0] = st->poly_offset_factor;
-@@ -2785,42 +4761,32 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2785,42 +4766,32 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          pc.zp0[3] = s_cur_sy;
          pc.zp1[0] = 1.0f / ((float)zm + 1.0f);
          pc.zp1[1] = (float)zm;
@@ -17478,7 +17483,7 @@ index f4432e7..5e4c4b8 100644
                                                     st->front_face == 0x901, bias, slope));
      apply_scissor(st, gw, gh);
      if ((st->blend_sfactor | st->blend_dfactor) & 0x8000) {
-@@ -2834,11 +4800,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2834,11 +4805,10 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      } else {
          bf[0] = bf[1] = bf[2] = bf[3] = 0;
      }
@@ -17494,7 +17499,7 @@ index f4432e7..5e4c4b8 100644
                       flare_depth ? 0u : st->depth_mask,
                       st->stencil_test, st->stencil_func, st->stencil_func_mask,
                       st->stencil_write_mask, st->stencil_fail,
-@@ -2851,6 +4816,20 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2851,6 +4821,20 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      return 1;
  }
  
@@ -17515,7 +17520,7 @@ index f4432e7..5e4c4b8 100644
  
  /* Bytes from the vertex and index rings; NULL if the request cannot fit. */
  static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
-@@ -2858,12 +4837,249 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
+@@ -2858,12 +4842,262 @@ static uint8_t *ring_map(ID3D11Buffer *b, UINT *pos, UINT cap, UINT bytes,
  {
      if (bytes > cap) return NULL;
      if (*pos + bytes > cap) *pos = 0;
@@ -17663,10 +17668,14 @@ index f4432e7..5e4c4b8 100644
 +        uint32_t *r = realloc(root, (size_t)nv * sizeof *r);
 +        uint32_t *pc = r ? realloc(piece, (size_t)nv * sizeof *pc) : NULL;
 +        float (*b)[5] = pc ? realloc(box, (size_t)nv * sizeof *b) : NULL;
++        uint8_t *f;
 +        if (r) root = r;
 +        if (pc) piece = pc;
 +        if (!b) return 0;
 +        box = b;
++        f = realloc(s_hud_far, nv);
++        if (!f) return 0;
++        s_hud_far = f;
 +        cap = nv;
 +    }
 +#define FIND(x) do { while (root[x] != x) x = root[x] = root[root[x]]; } while (0)
@@ -17735,6 +17744,15 @@ index f4432e7..5e4c4b8 100644
 +        /* A mixed map-icon/name atlas has already positioned its map
 +         * pieces. Mode 2 replaces only the projected names' offsets. */
 +        if (follow == 2 && !world_name_vertex(route_uv, sub + i)) continue;
++        if (follow == 3) {
++            float cx = (box[c][0] + box[c][1]) * 0.5f, cy = (box[c][2] + box[c][3]) * 0.5f;
++            s_hud_far[i] = 0;
++            if (world_name_vertex(route_uv, sub + i) || map_route_vertex(route_uv, sub + i) ||
++                (fabsf(cx - s_frame_map_cx) <= s_frame_map_half_width + HUD_MAP_MARGIN &&
++                 fabsf(cy - s_frame_map_cy) <= s_frame_map_half_height + HUD_MAP_MARGIN))
++                continue;
++            s_hud_far[i] = 1;
++        }
 +        dx[i] = 0.0f;
 +        if (dy) dy[i] = 0.0f;
 +        if (map_route_vertex(route_uv, sub + i)) continue;
@@ -17767,7 +17785,7 @@ index f4432e7..5e4c4b8 100644
  int nv2a_d3d_host_draw(const NvD3DState *st,
                         int (*draw)(const NvHostTarget *, void *), void *user)
  {
-@@ -2884,6 +5100,9 @@ int nv2a_d3d_host_draw(const NvD3DState *st,
+@@ -2884,6 +5118,9 @@ int nv2a_d3d_host_draw(const NvD3DState *st,
      return result;
  }
  
@@ -17777,7 +17795,7 @@ index f4432e7..5e4c4b8 100644
  /* ---------------------------------------------- vertex processing on the GPU
   *
   * Every draw runs ub_vs: it pulls the title's raw vertex arrays from a byte
-@@ -2894,14 +5113,107 @@ int nv2a_d3d_host_draw(const NvD3DState *st,
+@@ -2894,14 +5131,107 @@ int nv2a_d3d_host_draw(const NvD3DState *st,
   * shader compile, and no vertex is drawn from a CPU transform. */
  
  
@@ -17887,7 +17905,7 @@ index f4432e7..5e4c4b8 100644
  }
  
  /* Last presentation rectangle, normalized to client coordinates. */
-@@ -2930,12 +5242,31 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -2930,12 +5260,31 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      D3D11_MAPPED_SUBRESOURCE m;
      uint8_t *p;
      UINT total = 0, at = 0, ib_bytes = ni * 4;
@@ -17922,7 +17940,7 @@ index f4432e7..5e4c4b8 100644
      memset(&uc, 0, sizeof uc);
      memcpy(uc.def, def, sizeof uc.def);
      /* Arrays: interleaved ones share one copied span. */
-@@ -2963,20 +5294,37 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -2963,20 +5312,37 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      }
      for (i = 0; i < ngrp; i++)
          total += (((grp[i].stride ? (count - 1) * grp[i].stride : 0) + grp[i].span) + 15) & ~15u;
@@ -17961,7 +17979,7 @@ index f4432e7..5e4c4b8 100644
      }
      if (pos && s && s->sx > s->sy * 1.001f && s_overlay.place) {
          /* Screen-space 2D on a widened target spans the display unless the
-@@ -2995,7 +5343,8 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -2995,7 +5361,8 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
          if (flat) {
              NvOverlayDraw d;
              if (count > dx_cap) {
@@ -17971,7 +17989,7 @@ index f4432e7..5e4c4b8 100644
                  if (nd) { dx = nd; dx_cap = count; }
              }
              d.pos = pos; d.idx = idx; d.attrib = attr; d.ni = ni; d.lo = lo; d.count = count;
-@@ -3006,43 +5355,434 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3006,43 +5373,458 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
              use_dx = s_overlay.place(&d, count <= dx_cap ? dx : NULL, &squeeze, &shift);
          }
      }
@@ -18307,6 +18325,30 @@ index f4432e7..5e4c4b8 100644
 +                    }
 +                }
 +            }
++            /* A world marker drawn from the map's icon atlas without a name
++             * tag (the white turn-arrow circle) sits far from the minimap.
++             * The map's left-edge anchor pulled it left of the centre where
++             * the Xbox draws it: keep the title's projected position. */
++            if (map_part == 2 && !s_draw_minimap_improved && count <= dx_cap && dy &&
++                s_frame_map_half_width >= 1.0f && s_frame_map_half_height >= 1.0f &&
++                InterlockedCompareExchange(&s_frame_map_valid, 0, 0)) {
++                if (centered_ui < 0) centered_ui = s_centered_ui_query ? s_centered_ui_query() : 0;
++                if (!centered_ui) {
++                    if (!use_dx) memset(dx, 0, (size_t)count * sizeof *dx);
++                    if (!use_dy) memset(dy, 0, (size_t)count * sizeof *dy);
++                    if (hud_split(pos, count, idx, lo, ni, topology, (float)gw, narrow, 3, dx, route_uv,
++                                  (float)gh, ynarrow, dy)) {
++                        for (k = 0; k < count; ++k) if (s_hud_far[k]) {
++                            dx[k] = dx[k] * narrow / squeeze +
++                                    (pos[k][0] - (float)gw * .5f) * (narrow / squeeze - 1.0f) -
++                                    shift * (float)gw / (2.0f * squeeze);
++                            dy[k] = dy[k] * ynarrow / yscale +
++                                    (pos[k][1] - (float)gh * .5f) * (ynarrow / yscale - 1.0f);
++                        }
++                        use_dx = use_dy = 1;
++                    }
++                }
++            }
 +        }
 +    }
  
@@ -18315,9 +18357,9 @@ index f4432e7..5e4c4b8 100644
 -    if (!(p = ring_map(s_raw, &s_raw_pos, VB_BYTES, total + (use_dx ? count * 4 : 0), &m))) {
 +    if (suppress_map_base || hide_hud) {
 +        slow_frame_end(SF_DRAW_SCOPE, slow_draw);
-         RECOMP_PROFILE_END();
-         return;
-     }
++        RECOMP_PROFILE_END();
++        return;
++    }
 +    if (map_clip_top > 0.0f && s_bound_scissors_valid && s_bound_scissor_count == 1) {
 +        D3D11_RECT r = s_bound_scissors[0];
 +        LONG top = (LONG)(map_clip_top * s_aa_y * s_cur_sy + 0.5f);
@@ -18328,9 +18370,9 @@ index f4432e7..5e4c4b8 100644
 +     * batches keep tagged routes/names independent of ordinary HUD text. */
 +    if (total + (use_dx ? count * 4 : 0) + (use_dy ? count * 4 : 0) > VB_BYTES) {
 +        slow_frame_end(SF_DRAW_SCOPE, slow_draw);
-+        RECOMP_PROFILE_END();
-+        return;
-+    }
+         RECOMP_PROFILE_END();
+         return;
+     }
 +    if (!s_raw_nooverwrite) s_raw_pos = 0;
      {
 -        UINT goff[16];
@@ -18341,8 +18383,9 @@ index f4432e7..5e4c4b8 100644
 +         * discards it (a wrap) or the route tags below edit the copy. */
 +        int reuse = s_raw_nooverwrite && !s_overlay.sanitize_vertex_upload &&
 +                    !route_tag_layout(&attr[2]);
-+        for (i = 0; i < ngrp; i++) {
-+            UINT bytes = (grp[i].stride ? (count - 1) * grp[i].stride : 0) + grp[i].span;
+         for (i = 0; i < ngrp; i++) {
+             UINT bytes = (grp[i].stride ? (count - 1) * grp[i].stride : 0) + grp[i].span;
+-            memcpy(p + at, grp[i].base + (size_t)lo * grp[i].stride, bytes);
 +            hit[i] = reuse && vb_reuse_find(grp[i].base + (size_t)lo * grp[i].stride, bytes, &goff[i]);
 +            if (!hit[i]) fresh += (bytes + 15) & ~15u;
 +        }
@@ -18357,10 +18400,9 @@ index f4432e7..5e4c4b8 100644
 +            RECOMP_PROFILE_END();
 +            return;
 +        }
-         for (i = 0; i < ngrp; i++) {
++        for (i = 0; i < ngrp; i++) {
 +            const uint8_t *src = grp[i].base + (size_t)lo * grp[i].stride;
-             UINT bytes = (grp[i].stride ? (count - 1) * grp[i].stride : 0) + grp[i].span;
--            memcpy(p + at, grp[i].base + (size_t)lo * grp[i].stride, bytes);
++            UINT bytes = (grp[i].stride ? (count - 1) * grp[i].stride : 0) + grp[i].span;
 +            if (hit[i]) {
 +                if (s_prof_on > 0) s_prof_vb_reused += bytes;
 +                continue;
@@ -18418,7 +18460,7 @@ index f4432e7..5e4c4b8 100644
  
      uc.info[1] = program ? 1u : 0u;
      if (program) {
-@@ -3051,11 +5791,14 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3051,11 +5833,14 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
          const float (*consts)[4] = nv2a_vsh_constants(&cver);
          uc.info[0] = start;
          if (!prog || !consts) {
@@ -18435,7 +18477,7 @@ index f4432e7..5e4c4b8 100644
                  RECOMP_PROFILE_END();
                  return;
              }
-@@ -3063,7 +5806,9 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3063,7 +5848,9 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
              s_prog_valid = 1;
          }
          if (!s_vconst_valid || cver != s_vconst_version) {
@@ -18445,7 +18487,7 @@ index f4432e7..5e4c4b8 100644
                  RECOMP_PROFILE_END();
                  return;
              }
-@@ -3075,27 +5820,92 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -3075,27 +5862,92 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      uc.map[1] = 2.0f / (float)gh;
      uc.map[2] = 1.0f / (float)zmax;
      uc.map[3] = squeeze;
@@ -18543,7 +18585,7 @@ index f4432e7..5e4c4b8 100644
      RECOMP_PROFILE_END();
  }
  
-@@ -3134,7 +5944,6 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3134,7 +5986,6 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
          hitch_trace_report("clear_submit", trace_begin);
          return;
      }
@@ -18551,7 +18593,7 @@ index f4432e7..5e4c4b8 100644
      zf = (st->surface_format >> 4) & 0xF;
      unpack4(color, cc);
      if (s && (s->color_fmt & 0xF) == 0x3) {
-@@ -3146,7 +5955,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3146,7 +5997,10 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      memset(cc + 4, 0, 16);
      cc[4] = zf == 1 ? (float)(zstencil & 0xFFFF) / 65535.0f
                      : (float)(zstencil >> 8) / 16777215.0f;
@@ -18563,7 +18605,7 @@ index f4432e7..5e4c4b8 100644
      if (x1 >= gw) x1 = gw - 1;
      if (y1 >= gh) y1 = gh - 1;
      if (x0 > x1 || y0 > y1) {
-@@ -3157,18 +5969,24 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -3157,18 +6011,24 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      r.top = (LONG)(y0 * s_aa_y * s_cur_sy + 0.5f);
      r.right = (LONG)((x1 + 1) * s_aa_x * s_cur_sx + 0.5f);
      r.bottom = (LONG)((y1 + 1) * s_aa_y * s_cur_sy + 0.5f);
@@ -18594,7 +18636,7 @@ index f4432e7..5e4c4b8 100644
      hitch_trace_report("clear_submit", trace_begin);
  }
  
-@@ -3191,8 +6009,259 @@ static int s_wb_pending;
+@@ -3191,8 +6051,259 @@ static int s_wb_pending;
  static uint32_t s_wb_mask;
  static ID3D11Query *s_wb_event;
  static int s_wb_event_pending;
@@ -18854,7 +18896,7 @@ index f4432e7..5e4c4b8 100644
  
  /* A readback belongs to the surface that queued it, not the reusable cache
   * slot. A replacement of the same size must not inherit old GPU pixels. */
-@@ -3204,8 +6273,12 @@ static void writeback_drop_surface(Surface *s)
+@@ -3204,8 +6315,12 @@ static void writeback_drop_surface(Surface *s)
      s_wb_pending = s_wb_mask != 0;
      if (!s_wb_pending) {
          s_wb_event_pending = 0;
@@ -18867,7 +18909,7 @@ index f4432e7..5e4c4b8 100644
      }
  }
  
-@@ -3287,6 +6360,7 @@ typedef struct {
+@@ -3287,6 +6402,7 @@ typedef struct {
      unsigned surfaces, copied_rows, cpu_rows;
      HRESULT query_hr;
      BOOL query_done;
@@ -18875,7 +18917,7 @@ index f4432e7..5e4c4b8 100644
  } WbTraceParts;
  
  static void writeback_trace_parts(int wait, int64_t begin, const WbTraceParts *p)
-@@ -3298,35 +6372,126 @@ static void writeback_trace_parts(int wait, int64_t begin, const WbTraceParts *p
+@@ -3298,35 +6414,126 @@ static void writeback_trace_parts(int wait, int64_t begin, const WbTraceParts *p
      fprintf(stderr, "[HITCH] phase=readback_parts qpc_ms=%.3f start_qpc_ms=%.3f "
                      "duration_ms=%.3f thread=%lu wait=%d query_ms=%.3f map_ms=%.3f "
                      "copy_ms=%.3f unmap_ms=%.3f surfaces=%u copied_rows=%u cpu_rows=%u "
@@ -19006,7 +19048,7 @@ index f4432e7..5e4c4b8 100644
              writeback_trace_parts(0, trace_begin, &parts);
              writeback_trace_finish(0, 1, trace_begin);
              return 0;
-@@ -3339,9 +6504,10 @@ static int writeback_finish(int wait)
+@@ -3339,9 +6546,10 @@ static int writeback_finish(int wait)
          Surface *s = &s_surf[i];
          WbSlot *k = &s_wb[i];
          D3D11_MAPPED_SUBRESOURCE m;
@@ -19019,7 +19061,7 @@ index f4432e7..5e4c4b8 100644
          HRESULT hr;
          int64_t part_begin;
          if (!(s_wb_mask & (1u << i)))
-@@ -3363,12 +6529,15 @@ static int writeback_finish(int wait)
+@@ -3363,12 +6571,15 @@ static int writeback_finish(int wait)
          if (trace_begin) ++parts.surfaces;
          part_begin = trace_begin ? qpc() : 0;
          dst = (uint8_t *)guest(s->va);
@@ -19035,7 +19077,7 @@ index f4432e7..5e4c4b8 100644
              /* A row the CPU changed since the executor last looked holds
               * writes made after this frame was submitted (the title runs
               * ahead): they win, and the next sync uploads them. */
-@@ -3379,13 +6548,13 @@ static int writeback_finish(int wait)
+@@ -3379,13 +6590,13 @@ static int writeback_finish(int wait)
              if (trace_begin) ++parts.copied_rows;
              if (s->bpp == 4) {
                  if (amode < 0) {
@@ -19052,7 +19094,7 @@ index f4432e7..5e4c4b8 100644
                  for (x = 0; x < s->w; x++) {
                      uint32_t c = src[x];
                      o[x] = r565 ? (uint16_t)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07E0) | ((c >> 3) & 0x1F))
-@@ -3394,7 +6563,11 @@ static int writeback_finish(int wait)
+@@ -3394,7 +6605,11 @@ static int writeback_finish(int wait)
                  }
              }
              memcpy(s->shadow + (size_t)y * rowb, row, rowb);
@@ -19064,7 +19106,7 @@ index f4432e7..5e4c4b8 100644
          if (trace_begin) parts.copy += qpc() - part_begin;
          part_begin = trace_begin ? qpc() : 0;
          ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)k->stage, 0);
-@@ -3402,7 +6575,12 @@ static int writeback_finish(int wait)
+@@ -3402,7 +6617,12 @@ static int writeback_finish(int wait)
      }
      RECOMP_PROFILE_END();
      s_wb_pending = left;
@@ -19078,7 +19120,7 @@ index f4432e7..5e4c4b8 100644
      writeback_trace_parts(wait, trace_begin, &parts);
      writeback_trace_finish(wait, left, trace_begin);
      return !left;
-@@ -3410,22 +6588,26 @@ static int writeback_finish(int wait)
+@@ -3410,22 +6630,26 @@ static int writeback_finish(int wait)
  
  int nv2a_d3d_writeback_busy(void)
  {
@@ -19108,7 +19150,7 @@ index f4432e7..5e4c4b8 100644
      RECOMP_PROFILE_BEGIN("D3D11 write-back issue");
      for (i = 0; i < MAX_SURFACES; i++) {
          Surface *s = &s_surf[i];
-@@ -3438,9 +6620,10 @@ static void writeback_surfaces(void)
+@@ -3438,9 +6662,10 @@ static void writeback_surfaces(void)
              continue;
          surface_resolve(s);
          if (scaled) {
@@ -19122,7 +19164,7 @@ index f4432e7..5e4c4b8 100644
              ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)k->stage,
                                               (ID3D11Resource *)k->down);
          } else {
-@@ -3461,9 +6644,11 @@ static void writeback_surfaces(void)
+@@ -3461,9 +6686,11 @@ static void writeback_surfaces(void)
              ID3D11DeviceContext_End(s_ctx, (ID3D11Asynchronous *)s_wb_event);
              s_wb_event_pending = 1;
          }
@@ -19134,7 +19176,7 @@ index f4432e7..5e4c4b8 100644
  }
  
  /* ----------------------------------------------------- visibility tests */
-@@ -3532,10 +6717,43 @@ static ID3D11ShaderResourceView *s_ovl_srv;
+@@ -3532,10 +6759,43 @@ static ID3D11ShaderResourceView *s_ovl_srv;
  static UINT s_ovl_w, s_ovl_h;
  static uint32_t s_ovl_serial = 0xFFFFFFFFu;
  static DWORD s_last_present, s_last_flip;
@@ -19178,7 +19220,7 @@ index f4432e7..5e4c4b8 100644
  static int ensure_swapchain(void)
  {
      HWND h = xbox_FramebufferWindowHandle();
-@@ -3547,6 +6765,8 @@ static int ensure_swapchain(void)
+@@ -3547,6 +6807,8 @@ static int ensure_swapchain(void)
      hh = (UINT)(rc.bottom - rc.top);
      if (!w || !hh) return 0;                    /* minimised */
      if (s_swap && s_swap_hwnd != h) {
@@ -19187,7 +19229,7 @@ index f4432e7..5e4c4b8 100644
          IDXGISwapChain1_Release(s_swap);
          s_swap = NULL;
      }
-@@ -3564,8 +6784,31 @@ static int ensure_swapchain(void)
+@@ -3564,8 +6826,31 @@ static int ensure_swapchain(void)
          d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
          d.SampleDesc.Count = 1;
          d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -19220,7 +19262,7 @@ index f4432e7..5e4c4b8 100644
          hr = fac ? IDXGIFactory2_CreateSwapChainForHwnd(fac, (IUnknown *)s_dev, h, &d,
                                                          NULL, NULL, &s_swap) : E_FAIL;
          if (fac) {
-@@ -3576,10 +6819,14 @@ static int ensure_swapchain(void)
+@@ -3576,10 +6861,14 @@ static int ensure_swapchain(void)
          if (dxdev) IDXGIDevice_Release(dxdev);
          if (FAILED(hr)) { fail("CreateSwapChainForHwnd", hr); return 0; }
          s_swap_hwnd = h; s_swap_w = w; s_swap_h = hh;
@@ -19237,7 +19279,7 @@ index f4432e7..5e4c4b8 100644
              return 0;
          s_swap_w = w; s_swap_h = hh;
      }
-@@ -3642,6 +6889,7 @@ static void write_bmp(ID3D11Texture2D *bb, const char *path)
+@@ -3642,6 +6931,7 @@ static void write_bmp(ID3D11Texture2D *bb, const char *path)
   * seconds and 200 in a session; every spike is still logged. */
  static const char *s_spike_prefix = (const char *)-1;
  static double s_spike_ms = 50.0;
@@ -19245,7 +19287,7 @@ index f4432e7..5e4c4b8 100644
  static unsigned s_spike_pending, s_spike_id, s_spike_shot;
  static int64_t s_spike_split[PROF_COUNT];
  static LONG s_spec_recent;
-@@ -3662,6 +6910,7 @@ static void spike_check(int64_t interval, int64_t pace)
+@@ -3662,6 +6952,7 @@ static void spike_check(int64_t interval, int64_t pace)
                  buf[c - buf] = 0;
              }
              s_spike_prefix = buf;
@@ -19253,7 +19295,7 @@ index f4432e7..5e4c4b8 100644
              fprintf(stderr, "[SPIKE] capturing frames after flips over %.1f ms to %s-*\n",
                      s_spike_ms, s_spike_prefix);
          }
-@@ -3689,7 +6938,7 @@ static void spike_check(int64_t interval, int64_t pace)
+@@ -3689,7 +6980,7 @@ static void spike_check(int64_t interval, int64_t pace)
      s_spike_id++;
      fprintf(stderr, "[SPIKE] #%u frame %u: %.1f ms between flips (%.1f ms not pacing)%s\n",
              s_spike_id, s_frame, ms, work,
@@ -19262,7 +19304,7 @@ index f4432e7..5e4c4b8 100644
      {
          int i;
          fprintf(stderr, "[SPIKE]   ms:");
-@@ -3698,7 +6947,7 @@ static void spike_check(int64_t interval, int64_t pace)
+@@ -3698,7 +6989,7 @@ static void spike_check(int64_t interval, int64_t pace)
          fprintf(stderr, " | %ld new shaders in 1 s\n", (long)s_spec_recent);
          recomp_sampler_report(ms);
      }
@@ -19271,7 +19313,7 @@ index f4432e7..5e4c4b8 100644
          last_capture = GetTickCount();
          s_spike_pending = 2;
          s_spike_shot = 0;
-@@ -3720,19 +6969,99 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
+@@ -3720,19 +7011,99 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
      if (!prefix) return;
      if (!remaining) {
          int count = 0;
@@ -19374,7 +19416,7 @@ index f4432e7..5e4c4b8 100644
  
  /* Draw surface `s` (with the overlay described in *pc) into a w x h target,
   * letterboxed to the display aspect when asked. */
-@@ -3767,10 +7096,18 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3767,10 +7138,18 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
      pc->src_size[0] = (float)s->w; pc->src_size[1] = (float)s->h;
      pc->src_size[2] = (float)s->iw; pc->src_size[3] = (float)s->ih;
      pc->force_alpha[0] = 1.0f;
@@ -19393,7 +19435,7 @@ index f4432e7..5e4c4b8 100644
      upload_cb(s_cb_present, pc, sizeof *pc);
      unbind_textures();
      unbind_targets();
-@@ -3781,11 +7118,11 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3781,11 +7160,11 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
      vp.MinDepth = 0; vp.MaxDepth = 1;
      sc.left = 0; sc.top = 0; sc.right = (LONG)w; sc.bottom = (LONG)h;
      ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
@@ -19410,7 +19452,7 @@ index f4432e7..5e4c4b8 100644
      bind_vertex_shader(s_present_vs);
      bind_vertex_constants(s_cb_present);
      bind_pixel_shader(s_present_ps);
-@@ -3846,6 +7183,15 @@ static void prepare_overlay(PresentConsts *pc)
+@@ -3846,6 +7225,15 @@ static void prepare_overlay(PresentConsts *pc)
      pc->ovl_in[2] = 1.0f;
  }
  
@@ -19426,7 +19468,7 @@ index f4432e7..5e4c4b8 100644
  /* RECOMP_CAPTURE_SURFACE: the composited guest image at internal resolution
   * (no window scaling or letterbox), for pixel comparisons. */
  static ID3D11Texture2D *s_cap_tex;
-@@ -3882,31 +7228,19 @@ static void keep_image(ID3D11Texture2D *bb)
+@@ -3882,31 +7270,19 @@ static void keep_image(ID3D11Texture2D *bb)
  /* The kept image presented again; 0 if there is none to show. */
  static int present_kept(void)
  {
@@ -19467,7 +19509,7 @@ index f4432e7..5e4c4b8 100644
      s_last_present = GetTickCount();
      return 1;
  }
-@@ -3931,25 +7265,40 @@ static int pace_after_present(void)
+@@ -3931,25 +7307,40 @@ static int pace_after_present(void)
  
  static void pace_flip(FlipPacing *pacing)
  {
@@ -19509,7 +19551,7 @@ index f4432e7..5e4c4b8 100644
          if (!s_cap_tex || s_cap_w != s->iw || s_cap_h != s->ih) {
              if (s_cap_rtv) ID3D11RenderTargetView_Release(s_cap_rtv);
              if (s_cap_tex) ID3D11Texture2D_Release(s_cap_tex);
-@@ -3965,45 +7314,108 @@ static void present_surface(Surface *s, FlipPacing *pacing)
+@@ -3965,45 +7356,108 @@ static void present_surface(Surface *s, FlipPacing *pacing)
              composite(s_cap_rtv, s->iw, s->ih, s, &pc, 0);
              capture_backbuffer(s_cap_tex);
          }
@@ -19640,7 +19682,7 @@ index f4432e7..5e4c4b8 100644
  /* The flip completes at the display's next vertical blank, as it does on the
   * NV2A: FLIP_STALL holds the GPU until then, and the title, waiting on the
   * GPU, is paced by it. Completing it at once let menus run at hundreds of
-@@ -4015,23 +7427,31 @@ static void pace_vblank(void)
+@@ -4015,23 +7469,31 @@ static void pace_vblank(void)
      static LARGE_INTEGER freq;
      static int64_t next;
      static HANDLE timer;
@@ -19678,7 +19720,7 @@ index f4432e7..5e4c4b8 100644
          return;
      {
          RECOMP_PROFILE_BEGIN("D3D11 pace");
-@@ -4046,30 +7466,46 @@ static void pace_vblank(void)
+@@ -4046,30 +7508,46 @@ static void pace_vblank(void)
   * the monitor's native resolution and shape). A resize applies once it has
   * settled for RESIZE_SETTLE_MS, by dropping every host surface; they are
   * rebuilt at the new size from guest memory, which the flip just updated.
@@ -19730,7 +19772,7 @@ index f4432e7..5e4c4b8 100644
          scale = (float)atof(e);
      } else {
          /* RECOMP_SUPERSAMPLE=N (1..4) renders N x N host pixels per window
-@@ -4084,7 +7520,11 @@ static void display_config(int now)
+@@ -4084,7 +7562,11 @@ static void display_config(int now)
          if (scale < 1.0f) scale = 1.0f;
          if (scale > 8.0f) scale = 8.0f;
      }
@@ -19743,7 +19785,7 @@ index f4432e7..5e4c4b8 100644
      if (!now && fabsf(scale - s_scale) < 1e-3f && fabsf(aspect - s_aspect) < 1e-4f)
          return;
      if (!now) {
-@@ -4098,6 +7538,11 @@ static void display_config(int now)
+@@ -4098,6 +7580,11 @@ static void display_config(int now)
      }
      s_scale = scale;
      s_aspect = aspect;
@@ -19755,7 +19797,7 @@ index f4432e7..5e4c4b8 100644
      fprintf(stderr, "[D3D11] rendering %ux%u (window %ux%u, aspect %.3f)\n",
              (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
              w, h, aspect);
-@@ -4138,27 +7583,66 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
+@@ -4138,27 +7625,66 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
      return s;
  }
  
@@ -19824,7 +19866,7 @@ index f4432e7..5e4c4b8 100644
          if (s_prof_on > 0) {
              s_prof[PROF_WRITEBACK] += t1 - t0;
              s_prof[PROF_PRESENT] += qpc() - t1 - pacing.ticks;
-@@ -4169,12 +7653,16 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
+@@ -4169,12 +7695,16 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
           * still completes exactly one paced guest flip. A failed Present has
           * already waited before the attempt and must not wait a second time. */
          pace_flip(&pacing);
@@ -19841,7 +19883,7 @@ index f4432e7..5e4c4b8 100644
      s_frame++;
  }
  
-@@ -4252,6 +7740,8 @@ void nv2a_d3d_tick(void)
+@@ -4252,6 +7782,8 @@ void nv2a_d3d_tick(void)
  {
      DWORD now;
      uint32_t va, pitch;
@@ -19850,7 +19892,7 @@ index f4432e7..5e4c4b8 100644
      /* CPU scanout and PVIDEO can precede the first pushbuffer flip. */
      if (s_init_state <= 0 && !nv2a_d3d_init())
          return;
-@@ -4287,13 +7777,19 @@ void nv2a_d3d_tick(void)
+@@ -4287,13 +7819,19 @@ void nv2a_d3d_tick(void)
      now = GetTickCount();
      if (now - s_last_present < 16)
          return;
@@ -19873,7 +19915,7 @@ index f4432e7..5e4c4b8 100644
          s_frame++;
          return;
      }
-@@ -4307,23 +7803,35 @@ void nv2a_d3d_tick(void)
+@@ -4307,23 +7845,35 @@ void nv2a_d3d_tick(void)
           * Force the check because the submission epoch stops with the flips. */
          if (!s_wb_pending)
              surface_sync(s_shown, 1);
@@ -19913,7 +19955,7 @@ index f4432e7..5e4c4b8 100644
  int nv2a_d3d_prof_enabled(void) { return 0; }
  void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
  { (void)slot; (void)ticks; (void)verts; }
-@@ -4349,4 +7857,43 @@ void nv2a_d3d_zpass_clear(void) {}
+@@ -4349,4 +7899,43 @@ void nv2a_d3d_zpass_clear(void) {}
  uint32_t nv2a_d3d_zpass_read(void) { return 0; }
  float nv2a_d3d_display_aspect(void) { return 4.0f / 3.0f; }
  int nv2a_d3d_host_draw(const NvD3DState *st, int (*draw)(const NvHostTarget *, void *), void *user) { (void)st; (void)draw; (void)user; return 0; }
@@ -40383,10 +40425,10 @@ index 0000000..8a9d4ae
 +}
 diff --git a/tests/test_menu_placement.py b/tests/test_menu_placement.py
 new file mode 100644
-index 0000000..d250fda
+index 0000000..d1fa810
 --- /dev/null
 +++ b/tests/test_menu_placement.py
-@@ -0,0 +1,1211 @@
+@@ -0,0 +1,1228 @@
 +"""Exercise real HUD placement/clustering without a D3D device (MSVC prompt)."""
 +from pathlib import Path
 +import subprocess
@@ -40915,28 +40957,45 @@ index 0000000..d250fda
 +        memset(&submitted_uv,0,sizeof submitted_uv);
 +    }
 +}
++static int map_far(float left, float right, float top, float bottom) {
++    return fabsf((left + right) * .5f - s_frame_map_cx) > s_frame_map_half_width + HUD_MAP_MARGIN ||
++           fabsf((top + bottom) * .5f - s_frame_map_cy) > s_frame_map_half_height + HUD_MAP_MARGIN;
++}
++static void marker_expect(const Result *r, int k, float left, float right, float top,
++                          float bottom, Result base, float base_x, float aspect) {
++    float narrow = (4.0f / 3.0f) / aspect;
++    if (!improved && map_far(left, right, top, bottom)) {
++        float sq = r->squeeze, yn = r->yscale, cx = (left + right) * .5f, cy = (top + bottom) * .5f;
++        near(r->x[k], 320 + (left - 320) * sq + (cx - 320) * (1 - sq));
++        near(r->x[k + 1], 320 + (right - 320) * sq + (cx - 320) * (1 - sq));
++        near(r->y[k], 240 + (top - 240) * yn + (cy - 240) * (1 - yn));
++        near(r->y[k + 2], 240 + (bottom - 240) * yn + (cy - 240) * (1 - yn));
++    } else {
++        near(r->x[k], base.x[0] + (left - base_x) * narrow);
++        near(r->x[k + 1], r->x[k] + (right - left) * narrow);
++        near(r->y[k], top + base.y_offset); near(r->y[k + 2], bottom + base.y_offset);
++    }
++}
 +static void map_markers(float aspect, float scale, Result base, float base_x) {
-+    float p[8][4], narrow = (4.0f / 3.0f) / aspect;
++    float p[8][4];
 +    const uint32_t idx[12] = {0,1,2,0,2,3,4,5,6,4,6,7};
 +    Result r;
-+    int x, i;
++    int x;
 +    /* A moving checkpoint passes the midpoint, then leaves the map bounds.
 +     * Its position must remain the same affine function as the road pixels,
-+     * rather than jumping to an independently chosen HUD edge. */
++     * rather than jumping to an independently chosen HUD edge. Original
++     * (non-improved) map: an icon far from the map is a world marker (the
++     * white turn-arrow circle at the screen centre) and keeps the position
++     * the title drew it at, as on the Xbox, not the map's left anchor. */
 +    for (x = -20; x <= 660; x += 10) {
 +        r = box((float)x, (float)x + 16, 180, 196, aspect, scale, 1, 0, map_marker);
-+        near(r.x[0], base.x[0] + ((float)x - base_x) * narrow);
-+        near(r.x[1], r.x[0] + 16 * narrow);
-+        near(r.y[0], 180 + base.y_offset); near(r.y[2], 196 + base.y_offset);
-+        assert(!r.use_dx);
++        marker_expect(&r, 0, (float)x, (float)x + 16, 180, 196, base, base_x, aspect);
++        assert(r.use_dx == (!improved && map_far((float)x, (float)x + 16, 180, 196)));
 +    }
 +    quad(p, 110, 126, 180, 196); quad(p + 4, 490, 506, 180, 196);
 +    r = draw(p, 8, idx, 12, 0, aspect, scale, 1, 0, map_marker);
-+    for (i = 0; i < 8; ++i) {
-+        near(r.x[i], base.x[0] + (p[i][0] - base_x) * narrow);
-+        near(r.y[i], p[i][1] + base.y_offset);
-+    }
-+    assert(!r.use_dx); /* Disconnected icons in one atlas stay with the map. */
++    marker_expect(&r, 0, 110, 126, 180, 196, base, base_x, aspect);
++    marker_expect(&r, 4, 490, 506, 180, 196, base, base_x, aspect);
 +}
 +static void map_routes(float aspect, float scale, Result base, float base_x) {
 +    float p[12][4], narrow = (4.0f / 3.0f) / aspect;
