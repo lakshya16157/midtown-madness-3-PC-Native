@@ -457,7 +457,8 @@ static void help_show(Launcher *ui, int id)
             "Changes the gameplay. In Checkpoint and circuit races every opponent drives the same car as you, whichever car you pick. Career jobs keep their own cars. Off: the opponents get the game's own cars.",
             "In a race, the Free camera key flies the view away from your car: W/A/S/D or the left stick move, Q/E or the triggers go down and up, the arrows, right stick or mouse with its right button look. Shift/RB faster, Ctrl/LB slower. Your car gets no input meanwhile.",
             "Photo mode. In a race, F2 holds everything still and flies the camera: W/A/S/D move, Q/E down and up, the mouse looks (or the sticks and triggers). F3 (pad A) saves a PNG to Pictures\\Midtown Madness 3, F4 (pad X) hides the HUD. F2 again goes back to your car. Off: these keys do nothing.",
-            "Changes the gameplay. Race opponents drive the full course normally, then brake to a halt just before the final checkpoint so they never cross the finish line ahead of you. Off: opponents finish the race as on the Xbox."
+            "Changes the gameplay. Race opponents drive the full course normally, then brake to a halt just before the final checkpoint so they never cross the finish line ahead of you. Off: opponents finish the race as on the Xbox.",
+            "Skips the logo and intro movies when the game starts, as if you pressed Start. Untick it to watch the intro every time. Story movies always play."
         };
         int option = id - ID_OPTION, on = checked(ui, id), master = mm3_launcher_option_master(option);
         title = option_caption(option);
@@ -1388,7 +1389,7 @@ static void look_controls(Launcher *ui)
         {300, 250, "Improved visuals", NULL, {MM3_LAUNCH_DISTANCE, MM3_LAUNCH_CAR_LIGHT, MM3_LAUNCH_LAMP_LIGHT,
             MM3_LAUNCH_WORLD_LIGHT, MM3_LAUNCH_FLARE_DEPTH, MM3_LAUNCH_EXHAUST, 0}},
         {560, 260, "Menus and HUD", NULL, {MM3_LAUNCH_LOADING, MM3_LAUNCH_GRAPHICS_MENU, MM3_LAUNCH_QUIT,
-            MM3_LAUNCH_DLC_INFO, MM3_LAUNCH_NORTH_MARKER, 0}}
+            MM3_LAUNCH_SKIP_INTRO, MM3_LAUNCH_DLC_INFO, MM3_LAUNCH_NORTH_MARKER, 0}}
     };
     static const int nights[] = {10, 15, 20, MM3_NIGHT_LIGHT_DEFAULT, 35, 50, 75, 100};
     HWND c;

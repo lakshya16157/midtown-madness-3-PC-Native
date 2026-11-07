@@ -8,7 +8,7 @@ optional mods. You need your own copy of the Xbox game.
   (under **Assets** on the latest release).
 - **Linux** (native, no Wine or Proton): download **MM3-Linux-x86_64.tar.gz** from the
   [releases](https://github.com/lakshya16157/midtown-madness-3-PC-Native/releases), see
-  [Native Linux](#native-linux-no-wine-or-proton). The Linux build is new and still in beta.
+  [Native Linux](#native-linux-no-wine-or-proton). The Linux build is new, so please report any problem you hit.
 
 ## Install and play
 

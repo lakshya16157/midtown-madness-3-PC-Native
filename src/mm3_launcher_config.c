@@ -56,7 +56,8 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"MM3_SAME_CAR", "Opponents drive your car", 0},
     {"MM3_FREE_CAMERA", "Free camera", 1},
     {"MM3_PHOTO_MODE", "Photo mode", 1},
-    {"MM3_AI_STOP_FINISH", "Opponents wait at finish", 0}
+    {"MM3_AI_STOP_FINISH", "Opponents wait at finish", 0},
+    {"MM3_MOD_SKIP_INTRO", "Skip intro movies", 1}
 };
 
 typedef struct { int option; const char *value; } MM3ForcedOption;
