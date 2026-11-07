@@ -331,7 +331,21 @@ static void register_hud_queries(void)
     nv2a_d3d_set_split_screen_query(mm3_split_screen);
 }
 #else
-static void register_hud_queries(void) {}
+extern void nv2a_d3d_set_centered_ui_query(int (*query)(void));
+extern void nv2a_d3d_set_map_texture_query(int (*query)(uint32_t texture_addr));
+extern void nv2a_d3d_set_minimap_style_query(int (*query)(void));
+extern int mm3_minimap_improved(void);
+/* SDL3 GPU: the HUD placement hook (widescreen_hud.c) places the map; the
+ * renderer only needs these to give the improved map its square mask. */
+static void register_hud_queries(void)
+{
+    static int registered;
+    if (registered) return;
+    registered = 1;
+    nv2a_d3d_set_centered_ui_query(mm3_pause_ui_active);
+    nv2a_d3d_set_map_texture_query(mm3_map_texture_role);
+    nv2a_d3d_set_minimap_style_query(mm3_minimap_improved);
+}
 #endif
 
 void sub_0025968E(void)

@@ -21685,10 +21685,474 @@ index e40d0bc..b197e10 100644
  
  static uint32_t surface_color_bpp(uint32_t fmt)
 diff --git a/src/video/nv2a_sdlgpu.c b/src/video/nv2a_sdlgpu.c
-index fffccd5..31b85f0 100644
+index fffccd5..b87a0cd 100644
 --- a/src/video/nv2a_sdlgpu.c
 +++ b/src/video/nv2a_sdlgpu.c
-@@ -2481,6 +2481,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -46,6 +46,7 @@
+ #include "nv2a_render_common.h"
+ #include "nv2a_sampler_cache.h"
+ #include "nv2a_texture_hash.h"
++#include "nv2a_map_mask.h"
+ 
+ #include "sdlgpu/ub_vs.spirv.h"
+ #include "sdlgpu/ps_main.spirv.h"
+@@ -225,6 +226,85 @@ void nv2a_d3d_set_overlay_hooks(const NvOverlayHooks *hooks)
+ 
+ static volatile float s_aspect;
+ 
++/* Live settings from the title's own options (the MM3 port's Graphics menu), as
++ * nv2a_d3d11.c has them. Each is a packed value written by the setting's thread
++ * and read by the render thread; -1 means "not set: use the boot environment". */
++static volatile LONG s_runtime_scale_bits = -1;   /* float; 0 = automatic */
++static volatile LONG s_applied_scale_bits = -1;
++static volatile LONG s_runtime_aspect_bits = -1;  /* float; 0 = follow the window */
++static volatile LONG s_present_options = -1;      /* vsync << 16 | fps limit */
++static volatile LONG s_hud_hidden;
++static volatile LONG s_config_gen;                /* bumped by scale/aspect changes */
++static int s_applied_vsync = -1;                  /* the swapchain's, see apply_vsync */
++static void apply_vsync(int vsync);
++
++void nv2a_d3d_set_render_scale(float scale)
++{
++    LONG bits;
++    if (!(scale == 0.0f || (scale >= 0.5f && scale <= 8.0f))) return;
++    memcpy(&bits, &scale, sizeof bits);
++    InterlockedExchange(&s_runtime_scale_bits, bits);
++    InterlockedIncrement(&s_config_gen);
++}
++
++float nv2a_d3d_get_render_scale(void)
++{
++    LONG bits = InterlockedCompareExchange(&s_applied_scale_bits, 0, 0);
++    float scale;
++    if (bits == -1) return -1.0f;
++    memcpy(&scale, &bits, sizeof scale);
++    return scale;
++}
++
++void nv2a_d3d_set_display_aspect(float aspect)
++{
++    LONG bits;
++    if (!isfinite(aspect) || (aspect != 0.0f && (aspect < 0.5f || aspect > 4.0f))) return;
++    memcpy(&bits, &aspect, sizeof bits);
++    InterlockedExchange(&s_runtime_aspect_bits, bits);
++    InterlockedIncrement(&s_config_gen);
++}
++
++/* The boot environment (RECOMP_ASPECT) unless the live setting has been used. */
++static float live_env_aspect(void)
++{
++    float a;
++    LONG bits = InterlockedCompareExchange(&s_runtime_aspect_bits, 0, 0);
++    if (bits != -1) { memcpy(&a, &bits, sizeof a); return a; }
++    return env_aspect();
++}
++
++int nv2a_d3d_set_present_options(int vsync, int max_fps)
++{
++    if ((vsync != 0 && vsync != 1) || max_fps < 1 || max_fps > 120) return 0;
++    InterlockedExchange(&s_present_options, (LONG)((vsync << 16) | max_fps));
++    return 1;
++}
++
++/* vsync << 16 | limit; until the live setting is used, RECOMP_VSYNC and the
++ * frame limit from the environment (0 = unpaced). */
++static LONG present_options(void)
++{
++    LONG options = InterlockedCompareExchange(&s_present_options, 0, 0);
++    if (options < 0) {
++        const char *v = getenv("RECOMP_VSYNC");
++        int limit = recomp_frame_limit_from_env();
++        LONG configured;
++        if (limit < 0) limit = 0;
++        if (limit > 65535) limit = 65535;
++        configured = (LONG)(((v && atoi(v) != 0) << 16) | limit);
++        options = InterlockedCompareExchange(&s_present_options, configured, -1);
++        if (options < 0) options = configured;
++    }
++    return options;
++}
++
++/* Photo mode's hide-HUD key: race frames skip their flat 2D overlay draws. */
++void nv2a_d3d_set_hud_hidden(int hidden)
++{
++    InterlockedExchange(&s_hud_hidden, hidden != 0);
++}
++
+ /* The window's size in pixels; 0 if there is no window or it is minimised. */
+ static int client_size(uint32_t *w, uint32_t *h)
+ {
+@@ -243,7 +323,7 @@ float nv2a_d3d_display_aspect(void)
+     float a = s_aspect;
+     uint32_t w, h;
+     if (a) return a;
+-    if ((a = env_aspect()) != 0) return s_aspect = a;
++    if ((a = live_env_aspect()) != 0) return s_aspect = a;
+     if (client_size(&w, &h)) return s_aspect = clamp_aspect((float)w / (float)h);
+     if (SDL_WasInit(SDL_INIT_VIDEO)) {
+         /* No window yet (sizing it): the display it will open on. */
+@@ -808,7 +888,7 @@ static SDL_GPUTextureFormat s_depth_format;
+ typedef struct {
+     uint8_t vs, ps, color, depth, prim, blend_enable, write_mask, cull;
+     uint8_t front_ccw, zt, zw, zfunc, st, sfunc, rmask, wmask;
+-    uint8_t sfail, szfail, szpass, pad;
++    uint8_t sfail, szfail, szpass, screen;   /* screen: local-light screen blend (RGB) */
+     uint16_t sf, df, eq, pad2;
+     int32_t bias;
+     float slope;
+@@ -951,7 +1031,8 @@ static SDL_GPUGraphicsPipeline *pipeline(const PipeKey *k)
+             ctd.format = color_format(k->color);
+             ctd.blend_state.enable_blend = k->blend_enable != 0;
+             ctd.blend_state.src_color_blendfactor = blend_factor(k->sf, 0);
+-            ctd.blend_state.dst_color_blendfactor = blend_factor(k->df, 0);
++            ctd.blend_state.dst_color_blendfactor = k->screen ? SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR
++                                                              : blend_factor(k->df, 0);
+             ctd.blend_state.src_alpha_blendfactor = blend_factor(k->sf, 1);
+             ctd.blend_state.dst_alpha_blendfactor = blend_factor(k->df, 1);
+             ctd.blend_state.color_blend_op = ctd.blend_state.alpha_blend_op = blend_op(k->eq);
+@@ -986,6 +1067,7 @@ typedef Nv2aSamplerSlot SampSlot;
+ static SampSlot s_samp[SAMP_SLOTS];
+ static SDL_GPUSampler *s_linear_clamp, *s_point_clamp;
+ static SDL_GPUTexture *s_dummy_2d, *s_dummy_cube, *s_dummy_volume;
++static SDL_GPUTexture *s_glass_blank;   /* transparent black, see night_glass_reads_copy */
+ 
+ static SDL_GPUSamplerAddressMode addr_mode(uint32_t m)
+ {
+@@ -1141,6 +1223,11 @@ int nv2a_d3d_init(void)
+         s_dummy_volume = make_volume(1, 1, 1, 1);
+         if (!s_dummy_volume || !s_dummy_2d || !s_dummy_cube || !s_linear_clamp || !s_point_clamp) return 0;
+         upload_texture(s_dummy_2d, 0, 0, 1, 1, black, 4);
++        {
++            static const uint32_t clear_px = 0;
++            s_glass_blank = make_texture(1, 1, 1, 0, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER);
++            if (s_glass_blank) upload_texture(s_glass_blank, 0, 0, 1, 1, &clear_px, 4);
++        }
+         upload_texture(s_dummy_volume, 0, 0, 1, 1, black, 4);
+         for (f = 0; f < 6; f++) upload_texture(s_dummy_cube, 0, (uint32_t)f, 1, 1, black + f, 4);
+         copy_end();
+@@ -1152,7 +1239,7 @@ int nv2a_d3d_init(void)
+             fail("SDL_ClaimWindowForGPUDevice");
+             s_window = NULL;
+         } else {
+-            int vsync = getenv("RECOMP_VSYNC") ? atoi(getenv("RECOMP_VSYNC")) : 0;
++            int vsync = (int)((present_options() >> 16) & 1);
+             SDL_GPUPresentMode mode = SDL_GPU_PRESENTMODE_VSYNC;
+             if (!vsync) {
+                 if (SDL_WindowSupportsGPUPresentMode(s_dev, s_window, SDL_GPU_PRESENTMODE_IMMEDIATE))
+@@ -1161,6 +1248,7 @@ int nv2a_d3d_init(void)
+                     mode = SDL_GPU_PRESENTMODE_MAILBOX;
+             }
+             SDL_SetGPUSwapchainParameters(s_dev, s_window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, mode);
++            s_applied_vsync = vsync;
+         }
+     }
+     display_config(1);
+@@ -1204,6 +1292,7 @@ typedef struct {
+     int cpu_present_pending;
+     uint32_t synced_frame, used_frame;
+     uint32_t seq;
++    int screen_copy;                /* swizzled copy of the display (night glass, paint) */
+ } Surface;
+ 
+ typedef struct {
+@@ -1865,6 +1954,23 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
+ }
+ 
+ static int s_draw_textured, s_draw_reads_wide;
++static int s_draw_copies_display;           /* stage 0 reads a full guest-size target */
++static int s_night_glass;
++static float s_paint_softness;              /* display pixels; 0 keeps the sharp copy */
++static uint32_t s_lit_frame = 0xFFFFFFFFu;  /* s_frame of the last local-light composite */
++
++void nv2a_d3d_set_night_glass(int enabled) { s_night_glass = enabled != 0; }
++void nv2a_d3d_set_paint_softness(float pixels)
++{ s_paint_softness = pixels > 0.0f && pixels <= 32.0f ? pixels : 0.0f; }
++
++/* As nv2a_d3d11.c: at night the title's display copy (car reflections) holds
++ * the unlit frame, so translucent glass drawn over the lit scene reads
++ * transparent black instead of ghosting daylight through windows. */
++static int night_glass_reads_copy(const NvD3DState *st, const Surface *rt)
++{
++    return s_night_glass && rt && rt->screen_copy && st->blend_enable &&
++           (s_lit_frame == s_frame || s_lit_frame + 1u == s_frame);
++}
+ static uint32_t s_draw_tex_addr;
+ static int s_draw_bspline;
+ 
+@@ -2029,6 +2135,124 @@ static Op *draw_op(OpKind kind, uint32_t count, uint32_t first)
+ 
+ /* Everything a draw needs apart from its vertices, recorded into the batch
+  * (see setup_pipeline in nv2a_d3d11.c, which this follows step for step). */
++/* MM3's improved (square) race map, as nv2a_d3d11.c: the title names its map
++ * textures (map_texture_query: 1 = the map base) and whether the improved style
++ * is on; the base's retail round mask is swapped for a square one with soft
++ * edges. The map's placement comes from the shared HUD placement hook here. */
++static int (*s_map_texture_query)(uint32_t texture_addr);
++static int (*s_minimap_style_query)(void);
++static int (*s_centered_ui_query)(void);
++static float (*s_minimap_motion_query)(float cx, float cy);
++static float (*s_minimap_expansion_query)(float cx, float cy);
++static int (*s_split_screen_query)(void);
++void nv2a_d3d_set_map_texture_query(int (*query)(uint32_t texture_addr)) { s_map_texture_query = query; }
++void nv2a_d3d_set_minimap_style_query(int (*query)(void)) { s_minimap_style_query = query; }
++void nv2a_d3d_set_centered_ui_query(int (*query)(void)) { s_centered_ui_query = query; }
++void nv2a_d3d_set_minimap_motion_query(float (*query)(float, float)) { s_minimap_motion_query = query; }
++void nv2a_d3d_set_minimap_expansion_query(float (*query)(float, float)) { s_minimap_expansion_query = query; }
++void nv2a_d3d_set_split_screen_query(int (*query)(void)) { s_split_screen_query = query; }
++
++static SDL_GPUTexture *map_square_mask(const NvD3DTexture *t)
++{
++    static SDL_GPUTexture *mask;
++    static int attempted;
++    static uint32_t pixels[128 * 128];
++    unsigned x, y;
++    if (t->cube || t->color != 0x0Fu || t->width != 128 || t->height != 128 ||
++        t->levels != 1 || !guest_ok(t->addr, 16384u) ||
++        !nv2a_map_mask_matches(guest(t->addr), 16384u))
++        return NULL;
++    if (mask || attempted) return mask;
++    attempted = 1;
++    for (y = 0; y < 128; ++y)
++        for (x = 0; x < 128; ++x)
++            pixels[y * 128 + x] = nv2a_map_mask_pixel(x, y);
++    mask = make_texture(128, 128, 1, 0, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER);
++    if (!mask) {
++        fprintf(stderr, "[SDLGPU_MAP] square mask allocation failed; keeping the retail mask\n");
++        return NULL;
++    }
++    upload_texture(mask, 0, 0, 128, 128, pixels, 128 * 4);
++    fprintf(stderr, "[SDLGPU_MAP] square map enabled size=128 edge_fade=8 identity=retail_map_mask\n");
++    fflush(stderr);
++    return mask;
++}
++
++/* MM3 local lighting (the MM3 runtime patch; same settings and recognisers as
++ * nv2a_d3d11.c, which documents them): the title's light volumes accumulate
++ * into a light buffer that a composite pass applies to the unlit frame. These
++ * settings shape that accumulation in the shared combiner shader (shade(),
++ * ps_flags 0x100-0x8000); the screen blend is the pipeline's PipeKey.screen. */
++static float s_local_light_gain = 1.0f;
++static int s_local_light_softness, s_local_light_overlap, s_local_light_sum, s_local_light_falloff;
++static float s_light_shape[4] = {0.5f, 2.0f, 1.0f, 0.0f};
++static float s_light_tone[4] = {0.6f, 0.9f, 0.0f, 0.0f};
++static uint32_t s_bspline_sf, s_bspline_df;
++
++void nv2a_d3d_set_local_light_gain(float gain)
++{ s_local_light_gain = (gain >= 1.0f && gain <= 8.0f) ? gain : 1.0f; }
++void nv2a_d3d_set_local_light_softness(int enabled) { s_local_light_softness = enabled != 0; }
++void nv2a_d3d_set_local_light_overlap(int enabled) { s_local_light_overlap = enabled != 0; }
++void nv2a_d3d_set_local_light_sum(int enabled) { s_local_light_sum = enabled != 0; }
++void nv2a_d3d_set_local_light_falloff(int enabled) { s_local_light_falloff = enabled != 0; }
++void nv2a_d3d_set_bspline_blend(uint32_t sfactor, uint32_t dfactor)
++{ s_bspline_sf = sfactor; s_bspline_df = dfactor; }
++
++static void light_shape_normalise(void)
++{
++    double raw = 0.0;
++    int i;
++    for (i = 0; i < 1024; ++i) {
++        double d = (i + 0.5) / 1024.0, x = d * d;
++        raw += s_light_shape[0] / (x + s_light_shape[0]) *
++               pow(1.0 - pow(x, s_light_shape[1]), s_light_shape[2]) * x / 1024.0;
++    }
++    s_light_shape[3] = (float)((2.0 / 15.0) / raw);
++}
++
++float nv2a_d3d_set_local_light_shape(float source, float edge, float power, float white)
++{
++    if (!(source >= 0.02f && source <= 4.0f) || !(edge >= 1.0f && edge <= 4.0f) ||
++        !(power >= 0.5f && power <= 4.0f) || !(white > s_light_tone[0] + 0.05f && white <= 1.0f))
++        return 0.0f;
++    s_light_shape[0] = source;
++    s_light_shape[1] = edge;
++    s_light_shape[2] = power;
++    light_shape_normalise();
++    s_light_tone[1] = white;
++    return s_light_shape[3];
++}
++
++int nv2a_d3d_set_local_light_exposure(float knee, float ceiling)
++{
++    if (ceiling == 0.0f) { s_light_tone[2] = s_light_tone[3] = 0.0f; return 1; }
++    if (!(knee >= 0.1f && knee <= 1.0f) || !(ceiling >= knee + 0.05f && ceiling <= 1.5f)) return 0;
++    s_light_tone[2] = knee;
++    s_light_tone[3] = ceiling;
++    return 1;
++}
++
++/* Light/LightDraw.psh: one light volume added into the light buffer. */
++static int local_light_screen(const NvD3DState *st)
++{
++    return s_local_light_overlap && st->rc_seen &&
++           st->rc.control == 0x11101u && st->rc.stage_program == 0x6C621u &&
++           st->rc.final0 == 0x0000000Cu && st->rc.final1 == 0x00001B80u &&
++           st->rc.color_icw[0] == 0xC4DB0000u &&
++           st->rc.alpha_icw[0] == 0xD4DB1010u &&
++           st->rc.color_ocw[0] == 0xC0u && st->rc.alpha_ocw[0] == 0xC0u &&
++           tex_volume(&st->tex[3]) && st->blend_enable &&
++           st->blend_sfactor == 1u && st->blend_dfactor == 1u &&
++           st->blend_equation == 0x8006u;
++}
++
++/* Light/LightApplyTex.psh: the light buffer applied to the unlit frame. */
++static int is_local_light_composite(const NvD3DState *st)
++{
++    return st->rc_seen && st->rc.stage_program == 0x00021u &&
++           st->rc.final0 == 0x080F000Cu && st->rc.final1 == 0x0D1A0080u;
++}
++
+ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+                           uint32_t *out_gw, uint32_t *out_gh, uint32_t *out_zmax, int indexed)
+ {
+@@ -2040,12 +2264,14 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+     SDL_GPUTexture *srv[13] = { 0 };
+     void *smp[4] = { 0 };
+     int cull = 0, bias = 0, flare_depth = draw_forces_depth(st), wdepth;
++    int paint_stage = -1;                   /* ps_flags 0x10000: car paint reading the display copy */
++    int map_square = 0;                     /* the improved race map's base: square mask */
+     float slope = 0, bf[4];
+     PipeKey k;
+     SDL_GPUGraphicsPipeline *pipe;
+     Op *o;
+     (void)indexed;
+-    s_draw_textured = s_draw_reads_wide = 0;
++    s_draw_textured = s_draw_reads_wide = s_draw_copies_display = 0;
+     s_draw_tex_addr = 0;
+     s_draw_bspline = 0;
+ 
+@@ -2086,6 +2312,17 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+     if (s && write_mask(st, s)) s->gpu_dirty = 1;
+ 
+     memset(&pc, 0, sizeof pc);
++    /* The improved race map's base (as nv2a_d3d11.c): a draw sampling the
++     * texture the title names as its map base, improved style on, no centred
++     * pause UI. Its retail round mask becomes the square one below. */
++    if (s_map_texture_query && !st->depth_test && s_minimap_style_query && s_minimap_style_query() &&
++        !(s_centered_ui_query && s_centered_ui_query())) {
++        unsigned m;
++        for (m = 0; m < 4; ++m)
++            if (mode_needs_texture((st->rc.stage_program >> (m * 5)) & 31) &&
++                st->tex[m].addr && !st->tex[m].cube && s_map_texture_query(st->tex[m].addr) == 1)
++                map_square = 1;
++    }
+     memset(&pb, 0, sizeof pb);
+     for (n = 0; n < 4; n++) {
+         const NvD3DTexture *t = &st->tex[n];
+@@ -2105,11 +2342,14 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+         s_draw_textured = 1;
+         if (!s_draw_tex_addr) s_draw_tex_addr = t->addr;
+         if (rt && rt->sx > rt->sy * 1.001f) s_draw_reads_wide = 1;
++        if (n == 0 && rt && rt->w == GUEST_W && rt->h == GUEST_H) s_draw_copies_display = 1;
+         zt = t->color == 0x35 && !t->cube ? depth_find(phys(t->addr)) : NULL;
+         if (zt && zt->y16) {
+             view = zt->y16;
+             pc.tex_scale[n][0] = 1.0f / (float)(2 * zt->w);
+             pc.tex_scale[n][1] = 1.0f / (float)zt->h;
++        } else if (s_glass_blank && night_glass_reads_copy(st, rt)) {
++            view = s_glass_blank;
+         } else if (rt) {
+             surface_sync(rt, 0);
+             view = rt == s ? feedback_copy(rt) : rt->tex;
+@@ -2133,7 +2373,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+                 }
+             }
+         } else {
+-            view = texture_get_with_levels(t, &levels);
++            if (map_square) view = map_square_mask(t);
++            if (!view) view = texture_get_with_levels(t, &levels);
+             if (kind == K_LIN) {
+                 pc.tex_scale[n][0] = 1.0f / (float)t->width;
+                 pc.tex_scale[n][1] = 1.0f / (float)t->height;
+@@ -2146,11 +2387,24 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+             pc.tex_scale[n][2] = pc.tex_scale[n][3] = 1.0f;
+         }
+         if (!view) continue;
++        /* Opaque car paint mirrors the display copy: blur it over s_paint_softness
++         * display pixels in the shader (soft2), as nv2a_d3d11.c does. */
++        if (rt && rt->screen_copy && !st->blend_enable && s_paint_softness > 0.0f &&
++            paint_stage < 0 && mode == 1)
++            paint_stage = (int)n;
+         if (tex_volume(t)) srv[9 + n] = view;
+         else if (t->cube && !rt) srv[4 + n] = view; else srv[n] = view;
+         smp[n] = sampler(t, levels, reduce, smp);
+-        if (n == 0 && !t->cube && !tex_volume(t) && s_overlay.cubic_filter_0 &&
+-            s_overlay.cubic_filter_0(st, rt != NULL, (uint32_t)levels))
++        /* The title's smooth skyline (nv2a_d3d_set_bspline_blend, as nv2a_d3d11.c):
++         * its 256x256 DXT sky layer drawn with the configured blend. */
++        if ((n == 0 && !t->cube && !tex_volume(t) && s_overlay.cubic_filter_0 &&
++             s_overlay.cubic_filter_0(st, rt != NULL, (uint32_t)levels)) ||
++            (n == 0 && !rt && !t->cube && kind == K_DXT && t->color == 0x0F &&
++             t->width == 256 && t->height == 256 && levels > 4 &&
++             (((t->filter >> 16) & 0xFF) == 2 || ((t->filter >> 16) & 0xFF) == 4 ||
++              ((t->filter >> 16) & 0xFF) == 6) && ((t->filter >> 24) & 0xF) != 1 &&
++             s_bspline_sf && !st->depth_test && st->blend_enable &&
++             st->blend_sfactor == s_bspline_sf && st->blend_dfactor == s_bspline_df))
+             s_draw_bspline = 1;
+         pc.tex_info[n][0] = (t->control0 >> 2) & 1;
+         pc.tex_info[n][1] = (t->filter >> 28) | (tex_volume(t) ? 256u : 0u);
+@@ -2197,6 +2451,41 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+     pc.alpha_func = st->alpha_func;
+     pc.alpha_ref = st->alpha_ref;
+     pc.ps_flags = (st->rc_seen ? 1u : 0u) | (st->alpha_test ? 2u : 0u) | (s_draw_bspline ? 4u : 0u);
++    {
++        /* MM3 local lighting, as nv2a_d3d11.c (the D3D11-only own-depth tap 0x1000
++         * is not used: this backend samples depth views its own way). */
++        int raw_depth_view = st->rc_seen && st->rc.stage_program == 0x6C621u;
++        int composite = is_local_light_composite(st);
++        if (composite) s_lit_frame = s_frame;
++        if (paint_stage >= 0) {
++            pc.ps_flags |= 0x10000u | (uint32_t)paint_stage << 17;
++            pc.paint_soft[0] = s_paint_softness / (float)GUEST_W;
++            pc.paint_soft[1] = s_paint_softness / (float)(GUEST_H / 2u);
++        }
++        if (s_local_light_softness && raw_depth_view) pc.ps_flags |= 0x200u;
++        if (s_local_light_sum && local_light_screen(st)) {
++            pc.ps_flags |= 0x2000u;
++            if (s_local_light_falloff && raw_depth_view) pc.ps_flags |= 0x8000u;
++        }
++        if (s_local_light_overlap && composite)
++            pc.ps_flags |= s_local_light_sum ? 0x4000u : 0x400u;
++        if (pc.ps_flags & 0xC000u) {
++            if (!(s_light_shape[3] > 0.0f)) light_shape_normalise();
++            memcpy(pc.light_shape, s_light_shape, sizeof pc.light_shape);
++            memcpy(pc.light_tone, s_light_tone, sizeof pc.light_tone);
++        }
++        if (s_local_light_gain > 1.0f && composite) {
++            static int announced;
++            pc.ps_flags |= 0x100u;
++            memcpy(&pc.pad0, &s_local_light_gain, sizeof pc.pad0);
++            if (!announced) {
++                announced = 1;
++                fprintf(stderr, "[SDLGPU_LIGHT] local-light composite found; buffer gain %.2f applied\n",
++                        s_local_light_gain);
++                fflush(stderr);
++            }
++        }
++    }
+     pc.clip_plane = st->clip_plane_mode;
+     pc.other_input = st->other_stage_input;
+     pc.dot_map = st->dot_rgb_mapping;
+@@ -2252,6 +2541,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+     k.sf = (uint16_t)st->blend_sfactor;
+     k.df = (uint16_t)st->blend_dfactor;
+     k.eq = (uint16_t)st->blend_equation;
++    k.screen = (uint8_t)local_light_screen(st);
+     k.write_mask = (uint8_t)(s ? write_mask(st, s) : 0);
+     k.cull = (uint8_t)(cull == 3 ? 0 : cull);
+     k.front_ccw = st->front_face == 0x901;
+@@ -2456,6 +2746,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+             d.x0 = xlo; d.y0 = ylo; d.x1 = xhi; d.y1 = yhi;
+             d.tex = s_draw_tex_addr; d.textured = s_draw_textured; d.reads_wide = s_draw_reads_wide;
+             use_dx = s_overlay.place(&d, count <= dx_cap ? dx : NULL, &squeeze, &shift);
++            /* Hidden HUD (photo mode): drop the flat overlay draws the
++             * placement hook moved, never a pass across the whole canvas. */
++            if (use_dx && InterlockedCompareExchange(&s_hud_hidden, 0, 0) &&
++                !(xlo <= 1.0f && ylo <= 1.0f && xhi >= (float)gw - 1.0f && yhi >= (float)gh - 1.0f))
++                return;
+         }
+     }
+ 
+@@ -2481,6 +2776,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
                      s_overlay.sanitize_vertex_upload(p + uc.at[i][0] - s_vpos, &attr[i], i, lo, count);
      }
      uc.info[2] = 0xFFFFFFFFu;
@@ -21700,6 +22164,213 @@ index fffccd5..31b85f0 100644
      if (use_dx) {
          memcpy(p + at, dx, count * 4);
          uc.info[2] = s_vpos + at;
+@@ -2520,6 +2820,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+     rec_uniform(0, 0, &uc, sizeof uc);
+     rec_uniform(1, 0, s_zero_block, sizeof s_zero_block);
+     draw_op(OP_DRAWI, ni, first_index);
++    if (s && s->swizzled && s_draw_copies_display && !s->screen_copy) {
++        s->screen_copy = 1;
++        fprintf(stderr, "[SDLGPU] %08X %ux%u holds the title's display copy (glass reflections)\n",
++                s->phys, s->w, s->h);
++    }
+     s_vpos += (at + 255) & ~255u;
+     s_ipos += (ib_bytes + 255) & ~255u;
+     s_b.v1 = s_vpos;
+@@ -2908,6 +3213,48 @@ static uint64_t s_last_present, s_last_flip;
+ static Surface *s_shown;
+ 
+ /* Read a texture back and write it as a 24-bit BMP. */
++/* Photo mode (nv2a_d3d_request_screenshot): the next presented image goes to
++ * the callback as BGRA on the render thread, as nv2a_d3d11.c does. */
++static nv2a_screenshot_fn volatile s_screenshot_fn;
++void nv2a_d3d_request_screenshot(nv2a_screenshot_fn take)
++{
++    s_screenshot_fn = take;
++}
++
++static void serve_screenshot(SDL_GPUTexture *tex, uint32_t w, uint32_t h)
++{
++    nv2a_screenshot_fn take = s_screenshot_fn;
++    SDL_GPUTransferBufferCreateInfo ci = { SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, w * h * 4, 0 };
++    SDL_GPUTransferBuffer *tb;
++    SDL_GPUTextureRegion r;
++    SDL_GPUTextureTransferInfo info;
++    SDL_GPUFence *fence = NULL;
++    const uint8_t *m;
++    if (!take) return;
++    s_screenshot_fn = NULL;
++    tb = SDL_CreateGPUTransferBuffer(s_dev, &ci);
++    if (!tb || !copy_begin()) {
++        if (tb) SDL_ReleaseGPUTransferBuffer(s_dev, tb);
++        take(NULL, 0, 0, 0);
++        return;
++    }
++    memset(&r, 0, sizeof r);
++    memset(&info, 0, sizeof info);
++    r.texture = tex; r.w = w; r.h = h; r.d = 1;
++    info.transfer_buffer = tb;
++    SDL_DownloadFromGPUTexture(s_copy, &r, &info);
++    copy_end();
++    submit(&fence);
++    if (fence) {
++        SDL_WaitForGPUFences(s_dev, true, &fence, 1);
++        SDL_ReleaseGPUFence(s_dev, fence);
++    }
++    m = (const uint8_t *)SDL_MapGPUTransferBuffer(s_dev, tb, false);
++    take(m, m ? w : 0, m ? h : 0, w * 4);
++    if (m) SDL_UnmapGPUTransferBuffer(s_dev, tb);
++    SDL_ReleaseGPUTransferBuffer(s_dev, tb);
++}
++
+ static void write_bmp(SDL_GPUTexture *tex, uint32_t w, uint32_t h, const char *path)
+ {
+     SDL_GPUTransferBufferCreateInfo ci = { SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, w * h * 4, 0 };
+@@ -3125,6 +3472,7 @@ static int present_kept_image(FlipPacing *pacing)
+     if (!s_window || !s_kept) return 0;
+     copy_end();
+     flush_batch();
++    apply_vsync((int)((present_options() >> 16) & 1));
+     if (!cmd()) return 0;
+     RECOMP_PROFILE_BEGIN("SDL GPU acquire swapchain");
+     if (!SDL_WaitAndAcquireGPUSwapchainTexture(s_cmd, s_window, &sc, &sw, &sh))
+@@ -3185,6 +3533,8 @@ static void present_surface(Surface *s, FlipPacing *pacing)
+     composite(s_kept, w, h, s, &pc, 1);
+     if (!getenv("RECOMP_CAPTURE_SURFACE"))
+         capture_image(s_kept, w, h);
++    if (s_screenshot_fn)
++        serve_screenshot(s_kept, w, h);
+     if (present_kept_image(pacing))
+         s->cpu_present_pending = 0;
+ }
+@@ -3192,9 +3542,26 @@ static void present_surface(Surface *s, FlipPacing *pacing)
+ /* The flip completes at the display's next vertical blank (see pace_vblank
+  * in nv2a_d3d11.c): RECOMP_FPS_LIMIT=N sets the rate (default 60, 0 =
+  * unpaced). The wait is SDL_DelayPrecise, then a short spin. */
++/* The vsync setting the swapchain has (set at init); a change is applied
++ * before the next swapchain image is acquired, never while one is held:
++ * changing the present mode under an acquired image crashed RADV's submit. */
++static void apply_vsync(int vsync)
++{
++    SDL_GPUPresentMode mode = SDL_GPU_PRESENTMODE_VSYNC;
++    if (vsync == s_applied_vsync || !s_window) return;
++    s_applied_vsync = vsync;
++    if (!vsync) {
++        if (SDL_WindowSupportsGPUPresentMode(s_dev, s_window, SDL_GPU_PRESENTMODE_IMMEDIATE))
++            mode = SDL_GPU_PRESENTMODE_IMMEDIATE;
++        else if (SDL_WindowSupportsGPUPresentMode(s_dev, s_window, SDL_GPU_PRESENTMODE_MAILBOX))
++            mode = SDL_GPU_PRESENTMODE_MAILBOX;
++    }
++    SDL_SetGPUSwapchainParameters(s_dev, s_window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, mode);
++}
++
+ static void pace_vblank(void)
+ {
+-    static int limit = -1;
++    int limit;
+     static int64_t next;
+     int64_t now, freq = qpf();
+     extern int xbox_FramebufferPaused(void);
+@@ -3203,9 +3570,7 @@ static void pace_vblank(void)
+         fbw_sdl_pump();
+         next = 0;
+     }
+-    if (limit < 0) {
+-        limit = recomp_frame_limit_from_env();
+-    }
++    limit = (int)(present_options() & 0xFFFF);
+     if (limit <= 0)
+         return;
+     now = qpc();
+@@ -3226,23 +3591,30 @@ static void display_config(int now)
+ {
+     static uint32_t seen_w, seen_h, done_w, done_h;
+     static uint64_t seen_at;
++    static LONG done_gen;
++    LONG gen = InterlockedCompareExchange(&s_config_gen, 0, 0);
++    LONG scale_bits = InterlockedCompareExchange(&s_runtime_scale_bits, 0, 0);
+     const char *e = getenv("RECOMP_RENDER_SCALE");
+-    float scale, aspect = env_aspect();
++    float scale, aspect = live_env_aspect(), live_scale = -1.0f;
+     uint32_t w, h;
+     int i, deferred;
+     if (!client_size(&w, &h)) {
+         if (!now) return;
+         w = (uint32_t)(GUEST_H * nv2a_d3d_display_aspect()); h = GUEST_H;
+     }
+-    if (!now) {
++    if (scale_bits != -1) memcpy(&live_scale, &scale_bits, sizeof live_scale);
++    if (!now && gen == done_gen) {
+         if (w != seen_w || h != seen_h) { seen_w = w; seen_h = h; seen_at = SDL_GetTicks(); return; }
+         if ((w == done_w && h == done_h) || SDL_GetTicks() - seen_at < RESIZE_SETTLE_MS) return;
+     }
++    done_gen = gen;
+     if (!aspect) aspect = clamp_aspect((float)w / (float)h);
+     deferred = !now && s_aspect && fabsf(aspect - s_aspect) > 1e-4f &&
+                s_overlay.hold_aspect && s_overlay.hold_aspect();
+     if (deferred) aspect = s_aspect;
+-    if (e && atof(e) >= 0.5 && atof(e) <= 8.0) {
++    if (live_scale >= 0.5f) {
++        scale = live_scale;
++    } else if (live_scale < 0.0f && e && atof(e) >= 0.5 && atof(e) <= 8.0) {
+         scale = (float)atof(e);
+     } else {
+         const char *ss = getenv("RECOMP_SUPERSAMPLE");
+@@ -3267,6 +3639,11 @@ static void display_config(int now)
+     }
+     s_scale = scale;
+     s_aspect = aspect;
++    {
++        LONG bits;
++        memcpy(&bits, &scale, sizeof bits);
++        InterlockedExchange(&s_applied_scale_bits, bits);
++    }
+     fprintf(stderr, "[SDLGPU] rendering %ux%u (window %ux%u, aspect %.3f)\n",
+             (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
+             w, h, aspect);
+@@ -3303,12 +3680,25 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
+     return s;
+ }
+ 
++/* NV2A_HOST_HOLD_TAG (the MM3 draw-distance mod marks a frame drawn with a
++ * wrong view): that flip is not shown, the screen keeps the previous picture
++ * one refresh longer; never two in a row. As nv2a_d3d11.c. */
++static int s_hold_next, s_held_last;
++static unsigned s_held_flips;
++void nv2a_d3d_hold_frame(void)
++{
++    s_hold_next = 1;
++}
++
+ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
+ {
+     Surface *s;
+     FlipPacing pacing = { 0, 0 };
++    int hold;
+     if (!nv2a_d3d_init())
+         return;
++    hold = show && s_hold_next && !s_held_last;
++    s_hold_next = 0;
+     fbw_sdl_pump();
+     if (s_overlay.frame) s_overlay.frame();
+     s = surface_find(phys(surface_addr));
+@@ -3316,12 +3706,16 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
+         s = scan_surface(surface_addr, pitch);
+     s_shown = s;
+     s_last_flip = SDL_GetTicks();
++    if (show) s_held_last = hold = hold && s;
++    if (hold && !s_held_flips++)
++        fprintf(stderr, "[SDLGPU] held back a frame the title marked as wrong: the screen keeps the "
++                        "previous picture one refresh longer\n");
+     if (s_overlay.idle_present) s_overlay.idle_present((uint32_t)s_last_flip, 0, 0);
+     {
+         int64_t t0 = s_prof_on > 0 ? qpc() : 0, t1;
+         writeback_surfaces();
+         t1 = s_prof_on > 0 ? qpc() : 0;
+-        if (show) present_surface(s, &pacing);
++        if (show && !hold) present_surface(s, &pacing);
+         if (s_prof_on > 0) {
+             s_prof[PROF_WRITEBACK] += t1 - t0;
+             s_prof[PROF_PRESENT] += qpc() - t1 - pacing.ticks;
 diff --git a/src/video/nv2a_shader_cache.h b/src/video/nv2a_shader_cache.h
 index b1b85c0..ca0f979 100644
 --- a/src/video/nv2a_shader_cache.h
