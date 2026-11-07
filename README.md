@@ -1,12 +1,14 @@
 # Midtown Madness 3 recompilation
 
-Play the Xbox racing game **Midtown Madness 3** natively on your Windows PC or on Linux (and
-the Steam Deck through Proton): your screen's resolution and widescreen, up to 120 fps,
-controller or keyboard, two-player split screen, and optional mods. You need your own copy of
-the Xbox game.
+Play the Xbox racing game **Midtown Madness 3** natively on **Windows and Linux**: your screen's
+resolution and widescreen, up to 120 fps, controller or keyboard, two-player split screen, and
+optional mods. You need your own copy of the Xbox game.
 
-**[Download MM3-Setup.exe](https://github.com/lakshya16157/midtown-madness-3-PC-Native/releases/latest)**
-(under **Assets** on the latest release).
+- **Windows 10/11:** **[Download MM3-Setup.exe](https://github.com/lakshya16157/midtown-madness-3-PC-Native/releases/latest)**
+  (under **Assets** on the latest release).
+- **Linux** (native, no Wine or Proton): download **MM3-Linux-x86_64.tar.gz** from the
+  [releases](https://github.com/lakshya16157/midtown-madness-3-PC-Native/releases), see
+  [Native Linux](#native-linux-no-wine-or-proton). The Linux build is new and still in beta.
 
 ## Install and play
 
@@ -53,8 +55,9 @@ the Xbox game.
    starting a game that cannot run, when files of the game are missing: run Setup again with
    your image to put them back.
 
-You need Windows 10 or 11 (64-bit), a Direct3D 11 graphics card and about 6 GB of free
-disk space, or Linux / Steam Deck with Proton or Wine ([Linux and Steam Deck](#linux-and-steam-deck)).
+You need Windows 10 or 11 (64-bit) with a Direct3D 11 graphics card and about 6 GB of free
+disk space, or Linux with a Vulkan graphics driver and about 10 GB ([native Linux](#native-linux-no-wine-or-proton);
+Proton or Wine also work for the Windows build, see [Linux and Steam Deck](#linux-and-steam-deck)).
 The first start shows the intro movies for about 3½ minutes; the game has not frozen.
 
 ## Look and gameplay
