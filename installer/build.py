@@ -51,6 +51,33 @@ def newest_game_exe(repo: Path) -> Path:
     return max(found, key=lambda p: p.stat().st_mtime)
 
 
+def make_icons(logo, branding: Path) -> None:
+    """Setup's icon (the .exe, its window, the shortcuts, the Linux menu entry): the game's logo on the
+    header's dark-blue tile with the gold edge.  Drawn at build time from the game's own artwork, so
+    nothing of it is committed; branding/mm3.ico (all sizes) and branding/mm3.png (256 px)."""
+    from PIL import Image, ImageDraw, ImageFilter
+    size, radius = 256, 56
+    top, bottom = (9, 16, 30), (31, 55, 102)
+    tile = Image.new("RGBA", (size, size))
+    draw = ImageDraw.Draw(tile)
+    for y in range(size):
+        t = y / (size - 1)
+        draw.line([(0, y), (size, y)], fill=tuple(round(a + (b - a) * t) for a, b in zip(top, bottom)) + (255,))
+    draw.rectangle([0, size - 12, size, size], fill=(242, 183, 5, 255))        # the gold edge
+    width = round(size * 0.88)
+    mark = logo.resize((width, round(logo.height * width / logo.width)), Image.LANCZOS)
+    left, upper = (size - width) // 2, (size - mark.height) // 2 - 6
+    shadow = Image.new("RGBA", tile.size, (0, 0, 0, 0))
+    shadow.paste((0, 0, 0, 170), (left + 2, upper + 4), mark.getchannel("A"))
+    tile = Image.alpha_composite(tile, shadow.filter(ImageFilter.GaussianBlur(4)))
+    tile.alpha_composite(mark, (left, upper))
+    rounded = Image.new("L", (size * 4, size * 4), 0)                           # smooth corners
+    ImageDraw.Draw(rounded).rounded_rectangle([0, 0, size * 4 - 1, size * 4 - 1], radius * 4, fill=255)
+    tile.putalpha(rounded.resize((size, size), Image.LANCZOS))
+    tile.save(branding / "mm3.png")
+    tile.save(branding / "mm3.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+
+
 def stage_branding(payload: Path, repo: Path) -> None:
     """The window icon, and the game's own logo (Menu/Gfx/mm3_logo.cdds) from the maintainer's
     extracted game files. The logo is game artwork, so it is taken here and never committed; without
@@ -67,8 +94,10 @@ def stage_branding(payload: Path, repo: Path) -> None:
         from PIL import Image
         with zipfile.ZipFile(archive) as zipped:
             dds = mm3_textures.cdds_to_dds(zipped.read("Menu/Gfx/mm3_logo.cdds"))
-        Image.open(io.BytesIO(dds)).convert("RGBA").save(branding / "mm3_logo.png")
-        print("game logo: Menu/Gfx/mm3_logo.cdds")
+        logo = Image.open(io.BytesIO(dds)).convert("RGBA")
+        logo.save(branding / "mm3_logo.png")
+        make_icons(logo, branding)
+        print("game logo: Menu/Gfx/mm3_logo.cdds (and the icon made from it)")
     except (ImportError, OSError, KeyError, ValueError) as error:
         print(f"WARNING: no game logo in this Setup ({type(error).__name__}: {error})")
     finally:
@@ -160,7 +189,7 @@ def main() -> int:
     stage_payload(payload, repo, args.packages, find_downloads(args.downloads))
 
     command = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
-               "--name", "MM3-Setup", "--icon", str(repo / "src" / "mm3.ico"),
+               "--name", "MM3-Setup", "--icon", str(payload / "branding" / "mm3.ico"),
                "--add-data", f"{payload};payload",
                "--distpath", str(args.work / "dist"), "--workpath", str(args.work / "pyi"),
                "--specpath", str(args.work)]

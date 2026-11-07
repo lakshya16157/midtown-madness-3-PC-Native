@@ -49,7 +49,7 @@ from pathlib import Path
 # PyInstaller see and include them (it only analyses this file's own imports).
 _PAYLOAD_STDLIB = (argparse, collections, copy, hashlib, math, re, struct, tempfile, zipfile, zlib)
 
-VERSION = "2.6 beta 5"
+VERSION = "2.6 beta 6"
 TITLE = "Midtown Madness 3 - Setup"
 # "Check for updates" asks GitHub for the newest release and downloads the MM3-Setup.exe attached to it.
 RELEASES_API = "https://api.github.com/repos/lakshya16157/midtown-madness-3-PC-Native/releases/latest"
@@ -65,8 +65,8 @@ DISC_FILES = "setup-disc-files.json"   # beside setup-options.json: the disc's f
 # The car toolkit is in the project repository (it needs Python), not in the install.
 CAR_WORKSHOP_URL = "https://github.com/lakshya16157/midtown-madness-3-PC-Native/tree/main/tools/car-mods"
 CAR_WORKSHOP_TEXT = (
-    "Car Workshop is the project's car toolkit. With it you can change the new cars: their names, "
-    "menu ratings, handling (mass, engine, grip, gears), speedometers and which body each one uses, "
+    "Car Workshop is the project's car toolkit. With it you can change the new cars: their physics "
+    "(engine, weight, grip, gears, brakes and more), names, menu ratings, speedometers and which body each one uses, "
     "then apply the result to your game. It is in the GitHub project under tools\\car-mods "
     "(editor.cmd) and runs with Python 3."
 )
@@ -637,6 +637,8 @@ def install_game_exe(dest: Path, log, replace_exe: bool = True) -> None:
         sources.append(runtime)
     if NATIVE_LINUX and (PAYLOAD / "mm3.png").is_file():
         sources.append(PAYLOAD / "mm3.png")      # the menu entry's icon
+    if not NATIVE_LINUX and (PAYLOAD / "branding" / "mm3.ico").is_file():
+        sources.append(PAYLOAD / "branding" / "mm3.ico")      # the shortcuts' icon
     libraries = PAYLOAD / "lib"        # Linux: the few shared libraries the build ships (found through the start script)
     if NATIVE_LINUX and libraries.is_dir():
         shutil.copytree(libraries, dest / "lib", dirs_exist_ok=True)
@@ -1211,7 +1213,7 @@ def create_shortcuts(dest: Path, log, folders: dict[str, Path] | None = None) ->
     for label, folder in (folders if folders is not None else shortcut_folders()).items():
         link = Path(folder) / SHORTCUT_NAME
         env = dict(os.environ, MM3_LNK=str(link), MM3_TARGET=str(dest / LAUNCHER), MM3_DIR=str(dest),
-                   MM3_ICON=f"{dest / GAME_EXE},0")
+                   MM3_ICON=str(dest / "mm3.ico") if (dest / "mm3.ico").is_file() else f"{dest / GAME_EXE},0")
         try:
             Path(folder).mkdir(parents=True, exist_ok=True)
             result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
@@ -1265,7 +1267,7 @@ def uninstall(dest, log, delete_game_files: bool = False) -> list[str]:
     if NATIVE_LINUX:
         shutil.rmtree(dest / "lib", ignore_errors=True)
     for name in (GAME_EXE, GAME_EXE + ".new", Path(GAME_EXE).stem + ".pdb", "vcruntime140.dll", LAUNCHER, LINUX_LAUNCHER,
-                 "mm3.png", "Extra cars - credits.txt", DISC_FILES):
+                 "mm3.png", "mm3.ico", "Extra cars - credits.txt", DISC_FILES):
         try:
             (dest / name).unlink()
             removed.append(name)
@@ -1518,7 +1520,7 @@ def banner_png(width: int, height: int, scale: float) -> bytes | None:
         stripe_draw.polygon([(x + round(46 * scale), 0), (x + round(62 * scale), 0), (x + round(16 * scale), height),
                              (x, height)], fill=(255, 255, 255, 12 + i * 3))
     image = Image.alpha_composite(image, stripes)
-    target_height = min(round(86 * scale), height - round(18 * scale))
+    target_height = min(round(86 * scale * max(1.0, height / (112 * scale))), height - round(18 * scale))
     logo = logo.resize((round(logo.width * target_height / logo.height), target_height), Image.LANCZOS)
     left, upper = round(30 * scale), (height - target_height) // 2 - round(2 * scale)
     shadow = Image.new("RGBA", image.size, (0, 0, 0, 0))
@@ -1552,9 +1554,14 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
         return int(round(value * scale))
 
     icon = branding("mm3.ico")
-    if icon:
+    if icon and not NATIVE_LINUX:
         try:
             root.iconbitmap(default=str(icon))
+        except tk.TclError:
+            pass
+    if NATIVE_LINUX and (PAYLOAD / "mm3.png").is_file():    # Tk takes a picture, not an .ico, on Linux
+        try:
+            root.iconphoto(True, tk.PhotoImage(file=str(PAYLOAD / "mm3.png")))
         except tk.TclError:
             pass
     page, card_bg, line, ink = "#eceff4", "#ffffff", "#d3d9e2", "#1b2430"
@@ -1609,17 +1616,38 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
     width, height = px(700), px(72 if compact else 112)
     banner = tk.Canvas(root, width=width, height=height, bg="#0c1424", highlightthickness=0)
     banner.pack(fill="x")
-    picture = banner_png(width, height, scale)
-    if picture:
-        banner.photo = tk.PhotoImage(data=base64.b64encode(picture))
-        banner.create_image(0, 0, anchor="nw", image=banner.photo)
-    else:
-        banner.create_text(px(28), height // 2, anchor="w", text="MIDTOWN MADNESS 3", fill="#f2b705",
-                           font=("Segoe UI", 22, "bold italic"))
-    banner.create_text(width - px(26), height * 38 // 100, anchor="e", text="PC Native Setup", fill="#ffffff",
-                       font=("Segoe UI Semibold", 15))
-    banner.create_text(width - px(26), height * 66 // 100, anchor="e", text=f"Version {VERSION}", fill="#9db4d6",
-                       font=("Segoe UI", 10))
+    banner_job = {"width": 0, "after": None}
+
+    def draw_banner(span: int) -> None:
+        """Draw the header for a window `span` pixels wide: the picture is rendered at that width (no dark
+        gap when the window is stretched or maximised) and the header and its logo grow a little with it."""
+        span = max(span, px(400))
+        zoom = min(1.6, max(1.0, span / width))
+        tall = round(height * zoom)
+        banner_job["width"] = span
+        banner.configure(height=tall)
+        banner.delete("all")
+        picture = banner_png(span, tall, scale)
+        if picture:
+            banner.photo = tk.PhotoImage(data=base64.b64encode(picture))
+            banner.create_image(0, 0, anchor="nw", image=banner.photo)
+        else:
+            banner.create_text(px(28), tall // 2, anchor="w", text="MIDTOWN MADNESS 3", fill="#f2b705",
+                               font=("Segoe UI", round(22 * zoom), "bold italic"))
+        banner.create_text(span - px(26), tall * 38 // 100, anchor="e", text="PC Native Setup", fill="#ffffff",
+                           font=("Segoe UI Semibold", round(15 * zoom)))
+        banner.create_text(span - px(26), tall * 66 // 100, anchor="e", text=f"Version {VERSION}", fill="#9db4d6",
+                           font=("Segoe UI", round(10 * zoom)))
+
+    def banner_resized(event) -> None:
+        if event.width == banner_job["width"]:
+            return
+        if banner_job["after"] is not None:
+            root.after_cancel(banner_job["after"])
+        banner_job["after"] = root.after(60, lambda: (banner_job.update(after=None), draw_banner(banner.winfo_width())))
+
+    draw_banner(width)
+    banner.bind("<Configure>", banner_resized)
 
     # The form sits in a scrollable area: the window can be resized, and on a short or oddly scaled
     # screen (Install hidden under the taskbar) it is capped to the work area and scrolls instead.
@@ -1746,8 +1774,9 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
     cars_label = tk.Label(content, font=body, fg=grey, bg=card_bg, justify="left", anchor="w",
                           wraplength=px(620),
                           text=("Adds %d community cars. Review the names and authors with Car list and credits. "
-                                "The full credits are also saved with the game. Change the new cars "
-                                "with Car Workshop, the car toolkit." % len(cars))
+                                "The full credits are also saved with the game. With Car Workshop, the car "
+                                "toolkit, you can also change their physics (engine, weight, grip, gears, "
+                                "brakes and more), names, menu ratings and speedometers." % len(cars))
                           if cars else "The extra cars are not included in this build.")
     cars_label.pack(fill="x")
 

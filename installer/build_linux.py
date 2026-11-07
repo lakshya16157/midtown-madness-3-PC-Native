@@ -77,14 +77,18 @@ def main() -> int:
     payload = stage / "payload"
     build.stage_payload(payload, repo, args.packages, find_downloads(args.downloads),
                         linux_binary=args.binary, linux_libs=args.libs)
-    # The menu entry's icon; the Windows build keeps .ico, here a PNG (Pillow is a build-time tool only).
-    for leftover in (payload / "branding" / "mm3.ico",):
-        leftover.unlink(missing_ok=True)
-    try:
-        from PIL import Image
-        Image.open(repo / "src" / "mm3.ico").convert("RGBA").save(payload / "mm3.png")
-    except (ImportError, OSError) as error:
-        print(f"WARNING: no menu icon ({error})")
+    # The menu entry's and window's icon is a PNG (made from the game's logo by build.make_icons, the same
+    # picture as the Windows icon); the .ico is Windows-only.
+    made = payload / "branding" / "mm3.png"
+    if made.is_file():
+        shutil.move(str(made), payload / "mm3.png")
+    else:
+        try:
+            from PIL import Image
+            Image.open(repo / "src" / "mm3.ico").convert("RGBA").save(payload / "mm3.png")
+        except (ImportError, OSError) as error:
+            print(f"WARNING: no menu icon ({error})")
+    (payload / "branding" / "mm3.ico").unlink(missing_ok=True)
     shutil.copy2(HERE / "installer.py", stage / "installer.py")
     (stage / "install.sh").write_text(INSTALL_SH, encoding="ascii", newline="\n")
     (stage / "README-Linux.txt").write_text(README, encoding="ascii", newline="\n")
