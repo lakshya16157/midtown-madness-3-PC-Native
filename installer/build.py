@@ -76,20 +76,27 @@ def stage_branding(payload: Path, repo: Path) -> None:
             sys.path.pop(0)
 
 
-def stage_payload(payload: Path, repo: Path, packages: Path, downloads: Path) -> None:
+def stage_payload(payload: Path, repo: Path, packages: Path, downloads: Path,
+                  linux_binary: Path | None = None, linux_libs: Path | None = None) -> None:
+    """Stage the payload.  linux_binary: the native Linux build (build_linux.py) instead of the .exe."""
     if payload.exists():
         shutil.rmtree(payload)
-    exe = newest_game_exe(repo)
+    exe = linux_binary or newest_game_exe(repo)
     print(f"game build: {exe}  sha256 {hashlib.sha256(exe.read_bytes()).hexdigest()[:16]}...")
     payload.mkdir(parents=True)
-    shutil.copy2(exe, payload / "mm3_recomp.exe")
-    # The native build uses MSVC's shared C runtime. PyInstaller's private
-    # runtime disappears when Setup closes, so the installed game needs its own
-    # app-local copy even on PCs without the Visual C++ redistributable.
-    runtime = Path(sys.base_prefix) / "vcruntime140.dll"
-    if not runtime.is_file():
-        sys.exit(f"Missing {runtime}; build with an official Windows x64 Python installation.")
-    shutil.copy2(runtime, payload / runtime.name)
+    if linux_binary:
+        shutil.copy2(exe, payload / "mm3_recomp")
+        if linux_libs and linux_libs.is_dir():
+            shutil.copytree(linux_libs, payload / "lib")
+    else:
+        shutil.copy2(exe, payload / "mm3_recomp.exe")
+        # The native build uses MSVC's shared C runtime. PyInstaller's private
+        # runtime disappears when Setup closes, so the installed game needs its own
+        # app-local copy even on PCs without the Visual C++ redistributable.
+        runtime = Path(sys.base_prefix) / "vcruntime140.dll"
+        if not runtime.is_file():
+            sys.exit(f"Missing {runtime}; build with an official Windows x64 Python installation.")
+        shutil.copy2(runtime, payload / runtime.name)
 
     stage_branding(payload, repo)
     (payload / "scripts").mkdir()

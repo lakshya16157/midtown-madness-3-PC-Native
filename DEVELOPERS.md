@@ -590,6 +590,8 @@ Run `build/mm3_recomp` from the repository folder (it also finds `game_files/` a
 own folder). `tools/game_test/run.py` works on Linux too: the teleport pipe is a Unix socket
 there (`$XDG_RUNTIME_DIR/MM3Teleport-<pid>.sock`).
 
+The downloadable Linux installer, `MM3-Linux-x86_64.tar.gz`, is built by `installer/build_linux.py --binary build/mm3_recomp --libs DIR` (a stripped native build, plus `libcrypto.so.3` and `libepoxy.so.0` in DIR). Build it on an old enough distribution (Ubuntu 22.04, glibc 2.35) so it runs on newer ones. It packs `install.sh` and the same `installer/installer.py` as the Windows Setup (running on the system's Python 3, `NATIVE_LINUX` mode) with the payload.
+
 On Linux the port's own sources see `<windows.h>` through `src/compat/posix/`, which maps
 the Win32 calls they use onto the runtime's POSIX layer (`platform/win32_compat.h`). Not
 available there yet: the Win32 settings window and updater (the RmlUi launcher is the

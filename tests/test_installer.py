@@ -493,5 +493,54 @@ class UpdateSwapTest(unittest.TestCase):
                          ["--dest", "D:/MM3"])
 
 
+class NativeLinuxTest(unittest.TestCase):
+    """MM3-Linux-x86_64.tar.gz: the same Setup running on Linux (checked here with the Linux names patched in)."""
+
+    def setUp(self):
+        for name, value in (("NATIVE_LINUX", True), ("GAME_EXE", "mm3_recomp"),
+                            ("LAUNCHER", "play-midtown-madness-3.sh"), ("SHORTCUT_NAME", "Midtown Madness 3.desktop")):
+            patcher = patch.object(setup, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_native_start_script_runs_the_linux_program_with_the_settings_and_bundled_libraries(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            target = Path(scratch)
+            setup.write_launcher(target, improvements=False)
+            text = (target / "play-midtown-madness-3.sh").read_bytes().decode("ascii")
+            self.assertNotIn("\r", text)
+            self.assertTrue(text.startswith("#!/bin/sh\n"))
+            self.assertIn('export LD_LIBRARY_PATH="$PWD/lib', text)
+            self.assertIn("./mm3_recomp > logs/last-run.log", text)
+            self.assertNotIn("wine", text.lower())
+            for name, value in setup.launch_settings(False).items():
+                self.assertIn(f"export {name}='{value}'\n", text)
+            self.assertFalse((target / "Play Midtown Madness 3.cmd").exists())   # no Windows script
+
+    def test_desktop_entries_quote_the_path_and_are_removed_again(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            folder = root / "applications"
+            dest = root / 'My "Games" $HOME' / "MM3"       # not created: Windows cannot hold a quote in a name
+            made = setup.create_shortcuts(dest, lambda text: None, {"Applications menu": folder})
+            self.assertEqual([path.name for path in made], ["Midtown Madness 3.desktop"])
+            text = made[0].read_text(encoding="utf-8")
+            self.assertIn("[Desktop Entry]", text)
+            self.assertIn('Exec=sh "', text)
+            self.assertIn('\\"Games\\"', text)                   # the quote cannot end the argument
+            self.assertIn("\\$HOME", text)                        # nor can $HOME expand
+            self.assertEqual(setup.remove_shortcuts([str(made[0])]), made)
+            self.assertFalse(made[0].exists())
+
+    def test_dlc_check_finds_lowercase_cars_folders(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            folder = Path(scratch)
+            (folder / "cars" / "Tweak").mkdir(parents=True)
+            (folder / "cars" / "Tweak" / "car213.txt").write_bytes(b"x")
+            found = setup.find_file_nocase(folder, "Cars/Tweak/car213.txt")
+            self.assertTrue(found.is_file())
+            self.assertEqual(setup.find_file_nocase(folder, "Cars/missing.txt").name, "missing.txt")
+
+
 if __name__ == "__main__":
     unittest.main()

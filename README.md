@@ -1,6 +1,6 @@
 # Midtown Madness 3 recompilation
 
-Play the Xbox racing game **Midtown Madness 3** natively on your Windows PC (or on Linux and
+Play the Xbox racing game **Midtown Madness 3** natively on your Windows PC or on Linux (and
 the Steam Deck through Proton): your screen's resolution and widescreen, up to 120 fps,
 controller or keyboard, two-player split screen, and optional mods. You need your own copy of
 the Xbox game.
@@ -196,7 +196,28 @@ players, is in [docs/MULTIPLAYER.md](docs/MULTIPLAYER.md).
 
 ## Linux and Steam Deck
 
-The game is a Windows program; it runs on Linux and the Steam Deck through **Proton 8 or newer
+### Native Linux (no Wine or Proton)
+
+Download **`MM3-Linux-x86_64.tar.gz`** from the [latest release](https://github.com/lakshya16157/midtown-madness-3-PC-Native/releases),
+unpack it and run the installer. You need your own game image (`.iso`), Python 3.9 or newer
+(`python3-tk` for the window), a Vulkan graphics driver and about 10 GB of free space:
+
+```sh
+tar -xzf MM3-Linux-x86_64.tar.gz
+cd MM3-Linux
+sh install.sh            # a window opens; or: sh install.sh --cli --iso /path/to/game.iso --cars --shortcuts
+```
+
+It installs to `~/Games/Midtown Madness 3`, adds a Desktop and applications-menu entry, and starts with
+`play-midtown-madness-3.sh` there. The build runs on Ubuntu 22.04 / Debian 12 or newer (any distribution
+with glibc 2.35+, including the Steam Deck's SteamOS). Unlike Windows, the downloadable races' loading
+screens are not drawn (they keep the car picture), and Setup does not update itself: download the new
+tarball. Saves and settings are kept when you install again. The Linux build is new: please report
+problems on the [issue page](https://github.com/lakshya16157/midtown-madness-3-PC-Native/issues).
+
+### Proton or Wine (the Windows build)
+
+The Windows build also runs on Linux and the Steam Deck through **Proton 8 or newer
 (Proton Experimental recommended)** or a recent **Wine**. Install it with the same tool you play it
 with, then start `mm3_recomp.exe` from the install folder:
 

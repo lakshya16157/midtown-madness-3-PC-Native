@@ -851,7 +851,7 @@ set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_L
 set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_LAUNCHER_NETWORK=1)
 # The release this build belongs to: the launcher's title and the first log
 # line show it, so a report says which version it came from.
-set(MM3_VERSION "2.6 beta 4")
+set(MM3_VERSION "2.6 beta 5")
 set_property(SOURCE src/mm3_launcher.c src/main.c APPEND PROPERTY COMPILE_DEFINITIONS
     "MM3_VERSION=\"${MM3_VERSION}\"")
 if(WIN32)

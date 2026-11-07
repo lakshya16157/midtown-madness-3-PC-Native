@@ -49,7 +49,7 @@ from pathlib import Path
 # PyInstaller see and include them (it only analyses this file's own imports).
 _PAYLOAD_STDLIB = (argparse, collections, copy, hashlib, math, re, struct, tempfile, zipfile, zlib)
 
-VERSION = "2.6 beta 4"
+VERSION = "2.6 beta 5"
 TITLE = "Midtown Madness 3 - Setup"
 # "Check for updates" asks GitHub for the newest release and downloads the MM3-Setup.exe attached to it.
 RELEASES_API = "https://api.github.com/repos/lakshya16157/midtown-madness-3-PC-Native/releases/latest"
@@ -60,7 +60,7 @@ ISSUES_URL = "https://github.com/lakshya16157/midtown-madness-3-PC-Native/issues
 MM3_TITLE_ID = 0x4D53002A   # in default.xbe's certificate; every release of the game has it
 # The extra cars add ~1.5 GB to the game's own files; the exe, launcher and logs ~0.3 GB.
 EXTRA_CARS_BYTES, BASE_EXTRA_BYTES = 1_500_000_000, 300_000_000
-SHORTCUT_NAME = "Midtown Madness 3.lnk"
+SHORTCUT_NAME = "Midtown Madness 3.desktop" if sys.platform.startswith("linux") else "Midtown Madness 3.lnk"
 DISC_FILES = "setup-disc-files.json"   # beside setup-options.json: the disc's files, for checks without the image
 # The car toolkit is in the project repository (it needs Python), not in the install.
 CAR_WORKSHOP_URL = "https://github.com/lakshya16157/midtown-madness-3-PC-Native/tree/main/tools/car-mods"
@@ -89,10 +89,12 @@ FROZEN = getattr(sys, "frozen", False)
 HERE = Path(sys._MEIPASS) if FROZEN else Path(__file__).resolve().parent
 PAYLOAD = HERE / "payload"
 APP_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
-DEFAULT_DEST = APP_DIR / "Midtown Madness 3"
+# The native Linux build (MM3-Linux-x86_64.tar.gz, no Wine): same Setup, a Linux program and start script.
+NATIVE_LINUX = sys.platform.startswith("linux")
+DEFAULT_DEST = Path.home() / "Games" / "Midtown Madness 3" if NATIVE_LINUX else APP_DIR / "Midtown Madness 3"
 
-GAME_EXE = "mm3_recomp.exe"
-LAUNCHER = "Play Midtown Madness 3.cmd"
+GAME_EXE = "mm3_recomp" if NATIVE_LINUX else "mm3_recomp.exe"
+LAUNCHER = "play-midtown-madness-3.sh" if NATIVE_LINUX else "Play Midtown Madness 3.cmd"
 LINUX_LAUNCHER = "Play Midtown Madness 3 (Linux).sh"
 CARS_CONFIG = PAYLOAD / "tools" / "car-mods" / "cars.local.json"
 DLC_TITLE_ID = "4d53002a"
@@ -633,10 +635,18 @@ def install_game_exe(dest: Path, log, replace_exe: bool = True) -> None:
     runtime = PAYLOAD / "vcruntime140.dll"
     if runtime.is_file():
         sources.append(runtime)
+    if NATIVE_LINUX and (PAYLOAD / "mm3.png").is_file():
+        sources.append(PAYLOAD / "mm3.png")      # the menu entry's icon
+    libraries = PAYLOAD / "lib"        # Linux: the few shared libraries the build ships (found through the start script)
+    if NATIVE_LINUX and libraries.is_dir():
+        shutil.copytree(libraries, dest / "lib", dirs_exist_ok=True)
+        log("Installed the bundled libraries.")
     for source in sources:
         target = dest / source.name
         temporary = dest / (source.name + ".new")
         shutil.copyfile(source, temporary)
+        if NATIVE_LINUX and source.name == GAME_EXE:
+            os.chmod(temporary, 0o755)
         try:
             os.replace(temporary, target)
         except PermissionError:
@@ -679,16 +689,34 @@ def native_dlc_metadata(data: bytes, pack: str) -> bytes:
     return signature + data[20:]
 
 
+def find_file_nocase(folder: Path, relative: str) -> Path:
+    """folder/relative.  Linux file names are case-sensitive but the DLC ships "cars/" where the game asks
+    for "Cars/" (the game folds case itself), so there each part may match in any letter case."""
+    path = Path(folder) / relative
+    if not NATIVE_LINUX or path.exists():
+        return path
+    current = Path(folder)
+    for part in relative.split("/"):
+        try:
+            match = next((entry for entry in os.listdir(current) if entry.lower() == part.lower()), None)
+        except OSError:
+            return path
+        if match is None:
+            return path
+        current = current / match
+    return current
+
+
 def installed_dlc_packs(game_dir: Path) -> list[str]:
     content = game_dir / "TDATA" / DLC_TITLE_ID / "$C"
     present = []
     for pack in DLC_PACKS:
         folder = content / pack
         try:
-            if not all((folder / name).is_file() and (folder / name).stat().st_size
-                       for name in dlc_required_files(pack)):
+            found = [find_file_nocase(folder, name) for name in dlc_required_files(pack)]
+            if not all(path.is_file() and path.stat().st_size for path in found):
                 continue
-            data = (folder / "contentmeta.xbx").read_bytes()
+            data = find_file_nocase(folder, "contentmeta.xbx").read_bytes()
             if native_dlc_metadata(data, pack) == data:
                 present.append(pack)
         except (OSError, InstallError):
@@ -854,8 +882,36 @@ def launch_settings(improvements: bool) -> dict[str, str]:
     return settings
 
 
+def write_native_launcher(dest: Path, settings: dict, improvements: bool) -> None:
+    """The start script of the native Linux build: `sh play-midtown-madness-3.sh` (or the menu entry)."""
+    def quoted(value: str) -> str:
+        return "'" + value.replace("'", "'\\''") + "'"
+    lines = [
+        "#!/bin/sh",
+        "# Midtown Madness 3 (native Linux), written by MM3 Setup. Safe to edit.",
+        f"# Game improvements: {'ON (native upgrades)' if improvements else 'OFF (original Xbox look)'}",
+        'cd "$(dirname "$0")" || exit 1',
+        f"if pgrep -x {GAME_EXE} >/dev/null 2>&1; then",
+        "  echo 'Midtown Madness 3 is already running. Close it first.'",
+        "  exit 1",
+        "fi",
+        'export LD_LIBRARY_PATH="$PWD/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"',
+    ]
+    lines += [f"export {name}={quoted(value)}" for name, value in settings.items()]
+    lines += [
+        "mkdir -p logs",
+        f"./{GAME_EXE} > logs/last-run.log 2>&1 || echo 'The game stopped with an error. Details: logs/last-run.log'",
+    ]
+    script = dest / LAUNCHER
+    script.write_text("\n".join(lines) + "\n", encoding="ascii", newline="\n")
+    os.chmod(script, 0o755)
+
+
 def write_launcher(dest: Path, improvements: bool) -> None:
     settings = launch_settings(improvements)
+    if NATIVE_LINUX:
+        write_native_launcher(dest, settings, improvements)
+        return
     lines = [
         "@echo off",
         "rem Midtown Madness 3 launcher, written by MM3 Setup. Safe to edit.",
@@ -1071,6 +1127,11 @@ def saved_options(dest: Path) -> dict:
 
 
 def game_running() -> bool:
+    if NATIVE_LINUX:
+        try:
+            return subprocess.run(["pgrep", "-x", GAME_EXE], capture_output=True).returncode == 0
+        except OSError:
+            return False
     shown = subprocess.run(["tasklist", "/fi", f"imagename eq {GAME_EXE}", "/nh"], capture_output=True,
                            text=True, creationflags=subprocess.CREATE_NO_WINDOW).stdout
     return GAME_EXE.lower() in shown.lower()
@@ -1087,9 +1148,11 @@ def launch_game(dest: Path) -> None:
     (dest / "logs").mkdir(exist_ok=True)
     env = dict(os.environ)
     env.update(launch_settings(improvements))
+    if NATIVE_LINUX:
+        env["LD_LIBRARY_PATH"] = str(dest / "lib") + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
     with open(dest / "logs" / "last-run.log", "wb") as log:
         subprocess.Popen([str(dest / GAME_EXE)], cwd=dest, env=env, stdout=log, stderr=subprocess.STDOUT,
-                         creationflags=subprocess.CREATE_NO_WINDOW)
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
 # ----------------------------------------------------------------------------- shortcuts and uninstall
@@ -1097,10 +1160,38 @@ def launch_game(dest: Path) -> None:
 def shortcut_folders() -> dict[str, Path]:
     """Where the Desktop and Start menu shortcuts go (the current user's, no administrator rights)."""
     folders = {"Desktop": known_folder("Desktop")}
+    if NATIVE_LINUX:
+        data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+        folders["Applications menu"] = data_home / "applications"
+        return folders
     appdata = os.environ.get("APPDATA")
     if appdata:
         folders["Start menu"] = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
     return folders
+
+
+def create_desktop_entries(dest: Path, log, folders: dict[str, Path]) -> list[Path]:
+    """Linux: a .desktop launcher on the Desktop and in the applications menu.  Never fails the install."""
+    def quoted(path) -> str:        # Exec= takes double-quoted arguments; \ " ` $ are escaped inside them
+        return '"' + str(path).replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`").replace("$", "\\$") + '"'
+    icon = dest / "mm3.png"
+    made = []
+    for label, folder in folders.items():
+        entry = Path(folder) / SHORTCUT_NAME
+        lines = ["[Desktop Entry]", "Type=Application", "Name=Midtown Madness 3",
+                 "Comment=Midtown Madness 3 PC Native", f"Exec=sh {quoted(dest / LAUNCHER)}",
+                 f"Path={dest}", "Terminal=false", "Categories=Game;"]
+        if icon.is_file():
+            lines.append(f"Icon={icon}")
+        try:
+            Path(folder).mkdir(parents=True, exist_ok=True)
+            entry.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            os.chmod(entry, 0o755)
+            made.append(entry)
+            log(f"Shortcut added to the {label}.")
+        except OSError as error:
+            log(f"Could not add the {label} shortcut ({error.strerror or error}). The game starts with '{LAUNCHER}' as before.")
+    return made
 
 
 def create_shortcuts(dest: Path, log, folders: dict[str, Path] | None = None) -> list[Path]:
@@ -1111,6 +1202,8 @@ def create_shortcuts(dest: Path, log, folders: dict[str, Path] | None = None) ->
     name with quotes or apostrophes cannot change what PowerShell runs.  Returns the files made.
     """
     dest = Path(dest)
+    if NATIVE_LINUX:
+        return create_desktop_entries(dest, log, folders if folders is not None else shortcut_folders())
     script = ("$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:MM3_LNK);"
               "$s.TargetPath=$env:MM3_TARGET;$s.WorkingDirectory=$env:MM3_DIR;$s.IconLocation=$env:MM3_ICON;"
               "$s.WindowStyle=7;$s.Description='Midtown Madness 3 PC Native';$s.Save()")
@@ -1169,8 +1262,10 @@ def uninstall(dest, log, delete_game_files: bool = False) -> list[str]:
             game_dir.is_symlink() or isjunction(game_dir) or not (game_dir / "default.xbe").is_file()):
         raise InstallError(f"{game_dir} is a link or does not look like the game's folder, so nothing was removed.")
     removed = [f"shortcut {path}" for path in remove_shortcuts(options.get("shortcuts"))]
+    if NATIVE_LINUX:
+        shutil.rmtree(dest / "lib", ignore_errors=True)
     for name in (GAME_EXE, GAME_EXE + ".new", Path(GAME_EXE).stem + ".pdb", "vcruntime140.dll", LAUNCHER, LINUX_LAUNCHER,
-                 "Extra cars - credits.txt", DISC_FILES):
+                 "mm3.png", "Extra cars - credits.txt", DISC_FILES):
         try:
             (dest / name).unlink()
             removed.append(name)
@@ -1716,7 +1811,8 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
     buttons = tk.Frame(frame, bg=page)
     buttons.grid(row=9, column=0, sticky="we")
     update_button = ttk.Button(buttons, text="Check for updates")
-    update_button.pack(side="left")
+    if not NATIVE_LINUX:        # the Linux download is a tarball: new versions are fetched from the releases page
+        update_button.pack(side="left")
     uninstall_button = ttk.Button(buttons, text="Uninstall...")
     cancel_button = ttk.Button(buttons, text="Cancel install")
     play = ttk.Button(buttons, text="Play now", style="Accent.TButton")
@@ -2163,6 +2259,14 @@ def main(argv=None) -> int:
     parser.add_argument("--update-api", default=RELEASES_API, help=argparse.SUPPRESS)  # tests: a local fake release
     args = parser.parse_args(argv)
     headless = args.cli or args.check_update or args.update or args.uninstall or args.update_game
+    if not headless and NATIVE_LINUX:
+        try:
+            import tkinter  # noqa: F401
+        except ImportError:
+            print("The Setup window needs Tk (Debian/Ubuntu: sudo apt install python3-tk; Fedora: sudo dnf install "
+                  "python3-tkinter).\nOr install without it:\n  ./install.sh --cli --iso /path/to/game.iso "
+                  "[--dlc DLC.zip] [--cars] [--shortcuts] [--dest DIR]", file=sys.stderr)
+            return 1
     if not headless:
         # Over an existing install the window starts with what was chosen last time, so installing
         # again (to update the game) does not take the extra cars away by default.
