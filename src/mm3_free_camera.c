@@ -84,9 +84,13 @@ static int key(int vk) { return xbox_FramebufferKeyDown(vk) != 0; }
  * of another program). */
 static int focused(void)
 {
+#ifndef _WIN32
+    return 0;   /* Off Windows the mouse look is not wired up yet (DESIGN.md open items). */
+#else
     DWORD process = 0;
     HWND window = GetForegroundWindow();
     return window && GetWindowThreadProcessId(window, &process) && process == GetCurrentProcessId();
+#endif
 }
 
 /* Photo mode, unless the launcher turned it off (MM3_PHOTO_MODE=0). */
@@ -187,6 +191,7 @@ static void fly(uint32_t camera, float out[16])
     if (key(VK_UP)) s_pitch += TURN * dt;
     if (key(VK_DOWN)) s_pitch -= TURN * dt;
     /* The right button looks; while the race is held the mouse alone does. */
+#ifdef _WIN32
     if (key(VK_RBUTTON) || (s_from_hold && focused())) {
         POINT p;
         /* Physical pixels: in a DPI-unaware thread a scaled display (250%)
@@ -211,6 +216,7 @@ static void fly(uint32_t camera, float out[16])
     } else {
         s_mouse_held = 0;
     }
+#endif
     if (key(VK_SHIFT)) speed *= 5.0f;
     if (key(VK_CONTROL)) speed *= 0.2f;
     if (key('W')) move[2] += 1.0f;

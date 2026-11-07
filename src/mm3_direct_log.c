@@ -7,6 +7,7 @@
  * measurable; the smooth 19 October runs had them on. Only the newest few
  * direct logs are kept. MM3_DIRECT_LOG=0 keeps the console instead. */
 #define WIN32_LEAN_AND_MEAN
+#ifdef _WIN32
 #include <windows.h>
 #include <tlhelp32.h>
 #include <fcntl.h>
@@ -189,3 +190,9 @@ void mm3_direct_launch_log(void)
     thread = CreateThread(NULL, 0, report_overlay, NULL, 0, NULL);
     if (thread) CloseHandle(thread);
 }
+
+#else /* !_WIN32: launchers redirect the log themselves; power reports are Windows only for now. */
+#include "mm3_direct_log.h"
+void mm3_direct_launch_log(void) {}
+void mm3_power_watch(void) {}
+#endif /* _WIN32 */

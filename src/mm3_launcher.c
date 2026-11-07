@@ -1,3 +1,6 @@
+/* Windows only: the Win32 settings window and its updater. Off Windows the RmlUi launcher
+ * (mm3_launcher.cpp) is the settings window, and AntRecomp/the player handles updates. */
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #ifndef COBJMACROS
 #define COBJMACROS
@@ -2427,3 +2430,5 @@ int mm3_launcher_run(void)
     if (!bootstrap(warning, sizeof warning)) { fprintf(stderr, "[MM3_LAUNCHER] %s\n", warning); return 0; }
     return 1;
 }
+
+#endif /* _WIN32 */

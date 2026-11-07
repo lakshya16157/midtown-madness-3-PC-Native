@@ -1,5 +1,7 @@
 #include <windows.h>
+#ifdef _WIN32
 #include <tlhelp32.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,6 +95,7 @@ static uint32_t s_watch_guest;
 static volatile LONG s_watch_hits;
 static RECOMP_TLS volatile int s_guard_writing;   /* the guard's own repair is not reported */
 
+#ifdef _WIN32
 static LONG CALLBACK watch_exception(EXCEPTION_POINTERS *p)
 {
     CONTEXT *c = p->ContextRecord;
@@ -180,6 +183,9 @@ static void watch_slot(uint32_t guest)
     CloseHandle(thread);
     fprintf(stderr, "[MM3_UI_WATCH] watching %08X for writes in %lu threads\n", guest, armed);
 }
+#else /* !_WIN32: hardware write watch is Windows only (debug diagnostic) */
+static void watch_slot(uint32_t guest) { (void)guest; }
+#endif
 
 static void check_link(uint32_t widget, uint32_t offset, const char *what)
 {

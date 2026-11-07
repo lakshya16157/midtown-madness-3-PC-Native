@@ -5,6 +5,7 @@
 1. checks the toolchain (Visual Studio or local MSVC, CMake, a C/C++ compiler off Windows) and Python
 2. makes tools/venv with the pinned generator dependency (capstone)
 3. verifies the disc's code and extracts it to game_files/
+   and applies patches/xboxrecomp-mm3.patch to tools/xboxrecomp (as setup.ps1 does)
 4. generates the translated C into src/recomp/gen/ (about 6 minutes)
 5. builds build/<Config>/mm3_recomp.exe (Windows) or build/mm3_recomp
 6. captures the audio DSP programs from a short run of the game, then rebuilds
@@ -107,6 +108,11 @@ def game_files(iso, skip_hash, force, msvc):
         print("game_files/default.xbe present (use --force to re-extract)")
 
 
+def runtime_patch(msvc):
+    step("MM3 runtime fixes (patches/xboxrecomp-mm3.patch)")
+    run([venv_python(), "scripts/apply_runtime_patch.py"], "MM3 runtime fixes", build_env(msvc))
+
+
 def generate(force, msvc):
     step("Generate translated code (src/recomp/gen/)")
     generated = REPO / "src/recomp/gen"
@@ -201,6 +207,7 @@ def main(argv=None):
     msvc, cmake, kind = prerequisites()
     python_env(args.force, msvc)
     game_files(iso, args.skip_iso_hash, args.force, msvc)
+    runtime_patch(msvc)
     generate(args.force, msvc)
     configure(args.config, args.renderer, cmake, kind, msvc, args.build_dir)
     compile_game(args.config, cmake, msvc, args.build_dir)
