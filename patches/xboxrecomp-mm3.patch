@@ -18,6 +18,41 @@ index 552d7b2..10e69dd 100644
  # Shared FMV player (Media Foundation -> D3D8 texture)
  add_subdirectory(src/video)
  
+diff --git a/cmake/Nv2aSdlgpu.cmake b/cmake/Nv2aSdlgpu.cmake
+index f16b2e6..eaf91b7 100644
+--- a/cmake/Nv2aSdlgpu.cmake
++++ b/cmake/Nv2aSdlgpu.cmake
+@@ -83,6 +83,30 @@ function(xbr_sdlgpu_shaders gen out)
+             list(APPEND _shader_headers ${_out})
+         endforeach()
+     endforeach()
++    # Specialised pixel shaders: one SPIR-V per combiner configuration of the
++    # title's XBOXRECOMP_PS_STATES, as the D3D11 renderer's prebuilt variants
++    # (tools/shader_prebuild). The include always exists; without states, or
++    # when Direct3D 12 shaders are what the target uses, its table is empty.
++    set(_spec_inc ${gen}/sdlgpu/ps_spec.inc)
++    if(XBOXRECOMP_PS_STATES AND EXISTS "${XBOXRECOMP_PS_STATES}" AND NOT WIN32)
++        find_package(Python3 REQUIRED COMPONENTS Interpreter)
++        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${XBOXRECOMP_PS_STATES}")
++        add_custom_command(OUTPUT ${_spec_inc}
++            COMMAND ${CMAKE_COMMAND} -E make_directory ${gen}/sdlgpu
++            COMMAND ${Python3_EXECUTABLE} ${_xbr_sdlgpu_root}/tools/shader_prebuild/sdlgpu_spec_prebuild.py
++                    --dxc ${XBOXRECOMP_DXC} --unit ${gen}/units/combiner.hlsl
++                    --states ${XBOXRECOMP_PS_STATES} --out ${_spec_inc}
++            DEPENDS ${gen}/units/combiner.hlsl ${XBOXRECOMP_PS_STATES} ${NV2A_HLSL_DEPENDS}
++                    ${_xbr_sdlgpu_root}/tools/shader_prebuild/sdlgpu_spec_prebuild.py
++            COMMENT "dxc specialised pixel shaders (SPIR-V)"
++            VERBATIM)
++    else()
++        file(WRITE ${_spec_inc}
++            "/* No specialised pixel shaders in this build. */\n"
++            "static const SpecState s_spec_states[1] = { {{0}, 0, 0} };\n"
++            "#define SPEC_STATE_COUNT 0\n")
++    endif()
++    list(APPEND _shader_headers ${_spec_inc})
+     set(${out} ${_shader_headers} PARENT_SCOPE)
+ endfunction()
+ 
 diff --git a/include/nv2a_host_commands.h b/include/nv2a_host_commands.h
 new file mode 100644
 index 0000000..131b892
@@ -21830,7 +21865,7 @@ index e40d0bc..b197e10 100644
  
  static uint32_t surface_color_bpp(uint32_t fmt)
 diff --git a/src/video/nv2a_sdlgpu.c b/src/video/nv2a_sdlgpu.c
-index fffccd5..33c7431 100644
+index fffccd5..728f5f4 100644
 --- a/src/video/nv2a_sdlgpu.c
 +++ b/src/video/nv2a_sdlgpu.c
 @@ -46,6 +46,7 @@
@@ -21841,7 +21876,20 @@ index fffccd5..33c7431 100644
  
  #include "sdlgpu/ub_vs.spirv.h"
  #include "sdlgpu/ps_main.spirv.h"
-@@ -225,6 +226,85 @@ void nv2a_d3d_set_overlay_hooks(const NvOverlayHooks *hooks)
+@@ -81,6 +82,12 @@
+ #define DXIL(name) NULL, 0
+ #endif
+ 
++/* Specialised pixel shaders (tools/shader_prebuild/sdlgpu_spec_prebuild.py):
++ * the SPIR-V of each known combiner configuration, built with the game. */
++#include "nv2a_ps_spec.h"
++typedef struct { uint32_t key[54]; const unsigned char *spirv; size_t size; } SpecState;
++#include "sdlgpu/ps_spec.inc"
++
+ extern ptrdiff_t xbox_GetMemoryOffset(void);
+ 
+ #define CONTIG_BASE 0x80000000u
+@@ -225,6 +232,85 @@ void nv2a_d3d_set_overlay_hooks(const NvOverlayHooks *hooks)
  
  static volatile float s_aspect;
  
@@ -21927,7 +21975,7 @@ index fffccd5..33c7431 100644
  /* The window's size in pixels; 0 if there is no window or it is minimised. */
  static int client_size(uint32_t *w, uint32_t *h)
  {
-@@ -243,7 +323,7 @@ float nv2a_d3d_display_aspect(void)
+@@ -243,7 +329,7 @@ float nv2a_d3d_display_aspect(void)
      float a = s_aspect;
      uint32_t w, h;
      if (a) return a;
@@ -21936,16 +21984,153 @@ index fffccd5..33c7431 100644
      if (client_size(&w, &h)) return s_aspect = clamp_aspect((float)w / (float)h);
      if (SDL_WasInit(SDL_INIT_VIDEO)) {
          /* No window yet (sizing it): the display it will open on. */
-@@ -808,7 +888,7 @@ static SDL_GPUTextureFormat s_depth_format;
+@@ -312,6 +398,7 @@ static const ShaderSource s_shader_src[SH_COUNT] = {
+ #endif
+ };
+ static SDL_GPUShader *s_shader[SH_COUNT];
++static int s_spec_spirv;                     /* the device takes SPIR-V (the specialised shaders' format) */
+ 
+ static int create_shaders(void)
+ {
+@@ -331,6 +418,7 @@ static int create_shaders(void)
+             ci.code = src->dxil;
+             ci.code_size = src->dxil_size;
+         } else if (formats & SDL_GPU_SHADERFORMAT_SPIRV) {
++            s_spec_spirv = 1;
+             ci.format = SDL_GPU_SHADERFORMAT_SPIRV;
+             ci.code = src->spirv;
+             ci.code_size = src->spirv_size;
+@@ -800,6 +888,107 @@ static void graveyard_empty(void)
+     s_samp_graveyard_n = 0;
+ }
+ 
++/* ------------------------------------------------ specialised pixel shaders */
++
++/* A draw whose combiner configuration is in the build's table runs that
++ * configuration's own pixel shader instead of the generic one, which loops
++ * over the combiner stages with run-time control words (as the D3D11 renderer
++ * does, spec_ps in nv2a_d3d11.c). Only with SPIR-V: the table holds no DXIL.
++ * RECOMP_SDLGPU_SPEC=0 turns it off; RECOMP_SDLGPU_SPEC=log also prints the
++ * configurations that were drawn generically, in the states file's format. */
++#define SPEC_SLOTS 2048u
++static int s_spec_mode = -1;                 /* 0 off, 1 on, 2 on and logging */
++static uint16_t s_spec_slot[SPEC_SLOTS];     /* 1 + index, 0 empty */
++static SDL_GPUShader *s_spec_shader[SPEC_STATE_COUNT + 1];
++static uint8_t s_spec_bad[SPEC_STATE_COUNT + 1];
++static uint32_t s_spec_hits, s_spec_misses, s_spec_logged;
++
++static uint32_t spec_hash(const uint32_t *w)
++{
++    uint32_t h = 2166136261u;
++    unsigned i;
++    for (i = 0; i < 54; i++) h = (h ^ w[i]) * 16777619u;
++    return h ^ (h >> 15);
++}
++
++static void spec_init(void)
++{
++    const char *e = getenv("RECOMP_SDLGPU_SPEC");
++    uint32_t i;
++    s_spec_mode = (e && e[0] == '0') ? 0 : (e && !strcmp(e, "log")) ? 2 : 1;
++    if (!s_spec_spirv || !SPEC_STATE_COUNT) { s_spec_mode = 0; return; }
++    for (i = 0; i < SPEC_STATE_COUNT; i++) {
++        uint32_t h = spec_hash(s_spec_states[i].key) & (SPEC_SLOTS - 1u);
++        while (s_spec_slot[h]) h = (h + 1u) & (SPEC_SLOTS - 1u);
++        s_spec_slot[h] = (uint16_t)(i + 1u);
++    }
++    fprintf(stderr, "[SDLGPU] %u specialised pixel shaders in this build\n", (unsigned)SPEC_STATE_COUNT);
++}
++
++/* 1 + the table index of this draw's configuration, or 0. */
++static uint16_t spec_find(const PSConsts *pc, uint32_t variant)
++{
++    PsKey k;
++    uint32_t h, i;
++    if (s_spec_mode < 0) spec_init();
++    if (!s_spec_mode) return 0;
++    memset(&k, 0, sizeof k);
++    memcpy(k.c_icw, pc->c_icw, sizeof k.c_icw);
++    memcpy(k.a_icw, pc->a_icw, sizeof k.a_icw);
++    memcpy(k.c_ocw, pc->c_ocw, sizeof k.c_ocw);
++    memcpy(k.a_ocw, pc->a_ocw, sizeof k.a_ocw);
++    k.fin0 = pc->fin0; k.fin1 = pc->fin1; k.rc_control = pc->rc_control;
++    k.stage_prog = pc->stage_prog; k.alpha_func = pc->alpha_func; k.ps_flags = pc->ps_flags;
++    k.clip_plane = pc->clip_plane; k.other_input = pc->other_input; k.dot_map = pc->dot_map;
++    k.variant = variant;
++    for (i = 0; i < 4; i++) {
++        k.tex_info[i][0] = pc->tex_info[i][0]; k.tex_info[i][1] = pc->tex_info[i][1];
++        k.tex_info[i][2] = pc->tex_info[i][2];
++    }
++    h = spec_hash((const uint32_t *)&k) & (SPEC_SLOTS - 1u);
++    while (s_spec_slot[h]) {
++        uint32_t n = s_spec_slot[h] - 1u;
++        if (!memcmp(s_spec_states[n].key, &k, sizeof k)) {
++            if (s_spec_bad[n]) return 0;
++            s_spec_hits++;
++            return (uint16_t)(n + 1u);
++        }
++        h = (h + 1u) & (SPEC_SLOTS - 1u);
++    }
++    s_spec_misses++;
++    if (s_spec_mode == 2 && s_spec_logged < 64) {
++        const uint32_t *w = (const uint32_t *)&k;
++        char line[1024];
++        size_t n = 0;
++        for (i = 0; i < 54 && n + 10 < sizeof line; i++) n += (size_t)snprintf(line + n, sizeof line - n, "%x ", w[i]);
++        fprintf(stderr, "[SDLGPU_SPEC] generic %s\n", line);
++        s_spec_logged++;
++    }
++    return 0;
++}
++
++/* The shader of table entry n, made on first use; NULL when the driver refuses it. */
++static SDL_GPUShader *spec_shader(uint32_t n)
++{
++    SDL_GPUShaderCreateInfo ci;
++    if (n >= SPEC_STATE_COUNT || s_spec_bad[n]) return NULL;
++    if (s_spec_shader[n]) return s_spec_shader[n];
++    memset(&ci, 0, sizeof ci);
++    ci.entrypoint = (s_spec_states[n].key[41] & 2u) ? "ps_wdepth" : "ps_main";
++    ci.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
++    ci.num_samplers = 13;
++    ci.num_uniform_buffers = 3;
++    ci.format = SDL_GPU_SHADERFORMAT_SPIRV;
++    ci.code = s_spec_states[n].spirv;
++    ci.code_size = s_spec_states[n].size;
++    s_spec_shader[n] = SDL_CreateGPUShader(s_dev, &ci);
++    if (!s_spec_shader[n]) {
++        s_spec_bad[n] = 1;
++        fprintf(stderr, "[SDLGPU] specialised pixel shader %u: %s (the generic one is used)\n", n, SDL_GetError());
++    }
++    return s_spec_shader[n];
++}
++
+ /* ------------------------------------------------------------- pipelines */
+ 
+ enum { FMT_NONE, FMT_BGRA8, FMT_RGBA16, FMT_R32F };
+@@ -808,8 +997,8 @@ static SDL_GPUTextureFormat s_depth_format;
  typedef struct {
      uint8_t vs, ps, color, depth, prim, blend_enable, write_mask, cull;
      uint8_t front_ccw, zt, zw, zfunc, st, sfunc, rmask, wmask;
 -    uint8_t sfail, szfail, szpass, pad;
+-    uint16_t sf, df, eq, pad2;
 +    uint8_t sfail, szfail, szpass, screen;   /* screen: local-light screen blend (RGB) */
-     uint16_t sf, df, eq, pad2;
++    uint16_t sf, df, eq, spec;   /* spec: 1 + the specialised pixel shader, 0 = generic */
      int32_t bias;
      float slope;
-@@ -951,7 +1031,8 @@ static SDL_GPUGraphicsPipeline *pipeline(const PipeKey *k)
+ } PipeKey;
+@@ -924,6 +1113,10 @@ static SDL_GPUGraphicsPipeline *pipeline(const PipeKey *k)
+         memset(&ctd, 0, sizeof ctd);
+         ci.vertex_shader = s_shader[k->vs];
+         ci.fragment_shader = s_shader[k->ps];
++        if (k->spec) {
++            SDL_GPUShader *sp = spec_shader((uint32_t)k->spec - 1u);
++            if (sp) ci.fragment_shader = sp;
++        }
+         ci.primitive_type = (SDL_GPUPrimitiveType)k->prim;
+         ci.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+         ci.rasterizer_state.cull_mode = k->cull == 1 ? SDL_GPU_CULLMODE_FRONT :
+@@ -951,7 +1144,8 @@ static SDL_GPUGraphicsPipeline *pipeline(const PipeKey *k)
              ctd.format = color_format(k->color);
              ctd.blend_state.enable_blend = k->blend_enable != 0;
              ctd.blend_state.src_color_blendfactor = blend_factor(k->sf, 0);
@@ -21955,7 +22140,7 @@ index fffccd5..33c7431 100644
              ctd.blend_state.src_alpha_blendfactor = blend_factor(k->sf, 1);
              ctd.blend_state.dst_alpha_blendfactor = blend_factor(k->df, 1);
              ctd.blend_state.color_blend_op = ctd.blend_state.alpha_blend_op = blend_op(k->eq);
-@@ -986,6 +1067,7 @@ typedef Nv2aSamplerSlot SampSlot;
+@@ -986,6 +1180,7 @@ typedef Nv2aSamplerSlot SampSlot;
  static SampSlot s_samp[SAMP_SLOTS];
  static SDL_GPUSampler *s_linear_clamp, *s_point_clamp;
  static SDL_GPUTexture *s_dummy_2d, *s_dummy_cube, *s_dummy_volume;
@@ -21963,7 +22148,7 @@ index fffccd5..33c7431 100644
  
  static SDL_GPUSamplerAddressMode addr_mode(uint32_t m)
  {
-@@ -1141,6 +1223,11 @@ int nv2a_d3d_init(void)
+@@ -1141,6 +1336,11 @@ int nv2a_d3d_init(void)
          s_dummy_volume = make_volume(1, 1, 1, 1);
          if (!s_dummy_volume || !s_dummy_2d || !s_dummy_cube || !s_linear_clamp || !s_point_clamp) return 0;
          upload_texture(s_dummy_2d, 0, 0, 1, 1, black, 4);
@@ -21975,7 +22160,7 @@ index fffccd5..33c7431 100644
          upload_texture(s_dummy_volume, 0, 0, 1, 1, black, 4);
          for (f = 0; f < 6; f++) upload_texture(s_dummy_cube, 0, (uint32_t)f, 1, 1, black + f, 4);
          copy_end();
-@@ -1152,7 +1239,7 @@ int nv2a_d3d_init(void)
+@@ -1152,7 +1352,7 @@ int nv2a_d3d_init(void)
              fail("SDL_ClaimWindowForGPUDevice");
              s_window = NULL;
          } else {
@@ -21984,7 +22169,7 @@ index fffccd5..33c7431 100644
              SDL_GPUPresentMode mode = SDL_GPU_PRESENTMODE_VSYNC;
              if (!vsync) {
                  if (SDL_WindowSupportsGPUPresentMode(s_dev, s_window, SDL_GPU_PRESENTMODE_IMMEDIATE))
-@@ -1161,6 +1248,7 @@ int nv2a_d3d_init(void)
+@@ -1161,6 +1361,7 @@ int nv2a_d3d_init(void)
                      mode = SDL_GPU_PRESENTMODE_MAILBOX;
              }
              SDL_SetGPUSwapchainParameters(s_dev, s_window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, mode);
@@ -21992,7 +22177,7 @@ index fffccd5..33c7431 100644
          }
      }
      display_config(1);
-@@ -1204,6 +1292,7 @@ typedef struct {
+@@ -1204,6 +1405,7 @@ typedef struct {
      int cpu_present_pending;
      uint32_t synced_frame, used_frame;
      uint32_t seq;
@@ -22000,7 +22185,7 @@ index fffccd5..33c7431 100644
  } Surface;
  
  typedef struct {
-@@ -1865,6 +1954,23 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
+@@ -1865,6 +2067,23 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
  }
  
  static int s_draw_textured, s_draw_reads_wide;
@@ -22024,7 +22209,7 @@ index fffccd5..33c7431 100644
  static uint32_t s_draw_tex_addr;
  static int s_draw_bspline;
  
-@@ -2029,6 +2135,124 @@ static Op *draw_op(OpKind kind, uint32_t count, uint32_t first)
+@@ -2029,6 +2248,124 @@ static Op *draw_op(OpKind kind, uint32_t count, uint32_t first)
  
  /* Everything a draw needs apart from its vertices, recorded into the batch
   * (see setup_pipeline in nv2a_d3d11.c, which this follows step for step). */
@@ -22149,7 +22334,7 @@ index fffccd5..33c7431 100644
  static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                            uint32_t *out_gw, uint32_t *out_gh, uint32_t *out_zmax, int indexed)
  {
-@@ -2040,12 +2264,14 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2040,12 +2377,14 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      SDL_GPUTexture *srv[13] = { 0 };
      void *smp[4] = { 0 };
      int cull = 0, bias = 0, flare_depth = draw_forces_depth(st), wdepth;
@@ -22165,7 +22350,7 @@ index fffccd5..33c7431 100644
      s_draw_tex_addr = 0;
      s_draw_bspline = 0;
  
-@@ -2086,6 +2312,17 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2086,6 +2425,17 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      if (s && write_mask(st, s)) s->gpu_dirty = 1;
  
      memset(&pc, 0, sizeof pc);
@@ -22183,7 +22368,7 @@ index fffccd5..33c7431 100644
      memset(&pb, 0, sizeof pb);
      for (n = 0; n < 4; n++) {
          const NvD3DTexture *t = &st->tex[n];
-@@ -2105,11 +2342,14 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2105,11 +2455,14 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          s_draw_textured = 1;
          if (!s_draw_tex_addr) s_draw_tex_addr = t->addr;
          if (rt && rt->sx > rt->sy * 1.001f) s_draw_reads_wide = 1;
@@ -22198,7 +22383,7 @@ index fffccd5..33c7431 100644
          } else if (rt) {
              surface_sync(rt, 0);
              view = rt == s ? feedback_copy(rt) : rt->tex;
-@@ -2133,7 +2373,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2133,7 +2486,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                  }
              }
          } else {
@@ -22208,7 +22393,7 @@ index fffccd5..33c7431 100644
              if (kind == K_LIN) {
                  pc.tex_scale[n][0] = 1.0f / (float)t->width;
                  pc.tex_scale[n][1] = 1.0f / (float)t->height;
-@@ -2146,11 +2387,24 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2146,11 +2500,24 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
              pc.tex_scale[n][2] = pc.tex_scale[n][3] = 1.0f;
          }
          if (!view) continue;
@@ -22235,7 +22420,7 @@ index fffccd5..33c7431 100644
              s_draw_bspline = 1;
          pc.tex_info[n][0] = (t->control0 >> 2) & 1;
          pc.tex_info[n][1] = (t->filter >> 28) | (tex_volume(t) ? 256u : 0u);
-@@ -2197,6 +2451,41 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2197,6 +2564,41 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      pc.alpha_func = st->alpha_func;
      pc.alpha_ref = st->alpha_ref;
      pc.ps_flags = (st->rc_seen ? 1u : 0u) | (st->alpha_test ? 2u : 0u) | (s_draw_bspline ? 4u : 0u);
@@ -22277,7 +22462,15 @@ index fffccd5..33c7431 100644
      pc.clip_plane = st->clip_plane_mode;
      pc.other_input = st->other_stage_input;
      pc.dot_map = st->dot_rgb_mapping;
-@@ -2252,6 +2541,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2242,6 +2644,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+         static const uint8_t ps[4] = { SH_PS_MAIN, SH_PS_MAIN_FLAT, SH_PS_WDEPTH, SH_PS_WDEPTH_FLAT };
+         k.vs = SH_UB_VS;
+         k.ps = ps[v];
++        k.spec = spec_find(&pc, v);
+     }
+     k.color = s ? FMT_BGRA8 : FMT_NONE;
+     k.depth = d ? 1 : 0;
+@@ -2252,6 +2655,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      k.sf = (uint16_t)st->blend_sfactor;
      k.df = (uint16_t)st->blend_dfactor;
      k.eq = (uint16_t)st->blend_equation;
@@ -22285,20 +22478,79 @@ index fffccd5..33c7431 100644
      k.write_mask = (uint8_t)(s ? write_mask(st, s) : 0);
      k.cull = (uint8_t)(cull == 3 ? 0 : cull);
      k.front_ccw = st->front_face == 0x901;
-@@ -2362,6 +2652,12 @@ void nv2a_d3d_zpass_clear(void)
+@@ -2362,6 +2766,71 @@ void nv2a_d3d_zpass_clear(void)
      s_zpass = 0;
  }
  
++/* A block of a render target in guest pixels (nearest sampling when the host
++ * target is scaled), B8G8R8A8 with the alpha kept raw: the title builds the
++ * sun's visibility mask this way (2D engine blits, nv2a_pb_exec.c). */
 +int nv2a_d3d_surface_read(uint32_t phys, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t *out)
 +{
-+    (void)phys; (void)x; (void)y; (void)w; (void)h; (void)out;
-+    return 0;
++    Surface *s;
++    SDL_GPUTransferBufferCreateInfo ci;
++    SDL_GPUTransferBuffer *tb;
++    SDL_GPUTextureRegion r;
++    SDL_GPUTextureTransferInfo info;
++    SDL_GPUFence *fence = NULL;
++    const uint8_t *m;
++    uint32_t hx0, hy0, hx1, hy1, bw, bh, i, j;
++    int ok = 0;
++    if (!s_dev || !out || !w || !h) return 0;
++    s = surface_find(phys);
++    if (!s || !s->tex || s->bpp != 4 || !s->w || !s->h || x + w > s->w || y + h > s->h || s->clear) return 0;
++    hx0 = (uint32_t)((uint64_t)x * s->iw / s->w);
++    hy0 = (uint32_t)((uint64_t)y * s->ih / s->h);
++    hx1 = (uint32_t)((uint64_t)(x + w) * s->iw / s->w);
++    hy1 = (uint32_t)((uint64_t)(y + h) * s->ih / s->h);
++    if (hx1 <= hx0) hx1 = hx0 + 1;
++    if (hy1 <= hy0) hy1 = hy0 + 1;
++    if (hx1 > s->iw || hy1 > s->ih) return 0;
++    bw = hx1 - hx0; bh = hy1 - hy0;
++    memset(&ci, 0, sizeof ci);
++    ci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
++    ci.size = bw * bh * 4;
++    tb = SDL_CreateGPUTransferBuffer(s_dev, &ci);
++    if (!tb || !copy_begin()) {
++        if (tb) SDL_ReleaseGPUTransferBuffer(s_dev, tb);
++        return 0;
++    }
++    memset(&r, 0, sizeof r);
++    memset(&info, 0, sizeof info);
++    r.texture = s->tex; r.x = hx0; r.y = hy0; r.w = bw; r.h = bh; r.d = 1;
++    info.transfer_buffer = tb;
++    SDL_DownloadFromGPUTexture(s_copy, &r, &info);
++    copy_end();
++    submit(&fence);
++    if (fence) {
++        SDL_WaitForGPUFences(s_dev, true, &fence, 1);
++        SDL_ReleaseGPUFence(s_dev, fence);
++    }
++    if ((m = (const uint8_t *)SDL_MapGPUTransferBuffer(s_dev, tb, false)) != NULL) {
++        for (j = 0; j < h; j++) {
++            uint32_t hy = (uint32_t)(((uint64_t)(y + j) * 2 + 1) * s->ih / ((uint64_t)s->h * 2));
++            const uint32_t *row;
++            hy = hy < hy0 ? 0 : hy - hy0;
++            if (hy >= bh) hy = bh - 1;
++            row = (const uint32_t *)(m + (size_t)hy * bw * 4);
++            for (i = 0; i < w; i++) {
++                uint32_t hx = (uint32_t)(((uint64_t)(x + i) * 2 + 1) * s->iw / ((uint64_t)s->w * 2));
++                hx = hx < hx0 ? 0 : hx - hx0;
++                if (hx >= bw) hx = bw - 1;
++                out[(size_t)j * w + i] = row[hx];
++            }
++        }
++        SDL_UnmapGPUTransferBuffer(s_dev, tb);
++        ok = 1;
++    }
++    SDL_ReleaseGPUTransferBuffer(s_dev, tb);
++    return ok;
 +}
 +
  uint32_t nv2a_d3d_zpass_read(void)
  {
      double px;
-@@ -2456,6 +2752,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -2456,6 +2925,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
              d.x0 = xlo; d.y0 = ylo; d.x1 = xhi; d.y1 = yhi;
              d.tex = s_draw_tex_addr; d.textured = s_draw_textured; d.reads_wide = s_draw_reads_wide;
              use_dx = s_overlay.place(&d, count <= dx_cap ? dx : NULL, &squeeze, &shift);
@@ -22310,7 +22562,7 @@ index fffccd5..33c7431 100644
          }
      }
  
-@@ -2481,6 +2782,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -2481,6 +2955,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
                      s_overlay.sanitize_vertex_upload(p + uc.at[i][0] - s_vpos, &attr[i], i, lo, count);
      }
      uc.info[2] = 0xFFFFFFFFu;
@@ -22322,7 +22574,7 @@ index fffccd5..33c7431 100644
      if (use_dx) {
          memcpy(p + at, dx, count * 4);
          uc.info[2] = s_vpos + at;
-@@ -2520,6 +2826,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -2520,6 +2999,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      rec_uniform(0, 0, &uc, sizeof uc);
      rec_uniform(1, 0, s_zero_block, sizeof s_zero_block);
      draw_op(OP_DRAWI, ni, first_index);
@@ -22334,7 +22586,7 @@ index fffccd5..33c7431 100644
      s_vpos += (at + 255) & ~255u;
      s_ipos += (ib_bytes + 255) & ~255u;
      s_b.v1 = s_vpos;
-@@ -2908,6 +3219,48 @@ static uint64_t s_last_present, s_last_flip;
+@@ -2908,6 +3392,48 @@ static uint64_t s_last_present, s_last_flip;
  static Surface *s_shown;
  
  /* Read a texture back and write it as a 24-bit BMP. */
@@ -22383,7 +22635,7 @@ index fffccd5..33c7431 100644
  static void write_bmp(SDL_GPUTexture *tex, uint32_t w, uint32_t h, const char *path)
  {
      SDL_GPUTransferBufferCreateInfo ci = { SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, w * h * 4, 0 };
-@@ -3125,6 +3478,7 @@ static int present_kept_image(FlipPacing *pacing)
+@@ -3125,6 +3651,7 @@ static int present_kept_image(FlipPacing *pacing)
      if (!s_window || !s_kept) return 0;
      copy_end();
      flush_batch();
@@ -22391,7 +22643,7 @@ index fffccd5..33c7431 100644
      if (!cmd()) return 0;
      RECOMP_PROFILE_BEGIN("SDL GPU acquire swapchain");
      if (!SDL_WaitAndAcquireGPUSwapchainTexture(s_cmd, s_window, &sc, &sw, &sh))
-@@ -3185,6 +3539,8 @@ static void present_surface(Surface *s, FlipPacing *pacing)
+@@ -3185,6 +3712,8 @@ static void present_surface(Surface *s, FlipPacing *pacing)
      composite(s_kept, w, h, s, &pc, 1);
      if (!getenv("RECOMP_CAPTURE_SURFACE"))
          capture_image(s_kept, w, h);
@@ -22400,7 +22652,7 @@ index fffccd5..33c7431 100644
      if (present_kept_image(pacing))
          s->cpu_present_pending = 0;
  }
-@@ -3192,9 +3548,26 @@ static void present_surface(Surface *s, FlipPacing *pacing)
+@@ -3192,9 +3721,26 @@ static void present_surface(Surface *s, FlipPacing *pacing)
  /* The flip completes at the display's next vertical blank (see pace_vblank
   * in nv2a_d3d11.c): RECOMP_FPS_LIMIT=N sets the rate (default 60, 0 =
   * unpaced). The wait is SDL_DelayPrecise, then a short spin. */
@@ -22428,7 +22680,7 @@ index fffccd5..33c7431 100644
      static int64_t next;
      int64_t now, freq = qpf();
      extern int xbox_FramebufferPaused(void);
-@@ -3203,9 +3576,7 @@ static void pace_vblank(void)
+@@ -3203,9 +3749,7 @@ static void pace_vblank(void)
          fbw_sdl_pump();
          next = 0;
      }
@@ -22439,7 +22691,7 @@ index fffccd5..33c7431 100644
      if (limit <= 0)
          return;
      now = qpc();
-@@ -3226,23 +3597,30 @@ static void display_config(int now)
+@@ -3226,23 +3770,30 @@ static void display_config(int now)
  {
      static uint32_t seen_w, seen_h, done_w, done_h;
      static uint64_t seen_at;
@@ -22473,7 +22725,7 @@ index fffccd5..33c7431 100644
          scale = (float)atof(e);
      } else {
          const char *ss = getenv("RECOMP_SUPERSAMPLE");
-@@ -3267,6 +3645,11 @@ static void display_config(int now)
+@@ -3267,6 +3818,11 @@ static void display_config(int now)
      }
      s_scale = scale;
      s_aspect = aspect;
@@ -22485,7 +22737,7 @@ index fffccd5..33c7431 100644
      fprintf(stderr, "[SDLGPU] rendering %ux%u (window %ux%u, aspect %.3f)\n",
              (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
              w, h, aspect);
-@@ -3303,12 +3686,25 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
+@@ -3303,12 +3859,25 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
      return s;
  }
  
@@ -22511,7 +22763,7 @@ index fffccd5..33c7431 100644
      fbw_sdl_pump();
      if (s_overlay.frame) s_overlay.frame();
      s = surface_find(phys(surface_addr));
-@@ -3316,12 +3712,16 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
+@@ -3316,12 +3885,16 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
          s = scan_surface(surface_addr, pitch);
      s_shown = s;
      s_last_flip = SDL_GetTicks();
@@ -45525,3 +45777,147 @@ index 0000000..73a218d
 +    printf("nv2a_shader_prebuild: %u shaders (%d specialised)\n", (unsigned)s_built, states);
 +    return 0;
 +}
+diff --git a/tools/shader_prebuild/sdlgpu_spec_prebuild.py b/tools/shader_prebuild/sdlgpu_spec_prebuild.py
+new file mode 100644
+index 0000000..862ee24
+--- /dev/null
++++ b/tools/shader_prebuild/sdlgpu_spec_prebuild.py
+@@ -0,0 +1,138 @@
++#!/usr/bin/env python3
++"""Compile the SDL3 GPU renderer's specialised pixel shaders at build time.
++
++The D3D11 renderer specialises its pixel shader per register-combiner
++configuration (nv2a_ps_spec.h: the control words become constants, so the
++compiler folds the combiner interpreter away) and tools/shader_prebuild builds
++the known configurations ahead of time. The SDL3 GPU renderer has no run-time
++compiler, so this script does the same with DXC into SPIR-V: one variant per
++configuration of the states file, written as a C include (a table of
++configurations and their SPIR-V) that nv2a_sdlgpu.c looks draws up in. A
++configuration that is not in the table is drawn by the generic shader.
++
++usage: sdlgpu_spec_prebuild.py --dxc DXC --unit combiner.hlsl --states states.txt
++                               --out ps_spec.inc [--jobs N] [-I dir ...]
++
++The states file has one configuration a line: the 54 words of a PsKey in hex
++('#' starts a comment). nv2a_ps_spec.h is the reference for SPEC_DECL; keep
++spec_decl() in step with it.
++"""
++import argparse
++import concurrent.futures
++import os
++import subprocess
++import sys
++import tempfile
++
++WORDS = 54
++
++
++def spec_decl(w):
++    """nv2a_ps_spec.h: nv_ps_spec_decl, word for word."""
++    c_icw, a_icw, c_ocw, a_ocw = w[0:8], w[8:16], w[16:24], w[24:32]
++    fin0, fin1, rc_control, stage_prog, alpha_func, ps_flags = w[32:38]
++    clip_plane, other_input, dot_map, variant = w[38:42]
++    ti = [w[42 + 3 * i:45 + 3 * i] for i in range(4)]
++
++    def arr(name, v):
++        return ("static const uint4 %s[2] = { uint4(%su,%su,%su,%su), uint4(%su,%su,%su,%su) };"
++                % ((name,) + tuple(v)))
++
++    s = arr("c_icw", c_icw) + arr("a_icw", a_icw) + arr("c_ocw", c_ocw) + arr("a_ocw", a_ocw)
++    s += "static const uint fin0 = %uu; static const uint fin1 = %uu;" % (fin0, fin1)
++    s += "static const uint rc_control = %uu; static const uint stage_prog = %uu;" % (rc_control, stage_prog)
++    s += "static const uint alpha_func = %uu; static const uint ps_flags = %uu;" % (alpha_func, ps_flags)
++    s += "static const uint clip_plane = %uu; static const uint other_input = %uu;" % (clip_plane, other_input)
++    s += "static const uint dot_map = %uu;" % dot_map
++    s += "static const uint4 tex_info[4] = { " + ", ".join(
++        "uint4(%su,%su,%su,0)" % tuple(t) for t in ti) + " };"
++    return s
++
++
++def read_states(path):
++    seen, states = set(), []
++    with open(path) as f:
++        for line in f:
++            line = line.strip()
++            if not line or line.startswith("#"):
++                continue
++            try:
++                w = tuple(int(x, 16) for x in line.split())
++            except ValueError:
++                print("sdlgpu_spec_prebuild: not a configuration: %.60s" % line, file=sys.stderr)
++                continue
++            if len(w) != WORDS or w[41] > 3:
++                print("sdlgpu_spec_prebuild: not a configuration: %.60s" % line, file=sys.stderr)
++                continue
++            if w in seen:
++                continue
++            seen.add(w)
++            states.append(w)
++    return states
++
++
++def compile_one(args, w):
++    variant = w[41]
++    entry = "ps_wdepth" if variant & 2 else "ps_main"
++    with tempfile.NamedTemporaryFile(suffix=".spv", delete=False) as t:
++        out = t.name
++    cmd = [args.dxc, "-nologo", "-HV", "2018", "-Wno-ignored-attributes", "-T", "ps_6_0", "-E", entry,
++           "-D", "SDLGPU", "-D", "STAGE_PS", "-D", "SPEC=1", "-D", "SPEC_DECL=" + spec_decl(w)]
++    if variant & 1:
++        cmd += ["-D", "FLATQ=nointerpolation"]
++    cmd += ["-spirv", "-fspv-target-env=vulkan1.0", "-fvk-use-dx-layout", "-Fo", out, args.unit]
++    try:
++        r = subprocess.run(cmd, capture_output=True, text=True)
++        if r.returncode != 0:
++            return None, r.stderr.strip()[:400]
++        with open(out, "rb") as f:
++            return f.read(), ""
++    finally:
++        try:
++            os.remove(out)
++        except OSError:
++            pass
++
++
++def main():
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--dxc", required=True)
++    ap.add_argument("--unit", required=True)
++    ap.add_argument("--states", required=True)
++    ap.add_argument("--out", required=True)
++    ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
++    args = ap.parse_args()
++    states = read_states(args.states)
++    results = [None] * len(states)
++    failed = 0
++    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
++        futures = {pool.submit(compile_one, args, w): i for i, w in enumerate(states)}
++        for fut in concurrent.futures.as_completed(futures):
++            i = futures[fut]
++            data, err = fut.result()
++            if data is None:
++                failed += 1
++                print("sdlgpu_spec_prebuild: state %d did not compile: %s" % (i, err), file=sys.stderr)
++            else:
++                results[i] = data
++    built = [(w, d) for w, d in zip(states, results) if d is not None]
++    tmp = args.out + ".tmp"
++    with open(tmp, "w") as o:
++        o.write("/* Generated by tools/shader_prebuild/sdlgpu_spec_prebuild.py; do not edit. */\n")
++        for n, (w, d) in enumerate(built):
++            o.write("static const unsigned char s_spec_spirv_%d[%d] = {" % (n, len(d)))
++            o.write(",".join(("\n" if k % 24 == 0 else "") + "0x%02x" % b for k, b in enumerate(d)))
++            o.write("\n};\n")
++        o.write("static const SpecState s_spec_states[%d] = {\n" % max(1, len(built)))
++        for n, (w, d) in enumerate(built):
++            o.write("    {{" + ",".join("0x%x" % x for x in w) + "}, s_spec_spirv_%d, %d},\n" % (n, len(d)))
++        if not built:
++            o.write("    {{0}, 0, 0}\n")
++        o.write("};\n#define SPEC_STATE_COUNT %d\n" % len(built))
++    os.replace(tmp, args.out)
++    print("sdlgpu_spec_prebuild: %d specialised pixel shaders (%d failed)" % (len(built), failed))
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())

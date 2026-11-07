@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <math.h>
+#include <string.h>
 #include "recomp_types.h"
 #include "mm3_cheat_keys.h"
 
@@ -126,6 +127,19 @@ static float holding_back(float factor, float share, float below)
     return share >= 0.0f ? factor + (1.0f - factor) * share : factor * below;
 }
 
+/* Issue #26: the opponent must never reach the final node, which would
+ * finish its race. The final node of its own list becomes a copy of the one
+ * before it, so it only ever aims at the place where it waits. */
+static void copy_second_last_node(uint32_t cp_begin, uint32_t cp_count)
+{
+    uint32_t last, prev;
+    if (cp_count < 3u) return;
+    last = cp_begin + (cp_count - 1u) * 0x7Cu;
+    prev = last - 0x7Cu;
+    if (guest(last) && guest(prev) && memcmp((const void *)XBOX_PTR(last), (const void *)XBOX_PTR(prev), 0x7Cu) != 0)
+        memcpy((void *)XBOX_PTR(last), (const void *)XBOX_PTR(prev), 0x7Cu);
+}
+
 static int stop_before_finish(uint32_t ai, int *hold_brake)
 {
     uint32_t cp_idx = MEM32(ai + 0xA0u), lap = MEM32(ai + 0xA4u), laps = MEM32(ai + 0xA8u);
@@ -133,6 +147,7 @@ static int stop_before_finish(uint32_t ai, int *hold_brake)
     uint32_t cp;
     *hold_brake = 0;
     cp_count = (guest(cp_begin) && cp_end >= cp_begin + 0x7Cu) ? (cp_end - cp_begin) / 0x7Cu : 0u;
+    if (cp_count && (laps <= 1u || lap + 1u >= laps)) copy_second_last_node(cp_begin, cp_count);
     if (!cp_count || cp_idx + 1u < cp_count || (laps > 1u && lap + 1u < laps)) return 0;
     cp = cp_begin + cp_idx * 0x7Cu;
     if (guest(cp)) {

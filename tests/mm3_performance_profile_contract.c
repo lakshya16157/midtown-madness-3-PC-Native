@@ -48,10 +48,15 @@ int main(void)
     const char *names[] = {"Balanced", "Quality", "LowPower"};
     const char *overrides[] = {"2.25", "8", "1.25", "3.5", "4", "45", "0", "0", "0", "0"};
     size_t i, j;
-    profile(NULL, "2.0", "4", "2", "60");
-    profile("", "2.0", "4", "2", "60");
-    profile("unknown", "2.0", "4", "2", "60");
-    profile("Balanced", "2.0", "4", "2", "60");
+#ifdef _WIN32
+#define BALANCED_SCALE "2.0"
+#else
+#define BALANCED_SCALE "1.5"
+#endif
+    profile(NULL, BALANCED_SCALE, "4", "2", "60");
+    profile("", BALANCED_SCALE, "4", "2", "60");
+    profile("unknown", BALANCED_SCALE, "4", "2", "60");
+    profile("Balanced", BALANCED_SCALE, "4", "2", "60");
     profile("quality", "3.0", "8", "2", "60");
     profile("LOWPOWER", "1.5", "1", "1", "30");
 

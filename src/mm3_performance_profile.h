@@ -28,7 +28,14 @@ static inline int mm3_profile_name_equal(const char *value, const char *name)
 
 static inline const MM3PerformanceProfile *mm3_performance_profile(const char *name)
 {
+#ifdef _WIN32
     static const MM3PerformanceProfile balanced = {"Balanced", "2.0", "4", "2", "16", "60"};
+#else
+    /* The SDL3 GPU renderer has no multisampling and runs the generic (not
+     * per-state specialised) pixel shader, so the same 2x scale costs a handheld
+     * (Steam Deck) much more than the D3D11 renderer; 1.5x fits its 1280x800 panel. */
+    static const MM3PerformanceProfile balanced = {"Balanced", "1.5", "4", "2", "16", "60"};
+#endif
     static const MM3PerformanceProfile quality = {"Quality", "3.0", "8", "2", "16", "60"};
     static const MM3PerformanceProfile low_power = {"LowPower", "1.5", "1", "1", "16", "30"};
     if (mm3_profile_name_equal(name, quality.name)) return &quality;
