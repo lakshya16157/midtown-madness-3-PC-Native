@@ -34,7 +34,7 @@ enum MM3LauncherOption {
 
 typedef struct MM3LauncherConfig {
     int option[MM3_LAUNCH_OPTION_COUNT];
-    int controller_count; /* 1..4 USB controllers exposed to the game. */
+    int controller_count; /* 1..4 USB controllers exposed to the game; 0 one per connected controller. */
     int fov_degrees; /* 0 = retail, otherwise 60..110 horizontal degrees. */
     /* Gameplay mods, percent of the Xbox's (100); Xbox gameplay uses 100. */
     int damage_percent; /* crash damage to every car, 0..400 */
