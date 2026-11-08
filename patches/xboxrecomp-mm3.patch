@@ -21865,7 +21865,7 @@ index e40d0bc..b197e10 100644
  
  static uint32_t surface_color_bpp(uint32_t fmt)
 diff --git a/src/video/nv2a_sdlgpu.c b/src/video/nv2a_sdlgpu.c
-index fffccd5..728f5f4 100644
+index fffccd5..c93cfe7 100644
 --- a/src/video/nv2a_sdlgpu.c
 +++ b/src/video/nv2a_sdlgpu.c
 @@ -46,6 +46,7 @@
@@ -21889,7 +21889,83 @@ index fffccd5..728f5f4 100644
  extern ptrdiff_t xbox_GetMemoryOffset(void);
  
  #define CONTIG_BASE 0x80000000u
-@@ -225,6 +232,85 @@ void nv2a_d3d_set_overlay_hooks(const NvOverlayHooks *hooks)
+@@ -113,6 +120,7 @@ static const char *const s_prof_name[PROF_COUNT] = {
+ static int64_t s_prof[PROF_COUNT];
+ static uint64_t s_prof_verts, s_prof_draws, s_prof_passes;
+ static int s_prof_on = -1;
++static uint32_t s_pipes_built, s_draws_skipped, s_sync_pipes;   /* background pipeline builds, see pipeline_draw */
+ 
+ void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
+ {
+@@ -126,14 +134,30 @@ int nv2a_d3d_prof_enabled(void)
+     return s_prof_on;
+ }
+ 
++static uint32_t s_spec_hits, s_spec_misses, s_read_count;   /* defined with their users below */
++static int64_t s_read_ticks;
++static uint32_t s_frame;
++
+ static void prof_report(void)
+ {
+-    static int64_t last, frames, prev, worst;
++    static int64_t last, frames, prev, worst, snap[PROF_COUNT];
++    static unsigned hitches_logged;
+     int64_t now = qpc(), freq = qpf();
+     int i;
+     if (!nv2a_d3d_prof_enabled()) return;
+     frames++;
+     if (prev && now - prev > worst) worst = now - prev;
++    /* A frame that took over 90 ms: where its time went, stage by stage (the sums are since the
++     * previous frame; the pacing wait is the display's, not a cost). */
++    if (prev && now - prev > freq * 9 / 100 && hitches_logged < 300) {
++        hitches_logged++;
++        fprintf(stderr, "[SDLGPU_HITCH] frame %u took %.0f ms |", s_frame, (double)(now - prev) * 1000.0 / (double)freq);
++        for (i = 0; i < PROF_COUNT; i++)
++            fprintf(stderr, " %s %.1f", s_prof_name[i], (double)(s_prof[i] - snap[i]) * 1000.0 / (double)freq);
++        fprintf(stderr, " ms | pipelines built in the background %u, on the drawing thread %u, draws skipped %u\n",
++                s_pipes_built, s_sync_pipes, s_draws_skipped);
++    }
++    for (i = 0; i < PROF_COUNT; i++) snap[i] = s_prof[i];
+     prev = now;
+     if (!last) { last = now; return; }
+     if (now - last < freq) return;
+@@ -145,8 +169,14 @@ static void prof_report(void)
+     fprintf(stderr, " ms/frame | %llu verts %llu draws %llu passes/frame\n",
+             (unsigned long long)(s_prof_verts / frames), (unsigned long long)(s_prof_draws / frames),
+             (unsigned long long)(s_prof_passes / frames));
++    fprintf(stderr, "[SDLGPU_PROF] pixel shaders: %u draws specialised, %u generic (total) | surface reads %u, %.1f ms (total)\n",
++            s_spec_hits, s_spec_misses, s_read_count, (double)s_read_ticks * 1000.0 / (double)freq);
++    if (s_pipes_built || s_draws_skipped)
++        fprintf(stderr, "[SDLGPU_PROF] pipelines built in the background %u, draws skipped waiting for one %u (total)\n",
++                s_pipes_built, s_draws_skipped);
+     fflush(stderr);
+     memset(s_prof, 0, sizeof s_prof);
++    for (i = 0; i < PROF_COUNT; i++) snap[i] = 0;
+     s_prof_verts = s_prof_draws = s_prof_passes = 0;
+     frames = 0;
+     worst = 0;
+@@ -203,6 +233,20 @@ static void frame_csv(int64_t pace)
+ }
+ 
+ static uint32_t s_frame = 1;
++
++/* Heavy logging for slow-session reports (a few lines at most per cause): one blocking call that took
++ * more than 30 ms is named with the frame it happened in. */
++static unsigned s_stall_logged;
++static uint32_t s_read_count;
++static int64_t s_read_ticks;
++static void stall_log(const char *what, int64_t t0)
++{
++    double ms = (double)(qpc() - t0) * 1000.0 / (double)qpf();
++    if (ms < 30.0 || s_stall_logged >= 400) return;
++    s_stall_logged++;
++    fprintf(stderr, "[SDLGPU_STALL] %s took %.0f ms (frame %u)\n", what, ms, s_frame);
++}
++#define WAIT_FENCE(fencep) do { int64_t t_ = qpc(); SDL_WaitForGPUFences(s_dev, true, (fencep), 1); stall_log(__func__, t_); } while (0)
+ /* Bumped at every pushbuffer kick (see nv2a_d3d11.c). */
+ static uint32_t s_epoch = 1;
+ 
+@@ -225,6 +269,85 @@ void nv2a_d3d_set_overlay_hooks(const NvOverlayHooks *hooks)
  
  static volatile float s_aspect;
  
@@ -21975,7 +22051,7 @@ index fffccd5..728f5f4 100644
  /* The window's size in pixels; 0 if there is no window or it is minimised. */
  static int client_size(uint32_t *w, uint32_t *h)
  {
-@@ -243,7 +329,7 @@ float nv2a_d3d_display_aspect(void)
+@@ -243,7 +366,7 @@ float nv2a_d3d_display_aspect(void)
      float a = s_aspect;
      uint32_t w, h;
      if (a) return a;
@@ -21984,7 +22060,7 @@ index fffccd5..728f5f4 100644
      if (client_size(&w, &h)) return s_aspect = clamp_aspect((float)w / (float)h);
      if (SDL_WasInit(SDL_INIT_VIDEO)) {
          /* No window yet (sizing it): the display it will open on. */
-@@ -312,6 +398,7 @@ static const ShaderSource s_shader_src[SH_COUNT] = {
+@@ -312,6 +435,7 @@ static const ShaderSource s_shader_src[SH_COUNT] = {
  #endif
  };
  static SDL_GPUShader *s_shader[SH_COUNT];
@@ -21992,7 +22068,7 @@ index fffccd5..728f5f4 100644
  
  static int create_shaders(void)
  {
-@@ -331,6 +418,7 @@ static int create_shaders(void)
+@@ -331,6 +455,7 @@ static int create_shaders(void)
              ci.code = src->dxil;
              ci.code_size = src->dxil_size;
          } else if (formats & SDL_GPU_SHADERFORMAT_SPIRV) {
@@ -22000,7 +22076,7 @@ index fffccd5..728f5f4 100644
              ci.format = SDL_GPU_SHADERFORMAT_SPIRV;
              ci.code = src->spirv;
              ci.code_size = src->spirv_size;
-@@ -800,6 +888,107 @@ static void graveyard_empty(void)
+@@ -800,6 +925,118 @@ static void graveyard_empty(void)
      s_samp_graveyard_n = 0;
  }
  
@@ -22072,8 +22148,14 @@ index fffccd5..728f5f4 100644
 +        h = (h + 1u) & (SPEC_SLOTS - 1u);
 +    }
 +    s_spec_misses++;
-+    if (s_spec_mode == 2 && s_spec_logged < 64) {
++    if (s_spec_mode == 2 && s_spec_logged < 400) {
++        static uint64_t seen[512];
++        uint64_t sh = spec_hash((const uint32_t *)&k) | 1u;
++        uint32_t q = 0;
 +        const uint32_t *w = (const uint32_t *)&k;
++        while (q < 512 && seen[q] && seen[q] != sh) q++;
++        if (q == 512 || seen[q] == sh) return 0;
++        seen[q] = sh;
 +        char line[1024];
 +        size_t n = 0;
 +        for (i = 0; i < 54 && n + 10 < sizeof line; i++) n += (size_t)snprintf(line + n, sizeof line - n, "%x ", w[i]);
@@ -22084,11 +22166,15 @@ index fffccd5..728f5f4 100644
 +}
 +
 +/* The shader of table entry n, made on first use; NULL when the driver refuses it. */
++static SDL_Mutex *s_shader_lock;   /* the builder threads and the drawing thread both create shaders */
++
 +static SDL_GPUShader *spec_shader(uint32_t n)
 +{
 +    SDL_GPUShaderCreateInfo ci;
 +    if (n >= SPEC_STATE_COUNT || s_spec_bad[n]) return NULL;
 +    if (s_spec_shader[n]) return s_spec_shader[n];
++    if (s_shader_lock) SDL_LockMutex(s_shader_lock);
++    if (s_spec_shader[n]) { if (s_shader_lock) SDL_UnlockMutex(s_shader_lock); return s_spec_shader[n]; }
 +    memset(&ci, 0, sizeof ci);
 +    ci.entrypoint = (s_spec_states[n].key[41] & 2u) ? "ps_wdepth" : "ps_main";
 +    ci.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
@@ -22102,13 +22188,14 @@ index fffccd5..728f5f4 100644
 +        s_spec_bad[n] = 1;
 +        fprintf(stderr, "[SDLGPU] specialised pixel shader %u: %s (the generic one is used)\n", n, SDL_GetError());
 +    }
++    if (s_shader_lock) SDL_UnlockMutex(s_shader_lock);
 +    return s_spec_shader[n];
 +}
 +
  /* ------------------------------------------------------------- pipelines */
  
  enum { FMT_NONE, FMT_BGRA8, FMT_RGBA16, FMT_R32F };
-@@ -808,8 +997,8 @@ static SDL_GPUTextureFormat s_depth_format;
+@@ -808,8 +1045,8 @@ static SDL_GPUTextureFormat s_depth_format;
  typedef struct {
      uint8_t vs, ps, color, depth, prim, blend_enable, write_mask, cull;
      uint8_t front_ccw, zt, zw, zfunc, st, sfunc, rmask, wmask;
@@ -22119,28 +22206,393 @@ index fffccd5..728f5f4 100644
      int32_t bias;
      float slope;
  } PipeKey;
-@@ -924,6 +1113,10 @@ static SDL_GPUGraphicsPipeline *pipeline(const PipeKey *k)
-         memset(&ctd, 0, sizeof ctd);
-         ci.vertex_shader = s_shader[k->vs];
-         ci.fragment_shader = s_shader[k->ps];
-+        if (k->spec) {
-+            SDL_GPUShader *sp = spec_shader((uint32_t)k->spec - 1u);
-+            if (sp) ci.fragment_shader = sp;
+@@ -898,77 +1135,326 @@ static SDL_GPUTextureFormat color_format(uint8_t f)
+     }
+ }
+ 
+-static SDL_GPUGraphicsPipeline *pipeline(const PipeKey *k)
++static SDL_GPUGraphicsPipeline *pipeline(const PipeKey *k);
++
++/* Builds the pipeline of a key: this compiles the shaders in the driver, tens
++ * of milliseconds for a specialised pixel shader and far more for the generic
++ * one. Safe on any thread. */
++static SDL_GPUGraphicsPipeline *pipeline_create(const PipeKey *k)
+ {
+-    uint64_t h = hash_mem((const uint8_t *)k, sizeof *k);
+-    uint32_t i, n;
++    SDL_GPUGraphicsPipelineCreateInfo ci;
++    SDL_GPUColorTargetDescription ctd;
++    SDL_GPUStencilOpState so;
++    SDL_GPUGraphicsPipeline *made;
++    memset(&ci, 0, sizeof ci);
++    memset(&ctd, 0, sizeof ctd);
++    ci.vertex_shader = s_shader[k->vs];
++    ci.fragment_shader = s_shader[k->ps];
++    if (k->spec) {
++        SDL_GPUShader *sp = spec_shader((uint32_t)k->spec - 1u);
++        if (sp) ci.fragment_shader = sp;
++    }
++    ci.primitive_type = (SDL_GPUPrimitiveType)k->prim;
++    ci.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
++    ci.rasterizer_state.cull_mode = k->cull == 1 ? SDL_GPU_CULLMODE_FRONT :
++                                    k->cull == 2 ? SDL_GPU_CULLMODE_BACK : SDL_GPU_CULLMODE_NONE;
++    ci.rasterizer_state.front_face = k->front_ccw ? SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE
++                                                  : SDL_GPU_FRONTFACE_CLOCKWISE;
++    ci.rasterizer_state.depth_bias_constant_factor = (float)k->bias;
++    ci.rasterizer_state.depth_bias_slope_factor = k->slope;
++    ci.rasterizer_state.enable_depth_bias = k->bias != 0 || k->slope != 0.0f;
++    ci.rasterizer_state.enable_depth_clip = false;
++    ci.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
++    ci.depth_stencil_state.enable_depth_test = k->zt != 0;
++    ci.depth_stencil_state.enable_depth_write = k->zw != 0;
++    ci.depth_stencil_state.compare_op = cmp(0x200 | k->zfunc);
++    ci.depth_stencil_state.enable_stencil_test = k->st != 0;
++    ci.depth_stencil_state.compare_mask = k->rmask;
++    ci.depth_stencil_state.write_mask = k->wmask;
++    so.fail_op = sop(k->sfail);
++    so.depth_fail_op = sop(k->szfail);
++    so.pass_op = sop(k->szpass);
++    so.compare_op = cmp(0x200 | k->sfunc);
++    ci.depth_stencil_state.front_stencil_state = so;
++    ci.depth_stencil_state.back_stencil_state = so;
++    if (k->color) {
++        ctd.format = color_format(k->color);
++        ctd.blend_state.enable_blend = k->blend_enable != 0;
++        ctd.blend_state.src_color_blendfactor = blend_factor(k->sf, 0);
++        ctd.blend_state.dst_color_blendfactor = k->screen ? SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR
++                                                          : blend_factor(k->df, 0);
++        ctd.blend_state.src_alpha_blendfactor = blend_factor(k->sf, 1);
++        ctd.blend_state.dst_alpha_blendfactor = blend_factor(k->df, 1);
++        ctd.blend_state.color_blend_op = ctd.blend_state.alpha_blend_op = blend_op(k->eq);
++        ctd.blend_state.enable_color_write_mask = true;
++        ctd.blend_state.color_write_mask = (SDL_GPUColorComponentFlags)(k->write_mask & 15);
++        ci.target_info.color_target_descriptions = &ctd;
++        ci.target_info.num_color_targets = 1;
++    }
++    ci.target_info.has_depth_stencil_target = k->depth != 0;
++    ci.target_info.depth_stencil_format = k->depth ? s_depth_format : SDL_GPU_TEXTUREFORMAT_INVALID;
++    RECOMP_PROFILE_BEGIN("SDL GPU pipeline creation");
++    made = SDL_CreateGPUGraphicsPipeline(s_dev, &ci);
++    RECOMP_PROFILE_END();
++    return made;
++}
++
++/* The table of built pipelines. A worker thread (below) adds to it, so every
++ * access holds s_pipe_lock once that thread exists. */
++static SDL_Mutex *s_pipe_lock;
++static uint32_t s_pipe_count;
++
++static void pipe_lock(void) { if (s_pipe_lock) SDL_LockMutex(s_pipe_lock); }
++static void pipe_unlock(void) { if (s_pipe_lock) SDL_UnlockMutex(s_pipe_lock); }
++
++static SDL_GPUGraphicsPipeline *pipe_find_locked(const PipeKey *k, uint64_t h)
++{
++    uint32_t n;
+     for (n = 0; n < PIPE_SLOTS; n++) {
+         PipeSlot *s = &s_pipes[(h + n) & (PIPE_SLOTS - 1)];
+         if (s->pipe && !memcmp(&s->key, k, sizeof *k)) return s->pipe;
+         if (!s->pipe) break;
+     }
+-    i = (uint32_t)((h + n) & (PIPE_SLOTS - 1));
+-    if (n == PIPE_SLOTS) {
++    return NULL;
++}
++
++/* Stores a built pipeline; 0 when the table has no free slot. A key built
++ * twice keeps the first one. */
++static int pipe_insert_locked(const PipeKey *k, uint64_t h, SDL_GPUGraphicsPipeline *p)
++{
++    uint32_t n;
++    for (n = 0; n < PIPE_SLOTS; n++) {
++        PipeSlot *s = &s_pipes[(h + n) & (PIPE_SLOTS - 1)];
++        if (s->pipe && !memcmp(&s->key, k, sizeof *k)) { SDL_ReleaseGPUGraphicsPipeline(s_dev, p); return 1; }
++        if (!s->pipe) { s->key = *k; s->pipe = p; s_pipe_count++; return 1; }
++    }
++    return 0;
++}
++
++/* ---------------------------------------------------- background pipelines */
++
++/* A first-seen state used to freeze the game while the driver compiled it (a
++ * level start needs hundreds). The title's draws ask a worker thread for a
++ * missing pipeline and skip that one draw until it is ready, a few frames at
++ * most; the states of earlier runs are built at start-up from a cache file.
++ * RECOMP_SDLGPU_ASYNC=0 builds on the drawing thread as before. */
++#define PEND_MAX 512
++#define PQ_SIZE 1024
++#define WARM_MAX 2048
++static int s_async = -1;
++static SDL_Semaphore *s_pq_sem;
++static PipeKey s_pq[PQ_SIZE];
++static uint32_t s_pq_head, s_pq_tail;
++static PipeKey s_pend[PEND_MAX];
++static uint8_t s_pend_failed[PEND_MAX];
++static uint32_t s_pend_n;
++static PipeKey *s_warm;
++static uint32_t s_warm_n;
++static FILE *s_pk_file;
++static uint32_t s_pk_saved;
++
++typedef struct { char magic[8]; uint32_t key_size, spec_count, spec_sig, depth_format; } PipeFileHeader;
++
++static const char *pipe_file_path(char *out, size_t size)
++{
++    const char *home = getenv("HOME"), *data = getenv("XDG_DATA_HOME");
++    if (data && *data) snprintf(out, size, "%s/xboxrecomp/sdlgpu-pipelines.bin", data);
++    else if (home && *home) snprintf(out, size, "%s/.local/share/xboxrecomp/sdlgpu-pipelines.bin", home);
++    else return NULL;
++    return out;
++}
++
++static PipeFileHeader pipe_file_header(void)
++{
++    PipeFileHeader hd;
++    uint32_t i, sig = 2166136261u;
++    memset(&hd, 0, sizeof hd);
++    memcpy(hd.magic, "MM3PIPE1", 8);
++    hd.key_size = (uint32_t)sizeof(PipeKey);
++    hd.spec_count = SPEC_STATE_COUNT;
++    for (i = 0; i < SPEC_STATE_COUNT && i < 64; i++) sig = (sig ^ s_spec_states[i].key[0] ^ s_spec_states[i].key[32]) * 16777619u;
++    hd.spec_sig = sig;
++    hd.depth_format = (uint32_t)s_depth_format;
++    return hd;
++}
++
++/* The keys earlier runs built (same build only), then the file is kept open to add new ones. */
++static void pipe_file_open(void)
++{
++    char path[1024], dir[1024], *slash;
++    PipeFileHeader want = pipe_file_header(), got;
++    FILE *f;
++    if (!pipe_file_path(path, sizeof path)) return;
++    strcpy(dir, path);
++    if ((slash = strrchr(dir, '/')) != NULL) { *slash = 0; SDL_CreateDirectory(dir); }
++    f = fopen(path, "rb");
++    if (f) {
++        if (fread(&got, sizeof got, 1, f) == 1 && !memcmp(&got, &want, sizeof got)) {
++            s_warm = (PipeKey *)malloc(WARM_MAX * sizeof *s_warm);
++            while (s_warm && s_warm_n < WARM_MAX && fread(&s_warm[s_warm_n], sizeof(PipeKey), 1, f) == 1)
++                s_warm_n++;
++            s_pk_saved = s_warm_n;
 +        }
-         ci.primitive_type = (SDL_GPUPrimitiveType)k->prim;
-         ci.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-         ci.rasterizer_state.cull_mode = k->cull == 1 ? SDL_GPU_CULLMODE_FRONT :
-@@ -951,7 +1144,8 @@ static SDL_GPUGraphicsPipeline *pipeline(const PipeKey *k)
-             ctd.format = color_format(k->color);
-             ctd.blend_state.enable_blend = k->blend_enable != 0;
-             ctd.blend_state.src_color_blendfactor = blend_factor(k->sf, 0);
++        fclose(f);
++    }
++    if (s_pk_saved) {
++        s_pk_file = fopen(path, "ab");
++    } else {
++        s_pk_file = fopen(path, "wb");
++        if (s_pk_file) fwrite(&want, sizeof want, 1, s_pk_file);
++    }
++}
++
++static int pipe_worker(void *unused)
++{
++    int64_t t_start = qpc();
++    uint32_t i, warmed = 0;
++    for (i = 0; unused == NULL && i < s_warm_n; i++) {
++        PipeKey *k = &s_warm[i];
++        uint64_t h = hash_mem((const uint8_t *)k, sizeof *k);
++        SDL_GPUGraphicsPipeline *p;
++        int have;
++        pipe_lock();
++        have = pipe_find_locked(k, h) != NULL;
++        pipe_unlock();
++        if (have) continue;
++        p = pipeline_create(k);
++        if (!p) continue;
++        pipe_lock();
++        if (!pipe_insert_locked(k, h, p)) SDL_ReleaseGPUGraphicsPipeline(s_dev, p);
++        pipe_unlock();
++        warmed++;
++    }
++    if (unused == NULL && s_warm_n)
++        fprintf(stderr, "[SDLGPU] pipeline warm-up: %u of %u pipelines from earlier runs built in %.0f ms\n",
++                warmed, s_warm_n, (qpc() - t_start) * 1000.0 / (double)qpf());
++    fflush(stderr);
++    for (;;) {
++        PipeKey key;
++        SDL_GPUGraphicsPipeline *p;
++        uint64_t h;
++        int64_t t0;
++        double ms;
++        uint32_t j;
++        static unsigned slow_logged;
++        SDL_WaitSemaphore(s_pq_sem);
++        pipe_lock();
++        if (s_pq_head == s_pq_tail) { pipe_unlock(); continue; }
++        key = s_pq[s_pq_head++ % PQ_SIZE];
++        pipe_unlock();
++        t0 = qpc();
++        p = pipeline_create(&key);
++        ms = (qpc() - t0) * 1000.0 / (double)qpf();
++        h = hash_mem((const uint8_t *)&key, sizeof key);
++        pipe_lock();
++        if (p && !pipe_insert_locked(&key, h, p)) SDL_ReleaseGPUGraphicsPipeline(s_dev, p);
++        for (j = 0; j < s_pend_n; j++)
++            if (!memcmp(&s_pend[j], &key, sizeof key)) {
++                if (p) { s_pend[j] = s_pend[s_pend_n - 1]; s_pend_failed[j] = s_pend_failed[s_pend_n - 1]; s_pend_n--; }
++                else s_pend_failed[j] = 1;
++                break;
++            }
++        pipe_unlock();
++        if (!p) {
++            fprintf(stderr, "[SDLGPU] background pipeline creation failed: %s\n", SDL_GetError());
++            continue;
++        }
++        s_pipes_built++;
++        if (s_pk_file && s_pk_saved < WARM_MAX) {
++            fwrite(&key, sizeof key, 1, s_pk_file);
++            fflush(s_pk_file);
++            s_pk_saved++;
++        }
++        if (ms > 40.0 && slow_logged++ < 40)
++            fprintf(stderr, "[SDLGPU] pipeline took %.0f ms in the background (spec %u, ps %u)\n", ms, key.spec, key.ps);
++    }
++    return 0;
++}
++
++static void pipe_async_init(void)
++{
++    const char *e = getenv("RECOMP_SDLGPU_ASYNC");
++    SDL_Thread *t;
++    s_async = !(e && !strcmp(e, "0"));
++    if (!s_async) return;
++    s_pipe_lock = SDL_CreateMutex();
++    s_pq_sem = SDL_CreateSemaphore(0);
++    if (!s_pipe_lock || !s_pq_sem) { s_async = 0; return; }
++    pipe_file_open();
++    t = SDL_CreateThread(pipe_worker, "mm3 pipelines", NULL);
++    if (!t) { s_async = 0; return; }
++    SDL_DetachThread(t);
++    if ((t = SDL_CreateThread(pipe_worker, "mm3 pipelines 2", &s_async)) != NULL)   /* a second builder: no warm-up */
++        SDL_DetachThread(t);
++}
++
++/* Pipeline for the title's own draws: NULL when it is still being built (the
++ * draw is skipped) or could not be. */
++static SDL_GPUGraphicsPipeline *pipeline_draw(const PipeKey *k)
++{
++    uint64_t h = hash_mem((const uint8_t *)k, sizeof *k);
++    SDL_GPUGraphicsPipeline *p;
++    uint32_t j;
++    if (s_async <= 0) return pipeline(k);
++    pipe_lock();
++    p = pipe_find_locked(k, h);
++    if (p) { pipe_unlock(); return p; }
++    for (j = 0; j < s_pend_n; j++)
++        if (!memcmp(&s_pend[j], k, sizeof *k)) {
++            s_draws_skipped++;
++            pipe_unlock();
++            return NULL;
++        }
++    if (s_pend_n < PEND_MAX && s_pq_tail - s_pq_head < PQ_SIZE && s_pipe_count < PIPE_SLOTS * 3u / 4u) {
++        static int announced;
++        s_pend[s_pend_n] = *k;
++        s_pend_failed[s_pend_n++] = 0;
++        s_pq[s_pq_tail++ % PQ_SIZE] = *k;
++        s_draws_skipped++;
++        pipe_unlock();
++        SDL_SignalSemaphore(s_pq_sem);
++        if (!announced) {
++            announced = 1;
++            fprintf(stderr, "[SDLGPU] pipelines are built in the background: a draw waits for its own "
++                            "(RECOMP_SDLGPU_ASYNC=0 builds them on the drawing thread)\n");
++            fflush(stderr);
++        }
++        return NULL;
++    }
++    pipe_unlock();
++    return pipeline(k);
++}
++
++/* Pipeline for the renderer's own passes, built now when missing. */
++static SDL_GPUGraphicsPipeline *pipeline(const PipeKey *k)
++{
++    uint64_t h = hash_mem((const uint8_t *)k, sizeof *k);
++    SDL_GPUGraphicsPipeline *p;
++    pipe_lock();
++    p = pipe_find_locked(k, h);
++    pipe_unlock();
++    if (p) return p;
++    {
++        int64_t t_pipe = qpc();
++        p = pipeline_create(k);
++        stall_log("pipeline built on the drawing thread", t_pipe);
++        s_sync_pipes++;
++    }
++    if (!p) { fail("SDL_CreateGPUGraphicsPipeline"); return NULL; }
++    pipe_lock();
++    if (!pipe_insert_locked(k, h, p)) {
+         /* Full: replace the home slot. A pipeline a recorded draw names stays
+          * alive until SDL is done with it (release is deferred by SDL). */
++        uint32_t i = (uint32_t)(h & (PIPE_SLOTS - 1));
++        pipe_unlock();
+         flush_batch();
+-        i = (uint32_t)(h & (PIPE_SLOTS - 1));
++        pipe_lock();
+         SDL_ReleaseGPUGraphicsPipeline(s_dev, s_pipes[i].pipe);
+-        s_pipes[i].pipe = NULL;
+-    }
+-    {
+-        SDL_GPUGraphicsPipelineCreateInfo ci;
+-        SDL_GPUColorTargetDescription ctd;
+-        SDL_GPUStencilOpState so;
+-        memset(&ci, 0, sizeof ci);
+-        memset(&ctd, 0, sizeof ctd);
+-        ci.vertex_shader = s_shader[k->vs];
+-        ci.fragment_shader = s_shader[k->ps];
+-        ci.primitive_type = (SDL_GPUPrimitiveType)k->prim;
+-        ci.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+-        ci.rasterizer_state.cull_mode = k->cull == 1 ? SDL_GPU_CULLMODE_FRONT :
+-                                        k->cull == 2 ? SDL_GPU_CULLMODE_BACK : SDL_GPU_CULLMODE_NONE;
+-        ci.rasterizer_state.front_face = k->front_ccw ? SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE
+-                                                      : SDL_GPU_FRONTFACE_CLOCKWISE;
+-        ci.rasterizer_state.depth_bias_constant_factor = (float)k->bias;
+-        ci.rasterizer_state.depth_bias_slope_factor = k->slope;
+-        ci.rasterizer_state.enable_depth_bias = k->bias != 0 || k->slope != 0.0f;
+-        ci.rasterizer_state.enable_depth_clip = false;
+-        ci.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+-        ci.depth_stencil_state.enable_depth_test = k->zt != 0;
+-        ci.depth_stencil_state.enable_depth_write = k->zw != 0;
+-        ci.depth_stencil_state.compare_op = cmp(0x200 | k->zfunc);
+-        ci.depth_stencil_state.enable_stencil_test = k->st != 0;
+-        ci.depth_stencil_state.compare_mask = k->rmask;
+-        ci.depth_stencil_state.write_mask = k->wmask;
+-        so.fail_op = sop(k->sfail);
+-        so.depth_fail_op = sop(k->szfail);
+-        so.pass_op = sop(k->szpass);
+-        so.compare_op = cmp(0x200 | k->sfunc);
+-        ci.depth_stencil_state.front_stencil_state = so;
+-        ci.depth_stencil_state.back_stencil_state = so;
+-        if (k->color) {
+-            ctd.format = color_format(k->color);
+-            ctd.blend_state.enable_blend = k->blend_enable != 0;
+-            ctd.blend_state.src_color_blendfactor = blend_factor(k->sf, 0);
 -            ctd.blend_state.dst_color_blendfactor = blend_factor(k->df, 0);
-+            ctd.blend_state.dst_color_blendfactor = k->screen ? SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR
-+                                                              : blend_factor(k->df, 0);
-             ctd.blend_state.src_alpha_blendfactor = blend_factor(k->sf, 1);
-             ctd.blend_state.dst_alpha_blendfactor = blend_factor(k->df, 1);
-             ctd.blend_state.color_blend_op = ctd.blend_state.alpha_blend_op = blend_op(k->eq);
-@@ -986,6 +1180,7 @@ typedef Nv2aSamplerSlot SampSlot;
+-            ctd.blend_state.src_alpha_blendfactor = blend_factor(k->sf, 1);
+-            ctd.blend_state.dst_alpha_blendfactor = blend_factor(k->df, 1);
+-            ctd.blend_state.color_blend_op = ctd.blend_state.alpha_blend_op = blend_op(k->eq);
+-            ctd.blend_state.enable_color_write_mask = true;
+-            ctd.blend_state.color_write_mask = (SDL_GPUColorComponentFlags)(k->write_mask & 15);
+-            ci.target_info.color_target_descriptions = &ctd;
+-            ci.target_info.num_color_targets = 1;
+-        }
+-        ci.target_info.has_depth_stencil_target = k->depth != 0;
+-        ci.target_info.depth_stencil_format = k->depth ? s_depth_format : SDL_GPU_TEXTUREFORMAT_INVALID;
+-        RECOMP_PROFILE_BEGIN("SDL GPU pipeline creation");
+-        s_pipes[i].pipe = SDL_CreateGPUGraphicsPipeline(s_dev, &ci);
+-        RECOMP_PROFILE_END();
+-        if (!s_pipes[i].pipe) { fail("SDL_CreateGPUGraphicsPipeline"); return NULL; }
+         s_pipes[i].key = *k;
+-        return s_pipes[i].pipe;
++        s_pipes[i].pipe = p;
+     }
++    pipe_unlock();
++    return p;
+ }
+ 
+ static void pipe_key_plain(PipeKey *k, uint8_t vs, uint8_t ps, uint8_t color, uint8_t prim)
+@@ -986,6 +1472,7 @@ typedef Nv2aSamplerSlot SampSlot;
  static SampSlot s_samp[SAMP_SLOTS];
  static SDL_GPUSampler *s_linear_clamp, *s_point_clamp;
  static SDL_GPUTexture *s_dummy_2d, *s_dummy_cube, *s_dummy_volume;
@@ -22148,7 +22600,16 @@ index fffccd5..728f5f4 100644
  
  static SDL_GPUSamplerAddressMode addr_mode(uint32_t m)
  {
-@@ -1141,6 +1336,11 @@ int nv2a_d3d_init(void)
+@@ -1100,6 +1587,8 @@ int nv2a_d3d_init(void)
+     if (!SDL_GPUTextureSupportsFormat(s_dev, s_depth_format, SDL_GPU_TEXTURETYPE_2D,
+             SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER))
+         s_depth_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
++    s_shader_lock = SDL_CreateMutex();
++    pipe_async_init();
+     {
+         SDL_GPUBufferCreateInfo b;
+         SDL_GPUTransferBufferCreateInfo t;
+@@ -1141,6 +1630,11 @@ int nv2a_d3d_init(void)
          s_dummy_volume = make_volume(1, 1, 1, 1);
          if (!s_dummy_volume || !s_dummy_2d || !s_dummy_cube || !s_linear_clamp || !s_point_clamp) return 0;
          upload_texture(s_dummy_2d, 0, 0, 1, 1, black, 4);
@@ -22160,7 +22621,7 @@ index fffccd5..728f5f4 100644
          upload_texture(s_dummy_volume, 0, 0, 1, 1, black, 4);
          for (f = 0; f < 6; f++) upload_texture(s_dummy_cube, 0, (uint32_t)f, 1, 1, black + f, 4);
          copy_end();
-@@ -1152,7 +1352,7 @@ int nv2a_d3d_init(void)
+@@ -1152,7 +1646,7 @@ int nv2a_d3d_init(void)
              fail("SDL_ClaimWindowForGPUDevice");
              s_window = NULL;
          } else {
@@ -22169,7 +22630,7 @@ index fffccd5..728f5f4 100644
              SDL_GPUPresentMode mode = SDL_GPU_PRESENTMODE_VSYNC;
              if (!vsync) {
                  if (SDL_WindowSupportsGPUPresentMode(s_dev, s_window, SDL_GPU_PRESENTMODE_IMMEDIATE))
-@@ -1161,6 +1361,7 @@ int nv2a_d3d_init(void)
+@@ -1161,6 +1655,7 @@ int nv2a_d3d_init(void)
                      mode = SDL_GPU_PRESENTMODE_MAILBOX;
              }
              SDL_SetGPUSwapchainParameters(s_dev, s_window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, mode);
@@ -22177,7 +22638,7 @@ index fffccd5..728f5f4 100644
          }
      }
      display_config(1);
-@@ -1204,6 +1405,7 @@ typedef struct {
+@@ -1204,6 +1699,7 @@ typedef struct {
      int cpu_present_pending;
      uint32_t synced_frame, used_frame;
      uint32_t seq;
@@ -22185,7 +22646,7 @@ index fffccd5..728f5f4 100644
  } Surface;
  
  typedef struct {
-@@ -1865,6 +2067,23 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
+@@ -1865,6 +2361,23 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
  }
  
  static int s_draw_textured, s_draw_reads_wide;
@@ -22209,7 +22670,7 @@ index fffccd5..728f5f4 100644
  static uint32_t s_draw_tex_addr;
  static int s_draw_bspline;
  
-@@ -2029,6 +2248,124 @@ static Op *draw_op(OpKind kind, uint32_t count, uint32_t first)
+@@ -2029,6 +2542,124 @@ static Op *draw_op(OpKind kind, uint32_t count, uint32_t first)
  
  /* Everything a draw needs apart from its vertices, recorded into the batch
   * (see setup_pipeline in nv2a_d3d11.c, which this follows step for step). */
@@ -22334,7 +22795,7 @@ index fffccd5..728f5f4 100644
  static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                            uint32_t *out_gw, uint32_t *out_gh, uint32_t *out_zmax, int indexed)
  {
-@@ -2040,12 +2377,14 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2040,12 +2671,14 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      SDL_GPUTexture *srv[13] = { 0 };
      void *smp[4] = { 0 };
      int cull = 0, bias = 0, flare_depth = draw_forces_depth(st), wdepth;
@@ -22350,7 +22811,7 @@ index fffccd5..728f5f4 100644
      s_draw_tex_addr = 0;
      s_draw_bspline = 0;
  
-@@ -2086,6 +2425,17 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2086,6 +2719,17 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      if (s && write_mask(st, s)) s->gpu_dirty = 1;
  
      memset(&pc, 0, sizeof pc);
@@ -22368,7 +22829,7 @@ index fffccd5..728f5f4 100644
      memset(&pb, 0, sizeof pb);
      for (n = 0; n < 4; n++) {
          const NvD3DTexture *t = &st->tex[n];
-@@ -2105,11 +2455,14 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2105,11 +2749,14 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          s_draw_textured = 1;
          if (!s_draw_tex_addr) s_draw_tex_addr = t->addr;
          if (rt && rt->sx > rt->sy * 1.001f) s_draw_reads_wide = 1;
@@ -22383,7 +22844,7 @@ index fffccd5..728f5f4 100644
          } else if (rt) {
              surface_sync(rt, 0);
              view = rt == s ? feedback_copy(rt) : rt->tex;
-@@ -2133,7 +2486,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2133,7 +2780,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                  }
              }
          } else {
@@ -22393,7 +22854,7 @@ index fffccd5..728f5f4 100644
              if (kind == K_LIN) {
                  pc.tex_scale[n][0] = 1.0f / (float)t->width;
                  pc.tex_scale[n][1] = 1.0f / (float)t->height;
-@@ -2146,11 +2500,24 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2146,11 +2794,24 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
              pc.tex_scale[n][2] = pc.tex_scale[n][3] = 1.0f;
          }
          if (!view) continue;
@@ -22420,7 +22881,7 @@ index fffccd5..728f5f4 100644
              s_draw_bspline = 1;
          pc.tex_info[n][0] = (t->control0 >> 2) & 1;
          pc.tex_info[n][1] = (t->filter >> 28) | (tex_volume(t) ? 256u : 0u);
-@@ -2197,6 +2564,41 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2197,6 +2858,41 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      pc.alpha_func = st->alpha_func;
      pc.alpha_ref = st->alpha_ref;
      pc.ps_flags = (st->rc_seen ? 1u : 0u) | (st->alpha_test ? 2u : 0u) | (s_draw_bspline ? 4u : 0u);
@@ -22462,7 +22923,7 @@ index fffccd5..728f5f4 100644
      pc.clip_plane = st->clip_plane_mode;
      pc.other_input = st->other_stage_input;
      pc.dot_map = st->dot_rgb_mapping;
-@@ -2242,6 +2644,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2242,6 +2938,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          static const uint8_t ps[4] = { SH_PS_MAIN, SH_PS_MAIN_FLAT, SH_PS_WDEPTH, SH_PS_WDEPTH_FLAT };
          k.vs = SH_UB_VS;
          k.ps = ps[v];
@@ -22470,7 +22931,7 @@ index fffccd5..728f5f4 100644
      }
      k.color = s ? FMT_BGRA8 : FMT_NONE;
      k.depth = d ? 1 : 0;
-@@ -2252,6 +2655,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2252,6 +2949,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      k.sf = (uint16_t)st->blend_sfactor;
      k.df = (uint16_t)st->blend_dfactor;
      k.eq = (uint16_t)st->blend_equation;
@@ -22478,7 +22939,16 @@ index fffccd5..728f5f4 100644
      k.write_mask = (uint8_t)(s ? write_mask(st, s) : 0);
      k.cull = (uint8_t)(cull == 3 ? 0 : cull);
      k.front_ccw = st->front_face == 0x901;
-@@ -2362,6 +2766,71 @@ void nv2a_d3d_zpass_clear(void)
+@@ -2271,7 +2969,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+     } else {
+         k.zfunc = 7; k.sfunc = 7;
+     }
+-    if (!(pipe = pipeline(&k))) return 0;
++    if (!(pipe = pipeline_draw(&k))) return 0;
+     if ((st->blend_sfactor | st->blend_dfactor) & 0x8000) {
+         float c[4];
+         unpack4(st->blend_color, c);
+@@ -2362,6 +3060,74 @@ void nv2a_d3d_zpass_clear(void)
      s_zpass = 0;
  }
  
@@ -22487,6 +22957,7 @@ index fffccd5..728f5f4 100644
 + * sun's visibility mask this way (2D engine blits, nv2a_pb_exec.c). */
 +int nv2a_d3d_surface_read(uint32_t phys, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t *out)
 +{
++    int64_t t_read = qpc();
 +    Surface *s;
 +    SDL_GPUTransferBufferCreateInfo ci;
 +    SDL_GPUTransferBuffer *tb;
@@ -22523,7 +22994,7 @@ index fffccd5..728f5f4 100644
 +    copy_end();
 +    submit(&fence);
 +    if (fence) {
-+        SDL_WaitForGPUFences(s_dev, true, &fence, 1);
++        WAIT_FENCE(&fence);
 +        SDL_ReleaseGPUFence(s_dev, fence);
 +    }
 +    if ((m = (const uint8_t *)SDL_MapGPUTransferBuffer(s_dev, tb, false)) != NULL) {
@@ -22544,13 +23015,15 @@ index fffccd5..728f5f4 100644
 +        ok = 1;
 +    }
 +    SDL_ReleaseGPUTransferBuffer(s_dev, tb);
++    s_read_count++;
++    s_read_ticks += qpc() - t_read;
 +    return ok;
 +}
 +
  uint32_t nv2a_d3d_zpass_read(void)
  {
      double px;
-@@ -2456,6 +2925,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -2456,6 +3222,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
              d.x0 = xlo; d.y0 = ylo; d.x1 = xhi; d.y1 = yhi;
              d.tex = s_draw_tex_addr; d.textured = s_draw_textured; d.reads_wide = s_draw_reads_wide;
              use_dx = s_overlay.place(&d, count <= dx_cap ? dx : NULL, &squeeze, &shift);
@@ -22562,7 +23035,7 @@ index fffccd5..728f5f4 100644
          }
      }
  
-@@ -2481,6 +2955,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -2481,6 +3252,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
                      s_overlay.sanitize_vertex_upload(p + uc.at[i][0] - s_vpos, &attr[i], i, lo, count);
      }
      uc.info[2] = 0xFFFFFFFFu;
@@ -22574,7 +23047,7 @@ index fffccd5..728f5f4 100644
      if (use_dx) {
          memcpy(p + at, dx, count * 4);
          uc.info[2] = s_vpos + at;
-@@ -2520,6 +2999,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -2520,6 +3296,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      rec_uniform(0, 0, &uc, sizeof uc);
      rec_uniform(1, 0, s_zero_block, sizeof s_zero_block);
      draw_op(OP_DRAWI, ni, first_index);
@@ -22586,7 +23059,25 @@ index fffccd5..728f5f4 100644
      s_vpos += (at + 255) & ~255u;
      s_ipos += (ib_bytes + 255) & ~255u;
      s_b.v1 = s_vpos;
-@@ -2908,6 +3392,48 @@ static uint64_t s_last_present, s_last_flip;
+@@ -2621,7 +3402,7 @@ static void zpass_collect(void)
+     if (fence) {
+         float avg = 0;
+         const float *v;
+-        SDL_WaitForGPUFences(s_dev, true, &fence, 1);
++        WAIT_FENCE(&fence);
+         SDL_ReleaseGPUFence(s_dev, fence);
+         v = (const float *)SDL_MapGPUTransferBuffer(s_dev, tb, false);
+         if (v) { avg = *v; SDL_UnmapGPUTransferBuffer(s_dev, tb); }
+@@ -2791,7 +3572,7 @@ static int writeback_finish(int wait)
+     if (s_wb_fence) {
+         if (!wait && !SDL_QueryGPUFence(s_dev, s_wb_fence))
+             return 0;
+-        SDL_WaitForGPUFences(s_dev, true, &s_wb_fence, 1);
++        WAIT_FENCE(&s_wb_fence);
+         SDL_ReleaseGPUFence(s_dev, s_wb_fence);
+         s_wb_fence = NULL;
+     }
+@@ -2908,6 +3689,48 @@ static uint64_t s_last_present, s_last_flip;
  static Surface *s_shown;
  
  /* Read a texture back and write it as a 24-bit BMP. */
@@ -22623,7 +23114,7 @@ index fffccd5..728f5f4 100644
 +    copy_end();
 +    submit(&fence);
 +    if (fence) {
-+        SDL_WaitForGPUFences(s_dev, true, &fence, 1);
++        WAIT_FENCE(&fence);
 +        SDL_ReleaseGPUFence(s_dev, fence);
 +    }
 +    m = (const uint8_t *)SDL_MapGPUTransferBuffer(s_dev, tb, false);
@@ -22635,7 +23126,16 @@ index fffccd5..728f5f4 100644
  static void write_bmp(SDL_GPUTexture *tex, uint32_t w, uint32_t h, const char *path)
  {
      SDL_GPUTransferBufferCreateInfo ci = { SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, w * h * 4, 0 };
-@@ -3125,6 +3651,7 @@ static int present_kept_image(FlipPacing *pacing)
+@@ -2926,7 +3749,7 @@ static void write_bmp(SDL_GPUTexture *tex, uint32_t w, uint32_t h, const char *p
+     copy_end();
+     submit(&fence);
+     if (fence) {
+-        SDL_WaitForGPUFences(s_dev, true, &fence, 1);
++        WAIT_FENCE(&fence);
+         SDL_ReleaseGPUFence(s_dev, fence);
+     }
+     if ((m = (const uint8_t *)SDL_MapGPUTransferBuffer(s_dev, tb, false)) != NULL) {
+@@ -3125,6 +3948,7 @@ static int present_kept_image(FlipPacing *pacing)
      if (!s_window || !s_kept) return 0;
      copy_end();
      flush_batch();
@@ -22643,7 +23143,7 @@ index fffccd5..728f5f4 100644
      if (!cmd()) return 0;
      RECOMP_PROFILE_BEGIN("SDL GPU acquire swapchain");
      if (!SDL_WaitAndAcquireGPUSwapchainTexture(s_cmd, s_window, &sc, &sw, &sh))
-@@ -3185,6 +3712,8 @@ static void present_surface(Surface *s, FlipPacing *pacing)
+@@ -3185,6 +4009,8 @@ static void present_surface(Surface *s, FlipPacing *pacing)
      composite(s_kept, w, h, s, &pc, 1);
      if (!getenv("RECOMP_CAPTURE_SURFACE"))
          capture_image(s_kept, w, h);
@@ -22652,7 +23152,7 @@ index fffccd5..728f5f4 100644
      if (present_kept_image(pacing))
          s->cpu_present_pending = 0;
  }
-@@ -3192,9 +3721,26 @@ static void present_surface(Surface *s, FlipPacing *pacing)
+@@ -3192,9 +4018,26 @@ static void present_surface(Surface *s, FlipPacing *pacing)
  /* The flip completes at the display's next vertical blank (see pace_vblank
   * in nv2a_d3d11.c): RECOMP_FPS_LIMIT=N sets the rate (default 60, 0 =
   * unpaced). The wait is SDL_DelayPrecise, then a short spin. */
@@ -22680,7 +23180,7 @@ index fffccd5..728f5f4 100644
      static int64_t next;
      int64_t now, freq = qpf();
      extern int xbox_FramebufferPaused(void);
-@@ -3203,9 +3749,7 @@ static void pace_vblank(void)
+@@ -3203,9 +4046,7 @@ static void pace_vblank(void)
          fbw_sdl_pump();
          next = 0;
      }
@@ -22691,7 +23191,7 @@ index fffccd5..728f5f4 100644
      if (limit <= 0)
          return;
      now = qpc();
-@@ -3226,23 +3770,30 @@ static void display_config(int now)
+@@ -3226,23 +4067,30 @@ static void display_config(int now)
  {
      static uint32_t seen_w, seen_h, done_w, done_h;
      static uint64_t seen_at;
@@ -22725,7 +23225,7 @@ index fffccd5..728f5f4 100644
          scale = (float)atof(e);
      } else {
          const char *ss = getenv("RECOMP_SUPERSAMPLE");
-@@ -3267,6 +3818,11 @@ static void display_config(int now)
+@@ -3267,6 +4115,11 @@ static void display_config(int now)
      }
      s_scale = scale;
      s_aspect = aspect;
@@ -22737,7 +23237,7 @@ index fffccd5..728f5f4 100644
      fprintf(stderr, "[SDLGPU] rendering %ux%u (window %ux%u, aspect %.3f)\n",
              (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
              w, h, aspect);
-@@ -3303,12 +3859,25 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
+@@ -3303,12 +4156,25 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
      return s;
  }
  
@@ -22763,7 +23263,7 @@ index fffccd5..728f5f4 100644
      fbw_sdl_pump();
      if (s_overlay.frame) s_overlay.frame();
      s = surface_find(phys(surface_addr));
-@@ -3316,12 +3885,16 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
+@@ -3316,12 +4182,16 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
          s = scan_surface(surface_addr, pitch);
      s_shown = s;
      s_last_flip = SDL_GetTicks();

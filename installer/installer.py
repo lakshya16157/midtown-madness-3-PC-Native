@@ -49,7 +49,7 @@ from pathlib import Path
 # PyInstaller see and include them (it only analyses this file's own imports).
 _PAYLOAD_STDLIB = (argparse, collections, copy, hashlib, math, re, struct, tempfile, zipfile, zlib)
 
-VERSION = "2.6.2"
+VERSION = "2.6.3 beta 1"
 TITLE = "Midtown Madness 3 - Setup"
 # "Check for updates" asks GitHub for the newest release and downloads the MM3-Setup.exe attached to it.
 RELEASES_API = "https://api.github.com/repos/lakshya16157/midtown-madness-3-PC-Native/releases/latest"
@@ -911,6 +911,9 @@ def write_native_launcher(dest: Path, settings: dict, improvements: bool) -> Non
     ]
     lines += [f'[ -n "${{{name}:-}}" ] || export {name}={quoted(value)}'
               for name, value in settings.items() if name != "RECOMP_KEYBOARD"]
+    # Light frame timing in the log (a few frames a second of text), so a slow session shows where the time went.
+    lines += [f'[ -n "${{{name}:-}}" ] || export {name}={value}' for name, value in
+              (("RECOMP_D3D_PROFILE", "1"), ("RECOMP_HITCH_TRACE", "1"), ("RECOMP_SDLGPU_SPEC", "log"))]
     lines += [
         "mkdir -p logs",
         f"./{GAME_EXE} > logs/last-run.log 2>&1 || echo 'The game stopped with an error. Details: logs/last-run.log'",
