@@ -458,7 +458,8 @@ static void help_show(Launcher *ui, int id)
             "In a race, the Free camera key flies the view away from your car: W/A/S/D or the left stick move, Q/E or the triggers go down and up, the arrows, right stick or mouse with its right button look. Shift/RB faster, Ctrl/LB slower. Your car gets no input meanwhile.",
             "Photo mode. In a race, F2 holds everything still and flies the camera: W/A/S/D move, Q/E down and up, the mouse looks (or the sticks and triggers). F3 (pad A) saves a PNG to Pictures\\Midtown Madness 3, F4 (pad X) hides the HUD. F2 again goes back to your car. Off: these keys do nothing.",
             "Changes the gameplay. Race opponents drive the full course normally, then brake to a halt just before the final checkpoint so they never cross the finish line ahead of you. Off: opponents finish the race as on the Xbox.",
-            "Skips the logo and intro movies when the game starts, as if you pressed Start. Untick it to watch the intro every time. Story movies always play."
+            "Skips the logo and intro movies when the game starts, as if you pressed Start. Untick it to watch the intro every time. Story movies always play.",
+            "Car paint mirrors the scene a little blurred, so lamps are soft glows rather than hard bright spots. Untick it for the sharp mirror of the Xbox, which makes the reflections on cars easier to see. The Original look is always sharp."
         };
         int option = id - ID_OPTION, on = checked(ui, id), master = mm3_launcher_option_master(option);
         title = option_caption(option);
@@ -1385,7 +1386,7 @@ static void option_columns(Launcher *ui, int page, const OptionColumn *columns, 
 static void look_controls(Launcher *ui)
 {
     static const OptionColumn columns[] = {
-        {42, 240, "Graphics and audio", NULL, {MM3_LAUNCH_WIDESCREEN, MM3_LAUNCH_SKY, MM3_LAUNCH_NATIVE_FOG, 0}},
+        {42, 240, "Graphics and audio", NULL, {MM3_LAUNCH_WIDESCREEN, MM3_LAUNCH_SKY, MM3_LAUNCH_NATIVE_FOG, MM3_LAUNCH_PAINT_SOFT, 0}},
         {300, 250, "Improved visuals", NULL, {MM3_LAUNCH_DISTANCE, MM3_LAUNCH_CAR_LIGHT, MM3_LAUNCH_LAMP_LIGHT,
             MM3_LAUNCH_WORLD_LIGHT, MM3_LAUNCH_FLARE_DEPTH, MM3_LAUNCH_EXHAUST, 0}},
         {560, 260, "Menus and HUD", NULL, {MM3_LAUNCH_LOADING, MM3_LAUNCH_GRAPHICS_MENU, MM3_LAUNCH_QUIT,

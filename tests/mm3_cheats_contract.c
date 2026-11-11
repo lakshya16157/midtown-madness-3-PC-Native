@@ -50,6 +50,11 @@ void sub_0014194C_original(void)
     g_esp += 8;
 }
 
+void sub_00214F74_original(void) {}
+void sub_001F937C_original(void) {}
+void sub_0020DA6F_original(void) {}
+void sub_0020E6F0_original(void) {}
+
 #include "../src/mm3_free_camera.c"
 #include "../src/mm3_ai_difficulty.c"
 
@@ -190,7 +195,7 @@ static void ai_contract(void)
     MEMF(0x47000 + 0x90) = 1.0f;
 
     level("");
-    /* Opponents wait at finish (MM3_AI_STOP_FINISH=1): zeroes the active road
+    /* Opponents stop before the finish (MM3_AI_STOP_FINISH=1): zeroes the active road
      * segment's target velocities, zeroes off-screen speeds, and holds full
      * brakes before the final checkpoint on the final lap. */
     MEM32(k_ai) = 0x37FAB0; MEM32(k_vehicle + 8) = k_car;
@@ -241,7 +246,7 @@ static void ai_contract(void)
     step_ai();
     assert(seen[0] == 22.0f && MEMF(0x47000 + 0x90) == 1.0f);
     level("");
-    /* Opponents wait at finish (MM3_AI_STOP_FINISH=1): zeroes the active road
+    /* Opponents stop before the finish (MM3_AI_STOP_FINISH=1): zeroes the active road
      * segment's target velocities, zeroes off-screen speeds, and holds full
      * brakes before the final checkpoint on the final lap. */
     MEM32(k_ai) = 0x37FAB0; MEM32(k_vehicle + 8) = k_car;
@@ -260,10 +265,61 @@ static void ai_contract(void)
     assert(MEMF(0x49800 + 0x68) == 0.0f && MEMF(0x49800 + 0x6C) == 0.0f);
     assert(seen[6] == 0.0f && seen[7] == 0.0f && MEMF(k_personality + 0xC0) == 53.33f);
     assert(MEMF(k_state + 0x08) == 0.0f && MEMF(k_state + 0x0C) == 1.0f && g_eax == k_state);
+    /* Past the end of its list and far from the node: still braking. */
+    MEM32(k_ai + 0xA0) = 2; MEMF(k_ai + 0x60) = 5000.0f;
+    MEMF(k_state + 0x08) = 1.0f; MEMF(k_state + 0x0C) = 0.0f;
+    step_ai();
+    assert(MEMF(k_state + 0x08) == 0.0f && MEMF(k_state + 0x0C) == 1.0f);
     _putenv_s("MM3_AI_STOP_FINISH", "0");
     assert(mm3_cheat_ai_stop_finish() == 0);
     puts("PASS opponents' difficulty: MM3_AI_LEVEL sets the level; above 5 later braking, faster corners, no holding back, "
          "engine and brakes on top of the scripts' own factors; 5 restores; 0 slower; police and your car untouched");
+}
+
+/* The opponent's last checkPoint script call never reaches the script. */
+static void script_text(uint32_t str, const char *text)
+{
+    memcpy(&memory[str + 0x100], text, strlen(text) + 1);
+    MEM32(str + 4) = str + 0x100;   /* a long std::string: pointer at +4, capacity at +0x18 */
+    MEM32(str + 0x18) = 64;
+}
+
+static int reported(const char *text)
+{
+    script_text(0x4A000, text);
+    g_eax = 0x4A000;
+    sub_00214F74();
+    return memory[0x4A100] != '-';
+}
+
+static void finish_contract(void)
+{
+    MEM32(MAX_POINTS_ADDRESS) = 3;
+    sub_001F937C();
+    _putenv_s("MM3_AI_STOP_FINISH", "1");
+    assert(reported("checkPoint(\"CP-0\",\"Comp--0\")"));
+    assert(reported("checkPoint(\"CP-0\",\"Human-0\")"));
+    s_player = 0x4B000; MEM32(s_player + 0x19C) = k_vehicle;       /* the report names Comp--0's car */
+    MEM32(k_vehicle) = 0x383768; MEM32(k_vehicle + 8) = k_car; MEM32(k_ai + 0x28) = k_vehicle;
+    assert(reported("checkPoint(\"CP-1\",\"Comp--0\")"));
+    s_player = 0;
+    MEMF(k_car + 0x90) = 1.0f; MEMF(k_car + 0x94) = 1.0f;
+    MEMF(k_state + 0x08) = 1.0f; MEMF(k_state + 0x0C) = 0.0f;
+    step_ai();                                                     /* one gate left: engine cut, brakes on */
+    assert(MEMF(k_car + 0x90) == 0.0f && MEMF(k_car + 0x94) == 6.0f && MEMF(k_state + 0x0C) == 1.0f);
+    assert(!reported("checkPoint(\"CP-2\",\"Comp--0\")"));      /* the 3rd of 3: held back */
+    assert(!strncmp((char *)&memory[0x4A100], "--eckPoint", 10));  /* a Lua comment now */
+    assert(reported("checkPoint(\"CP-0\",\"Comp--1\")"));       /* each opponent counts alone */
+    assert(reported("print(\"hello\")"));
+    sub_001F937C();                                                /* a new race */
+    assert(reported("checkPoint(\"CP-0\",\"Comp--0\")"));
+    _putenv_s("MM3_AI_STOP_FINISH", "0");
+    sub_001F937C(); MEM32(MAX_POINTS_ADDRESS) = 1;
+    MEM32(MAX_POINTS_ADDRESS) = 3;
+    assert(reported("checkPoint(\"CP-1\",\"Comp--0\")") && reported("checkPoint(\"CP-2\",\"Comp--0\")") &&
+           reported("checkPoint(\"CP-3\",\"Comp--0\")"));   /* option off: untouched */
+    puts("PASS opponents stop before the finish: an opponent's last checkPoint script call is dropped, "
+         "yours, other opponents' and other scripts are not, a new race starts over");
 }
 
 int main(void)
@@ -276,5 +332,6 @@ int main(void)
     hold_contract();
     watchdog_contract();
     ai_contract();
+    finish_contract();
     return 0;
 }

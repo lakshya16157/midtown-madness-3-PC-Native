@@ -30,6 +30,7 @@ enum MM3LauncherOption {
     MM3_LAUNCH_PHOTO_MODE,       /* F2 holds the race and flies the camera, F3 saves a picture (not a gameplay mod) */
     MM3_LAUNCH_AI_STOP_FINISH,   /* race opponents stop just before the final checkpoint */
     MM3_LAUNCH_SKIP_INTRO,       /* the logo and intro movies at start-up are skipped (MM3_MOD_SKIP_INTRO) */
+    MM3_LAUNCH_PAINT_SOFT,       /* car paint mirrors the scene slightly blurred (off: sharp, as the Xbox) */
     MM3_LAUNCH_OPTION_COUNT
 };
 

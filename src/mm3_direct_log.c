@@ -319,10 +319,11 @@ static void sys_describe(void)
     char text[256] = "", model[256] = "unknown", board[128] = "", kernel[128] = "";
     FILE *f = fopen("/proc/cpuinfo", "r");
     char line[512];
-    int cores = 0;
+    int cores = 0, named = 0;
     if (f) {
         while (fgets(line, sizeof line, f)) {
-            if (!strncmp(line, "model name", 10) && !cores) {
+            if (!strncmp(line, "model name", 10) && !named) {
+                named = 1;
                 char *colon = strchr(line, ':');
                 if (colon) { snprintf(model, sizeof model, "%s", colon + 2); model[strcspn(model, "\n")] = 0; }
             }

@@ -53,11 +53,12 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"MM3_EXHAUST_TRIANGLES", "Exhaust smoke", 0},
     {"MM3_GAMEPLAY_MODS", "Modded gameplay", 0},
     {"MM3_MENU_QUIT", "Quit in the main menu", 1},
-    {"MM3_SAME_CAR", "Opponents drive your car", 0},
+    {"MM3_SAME_CAR", "Opponents match your car", 0},
     {"MM3_FREE_CAMERA", "Free camera", 1},
     {"MM3_PHOTO_MODE", "Photo mode", 1},
-    {"MM3_AI_STOP_FINISH", "Opponents wait at finish", 0},
-    {"MM3_MOD_SKIP_INTRO", "Skip intro movies", 1}
+    {"MM3_AI_STOP_FINISH", "Opponents stop before the finish", 0},
+    {"MM3_MOD_SKIP_INTRO", "Skip intro movies", 1},
+    {"MM3_SOFT_CAR_REFLECTIONS", "Softer car paint reflections", 1}
 };
 
 typedef struct { int option; const char *value; } MM3ForcedOption;
@@ -654,6 +655,7 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
         SET("MM3_NIGHT_GLASS", "0");       /* night glass keeps the daylight screen copy */
         SET("MM3_PAINT_SOFTNESS", "0");    /* car paint mirrors it sharply */
     }
+    if (!config->option[MM3_LAUNCH_PAINT_SOFT]) SET("MM3_PAINT_SOFTNESS", "0");   /* sharp car paint reflections in either look */
     if (!config->option[MM3_LAUNCH_GAMEPLAY])
         for (size_t i = 0; i < sizeof xbox_gameplay / sizeof xbox_gameplay[0]; ++i)
             SET(mm3_launcher_options[xbox_gameplay[i].option].key, xbox_gameplay[i].value);

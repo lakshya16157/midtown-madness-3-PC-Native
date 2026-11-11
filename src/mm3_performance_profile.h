@@ -31,9 +31,9 @@ static inline const MM3PerformanceProfile *mm3_performance_profile(const char *n
 #ifdef _WIN32
     static const MM3PerformanceProfile balanced = {"Balanced", "2.0", "4", "2", "16", "60"};
 #else
-    /* The SDL3 GPU renderer has no multisampling and runs the generic (not
-     * per-state specialised) pixel shader, so the same 2x scale costs a handheld
-     * (Steam Deck) much more than the D3D11 renderer; 1.5x fits its 1280x800 panel. */
+    /* The SDL3 GPU renderer has no multisampling, and the same 2x scale costs
+     * a handheld (Steam Deck) much more than the D3D11 renderer; 1.5x fits its
+     * 1280x800 panel. */
     static const MM3PerformanceProfile balanced = {"Balanced", "1.5", "4", "2", "16", "60"};
 #endif
     static const MM3PerformanceProfile quality = {"Quality", "3.0", "8", "2", "16", "60"};
@@ -75,6 +75,13 @@ static inline const char *mm3_apply_performance_defaults(const char *name)
         return "RECOMP_AUDIO_DSP_HANDOFF";
     if (mm3_performance_default("RECOMP_BUFFERED_ASSET_READS", "1"))
         return "RECOMP_BUFFERED_ASSET_READS";
+#ifndef _WIN32
+    /* The SDL3 GPU renderer on a handheld: the title need not wait for the GPU
+     * to finish each frame before it goes on (a Steam Deck log spent 65-77% of
+     * the game thread there); its render-target copies arrive a frame later. */
+    if (mm3_performance_default("RECOMP_READBACK_HOLD", "0"))
+        return "RECOMP_READBACK_HOLD";
+#endif
     return NULL;
 }
 

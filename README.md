@@ -89,7 +89,7 @@ Spanish voices in Spanish.
 | Names, pictures and loading-screen route maps for the DLC races | Rollover assist (off by default) |
 | In-game Graphics Settings menu | Route line on the map, race arrow hidden |
 | Exhaust smoke from each car's own pipes (off by default) | Improved minimap, which shows more of the map at speed |
-| Quit in the main menu, minimap compass pins hidden | Opponents drive your car (off by default) |
+| Quit in the main menu, minimap compass pins hidden | Opponents match your car (off by default) |
 | Softer car paint reflections | Car damage and time limits, from no damage to 3x and from half to 3x the time (Xbox values by default) |
 | Photo mode: **F2** holds the race and flies the camera, **F3** saves a picture, **F4** hides the HUD | Your car's damage, on top of car damage: invulnerable to 3x (Xbox by default) |
 | | Opponents' difficulty 0 to 9 (5 = Xbox by default) |

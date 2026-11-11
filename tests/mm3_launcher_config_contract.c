@@ -203,6 +203,12 @@ int main(int argc, char **argv)
     assert(!strcmp(getenv("MM3_OWN_DAMAGE_PERCENT"), "25"));
     assert(!strcmp(getenv("MM3_AI_LEVEL"), "8") && !strcmp(getenv("MM3_FREE_CAMERA_KEY"), "36"));
     assert(!strcmp(getenv("MM3_FREE_CAMERA"), "1"));
+    /* Softer car paint reflections off: sharp paint in the Improved look too. */
+    loaded.option[MM3_LAUNCH_PAINT_SOFT] = 0;
+    assert(mm3_launcher_config_apply(&loaded, error, sizeof error));
+    assert(!strcmp(getenv("MM3_PAINT_SOFTNESS"), "0"));
+    loaded.option[MM3_LAUNCH_PAINT_SOFT] = 1;
+    assert(!_putenv_s("MM3_PAINT_SOFTNESS", ""));
     /* The Original look: the Xbox visuals, menus and HUD markers; the
      * graphics/audio upgrades and the gameplay as chosen. */
     loaded.option[MM3_LAUNCH_IMPROVED] = 0;
@@ -232,7 +238,8 @@ int main(int argc, char **argv)
     assert(!strcmp(getenv("MM3_MOD_DRAW_DISTANCE"), "1") && !strcmp(getenv("MM3_HUD_NORTH_MARKER"), "0"));
     /* Which switch each option belongs to. */
     static const int always[] = {MM3_LAUNCH_KEYBOARD, MM3_LAUNCH_WIDESCREEN, MM3_LAUNCH_SKY, MM3_LAUNCH_NATIVE_FOG,
-        MM3_LAUNCH_DSP, MM3_LAUNCH_NETWORK, MM3_LAUNCH_IMPROVED, MM3_LAUNCH_GAMEPLAY, MM3_LAUNCH_PHOTO_MODE, MM3_LAUNCH_SKIP_INTRO};
+        MM3_LAUNCH_DSP, MM3_LAUNCH_NETWORK, MM3_LAUNCH_IMPROVED, MM3_LAUNCH_GAMEPLAY, MM3_LAUNCH_PHOTO_MODE, MM3_LAUNCH_SKIP_INTRO,
+        MM3_LAUNCH_PAINT_SOFT};
     static const int look[] = {MM3_LAUNCH_DISTANCE, MM3_LAUNCH_CAR_LIGHT, MM3_LAUNCH_LAMP_LIGHT, MM3_LAUNCH_WORLD_LIGHT,
         MM3_LAUNCH_FLARE_DEPTH, MM3_LAUNCH_LOADING, MM3_LAUNCH_NORTH_MARKER, MM3_LAUNCH_GRAPHICS_MENU,
         MM3_LAUNCH_DLC_INFO, MM3_LAUNCH_EXHAUST, MM3_LAUNCH_QUIT};

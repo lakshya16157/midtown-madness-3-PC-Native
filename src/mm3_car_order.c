@@ -143,7 +143,7 @@ static int circuit_extras_allowed(void)
     return mm3_circuit_mode_on() && !(v && !strcmp(v, "0"));
 }
 
-/* "Opponents drive your car" (launcher Gameplay mods, MM3_SAME_CAR): every
+/* "Opponents match your car" (launcher Gameplay mods, MM3_SAME_CAR): every
  * opponent pick returns the player's car. Only Checkpoint races (circuits
  * included) pick opponents' cars; Career jobs name each car, so missions keep
  * theirs. The player's car is the lobby's player 1 as lobbyGetModel finds it

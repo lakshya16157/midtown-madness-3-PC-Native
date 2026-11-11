@@ -30,7 +30,7 @@ def main():
         ], check=True, cwd=folder)
         environment = {k: v for k, v in os.environ.items() if k not in ("MM3_SAME_CAR", "MM3_EXTRA_CARS")}
         subprocess.run([str(executable)], check=True, cwd=folder, timeout=20, env=environment)
-        # The "Opponents drive your car" mod (MM3_SAME_CAR), read once per thread.
+        # The "Opponents match your car" mod (MM3_SAME_CAR), read once per thread.
         subprocess.run([str(executable), "same"], check=True, cwd=folder, timeout=20,
                        env=dict(environment, MM3_SAME_CAR="1"))
         # The installer's cars left out (MM3_EXTRA_CARS=0), also read once per thread.

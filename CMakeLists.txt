@@ -17,6 +17,12 @@ endif()
 # behaviour unless told not to.
 if(NOT MSVC)
     add_compile_options(-fwrapv -fno-strict-aliasing)
+    # Instruction scheduling for the Steam Deck's Zen 2 cores. Tuning only: no
+    # newer instructions, so the binary still runs on any x86-64 PC.
+    set(MM3_TUNE_CPU "znver2" CACHE STRING "Clang/GCC -mtune target for non-MSVC builds (empty: none)")
+    if(MM3_TUNE_CPU)
+        add_compile_options(-mtune=${MM3_TUNE_CPU})
+    endif()
 endif()
 
 set(CMAKE_C_STANDARD 11)
@@ -252,6 +258,9 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001EA16C)
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0016FC89)
 # Opponents' difficulty: the race opponents' Normal driving state (src/mm3_ai_difficulty.c).
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0014194C)
+# Opponents stop before the finish: the opponent's last checkPoint script call is dropped
+# (sub_00214F74 runs script text; sub_001F937C is gameSetMaxPoints, a race start).
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00214F74 sub_001F937C sub_0020DA6F sub_0020E6F0)
 # Lua natives this port adds to sub_0020646F's list (src/mm3_lua_natives.c).
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0020646F)
 # Screen-widget draws skip links to destroyed widgets, and a destroyed menu
@@ -851,7 +860,7 @@ set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_L
 set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_LAUNCHER_NETWORK=1)
 # The release this build belongs to: the launcher's title and the first log
 # line show it, so a report says which version it came from.
-set(MM3_VERSION "2.6.3 beta 1")
+set(MM3_VERSION "2.6.3")
 set_property(SOURCE src/mm3_launcher.c src/main.c APPEND PROPERTY COMPILE_DEFINITIONS
     "MM3_VERSION=\"${MM3_VERSION}\"")
 if(WIN32)

@@ -55,11 +55,12 @@ OPTIONS = [
     ("MM3_EXHAUST_TRIANGLES", "Exhaust smoke", 0),
     ("MM3_GAMEPLAY_MODS", "Modded gameplay", 0),
     ("MM3_MENU_QUIT", "Quit in the main menu", 1),
-    ("MM3_SAME_CAR", "Opponents drive your car", 0),
+    ("MM3_SAME_CAR", "Opponents match your car", 0),
     ("MM3_FREE_CAMERA", "Free camera", 1),
     ("MM3_PHOTO_MODE", "Photo mode", 1),
-    ("MM3_AI_STOP_FINISH", "Opponents wait at finish", 0),
+    ("MM3_AI_STOP_FINISH", "Opponents stop before the finish", 0),
     ("MM3_MOD_SKIP_INTRO", "Skip intro movies", 1),
+    ("MM3_SOFT_CAR_REFLECTIONS", "Softer car paint reflections", 1),
 ]
 DEFAULTS = {key: default for key, _label, default in OPTIONS}
 LABELS = {key: label for key, label, _default in OPTIONS}
@@ -98,6 +99,7 @@ HELP = {
     "MM3_GAMEPLAY_MODS": "Off gives the Xbox's gameplay: every gameplay mod below switches off.",
     "RECOMP_KEYBOARD": "Arrow keys drive, Enter is Start, Escape goes back. Needed without a controller.",
     "RECOMP_NET": "System Link over the network: list the other players below.",
+    "MM3_SOFT_CAR_REFLECTIONS": "Untick for the sharp, easier to see car paint reflections of the Xbox.",
     "MM3_AI_STOP_FINISH": "Race opponents stop just before the final checkpoint so you can still win.",
 }
 
@@ -280,6 +282,7 @@ def window():
     ttk.Spinbox(lower, from_=0, to=110, textvariable=numbers["MM3_FOV_DEGREES"], width=6).grid(row=1, column=0, sticky="w")
     check(lower, "MM3_MOD_SKIP_INTRO", 2)
     check(lower, "MM3_PHOTO_MODE", 3)
+    check(lower, "MM3_SOFT_CAR_REFLECTIONS", 4)
 
     gameplay = tab("Gameplay")
     check(gameplay, "MM3_GAMEPLAY_MODS", 0)

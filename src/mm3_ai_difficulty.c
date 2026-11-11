@@ -140,6 +140,19 @@ static void copy_second_last_node(uint32_t cp_begin, uint32_t cp_count)
         memcpy((void *)XBOX_PTR(last), (const void *)XBOX_PTR(prev), 0x7Cu);
 }
 
+/* The active road segment's target velocities, zeroed: the AI stops aiming for speed. */
+static void zero_road_speed(uint32_t ai)
+{
+    uint32_t mgr = MEM32(ai + 0x140u), road_idx = MEM32(ai + 0x144u), seg_idx = MEM32(ai + 0x148u);
+    uint32_t roads, segs;
+    if (guest(mgr) && guest(roads = MEM32(mgr + 0x20u)) &&
+        guest(segs = MEM32(roads + road_idx * 0xA4u + 0x64u)) &&
+        guest(segs + seg_idx * 0x74u + 0x6Cu)) {
+        MEMF(segs + seg_idx * 0x74u + 0x68u) = 0.0f;
+        MEMF(segs + seg_idx * 0x74u + 0x6Cu) = 0.0f;
+    }
+}
+
 static int stop_before_finish(uint32_t ai, int *hold_brake)
 {
     uint32_t cp_idx = MEM32(ai + 0xA0u), lap = MEM32(ai + 0xA4u), laps = MEM32(ai + 0xA8u);
@@ -149,7 +162,9 @@ static int stop_before_finish(uint32_t ai, int *hold_brake)
     cp_count = (guest(cp_begin) && cp_end >= cp_begin + 0x7Cu) ? (cp_end - cp_begin) / 0x7Cu : 0u;
     if (cp_count && (laps <= 1u || lap + 1u >= laps)) copy_second_last_node(cp_begin, cp_count);
     if (!cp_count || cp_idx + 1u < cp_count || (laps > 1u && lap + 1u < laps)) return 0;
-    cp = cp_begin + cp_idx * 0x7Cu;
+    /* Past the end of its list (the engine moved on before the hold): still held, at the last node. */
+    cp = cp_begin + (cp_idx < cp_count ? cp_idx : cp_count - 1u) * 0x7Cu;
+    if (cp_idx >= cp_count) *hold_brake = 1;
     if (guest(cp)) {
         float dx = MEMF(ai + 0x60u) - MEMF(cp + 0x28u);
         float dy = MEMF(ai + 0x64u) - MEMF(cp + 0x2Cu);
@@ -157,25 +172,141 @@ static int stop_before_finish(uint32_t ai, int *hold_brake)
         float cr = MEMF(cp + 0x34u);
         float r = (cr > 0.0f && cr < 100.0f ? cr : 15.0f) + 25.0f;
         if (dx * dx + dy * dy + dz * dz <= r * r) {
-            uint32_t mgr = MEM32(ai + 0x140u), road_idx = MEM32(ai + 0x144u), seg_idx = MEM32(ai + 0x148u);
-            uint32_t roads, segs;
-            if (guest(mgr) && guest(roads = MEM32(mgr + 0x20u)) &&
-                guest(segs = MEM32(roads + road_idx * 0xA4u + 0x64u)) &&
-                guest(segs + seg_idx * 0x74u + 0x6Cu)) {
-                MEMF(segs + seg_idx * 0x74u + 0x68u) = 0.0f;
-                MEMF(segs + seg_idx * 0x74u + 0x6Cu) = 0.0f;
-            }
+            zero_road_speed(ai);
             *hold_brake = 1;
         }
     }
     return 1;
 }
 
+/* Issue #26, the finish itself. A race opponent finishes when the script's
+ * checkPoint(id, player) has run for it total_targets times (logic_checkpoint.lua);
+ * the engine runs that text through sub_00214F74 (EAX = std::string). Steering
+ * the car away from the last node was not enough: the engine reports a gate
+ * from the player's own checkpoint list. So with the option on, the report
+ * that would be an opponent's last is turned into a Lua comment and the race
+ * never counts it. gameSetMaxPoints (sub_001F937C) runs at every race start
+ * and resets the counts; the total is kept at 0x407D20+0x2DC. */
+extern void sub_00214F74_original(void);
+extern void sub_001F937C_original(void);
+extern void sub_0020DA6F_original(void);
+extern void sub_0020E6F0_original(void);
+
+#define MAX_POINTS_ADDRESS (0x00407D20u + 0x2DCu)
+static int s_passed[16];
+static int s_held_logged[16];
+static uint32_t s_vehicle[16];   /* each opponent's vehicle interface, once the engine's report named it */
+static int s_hold[16];           /* passed all but its last checkpoint: engine cut, brakes on */
+static uint32_t s_player;        /* the player object of the report being made (sub_0020DA6F's EAX) */
+
+static int max_points(void)
+{
+    uint32_t raw = MEM32(MAX_POINTS_ADDRESS);
+    float value;
+    if (raw >= 1u && raw <= 1000u) return (int)raw;
+    value = MEMF(MAX_POINTS_ADDRESS);
+    return value >= 1.0f && value <= 1000.0f ? (int)(value + 0.5f) : 0;
+}
+
+static int in_guest(uint32_t address) { return address >= 0x10000u && address < 0x08000000u; }
+static int s_link_at[16];   /* where in the player object its vehicle was found */
+
+/* The player object's vehicle interface (vtable 0x383768): +0x19C where the
+ * other tools read it, else the first pointer in the object that has that vtable. */
+static uint32_t player_vehicle(uint32_t player, int *at)
+{
+    uint32_t v;
+    *at = 0;
+    if (!in_guest(player) || !in_guest(player + 0x400u)) return 0;
+    v = MEM32(player + 0x19Cu);
+    if (guest(v) && MEM32(v) == VEHICLE_VTABLE) { *at = 0x19C; return v; }
+    for (uint32_t off = 4; off < 0x400u; off += 4u) {
+        v = MEM32(player + off);
+        if (guest(v) && MEM32(v) == VEHICLE_VTABLE) { *at = (int)off; return v; }
+    }
+    return 0;
+}
+
+void sub_001F937C(void)
+{
+    memset(s_passed, 0, sizeof s_passed);
+    memset(s_held_logged, 0, sizeof s_held_logged);
+    memset(s_vehicle, 0, sizeof s_vehicle);
+    memset(s_hold, 0, sizeof s_hold);
+    sub_001F937C_original();
+}
+
+/* The engine's gate test for one player (EAX = the player object) runs the
+ * script report inside it, which is how an opponent's name meets its car. */
+void sub_0020DA6F(void)
+{
+    uint32_t outer = s_player;
+    s_player = g_eax;
+    sub_0020DA6F_original();
+    s_player = outer;
+}
+
+/* The other place the engine reports a gate (thiscall, ECX = the same kind of player object). */
+void sub_0020E6F0(void)
+{
+    uint32_t outer = s_player;
+    s_player = g_ecx;
+    sub_0020E6F0_original();
+    s_player = outer;
+}
+
+static int held_vehicle(uint32_t vehicle)
+{
+    for (int i = 0; i < 16; ++i)
+        if (s_hold[i] && s_vehicle[i] == vehicle) return 1;
+    return 0;
+}
+
+
+void sub_00214F74(void)
+{
+    uint32_t str = g_eax;
+    if (in_guest(str) && in_guest(str + 0x1Cu) && mm3_cheat_ai_stop_finish()) {
+        uint32_t chars = MEM32(str + 0x18u) < 16u ? str + 4u : MEM32(str + 4u);
+        if (in_guest(chars) && in_guest(chars + 64u) && !memcmp((const void *)XBOX_PTR(chars), "checkPoint(\"", 12)) {
+            char text[64];
+            const char *player;
+            memcpy(text, (const void *)XBOX_PTR(chars), 63);
+            text[63] = 0;
+            player = strstr(text, "\",\"Comp--");
+            if (player) {
+                int n = atoi(player + 9), total = max_points();
+                if (n >= 0 && n < 16 && total >= 2) {
+                    int last = s_passed[n] + 1 >= total;
+                    if (!s_vehicle[n]) s_vehicle[n] = player_vehicle(s_player, &s_link_at[n]);
+                    if (last) {
+                        MEM8(chars) = '-'; MEM8(chars + 1u) = '-';   /* the script sees a comment */
+                    } else {
+                        ++s_passed[n];
+                    }
+                    if (s_passed[n] + 1 >= total) s_hold[n] = 1;   /* one gate left: stop here */
+                    if (s_hold[n] && !s_held_logged[n]) {
+                        s_held_logged[n] = 1;
+                        fprintf(stderr, "[MM3_AI_STOP_FINISH] Comp--%d passed %d of %d checkpoints%s: held (engine cut, "
+                                "brakes on), vehicle %s\n", n, s_passed[n], total,
+                                last ? ", the last one is not reported" : "",
+                                s_vehicle[n] ? "linked" : "NOT linked");
+                        fprintf(stderr, "[MM3_AI_STOP_FINISH] Comp--%d player object 0x%08X, vehicle found at +0x%X\n",
+                                n, s_player, s_link_at[n]);
+                        fflush(stderr);
+                    }
+                }
+            }
+        }
+    }
+    sub_00214F74_original();
+}
+
 void sub_0014194C(void)
 {
     static int logged = -1;
     uint32_t state = g_ecx, ai = MEM32(g_ecx + 4u), personality, vehicle, car = 0;
-    int level = mm3_cheat_ai_level(), is_player = 0, final_cp = 0, hold_brake = 0;
+    int level = mm3_cheat_ai_level(), is_player = 0, final_cp = 0, hold_brake = 0, hold_car = 0;
     /* merged into line above */
     float saved[8];
     Factors f;
@@ -187,10 +318,12 @@ void sub_0014194C(void)
     vehicle = MEM32(ai + 0x28u);
     if (guest(vehicle) && MEM32(vehicle) == VEHICLE_VTABLE && guest(car = MEM32(vehicle + 8u))) {
         is_player = own_car(car);
+        hold_car = !is_player && mm3_cheat_ai_stop_finish() && held_vehicle(vehicle);
+        if (hold_car) { f.engine = 0.0f; f.brake = 6.0f; }   /* no power, strong brakes */
         if (!is_player) car_factors(car, &f);
     }
     if (!is_player && mm3_cheat_ai_stop_finish()) final_cp = stop_before_finish(ai, &hold_brake);
-        /* handled above */
+    if (hold_car) { final_cp = hold_brake = 1; zero_road_speed(ai); }
     if (logged != level) {
         logged = level;
         if (f.catch_up >= 0.0f)
