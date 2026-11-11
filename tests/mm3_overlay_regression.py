@@ -15,13 +15,11 @@ D3D11_HOOKS = r'''
 static int edge = -1, starts;
 void nv2a_d3d_set_edge_hud(int on) { edge = on; }
 void nv2a_d3d_set_hud_start(float a, float b, float c, float d) { starts += a == 50 && b == 320 && c == 178 && d == 448; }
-int mm3_render_force_depth(const NvD3DState *s, uint32_t w, uint32_t h) { (void)s; (void)w; (void)h; return 0; }
 int mm3_render_cubic_filter(const NvD3DState *s, int t, uint32_t l) { (void)s; (void)t; (void)l; return 0; }
 void mm3_render_vertex_alignment(uint32_t w, uint32_t h, float *snap, float *offset) { (void)w; (void)h; (void)snap; (void)offset; }
 int main(void) {
     assert(!mm3_hud_hooks.place && !mm3_hud_hooks.frame && !mm3_hud_hooks.hold_aspect);
     assert(!mm3_hud_hooks.sanitize_vertex_upload);
-    assert(mm3_hud_hooks.force_depth_test == mm3_render_force_depth);
     assert(mm3_hud_hooks.cubic_filter_0 == mm3_render_cubic_filter);
     assert(mm3_hud_hooks.vertex_alignment == mm3_render_vertex_alignment);
     mm3_hud_set_edge(1); assert(edge == 1);

@@ -31,6 +31,8 @@ static long long k_file_size(const char *root, const char *relative)
     return !strcmp(root, "Shared") ? k_shared : k_xbox;
 }
 #define MM3_POLICE_FILE_SIZE(root, relative) k_file_size(root, relative)
+/* The toolkit's guest check: the test's guest memory is the block main maps. */
+int xbox_GuestMapped(uint32_t va, uint32_t bytes) { return (uint64_t)va + bytes <= 0x410000u; }
 #include "../src/mm3_police_log.c"
 
 ptrdiff_t g_xbox_mem_offset;

@@ -185,9 +185,10 @@ def main():
                     expected = original_probe(image, cached, flags, direction)
                     assert list(map(int, output.split())) == expected
                     cases += 1
-        # The slice also holds kick-report helpers the fixture never calls (unreferenced statics).
+        # The slice also holds kick-report helpers the fixture never calls (unreferenced statics)
+        # and functions declared inside the functions that call them (4210), as recomp_manual.c does.
         diagnostics = compile_fixture(directory, 'diagnostics', diagnostics_fixture(),
-                                      disable_warnings=('4505',))
+                                      disable_warnings=('4505', '4210'))
         diagnostic_env = dict(os.environ)
         diagnostic_env.pop('RECOMP_UNIMPL_TRAP', None)
         diagnostic_env.pop('MM3_FRONTEND_ICALL_TRACE', None)

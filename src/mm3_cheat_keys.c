@@ -139,10 +139,20 @@ int mm3_cheat_ai_level(void)
     return v && *v >= '0' && *v <= '9' && !v[1] ? *v - '0' : 5;
 }
 
-int mm3_cheat_ai_stop_finish(void)
+/* Freeze opponents: a check box in the F10 settings window, for this session only. */
+static volatile LONG s_ai_frozen;
+
+int mm3_cheat_ai_frozen(void)
 {
-    const char *v = getenv("MM3_AI_STOP_FINISH");
-    return v && !strcmp(v, "1");
+    return (int)s_ai_frozen;
+}
+
+void mm3_cheat_set_ai_frozen(int frozen)
+{
+    if (InterlockedExchange(&s_ai_frozen, frozen ? 1 : 0) != (frozen ? 1 : 0)) {
+        fprintf(stderr, "[MM3_AI_FREEZE] opponents %s\n", frozen ? "frozen (engine cut, brakes on)" : "released");
+        fflush(stderr);
+    }
 }
 
 int mm3_cheat_camera_presses(void)

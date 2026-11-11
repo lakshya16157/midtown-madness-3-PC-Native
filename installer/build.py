@@ -119,6 +119,11 @@ def stage_payload(payload: Path, repo: Path, packages: Path, downloads: Path,
             shutil.copytree(linux_libs, payload / "lib")
     else:
         shutil.copy2(exe, payload / "mm3_recomp.exe")
+        # The Vulkan renderer's program (launcher option "Vulkan renderer"), built from the same sources.
+        vulkan = exe.with_name("mm3_recomp_vulkan.exe")
+        if vulkan.is_file():
+            print(f"vulkan build: {vulkan}  sha256 {hashlib.sha256(vulkan.read_bytes()).hexdigest()[:16]}...")
+            shutil.copy2(vulkan, payload / vulkan.name)      # no symbols, as for the main program
         # The native build uses MSVC's shared C runtime. PyInstaller's private
         # runtime disappears when Setup closes, so the installed game needs its own
         # app-local copy even on PCs without the Visual C++ redistributable.

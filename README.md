@@ -8,7 +8,9 @@ optional mods. You need your own copy of the Xbox game.
   (under **Assets** on the latest release).
 - **Linux** (native, no Wine or Proton): download **MM3-Linux-x86_64.tar.gz** from the
   [releases](https://github.com/lakshya16157/midtown-madness-3-PC-Native/releases), see
-  [Native Linux](#native-linux-no-wine-or-proton). The Linux build is new, so please report any problem you hit.
+  [Native Linux](#native-linux-no-wine-or-proton). **For now the Windows Setup through Proton runs better than the
+  native Linux build (also on the Steam Deck)**, see [Proton or Wine](#proton-or-wine-the-windows-build). The native
+  build is still in progress, so please report any problem you hit.
 
 ## Install and play
 
@@ -85,15 +87,16 @@ Spanish voices in Spanish.
 | Car headlight beams and glowing tail lights | [Extra cars](#extra-cars-and-car-workshop), editable in Car Workshop |
 | Better street lamps that light more of the street, tunnels included | Circuit opponents in DLC and extra cars |
 | Better night lighting: lights add up and fade as real light does, and lit cars keep their colour | Trees fall over when hit |
-| Lamp flares hidden behind buildings | Slipstream drafting (off by default) |
-| Names, pictures and loading-screen route maps for the DLC races | Rollover assist (off by default) |
-| In-game Graphics Settings menu | Route line on the map, race arrow hidden |
-| Exhaust smoke from each car's own pipes (off by default) | Improved minimap, which shows more of the map at speed |
-| Quit in the main menu, minimap compass pins hidden | Opponents match your car (off by default) |
-| Softer car paint reflections | Car damage and time limits, from no damage to 3x and from half to 3x the time (Xbox values by default) |
-| Photo mode: **F2** holds the race and flies the camera, **F3** saves a picture, **F4** hides the HUD | Your car's damage, on top of car damage: invulnerable to 3x (Xbox by default) |
+| Names, pictures and loading-screen route maps for the DLC races | Slipstream drafting (off by default) |
+| In-game Graphics Settings menu | Rollover assist (off by default) |
+| Exhaust smoke from each car's own pipes (off by default) | Route line on the map, race arrow hidden |
+| Quit in the main menu, minimap compass pins hidden | Improved minimap, which shows more of the map at speed |
+| Softer car paint reflections | Opponents match your car (off by default) |
+| Photo mode: **F2** holds the race and flies the camera, **F3** saves a picture, **F4** hides the HUD | Car damage and time limits, from no damage to 3x and from half to 3x the time (Xbox values by default) |
+| | Your car's damage, on top of car damage: invulnerable to 3x (Xbox by default) |
 | | Opponents' difficulty 0 to 9 (5 = Xbox by default) |
 | | Free camera on a key of your choice (on with Modded gameplay) |
+| | Freeze opponents: a check box in the **F10** settings window, until you untick it or quit |
 | | Unlock all vehicles, developer tools (off by default) |
 
 ## Graphics settings
@@ -108,12 +111,28 @@ Spanish voices in Spanish.
 | Widescreen HUD, smooth skyline, depth fog, field of view | Launcher **Visual + audio mods** | Yes | Yes |
 | Lighting and the other visual mods | Launcher **Visual + audio mods** | Off | Each on or off |
 | Night brightness | Launcher **Visual + audio mods** and **F10** | Xbox night | Darker to brighter, with Better night lighting |
+| Renderer: DirectX 11 or Vulkan | Launcher **Visual + audio mods** | Yes | Yes |
+| Don't wait for the GPU (off by default) | Launcher **Visual + audio mods** | Yes | Yes |
+
+**Don't wait for the GPU** is for slow graphics chips such as the Steam Deck's. It is off on Windows and
+on in the native Linux build, where waiting was the main slowdown. Each frame the game
+reads a few small pictures back from the GPU, as on the Xbox: which lamp glows are visible, and the
+sun flare. Normally it waits until the GPU has finished them. Ticked, it carries on without waiting:
+faster when the GPU is slow, but it then reads last frame's pictures, so lamp glows can flash on
+building windows. On a fast PC it makes no difference to the frame rate, so leave it off.
 
 While playing:
 
 - **F10** opens the settings window with either look. Changes that need a restart say so.
+  The **Freeze opponents** box at its top holds every race opponent's car where it is, at once,
+  until you untick it (your own car is never held). The window can be moved and resized.
   Settings the launcher fixes for this run (for example the Xbox view distance in the
   Original look) are greyed out, with the reason.
+  **On Linux** F10 opens the same kind of window inside the game (the Windows one is a separate
+  dialog): Freeze opponents, Maximum FPS, VSync, FPS in the title, Internal resolution and Night
+  brightness, each applied and saved at once. Window size, anti-aliasing, texture filtering and view
+  distance still change in the launcher Settings (restart). On a controller, Back plus a click of the
+  right stick opens it.
 - With the **Improved look**, **Graphics Settings** is also in the main menu (between Options
   and Profiles) and in the pause menu, so you can change them with the controller.
 - **F11** or **Alt+Enter** switches fullscreen on and off.
@@ -200,6 +219,9 @@ players, is in [docs/MULTIPLAYER.md](docs/MULTIPLAYER.md).
 ## Linux and Steam Deck
 
 ### Native Linux (no Wine or Proton)
+
+**Currently the Windows Setup through Proton (next section) runs better than the native build,**
+Steam Deck included. The native build is still in progress.
 
 Download **`MM3-Linux-x86_64.tar.gz`** from the [latest release](https://github.com/lakshya16157/midtown-madness-3-PC-Native/releases),
 unpack it and run the installer. You need your own game image (`.iso`), Python 3.9 or newer
@@ -325,7 +347,7 @@ work too. Where both ports changed the same thing, the behaviour above is the de
 - **Renderer and platforms:** an SDL3 GPU renderer (Vulkan or Direct3D 12) next to Direct3D 11,
   with the Linux build scripts: `python scripts/setup.py --renderer SDL3_GPU`, or the
   `scripts/build_gui.py` builder.
-- **Mods:** keyboard driving, menu mouse, lamp flare depth, skip intro movies, console-rate
+- **Mods:** keyboard driving, menu mouse, skip intro movies, console-rate
   simulation, the collision cell guard and developer tools. Each has a `MM3_MOD_*` switch listed
   in [src/mods/mods.c](src/mods/mods.c). Its RmlUi launcher with the Mods tab stays available:
   start the game with `MM3_RMLUI_LAUNCHER=1`.

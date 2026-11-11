@@ -12,6 +12,7 @@
 #include "mm3_display_settings_ids.h"
 #include "mm3_frame_limit.h"
 #include "mm3_world_lighting.h"
+#include "mm3_cheat_keys.h"
 
 /* Night brightness choices, percent of the game's own night world light. */
 static const int night_lights[] = {10, 15, 20, MM3_NIGHT_LIGHT_DEFAULT, 35, 50, 75, 100};
@@ -397,6 +398,104 @@ static int apply(HWND dialog)
     return 1;
 }
 
+/* The window can be resized (its height) and moved. A window taller than the
+ * screen (large text scaling, small screens) starts cut to fit. The buttons
+ * stay at the bottom edge and the settings above them scroll. */
+static int s_max_height;          /* pixels; 0 = 85% of the screen's work area (tests set it) */
+static int s_scroll, s_scroll_max, s_scroll_bottom;
+static int s_content, s_button_gap, s_full_width, s_full_height;   /* measured at full size */
+
+static int fixed_button(int id)
+{
+    return id == IDC_DISPLAY_DEFAULTS || id == IDC_DISPLAY_APPLY || id == IDOK || id == IDCANCEL;
+}
+
+static RECT child_rect(HWND dialog, HWND child)
+{
+    RECT r;
+    GetWindowRect(child, &r);
+    MapWindowPoints(NULL, dialog, (POINT *)&r, 2);
+    return r;
+}
+
+static void move_content(HWND dialog, int dy)
+{
+    HWND child;
+    for (child = GetWindow(dialog, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+        RECT r;
+        if (fixed_button(GetDlgCtrlID(child))) continue;
+        r = child_rect(dialog, child);
+        if (dy) SetWindowPos(child, NULL, r.left, r.top + dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        /* Nothing of the settings shows over the buttons' strip. */
+        ShowWindow(child, r.bottom + dy > s_scroll_bottom || r.top + dy < 0 ? SW_HIDE : SW_SHOWNA);
+    }
+    InvalidateRect(dialog, NULL, TRUE);
+}
+
+static void scroll_to(HWND dialog, int position)
+{
+    SCROLLINFO info = { sizeof info, SIF_POS };
+    if (position > s_scroll_max) position = s_scroll_max;
+    if (position < 0) position = 0;
+    if (position != s_scroll) move_content(dialog, s_scroll - position);
+    s_scroll = position;
+    info.nPos = position;
+    SetScrollInfo(dialog, SB_VERT, &info, TRUE);
+}
+
+/* After a size change: the buttons to the bottom edge, the scroll range to what fits. */
+static void layout(HWND dialog)
+{
+    RECT client;
+    HWND child;
+    SCROLLINFO info = { sizeof info, SIF_RANGE | SIF_PAGE };
+    int top;
+    if (!s_content || !GetClientRect(dialog, &client)) return;
+    top = client.bottom - s_button_gap;
+    for (child = GetWindow(dialog, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+        RECT r;
+        if (!fixed_button(GetDlgCtrlID(child))) continue;
+        r = child_rect(dialog, child);
+        SetWindowPos(child, NULL, r.left, top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    s_scroll_bottom = top - 6;
+    s_scroll_max = s_content > s_scroll_bottom ? s_content - s_scroll_bottom : 0;
+    info.nMax = s_content - 1;
+    info.nPage = (UINT)(s_scroll_bottom > 1 ? s_scroll_bottom : 1);
+    SetScrollInfo(dialog, SB_VERT, &info, TRUE);
+    if (s_scroll > s_scroll_max) scroll_to(dialog, s_scroll_max);   /* grown: bring the content back */
+    else move_content(dialog, 0);
+}
+
+static void fit_to_screen(HWND dialog)
+{
+    MONITORINFO monitor = { sizeof monitor };
+    RECT bounds, client, ok;
+    int limit;
+    s_scroll = s_scroll_max = 0;
+    if (!GetWindowRect(dialog, &bounds) || !GetClientRect(dialog, &client)) return;
+    ok = child_rect(dialog, GetDlgItem(dialog, IDOK));
+    s_content = ok.top - 6;
+    s_button_gap = client.bottom - ok.top;
+    SetWindowLongA(dialog, GWL_STYLE, GetWindowLongA(dialog, GWL_STYLE) | WS_VSCROLL | WS_THICKFRAME);
+    /* Room for the scroll bar and the sizing frame, at the full height. */
+    SetWindowPos(dialog, NULL, 0, 0, bounds.right - bounds.left, bounds.bottom - bounds.top,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+    {
+        RECT now, inner;
+        GetWindowRect(dialog, &now);
+        GetClientRect(dialog, &inner);
+        s_full_width = (now.right - now.left) + (client.right - inner.right) + GetSystemMetrics(SM_CXVSCROLL);
+        s_full_height = (now.bottom - now.top) + (client.bottom - inner.bottom);
+    }
+    limit = s_max_height;
+    if (!limit && GetMonitorInfoA(MonitorFromWindow(GetParent(dialog), MONITOR_DEFAULTTONEAREST), &monitor))
+        limit = (monitor.rcWork.bottom - monitor.rcWork.top) * 85 / 100;
+    if (!limit || limit > s_full_height) limit = s_full_height;
+    SetWindowPos(dialog, NULL, 0, 0, s_full_width, limit, SWP_NOMOVE | SWP_NOZORDER);
+    layout(dialog);
+}
+
 static INT_PTR CALLBACK display_dialog(HWND dialog, UINT message, WPARAM wparam, LPARAM lparam)
 {
     (void)lparam;
@@ -408,7 +507,9 @@ static INT_PTR CALLBACK display_dialog(HWND dialog, UINT message, WPARAM wparam,
         MM3DisplaySettings current;
         mm3_display_settings_get(&current);
         populate(dialog, &current);
+        CheckDlgButton(dialog, IDC_DISPLAY_FREEZE_AI, mm3_cheat_ai_frozen() ? BST_CHECKED : BST_UNCHECKED);
         update_status(dialog, 0);
+        fit_to_screen(dialog);
         if (GetWindowRect(GetParent(dialog), &parent) && GetWindowRect(dialog, &bounds)) {
             int width = bounds.right - bounds.left, height = bounds.bottom - bounds.top;
             int x = parent.left + ((parent.right - parent.left) - width) / 2;
@@ -443,6 +544,9 @@ static INT_PTR CALLBACK display_dialog(HWND dialog, UINT message, WPARAM wparam,
             update_status(dialog, 0);
             return TRUE;
         }
+        case IDC_DISPLAY_FREEZE_AI:       /* at once, not on Apply */
+            mm3_cheat_set_ai_frozen(IsDlgButtonChecked(dialog, IDC_DISPLAY_FREEZE_AI) == BST_CHECKED);
+            return TRUE;
         case IDC_DISPLAY_MODE:
             EnableWindow(GetDlgItem(dialog, IDC_DISPLAY_RESOLUTION),
                          combo_value(dialog, IDC_DISPLAY_MODE) == 0);
@@ -451,6 +555,38 @@ static INT_PTR CALLBACK display_dialog(HWND dialog, UINT message, WPARAM wparam,
         if (HIWORD(wparam) == CBN_SELCHANGE || HIWORD(wparam) == CBN_EDITCHANGE ||
             HIWORD(wparam) == BN_CLICKED) update_status(dialog, 0);
         break;
+    case WM_VSCROLL: {
+        SCROLLINFO info = { sizeof info, SIF_ALL };
+        GetScrollInfo(dialog, SB_VERT, &info);
+        switch (LOWORD(wparam)) {
+        case SB_LINEUP: scroll_to(dialog, s_scroll - 20); break;
+        case SB_LINEDOWN: scroll_to(dialog, s_scroll + 20); break;
+        case SB_PAGEUP: scroll_to(dialog, s_scroll - (int)info.nPage); break;
+        case SB_PAGEDOWN: scroll_to(dialog, s_scroll + (int)info.nPage); break;
+        case SB_THUMBTRACK: case SB_THUMBPOSITION: scroll_to(dialog, info.nTrackPos); break;
+        case SB_TOP: scroll_to(dialog, 0); break;
+        case SB_BOTTOM: scroll_to(dialog, s_scroll_max); break;
+        }
+        return TRUE;
+    }
+    case WM_DESTROY:
+        s_content = s_full_height = 0;     /* the next window measures itself again */
+        break;
+    case WM_SIZE:
+        layout(dialog);
+        break;
+    case WM_GETMINMAXINFO:
+        if (s_full_height) {
+            MINMAXINFO *m = (MINMAXINFO *)lparam;
+            m->ptMinTrackSize.x = m->ptMaxTrackSize.x = s_full_width;
+            m->ptMinTrackSize.y = s_full_height - s_content + 120;   /* the buttons and a few rows */
+            m->ptMaxTrackSize.y = s_full_height;
+        }
+        return TRUE;
+    case WM_MOUSEWHEEL:
+        if (!s_scroll_max) break;
+        scroll_to(dialog, s_scroll - GET_WHEEL_DELTA_WPARAM(wparam) * 40 / WHEEL_DELTA);
+        return TRUE;
     case WM_CLOSE:
         EndDialog(dialog, IDCANCEL);
         return TRUE;

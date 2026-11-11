@@ -75,12 +75,13 @@ static inline const char *mm3_apply_performance_defaults(const char *name)
         return "RECOMP_AUDIO_DSP_HANDOFF";
     if (mm3_performance_default("RECOMP_BUFFERED_ASSET_READS", "1"))
         return "RECOMP_BUFFERED_ASSET_READS";
-#ifndef _WIN32
-    /* The SDL3 GPU renderer on a handheld: the title need not wait for the GPU
-     * to finish each frame before it goes on (a Steam Deck log spent 65-77% of
-     * the game thread there); its render-target copies arrive a frame later. */
-    if (mm3_performance_default("RECOMP_READBACK_HOLD", "0"))
-        return "RECOMP_READBACK_HOLD";
+    /* RECOMP_READBACK_HOLD comes from the launcher's "Don't wait for the GPU"
+     * (MM3_NO_GPU_WAIT, default off): without the hold the title reads lamp
+     * glow visibility a frame late and window lights flash. */
+#if defined(_WIN32) && defined(MM3_RENDERER_SDL3)
+    /* On Windows SDL would pick Direct3D 12; this build is the Vulkan choice. */
+    if (mm3_performance_default("RECOMP_SDL_GPU_DRIVER", "vulkan"))
+        return "RECOMP_SDL_GPU_DRIVER";
 #endif
     return NULL;
 }

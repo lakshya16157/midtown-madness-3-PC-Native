@@ -49,7 +49,7 @@ from pathlib import Path
 # PyInstaller see and include them (it only analyses this file's own imports).
 _PAYLOAD_STDLIB = (argparse, collections, copy, hashlib, math, re, struct, tempfile, zipfile, zlib)
 
-VERSION = "2.6.3"
+VERSION = "2.7 beta 1"
 TITLE = "Midtown Madness 3 - Setup"
 # "Check for updates" asks GitHub for the newest release and downloads the MM3-Setup.exe attached to it.
 RELEASES_API = "https://api.github.com/repos/lakshya16157/midtown-madness-3-PC-Native/releases/latest"
@@ -94,6 +94,7 @@ NATIVE_LINUX = sys.platform.startswith("linux")
 DEFAULT_DEST = Path.home() / "Games" / "Midtown Madness 3" if NATIVE_LINUX else APP_DIR / "Midtown Madness 3"
 
 GAME_EXE = "mm3_recomp" if NATIVE_LINUX else "mm3_recomp.exe"
+VULKAN_FILES = ("mm3_recomp_vulkan.exe",)
 LAUNCHER = "play-midtown-madness-3.sh" if NATIVE_LINUX else "Play Midtown Madness 3.cmd"
 LINUX_LAUNCHER = "Play Midtown Madness 3 (Linux).sh"
 CARS_CONFIG = PAYLOAD / "tools" / "car-mods" / "cars.local.json"
@@ -632,6 +633,9 @@ def install_game_exe(dest: Path, log, replace_exe: bool = True) -> None:
         symbols = PAYLOAD / (Path(GAME_EXE).stem + ".pdb")
         if symbols.is_file():
             sources.append(symbols)
+        for name in VULKAN_FILES:       # the launcher's Vulkan renderer program (Windows)
+            if not NATIVE_LINUX and (PAYLOAD / name).is_file():
+                sources.append(PAYLOAD / name)
     runtime = PAYLOAD / "vcruntime140.dll"
     if runtime.is_file():
         sources.append(runtime)
@@ -1280,7 +1284,7 @@ def uninstall(dest, log, delete_game_files: bool = False) -> list[str]:
     removed = [f"shortcut {path}" for path in remove_shortcuts(options.get("shortcuts"))]
     if NATIVE_LINUX:
         shutil.rmtree(dest / "lib", ignore_errors=True)
-    for name in (GAME_EXE, GAME_EXE + ".new", Path(GAME_EXE).stem + ".pdb", "vcruntime140.dll", LAUNCHER, LINUX_LAUNCHER,
+    for name in (GAME_EXE, GAME_EXE + ".new", Path(GAME_EXE).stem + ".pdb", *VULKAN_FILES, "vcruntime140.dll", LAUNCHER, LINUX_LAUNCHER,
                  "mm3.png", "mm3.ico", "mm3_settings.py", "Extra cars - credits.txt", DISC_FILES):
         try:
             (dest / name).unlink()
@@ -2326,7 +2330,10 @@ def main(argv=None) -> int:
         if log_stream:
             log_stream.write(line + "\n")
         elif sys.stdout:
-            print(line, flush=True)
+            try:
+                print(line, flush=True)
+            except (OSError, ValueError):
+                pass      # started with no usable standard output (a windowed program run by another): nothing to show it on
 
     if args.uninstall:
         try:

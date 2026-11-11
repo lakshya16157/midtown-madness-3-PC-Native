@@ -174,17 +174,27 @@ int main(void){disabled();intervals();invalid();floating_point();abi();puts("PAS
 '''
 
 
+
+# The kick reads its ring lag through kick_ring_lag and, with s_kick_cursor
+# on, also the executor's position: give the copy both, cursor off, so the
+# bound under test is the one GET alone gives.
+def _kick_helpers(manual):
+    lag = re.search(r'^static uint32_t kick_ring_lag\(.*?^\}', manual, re.M | re.S).group()
+    return ('static int s_kick_cursor = 0;\n'
+            'uint32_t nv2a_pb_exec_cursor(void) { return 0; }\n' + lag + '\n')
+
 def main():
     if not shutil.which('cl'):
         raise SystemExit('Run scripts/enter-env.ps1 first.')
     manual = (ROOT / 'src/recomp_manual.c').read_text()
     kick = re.search(r'^void sub_00344AB0\(void\)\n\{.*?^\}', manual, re.M | re.S).group()
+    helpers = _kick_helpers(manual)
     assert kick.count('mm3_producer_diagnostics_kick();') == 1
     assert kick.index('mm3_producer_diagnostics_kick();') < kick.index('_mm_sfence();')
     with tempfile.TemporaryDirectory(prefix='mm3-producer-diagnostics-') as path:
         folder = Path(path)
         source, executable = folder / 'contract.c', folder / 'contract.exe'
-        source.write_text(SOURCE.replace('/* NATIVE_KICK */', kick))
+        source.write_text(SOURCE.replace('/* NATIVE_KICK */', helpers + kick))
         for optimization in ('/Od', '/O2'):
             subprocess.run(['cl', '/nologo', '/W4', optimization, '/std:c11',
                             '/D_CRT_SECURE_NO_WARNINGS', '/I' + str(ROOT / 'src'),

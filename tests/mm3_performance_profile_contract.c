@@ -39,11 +39,7 @@ static void profile(const char *name, const char *scale, const char *msaa,
     assert(strcmp(getenv("RECOMP_READBACK_FENCE"), "1") == 0);
     assert(strcmp(getenv("RECOMP_AUDIO_HIRES_WAIT"), "1") == 0);
     assert(strcmp(getenv("RECOMP_AUDIO_DSP_HANDOFF"), "1") == 0);
-#ifdef _WIN32
-    assert(!getenv("RECOMP_READBACK_HOLD") || !*getenv("RECOMP_READBACK_HOLD"));   /* the title waits, as before */
-#else
-    assert(strcmp(getenv("RECOMP_READBACK_HOLD"), "0") == 0);
-#endif
+    assert(!getenv("RECOMP_READBACK_HOLD") || !*getenv("RECOMP_READBACK_HOLD"));   /* the launcher's choice */
     assert(mm3_frame_limit(getenv("RECOMP_FPS_LIMIT")) == atoi(fps));
     assert(recomp_frame_limit_parse(getenv("RECOMP_FPS_LIMIT")) == atoi(fps));
 }

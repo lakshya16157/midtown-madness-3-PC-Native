@@ -23,6 +23,13 @@ if(NOT MSVC)
     if(MM3_TUNE_CPU)
         add_compile_options(-mtune=${MM3_TUNE_CPU})
     endif()
+    # Whole-program optimisation, as the Windows release gets from /GL: Clang
+    # ThinLTO linked with lld, in optimised builds only.
+    option(MM3_THIN_LTO "Clang ThinLTO (with lld) for non-Debug builds" ON)
+    if(MM3_THIN_LTO AND CMAKE_C_COMPILER_ID MATCHES "Clang")
+        add_compile_options("$<$<NOT:$<CONFIG:Debug>>:-flto=thin>")
+        add_link_options("$<$<NOT:$<CONFIG:Debug>>:-flto=thin>" -fuse-ld=lld)
+    endif()
 endif()
 
 set(CMAKE_C_STANDARD 11)
@@ -258,9 +265,6 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001EA16C)
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0016FC89)
 # Opponents' difficulty: the race opponents' Normal driving state (src/mm3_ai_difficulty.c).
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0014194C)
-# Opponents stop before the finish: the opponent's last checkPoint script call is dropped
-# (sub_00214F74 runs script text; sub_001F937C is gameSetMaxPoints, a race start).
-list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00214F74 sub_001F937C sub_0020DA6F sub_0020E6F0)
 # Lua natives this port adds to sub_0020646F's list (src/mm3_lua_natives.c).
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0020646F)
 # Screen-widget draws skip links to destroyed widgets, and a destroyed menu
@@ -797,6 +801,9 @@ if(WIN32)
     target_sources(${PROJECT_NAME} PRIVATE src/mm3.rc)
 endif()
 if(XBOXRECOMP_RENDERER STREQUAL "SDL3_GPU")
+    # main.c and the performance defaults: this program is the Vulkan renderer
+    # (on Windows the launcher's choice, mm3_recomp_vulkan.exe).
+    target_compile_definitions(${PROJECT_NAME} PRIVATE MM3_RENDERER_SDL3=1)
     # Renderer entry points the MM3 runtime patch adds to D3D11 only (DESIGN.md).
     target_sources(${PROJECT_NAME} PRIVATE src/compat/sdlgpu_d3d11_only.c)
     target_sources(${PROJECT_NAME} PRIVATE src/mods/world_tris_sdlgpu.c)
@@ -860,7 +867,7 @@ set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_L
 set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_LAUNCHER_NETWORK=1)
 # The release this build belongs to: the launcher's title and the first log
 # line show it, so a report says which version it came from.
-set(MM3_VERSION "2.6.3")
+set(MM3_VERSION "2.7 beta 1")
 set_property(SOURCE src/mm3_launcher.c src/main.c APPEND PROPERTY COMPILE_DEFINITIONS
     "MM3_VERSION=\"${MM3_VERSION}\"")
 if(WIN32)

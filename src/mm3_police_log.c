@@ -89,9 +89,10 @@ static int s_enabled = -1;
 
 /* The toolkit's check remembers the last committed region: a VirtualQuery
  * over the guest RAM view costs about 70 us, and this runs every frame. */
+extern int xbox_GuestMapped(uint32_t va, uint32_t bytes);
+
 static int readable(uint32_t address, size_t bytes)
 {
-    extern int xbox_GuestMapped(uint32_t va, uint32_t bytes);
     if (address < 0x10000 || address >= 0x08000000 || bytes > 0x08000000u - address)
         return 0;
     return xbox_GuestMapped(address, (uint32_t)bytes);

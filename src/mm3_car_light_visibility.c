@@ -91,7 +91,9 @@ static void car_light_walk(uint32_t node, uint32_t graph, uint32_t selector,
  * takes the full walk and the graph is recorded again.
  * MM3_CAR_LIGHT_PATHS=0 always walks in full; =check runs both every frame,
  * emits the full walk's lights and logs any difference. */
-enum { PATH_GRAPHS = 64, PATH_NODES = 192, PATH_LAMP = 1, PATH_TRANSFORM = 2, PATH_GROUP = 3 };
+/* 256 graphs: a race scene has more cars than 64, and with 64 they evicted
+ * each other every frame (path_record was 2% of the game thread). */
+enum { PATH_GRAPHS = 256, PATH_NODES = 192, PATH_LAMP = 1, PATH_TRANSFORM = 2, PATH_GROUP = 3 };
 typedef struct {
     uint32_t node, begin, end;
     int16_t parent;                 /* index of the part above; -1: the graph */
@@ -216,11 +218,16 @@ static int path_run(const PathCache *c, uint32_t graph, uint32_t selector, uint3
     return 1;
 }
 
+static unsigned path_home(uint32_t graph)
+{
+    return (graph * 0x9E3779B1u) >> 24;     /* 0..255: where a graph is looked for first */
+}
+
 static PathCache *path_find(uint32_t graph, uint32_t begin, uint32_t end)
 {
-    unsigned i;
+    unsigned i, home = path_home(graph);
     for (i = 0; i < PATH_GRAPHS; ++i) {
-        PathCache *c = &s_paths[i];
+        PathCache *c = &s_paths[(home + i) & (PATH_GRAPHS - 1)];
         if (c->graph == graph && c->begin == begin && c->end == end && c->count) return c;
     }
     return NULL;
@@ -228,13 +235,15 @@ static PathCache *path_find(uint32_t graph, uint32_t begin, uint32_t end)
 
 static PathCache *path_build(uint32_t graph, uint32_t begin, uint32_t end)
 {
-    PathCache *c = &s_paths[0];
-    unsigned i, remaining = CAR_LIGHT_WALK_NODES;
+    unsigned i, remaining = CAR_LIGHT_WALK_NODES, home = path_home(graph);
+    PathCache *c = &s_paths[home];
     uint32_t at;
     int overflow = 0;
+    /* Its own slot, else a free or the least recently used one, searched from home. */
     for (i = 0; i < PATH_GRAPHS; ++i) {
-        if (s_paths[i].graph == graph) { c = &s_paths[i]; break; }
-        if (s_paths[i].used < c->used) c = &s_paths[i];
+        PathCache *e = &s_paths[(home + i) & (PATH_GRAPHS - 1)];
+        if (e->graph == graph) { c = e; break; }
+        if (e->used < c->used) c = e;
     }
     c->graph = graph; c->begin = begin; c->end = end; c->count = 0;
     for (at = begin; at < end && !overflow; at += 4)

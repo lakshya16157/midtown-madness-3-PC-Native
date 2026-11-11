@@ -50,10 +50,6 @@ void sub_0014194C_original(void)
     g_esp += 8;
 }
 
-void sub_00214F74_original(void) {}
-void sub_001F937C_original(void) {}
-void sub_0020DA6F_original(void) {}
-void sub_0020E6F0_original(void) {}
 
 #include "../src/mm3_free_camera.c"
 #include "../src/mm3_ai_difficulty.c"
@@ -195,27 +191,7 @@ static void ai_contract(void)
     MEMF(0x47000 + 0x90) = 1.0f;
 
     level("");
-    /* Opponents stop before the finish (MM3_AI_STOP_FINISH=1): zeroes the active road
-     * segment's target velocities, zeroes off-screen speeds, and holds full
-     * brakes before the final checkpoint on the final lap. */
-    MEM32(k_ai) = 0x37FAB0; MEM32(k_vehicle + 8) = k_car;
-    MEM32(k_ai + 0xB4) = 0x48000; MEM32(k_ai + 0xB8) = 0x48000 + 2 * 0x7C;
-    MEM32(k_ai + 0xA0) = 1; MEM32(k_ai + 0xA4) = 0; MEM32(k_ai + 0xA8) = 1;
-    MEMF(0x48000 + 0x7C + 0x28) = 100.0f; MEMF(0x48000 + 0x7C + 0x2C) = 0.0f;
-    MEMF(0x48000 + 0x7C + 0x30) = 200.0f; MEMF(0x48000 + 0x7C + 0x34) = 15.0f;
-    MEMF(k_ai + 0x60) = 100.0f; MEMF(k_ai + 0x64) = 0.0f; MEMF(k_ai + 0x68) = 175.0f;
-    MEM32(k_ai + 0x140) = 0x49000; MEM32(k_ai + 0x144) = 0; MEM32(k_ai + 0x148) = 0;
-    MEM32(0x49000 + 0x20) = 0x49400; MEM32(0x49400 + 0x64) = 0x49800;
-    MEMF(0x49800 + 0x68) = 35.0f; MEMF(0x49800 + 0x6C) = 35.0f;
-    MEMF(k_state + 0x08) = 1.0f; MEMF(k_state + 0x0C) = 0.0f;
-    _putenv_s("MM3_AI_STOP_FINISH", "1");
-    assert(mm3_cheat_ai_stop_finish() == 1);
-    step_ai();
-    assert(MEMF(0x49800 + 0x68) == 0.0f && MEMF(0x49800 + 0x6C) == 0.0f);
-    assert(seen[6] == 0.0f && seen[7] == 0.0f && MEMF(k_personality + 0xC0) == 53.33f);
-    assert(MEMF(k_state + 0x08) == 0.0f && MEMF(k_state + 0x0C) == 1.0f && g_eax == k_state);
-    _putenv_s("MM3_AI_STOP_FINISH", "0");
-    assert(mm3_cheat_ai_stop_finish() == 0); assert(mm3_cheat_ai_level() == 5);
+    assert(mm3_cheat_ai_level() == 5);
     level("x"); assert(mm3_cheat_ai_level() == 5);
     level("10"); assert(mm3_cheat_ai_level() == 5);
     level("9"); assert(mm3_cheat_ai_level() == 9);
@@ -246,80 +222,65 @@ static void ai_contract(void)
     step_ai();
     assert(seen[0] == 22.0f && MEMF(0x47000 + 0x90) == 1.0f);
     level("");
-    /* Opponents stop before the finish (MM3_AI_STOP_FINISH=1): zeroes the active road
-     * segment's target velocities, zeroes off-screen speeds, and holds full
-     * brakes before the final checkpoint on the final lap. */
+    /* Freeze opponents (F10): engine cut, strong brakes, the road speed zeroed and
+     * full brakes held; unticked, the car drives again with its own factors. */
     MEM32(k_ai) = 0x37FAB0; MEM32(k_vehicle + 8) = k_car;
-    MEM32(k_ai + 0xB4) = 0x48000; MEM32(k_ai + 0xB8) = 0x48000 + 2 * 0x7C;
-    MEM32(k_ai + 0xA0) = 1; MEM32(k_ai + 0xA4) = 0; MEM32(k_ai + 0xA8) = 1;
-    MEMF(0x48000 + 0x7C + 0x28) = 100.0f; MEMF(0x48000 + 0x7C + 0x2C) = 0.0f;
-    MEMF(0x48000 + 0x7C + 0x30) = 200.0f; MEMF(0x48000 + 0x7C + 0x34) = 15.0f;
-    MEMF(k_ai + 0x60) = 100.0f; MEMF(k_ai + 0x64) = 0.0f; MEMF(k_ai + 0x68) = 175.0f;
     MEM32(k_ai + 0x140) = 0x49000; MEM32(k_ai + 0x144) = 0; MEM32(k_ai + 0x148) = 0;
     MEM32(0x49000 + 0x20) = 0x49400; MEM32(0x49400 + 0x64) = 0x49800;
     MEMF(0x49800 + 0x68) = 35.0f; MEMF(0x49800 + 0x6C) = 35.0f;
+    MEMF(k_car + 0x90) = 1.0f; MEMF(k_car + 0x94) = 1.0f;
     MEMF(k_state + 0x08) = 1.0f; MEMF(k_state + 0x0C) = 0.0f;
-    _putenv_s("MM3_AI_STOP_FINISH", "1");
-    assert(mm3_cheat_ai_stop_finish() == 1);
+    assert(!mm3_cheat_ai_frozen());
+    mm3_cheat_set_ai_frozen(1);
     step_ai();
     assert(MEMF(0x49800 + 0x68) == 0.0f && MEMF(0x49800 + 0x6C) == 0.0f);
     assert(seen[6] == 0.0f && seen[7] == 0.0f && MEMF(k_personality + 0xC0) == 53.33f);
     assert(MEMF(k_state + 0x08) == 0.0f && MEMF(k_state + 0x0C) == 1.0f && g_eax == k_state);
-    /* Past the end of its list and far from the node: still braking. */
-    MEM32(k_ai + 0xA0) = 2; MEMF(k_ai + 0x60) = 5000.0f;
+    assert(MEMF(k_car + 0x90) == 0.0f && MEMF(k_car + 0x94) == 6.0f);
+    MEM32(k_vehicle + 8) = 0x47000; MEMF(0x47000 + 0x90) = 1.0f;   /* your own car is never frozen */
+    step_ai();
+    assert(MEMF(0x47000 + 0x90) == 1.0f);
+    MEM32(k_vehicle + 8) = k_car;
+    mm3_cheat_set_ai_frozen(0);
     MEMF(k_state + 0x08) = 1.0f; MEMF(k_state + 0x0C) = 0.0f;
     step_ai();
-    assert(MEMF(k_state + 0x08) == 0.0f && MEMF(k_state + 0x0C) == 1.0f);
-    _putenv_s("MM3_AI_STOP_FINISH", "0");
-    assert(mm3_cheat_ai_stop_finish() == 0);
+    assert(MEMF(k_car + 0x90) == 1.0f && MEMF(k_car + 0x94) == 1.0f && MEMF(k_state + 0x08) == 1.0f);
     puts("PASS opponents' difficulty: MM3_AI_LEVEL sets the level; above 5 later braking, faster corners, no holding back, "
-         "engine and brakes on top of the scripts' own factors; 5 restores; 0 slower; police and your car untouched");
+         "engine and brakes on top of the scripts' own factors; 5 restores; 0 slower; police and your car untouched; Freeze opponents holds them and lets go");
 }
 
-/* The opponent's last checkPoint script call never reaches the script. */
-static void script_text(uint32_t str, const char *text)
+/* Freeze opponents (F10): an opponent's car body stays where it was when the
+ * box was ticked, whatever its update does; your own car is left alone. */
+static void freeze_contract(void)
 {
-    memcpy(&memory[str + 0x100], text, strlen(text) + 1);
-    MEM32(str + 4) = str + 0x100;   /* a long std::string: pointer at +4, capacity at +0x18 */
-    MEM32(str + 0x18) = 64;
-}
-
-static int reported(const char *text)
-{
-    script_text(0x4A000, text);
-    g_eax = 0x4A000;
-    sub_00214F74();
-    return memory[0x4A100] != '-';
-}
-
-static void finish_contract(void)
-{
-    MEM32(MAX_POINTS_ADDRESS) = 3;
-    sub_001F937C();
-    _putenv_s("MM3_AI_STOP_FINISH", "1");
-    assert(reported("checkPoint(\"CP-0\",\"Comp--0\")"));
-    assert(reported("checkPoint(\"CP-0\",\"Human-0\")"));
-    s_player = 0x4B000; MEM32(s_player + 0x19C) = k_vehicle;       /* the report names Comp--0's car */
-    MEM32(k_vehicle) = 0x383768; MEM32(k_vehicle + 8) = k_car; MEM32(k_ai + 0x28) = k_vehicle;
-    assert(reported("checkPoint(\"CP-1\",\"Comp--0\")"));
-    s_player = 0;
-    MEMF(k_car + 0x90) = 1.0f; MEMF(k_car + 0x94) = 1.0f;
-    MEMF(k_state + 0x08) = 1.0f; MEMF(k_state + 0x0C) = 0.0f;
-    step_ai();                                                     /* one gate left: engine cut, brakes on */
-    assert(MEMF(k_car + 0x90) == 0.0f && MEMF(k_car + 0x94) == 6.0f && MEMF(k_state + 0x0C) == 1.0f);
-    assert(!reported("checkPoint(\"CP-2\",\"Comp--0\")"));      /* the 3rd of 3: held back */
-    assert(!strncmp((char *)&memory[0x4A100], "--eckPoint", 10));  /* a Lua comment now */
-    assert(reported("checkPoint(\"CP-0\",\"Comp--1\")"));       /* each opponent counts alone */
-    assert(reported("print(\"hello\")"));
-    sub_001F937C();                                                /* a new race */
-    assert(reported("checkPoint(\"CP-0\",\"Comp--0\")"));
-    _putenv_s("MM3_AI_STOP_FINISH", "0");
-    sub_001F937C(); MEM32(MAX_POINTS_ADDRESS) = 1;
-    MEM32(MAX_POINTS_ADDRESS) = 3;
-    assert(reported("checkPoint(\"CP-1\",\"Comp--0\")") && reported("checkPoint(\"CP-2\",\"Comp--0\")") &&
-           reported("checkPoint(\"CP-3\",\"Comp--0\")"));   /* option off: untouched */
-    puts("PASS opponents stop before the finish: an opponent's last checkPoint script call is dropped, "
-         "yours, other opponents' and other scripts are not, a new race starts over");
+    const uint32_t them = 0x4C000, body = 0x50000;
+    MEM32(k_manager + 0x50) = 1; MEM32(k_manager + 0x54) = k_camera; MEM32(k_camera + 0xD8) = k_player;
+    MEM32(them + 0x19C) = 0x4D000; MEM32(0x4D000 + 8) = 0x4E000; MEM32(0x4E000 + 0x3C) = 0x4F000;
+    MEM32(0x4F000 + 4) = body;
+    for (int i = 0; i < 12; ++i) MEMF(body + 0xA4 + 4 * i) = (float)i;
+    MEMF(body + 0x20) = 30.0f; MEMF(body + 0x5C) = 2.0f;
+    mm3_ai_freeze_player(them, 0); mm3_ai_freeze_player(them, 1);
+    assert(MEMF(body + 0x20) == 30.0f && MEMF(body + 0xC8) == 9.0f);   /* off: untouched */
+    mm3_cheat_set_ai_frozen(1);
+    mm3_ai_freeze_player(them, 0);
+    assert(MEMF(body + 0x20) == 0.0f && MEMF(body + 0x5C) == 0.0f);     /* motion cleared before the update */
+    MEMF(body + 0xC8) = 50.0f; MEMF(body + 0xA4) = 0.5f; MEMF(body + 0x24) = 3.0f;   /* the update moved it */
+    mm3_ai_freeze_player(them, 1);
+    assert(MEMF(body + 0xC8) == 9.0f && MEMF(body + 0xA4) == 0.0f && MEMF(body + 0x24) == 0.0f);
+    MEM32(k_player + 0x19C) = 0x4D000;                                   /* the same body, as your car */
+    MEMF(body + 0xC8) = 50.0f;
+    mm3_ai_freeze_player(k_player, 1);
+    assert(MEMF(body + 0xC8) == 50.0f);                                  /* yours is never held */
+    mm3_cheat_set_ai_frozen(0);
+    mm3_ai_freeze_player(them, 1);
+    assert(MEMF(body + 0xC8) == 50.0f);                                  /* unticked: it drives again */
+    mm3_cheat_set_ai_frozen(1);
+    mm3_ai_freeze_player(them, 1);
+    assert(MEMF(body + 0xC8) == 50.0f);                                  /* a new freeze holds it where it is now */
+    mm3_cheat_set_ai_frozen(0);
+    MEM32(k_player + 0x19C) = k_player_vehicle; MEM32(k_manager + 0x50) = 1;
+    puts("PASS Freeze opponents: an opponent's car body is held where the freeze began, its motion cleared; "
+         "your car is not; unticked it drives on");
 }
 
 int main(void)
@@ -332,6 +293,6 @@ int main(void)
     hold_contract();
     watchdog_contract();
     ai_contract();
-    finish_contract();
+    freeze_contract();
     return 0;
 }

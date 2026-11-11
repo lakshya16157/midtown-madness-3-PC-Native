@@ -35,8 +35,6 @@ const Mm3Mod mm3_mods[MM3_MOD_COUNT] = {
         "Off: the generated code runs without them wherever it has a body of its own (register/SEH preservation, the stream copy). Functions the generator never produced stay filled in.", 1},
     [MM3_MOD_KEYBOARD_DRIVING] = {"keyboard_driving", "MM3_MOD_KEYBOARD_DRIVING", "Keyboard driving",
         "With keyboard controls, the arrows drive and steer in a race, R/F change gear, Space is the handbrake and C the camera; Escape goes back. Off: the arrows are only the d-pad.", 1},
-    [MM3_MOD_FLARE_DEPTH] = {"flare_depth", "MM3_MOD_FLARE_DEPTH", "Lamp flare depth",
-        "Street-lamp flares are also tested against the scene's depth, so they stay hidden behind buildings and cars. Off: only the game's own visibility test.", 1},
 };
 
 int mm3_mod_on(int mod)

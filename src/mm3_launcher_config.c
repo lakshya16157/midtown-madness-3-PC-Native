@@ -27,7 +27,6 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"MM3_MOD_CAR_LIGHTING", "Improved car lights", 1},
     {"MM3_MOD_LAMP_LIGHTING", "Improved street lamps", 1},
     {"MM3_MOD_WORLD_LIGHTING", "Improved world lighting", 1},
-    {"MM3_MOD_FLARE_DEPTH", "Flares hide behind objects", 1},
     {"MM3_UNLOCK_ALL_CARS", "Unlock all vehicles", 0},
     {"MM3_MOD_DEV_TOOLS", "Retail developer tools", 0},
     {"MM3_DEV_HUD", "Developer HUD", 0},
@@ -56,9 +55,10 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"MM3_SAME_CAR", "Opponents match your car", 0},
     {"MM3_FREE_CAMERA", "Free camera", 1},
     {"MM3_PHOTO_MODE", "Photo mode", 1},
-    {"MM3_AI_STOP_FINISH", "Opponents stop before the finish", 0},
     {"MM3_MOD_SKIP_INTRO", "Skip intro movies", 1},
-    {"MM3_SOFT_CAR_REFLECTIONS", "Softer car paint reflections", 1}
+    {"MM3_SOFT_CAR_REFLECTIONS", "Softer car paint reflections", 1},
+    {"MM3_RENDERER_VULKAN", "Vulkan renderer (instead of DirectX 11)", 0},
+    {"MM3_NO_GPU_WAIT", "Don't wait for the GPU (slow GPUs)", 0}
 };
 
 typedef struct { int option; const char *value; } MM3ForcedOption;
@@ -67,7 +67,7 @@ typedef struct { int option; const char *value; } MM3ForcedOption;
  * processor) stay as chosen. Nothing here changes the gameplay. */
 static const MM3ForcedOption original_look[] = {
     {MM3_LAUNCH_DISTANCE, "0"}, {MM3_LAUNCH_CAR_LIGHT, "0"}, {MM3_LAUNCH_LAMP_LIGHT, "0"},
-    {MM3_LAUNCH_WORLD_LIGHT, "0"}, {MM3_LAUNCH_FLARE_DEPTH, "0"}, {MM3_LAUNCH_LOADING, "0"},
+    {MM3_LAUNCH_WORLD_LIGHT, "0"}, {MM3_LAUNCH_LOADING, "0"},
     {MM3_LAUNCH_NORTH_MARKER, "1"}, {MM3_LAUNCH_GRAPHICS_MENU, "0"}, {MM3_LAUNCH_DLC_INFO, "0"},
     {MM3_LAUNCH_EXHAUST, "0"}, {MM3_LAUNCH_QUIT, "0"}
 };
@@ -81,7 +81,7 @@ static const MM3ForcedOption xbox_gameplay[] = {
     {MM3_LAUNCH_UNLOCK, "0"}, {MM3_LAUNCH_ROUTE_NAVIGATION, "0"}, {MM3_LAUNCH_RACE_ARROW, "1"},
     {MM3_LAUNCH_DEV_TOOLS, "0"}, {MM3_LAUNCH_DEV_HUD, "0"}, {MM3_LAUNCH_DEBUG_MENU, "0"},
     {MM3_LAUNCH_CAMERAS, "0"}, {MM3_LAUNCH_E3, "0"}, {MM3_LAUNCH_SAME_CAR, "0"},
-    {MM3_LAUNCH_FREE_CAMERA, "0"}, {MM3_LAUNCH_AI_STOP_FINISH, "0"}
+    {MM3_LAUNCH_FREE_CAMERA, "0"}
 };
 
 /* The launcher saves every option, so a changed default would never reach a
@@ -247,6 +247,10 @@ void mm3_launcher_config_defaults(MM3LauncherConfig *config)
     memset(config, 0, sizeof *config);
     for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i)
         config->option[i] = mm3_launcher_options[i].default_value;
+#ifndef _WIN32
+    /* Linux (and the Steam Deck): on, as in 2.6.3, where waiting for the GPU every frame was the slowdown. */
+    config->option[MM3_LAUNCH_NO_GPU_WAIT] = 1;
+#endif
     for (int i = 0; i < MM3_LAUNCHER_KEYS; ++i) config->keys[i] = bindings.keys[i];
     for (int i = 0; i < MM3_LAUNCHER_DRIVE_KEYS; ++i) config->drive_keys[i] = bindings.drive[i];
     for (int i = 0; i < MM3_LAUNCHER_PAD_INPUTS; ++i) config->pad[i] = bindings.pad[i];
@@ -440,8 +444,12 @@ int mm3_launcher_config_load(MM3LauncherConfig *config, char *error, size_t capa
         if (!equals) continue;
         *equals = 0; key = trim(key); value = trim(equals + 1);
         /* Settings this launcher no longer has (the typed cheat codes) are
-         * dropped quietly; the next save leaves them out. */
-        if (!strcmp(key, "MM3_CHEAT_CODES")) continue;
+         * dropped quietly; the next save leaves them out. MM3_AI_STOP_FINISH
+         * (Opponents stop before the finish) became F10's Freeze opponents;
+         * MM3_MOD_FLARE_DEPTH (Flares hide behind objects) cut the road's lamp
+         * reflections once the game's own flare visibility worked (issue #25). */
+        if (!strcmp(key, "MM3_CHEAT_CODES") || !strcmp(key, "MM3_AI_STOP_FINISH") ||
+            !strcmp(key, "MM3_MOD_FLARE_DEPTH")) continue;
         if (!strcmp(key, "MM3_SETTINGS_REVISION")) {
             if (!integer(value, 1, INT_MAX, &revision))
                 error_set(error, capacity, "Some unknown or invalid launcher settings were ignored.");
@@ -609,6 +617,10 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
         if (i == MM3_LAUNCH_NETWORK) value = config->option[i] ? "nat" : "0";
         SET(mm3_launcher_options[i].key, value);
     }
+    /* The read-back hold is what MM3_NO_GPU_WAIT turns off (mm3_launcher_config.h);
+     * an explicit RECOMP_READBACK_HOLD (tests, benchmarks) is kept unless it is ticked. */
+    if (config->option[MM3_LAUNCH_NO_GPU_WAIT] || !getenv("RECOMP_READBACK_HOLD"))
+        SET("RECOMP_READBACK_HOLD", config->option[MM3_LAUNCH_NO_GPU_WAIT] ? "0" : "1");
     /* OHCI automatically exposes at least this many root-hub ports. Keep an
      * explicitly supplied RECOMP_USB_NDP (and the default two-port hub). */
     if (config->controller_count) snprintf(number, sizeof number, "%d", config->controller_count);

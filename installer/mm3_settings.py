@@ -29,7 +29,6 @@ OPTIONS = [
     ("MM3_MOD_CAR_LIGHTING", "Improved car lights", 1),
     ("MM3_MOD_LAMP_LIGHTING", "Improved street lamps", 1),
     ("MM3_MOD_WORLD_LIGHTING", "Improved world lighting", 1),
-    ("MM3_MOD_FLARE_DEPTH", "Flares hide behind objects", 1),
     ("MM3_UNLOCK_ALL_CARS", "Unlock all vehicles", 0),
     ("MM3_MOD_DEV_TOOLS", "Retail developer tools", 0),
     ("MM3_DEV_HUD", "Developer HUD", 0),
@@ -58,23 +57,26 @@ OPTIONS = [
     ("MM3_SAME_CAR", "Opponents match your car", 0),
     ("MM3_FREE_CAMERA", "Free camera", 1),
     ("MM3_PHOTO_MODE", "Photo mode", 1),
-    ("MM3_AI_STOP_FINISH", "Opponents stop before the finish", 0),
     ("MM3_MOD_SKIP_INTRO", "Skip intro movies", 1),
     ("MM3_SOFT_CAR_REFLECTIONS", "Softer car paint reflections", 1),
+    ("MM3_RENDERER_VULKAN", "Vulkan renderer (instead of DirectX 11)", 0),
+    ("MM3_NO_GPU_WAIT", "Don't wait for the GPU (slow GPUs)", 0),
 ]
 DEFAULTS = {key: default for key, _label, default in OPTIONS}
+if sys.platform != "win32":
+    # Linux and the Steam Deck: on (as in 2.6.3), waiting for the GPU every frame was their slowdown.
+    DEFAULTS["MM3_NO_GPU_WAIT"] = 1
 LABELS = {key: label for key, label, _default in OPTIONS}
 
 # What the two switches turn off (original_look and xbox_gameplay in the C source).
 ORIGINAL_LOOK = ["MM3_MOD_DRAW_DISTANCE", "MM3_MOD_CAR_LIGHTING", "MM3_MOD_LAMP_LIGHTING",
-                 "MM3_MOD_WORLD_LIGHTING", "MM3_MOD_FLARE_DEPTH", "RECOMP_LOADING_SPINNER",
+                 "MM3_MOD_WORLD_LIGHTING", "RECOMP_LOADING_SPINNER",
                  "MM3_HUD_NORTH_MARKER", "MM3_GRAPHICS_MENU", "MM3_DLC_RACE_INFO",
                  "MM3_EXHAUST_TRIANGLES", "MM3_MENU_QUIT"]
 XBOX_GAMEPLAY = ["MM3_DRAFTING", "MM3_ROLL_GUARD", "MM3_FALLING_TREES", "MM3_EXTRA_CIRCUITS",
                  "MM3_EXTRA_CARS", "MM3_AI_ALL_CARS", "MM3_UNLOCK_ALL_CARS", "MM3_ROUTE_NAVIGATION",
                  "MM3_HUD_RACE_ARROW", "MM3_MOD_DEV_TOOLS", "MM3_DEV_HUD", "MM3_DEBUG_MENU",
-                 "MM3_EXTENDED_CAMERAS", "MM3_E3_PRESET", "MM3_SAME_CAR", "MM3_FREE_CAMERA",
-                 "MM3_AI_STOP_FINISH"]
+                 "MM3_EXTENDED_CAMERAS", "MM3_E3_PRESET", "MM3_SAME_CAR", "MM3_FREE_CAMERA"]
 
 # key: (label, low, high, default); 0 field-of-view means the retail one.
 NUMBERS = {
@@ -100,7 +102,6 @@ HELP = {
     "RECOMP_KEYBOARD": "Arrow keys drive, Enter is Start, Escape goes back. Needed without a controller.",
     "RECOMP_NET": "System Link over the network: list the other players below.",
     "MM3_SOFT_CAR_REFLECTIONS": "Untick for the sharp, easier to see car paint reflections of the Xbox.",
-    "MM3_AI_STOP_FINISH": "Race opponents stop just before the final checkpoint so you can still win.",
 }
 
 

@@ -14,6 +14,7 @@ const NvOverlayHooks mm3_hud_hooks = {0};
 
 int mm3_keyboard_driving(void) { return driving; }
 void xbox_InputSetMenuProbe(int (*probe)(void)) { menu_probe = probe; }
+void xbox_InputSetKeyboardDrivingProbe(int (*driving)(void)) { (void)driving; }
 void mm3_menu_mouse_init(void) { ++mouse_init_calls; }
 void nv2a_d3d_set_overlay_hooks(const NvOverlayHooks *hooks) { overlay = hooks; }
 void mm3_debug_teleport_init(void) { ++teleport_calls; }
@@ -36,7 +37,6 @@ int main(int argc, char **argv)
     _putenv_s("MM3_MOD_DEV_TOOLS", "1");
     _putenv_s("MM3_MOD_COLLISION_FIX", "0");
     _putenv_s("MM3_MOD_KEYBOARD_DRIVING", enabled ? "1" : "0");
-    _putenv_s("MM3_MOD_FLARE_DEPTH", enabled ? "1" : "0");
     mm3_mods_init();
     assert(render_commands_initialized == 1);
     assert(!strcmp(getenv("RECOMP_ASPECT"), enabled ? "16:10" : "4:3"));

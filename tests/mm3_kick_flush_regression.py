@@ -9,12 +9,22 @@ exactly when the producer is further ahead than the bound (a ring wrap counts as
 unbounded), and a kick inside the bound neither sets nor waits on the flush word.
 """
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import cc
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
+
+# The kick reads its ring lag through kick_ring_lag and, with s_kick_cursor
+# on, also the executor's position: give the copy both, cursor off, so the
+# bound under test is the one GET alone gives.
+def _kick_helpers(manual):
+    lag = re.search(r'^static uint32_t kick_ring_lag\(.*?^\}', manual, re.M | re.S).group()
+    return ('static int s_kick_cursor = 0;\n'
+            'uint32_t nv2a_pb_exec_cursor(void) { return 0; }\n' + lag + '\n')
 
 def main():
     cc.require_compiler()
@@ -51,7 +61,7 @@ void xbox_Nv2aWbcWait(uint32_t register_va)
     while ((*(volatile uint32_t *)(ram + register_va) & 0x10000u) && GetTickCount64()-start < 2000) Sleep(0);
     assert(!(*(volatile uint32_t *)(ram + register_va) & 0x10000u));
 }
-''' + source[kick:end] + r'''
+''' + _kick_helpers(source) + source[kick:end] + r'''
 static volatile LONG observed;
 static DWORD WINAPI acknowledge(void *unused)
 {

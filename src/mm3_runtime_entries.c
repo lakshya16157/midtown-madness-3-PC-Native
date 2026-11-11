@@ -2,6 +2,8 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <sys/mman.h>
 #endif
 #include "mm3_lua_natives.h"
 #include "recomp_lookup_cache.h"
@@ -59,7 +61,26 @@ static mm3_recomp_func_t *resolved_table(void)
     InterlockedExchangePointer((PVOID volatile *)&s_resolved, table);
     return table;
 #else
-    return NULL;
+    /* The same table on Linux: without it every vtable call there took the
+     * memo and then the generated table's lookup, and the per-thread cache
+     * below (filled only from this table) stayed empty. Anonymous pages are
+     * zero and only touched where called. */
+    static volatile int tried;
+    mm3_recomp_func_t *table = s_resolved;
+    uint32_t span;
+    void *pages;
+    if (table || !g_xbox_code_hi || g_xbox_code_hi <= g_xbox_code_lo) return table;
+    if (!__sync_bool_compare_and_swap(&tried, 0, 1)) return s_resolved;
+    span = g_xbox_code_hi - g_xbox_code_lo;
+    if (span > RESOLVED_SPAN_LIMIT) return NULL;
+    pages = mmap(NULL, (size_t)span * sizeof *table, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (pages == MAP_FAILED) return NULL;
+    table = (mm3_recomp_func_t *)pages;
+    s_resolved_base = g_xbox_code_lo;
+    s_resolved_span = span;
+    __atomic_store_n(&s_resolved, table, __ATOMIC_RELEASE);
+    return table;
 #endif
 }
 

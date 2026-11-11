@@ -24,6 +24,9 @@ void nv2a_d3d_set_display_aspect(float aspect) { published_aspect = aspect; }
 void xbox_InputSetBlocked(int value) { InterlockedExchange((LONG *)&blocked, value); }
 static int night_published = -1;
 void mm3_world_lighting_set_night_light(int percent) { night_published = percent; }
+static int ai_frozen;
+int mm3_cheat_ai_frozen(void) { return ai_frozen; }
+void mm3_cheat_set_ai_frozen(int frozen) { ai_frozen = frozen; }
 
 static HWND wait_dialog(void)
 {
@@ -187,6 +190,40 @@ static DWORD WINAPI drive_fixed(LPVOID argument)
     combo_select(dialog, IDC_DISPLAY_MSAA, 2);
     notify(dialog, IDC_DISPLAY_APPLY, BN_CLICKED);
     CHECK(fabsf(published_aspect - 4.f / 3.f) < 0.0001f && mm3_minimap_improved() == 0);
+    {   /* cut to 420 px: the buttons stay inside, the settings scroll */
+        RECT window, client, ok, box, box2;
+        GetWindowRect(dialog, &window);
+        GetClientRect(dialog, &client);
+        GetWindowRect(GetDlgItem(dialog, IDOK), &ok);
+        MapWindowPoints(NULL, dialog, (POINT *)&ok, 2);
+        CHECK(window.bottom - window.top == 420 && (GetWindowLongA(dialog, GWL_STYLE) & WS_VSCROLL));
+        CHECK(ok.bottom <= client.bottom && ok.top > 0 && IsWindowVisible(GetDlgItem(dialog, IDOK)));
+        CHECK(!IsWindowVisible(GetDlgItem(dialog, IDC_DISPLAY_NIGHT_LIGHT)));   /* below the fold */
+        GetWindowRect(GetDlgItem(dialog, IDC_DISPLAY_NIGHT_LIGHT), &box);
+        SendMessageA(dialog, WM_VSCROLL, SB_BOTTOM, 0);
+        GetWindowRect(GetDlgItem(dialog, IDC_DISPLAY_NIGHT_LIGHT), &box2);
+        CHECK(box2.top < box.top && IsWindowVisible(GetDlgItem(dialog, IDC_DISPLAY_NIGHT_LIGHT)));
+        CHECK(!IsWindowVisible(GetDlgItem(dialog, IDC_DISPLAY_RESOLUTION)));  /* scrolled off the top */
+        SendMessageA(dialog, WM_VSCROLL, SB_TOP, 0);
+        GetWindowRect(GetDlgItem(dialog, IDC_DISPLAY_NIGHT_LIGHT), &box2);
+        CHECK(box2.top == box.top && IsWindowVisible(GetDlgItem(dialog, IDC_DISPLAY_RESOLUTION)));
+        /* resized: scrolled down, then made full height, everything shows and the buttons follow the edge */
+        CHECK(GetWindowLongA(dialog, GWL_STYLE) & WS_THICKFRAME);
+        SendMessageA(dialog, WM_VSCROLL, SB_BOTTOM, 0);
+        CHECK(SetWindowPos(dialog, NULL, 0, 0, window.right - window.left, s_full_height, SWP_NOMOVE | SWP_NOZORDER));
+        GetClientRect(dialog, &client);
+        GetWindowRect(GetDlgItem(dialog, IDOK), &ok);
+        MapWindowPoints(NULL, dialog, (POINT *)&ok, 2);
+        CHECK(ok.bottom <= client.bottom && client.bottom - ok.bottom < 40 && s_scroll == 0 && s_scroll_max == 0);
+        GetWindowRect(GetDlgItem(dialog, IDC_DISPLAY_NIGHT_LIGHT), &box2);
+        CHECK(box2.top == box.top && IsWindowVisible(GetDlgItem(dialog, IDC_DISPLAY_NIGHT_LIGHT)) &&
+              IsWindowVisible(GetDlgItem(dialog, IDC_DISPLAY_RESOLUTION)));
+    }
+    CHECK(!ai_frozen);
+    SendMessageA(GetDlgItem(dialog, IDC_DISPLAY_FREEZE_AI), BM_CLICK, 0, 0);
+    CHECK(ai_frozen);                                   /* Freeze opponents works at once */
+    SendMessageA(GetDlgItem(dialog, IDC_DISPLAY_FREEZE_AI), BM_CLICK, 0, 0);
+    CHECK(!ai_frozen);
     PostMessageA(dialog, WM_COMMAND, IDCANCEL, 0);
     return 0;
 }
@@ -213,7 +250,9 @@ static int fixed_contract(const char *path)
     CHECK(owner);
     thread = CreateThread(NULL, 0, drive_fixed, NULL, 0, NULL);
     CHECK(thread);
+    s_max_height = 420;
     settings_handler(owner);
+    s_max_height = 0;
     CHECK(WaitForSingleObject(thread, 10000) == WAIT_OBJECT_0);
     CloseHandle(thread);
     mm3_display_settings_defaults(&loaded, NULL);
@@ -223,7 +262,8 @@ static int fixed_contract(const char *path)
     CHECK(loaded.minimap_improved == 1 && loaded.night_light == 40);
     DestroyWindow(owner);
     puts("PASS: settings the launcher fixed (aspect, distances, minimap) are greyed with the reason, keep their "
-         "forced values through Restore defaults and Apply, and the file keeps the player's own choices");
+         "forced values through Restore defaults and Apply, and the file keeps the player's own choices; a window "
+         "too tall for the screen is cut to fit with its settings scrolling above the buttons, and it resizes");
     return 0;
 }
 

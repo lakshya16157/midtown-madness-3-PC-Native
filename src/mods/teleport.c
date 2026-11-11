@@ -36,6 +36,7 @@
  * vtable+AC (1D5F90 -> 1CDDA3) and +28 (1D65BC), caches transform, sets +218.
  * These calls belong on the game thread, never on the pipe/UI thread. */
 extern void sub_002203E5_original(void);
+void mm3_ai_freeze_player(uint32_t player, int after);   /* src/mm3_ai_difficulty.c */
 extern void sub_0021ADF3(void);
 extern void mm3_mods_player_update(void);
 /* Taps on the player update and the pipe's live tuning commands (src/mm3_*.c). */
@@ -331,7 +332,12 @@ void sub_002203E5(void)
         if (body) mm3_stress_tick(player, body);
     }
     mm3_vehicle_dynamics_player(g_ecx);
-    sub_002203E5_original();
+    {
+        uint32_t player = g_ecx;
+        mm3_ai_freeze_player(player, 0);
+        sub_002203E5_original();
+        mm3_ai_freeze_player(player, 1);
+    }
     mm3_mods_player_update();
 }
 

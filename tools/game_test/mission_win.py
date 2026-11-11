@@ -17,7 +17,7 @@ from tools.game_test.run import Session
 ALL_MODS = {k: "1" for k in (
     "MM3_DEBUG_OVERLAY", "MM3_MOD_WIDESCREEN", "MM3_MOD_DRAW_DISTANCE", "MM3_MOD_SKY", "MM3_MOD_MENU_MOUSE",
     "MM3_MOD_DEV_TOOLS", "MM3_MOD_COLLISION_FIX", "MM3_MOD_SKIP_INTRO", "MM3_MOD_FOV", "MM3_MOD_FRAMERATE",
-    "MM3_MOD_TRANSLATION", "MM3_MOD_KEYBOARD_DRIVING", "MM3_MOD_FLARE_DEPTH")}
+    "MM3_MOD_TRANSLATION", "MM3_MOD_KEYBOARD_DRIVING")}
 ALL_MODS.update(MM3_SMOOTH="0", RECOMP_FPS_LIMIT="60")
 
 CHECKPOINT = [{"action": "wait_log", "text": "[MOD] skip_intro: intro", "timeout": 60}, {"action": "wait", "seconds": 30}] + [

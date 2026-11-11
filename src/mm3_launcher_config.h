@@ -10,7 +10,7 @@ enum { MM3_LAUNCHER_PLAYER1_CHOICES = 5, MM3_LAUNCHER_PLAYER2_CHOICES = 4 };
 enum MM3LauncherOption {
     MM3_LAUNCH_KEYBOARD, MM3_LAUNCH_WIDESCREEN, MM3_LAUNCH_DISTANCE,
     MM3_LAUNCH_SKY, MM3_LAUNCH_CAR_LIGHT, MM3_LAUNCH_LAMP_LIGHT,
-    MM3_LAUNCH_WORLD_LIGHT, MM3_LAUNCH_FLARE_DEPTH, MM3_LAUNCH_UNLOCK,
+    MM3_LAUNCH_WORLD_LIGHT, MM3_LAUNCH_UNLOCK,
     MM3_LAUNCH_DEV_TOOLS, MM3_LAUNCH_DEV_HUD, MM3_LAUNCH_DEBUG_MENU,
     MM3_LAUNCH_CAMERAS, MM3_LAUNCH_E3, MM3_LAUNCH_LOADING, MM3_LAUNCH_NATIVE_FOG,
     MM3_LAUNCH_DSP, MM3_LAUNCH_NETWORK,
@@ -28,9 +28,13 @@ enum MM3LauncherOption {
     MM3_LAUNCH_SAME_CAR,         /* race opponents drive the player's car */
     MM3_LAUNCH_FREE_CAMERA,      /* a key in a race flies the view away from the car */
     MM3_LAUNCH_PHOTO_MODE,       /* F2 holds the race and flies the camera, F3 saves a picture (not a gameplay mod) */
-    MM3_LAUNCH_AI_STOP_FINISH,   /* race opponents stop just before the final checkpoint */
     MM3_LAUNCH_SKIP_INTRO,       /* the logo and intro movies at start-up are skipped (MM3_MOD_SKIP_INTRO) */
     MM3_LAUNCH_PAINT_SOFT,       /* car paint mirrors the scene slightly blurred (off: sharp, as the Xbox) */
+    MM3_LAUNCH_VULKAN,           /* Windows: Play starts mm3_recomp_vulkan.exe (the Linux renderer on Vulkan) */
+    /* MM3_NO_GPU_WAIT sets RECOMP_READBACK_HOLD=0: the title no longer waits until its
+     * read-back pictures (lamp glow visibility, flare mask) are in guest memory. Faster on
+     * a slow GPU (Steam Deck), but lamp glows can flash on windows. Default off. */
+    MM3_LAUNCH_NO_GPU_WAIT,
     MM3_LAUNCH_OPTION_COUNT
 };
 

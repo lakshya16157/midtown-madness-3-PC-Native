@@ -126,11 +126,20 @@ int main(void){
 '''
 
 
+
+# The kick reads its ring lag through kick_ring_lag and, with s_kick_cursor
+# on, also the executor's position: give the copy both, cursor off, so the
+# bound under test is the one GET alone gives.
+def _kick_helpers(manual):
+    lag = re.search(r'^static uint32_t kick_ring_lag\(.*?^\}', manual, re.M | re.S).group()
+    return ('static int s_kick_cursor = 0;\n'
+            'uint32_t nv2a_pb_exec_cursor(void) { return 0; }\n' + lag + '\n')
+
 def main():
     if not shutil.which("cl"):
         raise SystemExit("Run scripts/enter-env.ps1 first.")
     manual = (ROOT / "src/recomp_manual.c").read_text()
-    kick = re.search(r"^void sub_00344AB0\(void\)\n\{.*?^\}", manual, re.M | re.S).group()
+    kick = _kick_helpers(manual) + re.search(r"^void sub_00344AB0\(void\)\n\{.*?^\}", manual, re.M | re.S).group()
     with tempfile.TemporaryDirectory(prefix="mm3-pushbuffer-run-ahead-") as path:
         folder = Path(path)
         source, executable = folder / "contract.c", folder / "contract.exe"

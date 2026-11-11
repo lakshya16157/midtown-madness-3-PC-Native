@@ -281,7 +281,7 @@ static int place(const NvOverlayDraw *d, float *dx, float *squeeze, float *shift
     return use_dx;
 }
 
-const NvOverlayHooks mm3_hud_hooks = { frame, place, NULL, sanitize_vertex_upload, mm3_render_force_depth, mm3_render_cubic_filter, NULL, mm3_render_vertex_alignment };
+const NvOverlayHooks mm3_hud_hooks = { frame, place, NULL, sanitize_vertex_upload, mm3_render_cubic_filter, NULL, mm3_render_vertex_alignment };
 #else
 void mm3_hud_set_edge(int on)
 {
@@ -297,5 +297,5 @@ void mm3_hud_set_start(float x0, float y0, float x1, float y1)
  * clears the route tags in its private vertex copy, and the camera hook
  * (widescreen.c) refreshes live cameras after an aspect change, so a resize
  * never has to wait for the race to end. */
-const NvOverlayHooks mm3_hud_hooks = { NULL, NULL, NULL, NULL, mm3_render_force_depth, mm3_render_cubic_filter, NULL, mm3_render_vertex_alignment };
+const NvOverlayHooks mm3_hud_hooks = { NULL, NULL, NULL, NULL, mm3_render_cubic_filter, NULL, mm3_render_vertex_alignment };
 #endif

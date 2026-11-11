@@ -428,7 +428,6 @@ static void help_show(Launcher *ui, int id)
             "Add illumination around vehicle lamps and on the road. Front lights activate in evening/night; morning/afternoon rear-light spill is small and faint. Off uses retail vehicle lighting.",
             "Add warm, local illumination around street lamps, with source-sized reach. Keeps the lamps' placement, activation and breakage. Off uses retail lamp lighting.",
             "Adjust world and local-light composition. Daylight keeps its authored colors; default night fill is darker so lamps stand out. Softens overlapping light fields. Off uses retail composition.",
-            "Use scene depth to hide lamp flares behind cars and buildings. Off can leave bright flares visible through solid objects.",
             "Changes the gameplay. Make all installed vehicles, including hidden bonus cars, selectable without earning them. This adds no downloads and does not complete career missions.",
             "Allow the game's developer scripts and commands. The developer HUD, menu, camera modes and E3 preset below depend on this switch and on the scripts prepared by tools\\debug-features\\prepare.py; they invoke the game's own developer commands.",
             "Show the game's diagnostic HUD at race start, including position and vehicle data. Requires developer tools and prepared scripts.",
@@ -457,9 +456,10 @@ static void help_show(Launcher *ui, int id)
             "Changes the gameplay. In Checkpoint and circuit races every opponent drives the same car as you, whichever car you pick. Career jobs keep their own cars. Off: the opponents get the game's own cars.",
             "In a race, the Free camera key flies the view away from your car: W/A/S/D or the left stick move, Q/E or the triggers go down and up, the arrows, right stick or mouse with its right button look. Shift/RB faster, Ctrl/LB slower. Your car gets no input meanwhile.",
             "Photo mode. In a race, F2 holds everything still and flies the camera: W/A/S/D move, Q/E down and up, the mouse looks (or the sticks and triggers). F3 (pad A) saves a PNG to Pictures\\Midtown Madness 3, F4 (pad X) hides the HUD. F2 again goes back to your car. Off: these keys do nothing.",
-            "Changes the gameplay. Race opponents drive the full course normally, then brake to a halt just before the final checkpoint so they never cross the finish line ahead of you. Off: opponents finish the race as on the Xbox.",
             "Skips the logo and intro movies when the game starts, as if you pressed Start. Untick it to watch the intro every time. Story movies always play.",
-            "Car paint mirrors the scene a little blurred, so lamps are soft glows rather than hard bright spots. Untick it for the sharp mirror of the Xbox, which makes the reflections on cars easier to see. The Original look is always sharp."
+            "Car paint mirrors the scene a little blurred, so lamps are soft glows rather than hard bright spots. Untick it for the sharp mirror of the Xbox, which makes the reflections on cars easier to see. The Original look is always sharp.",
+            "Play with the Vulkan renderer, the one Linux and the Steam Deck use, instead of DirectX 11. Same game and settings; it starts mm3_recomp_vulkan.exe from the game folder. Untick it for DirectX 11 if something looks wrong, and please report it.",
+            "Normally the game waits each frame until the GPU has handed back the small pictures it reads (lamp glow visibility, the sun flare), as on the Xbox. Tick this only on a slow GPU such as the Steam Deck: faster there, but lamp glows can flash on building windows. No speed difference on a fast PC."
         };
         int option = id - ID_OPTION, on = checked(ui, id), master = mm3_launcher_option_master(option);
         title = option_caption(option);
@@ -1386,9 +1386,10 @@ static void option_columns(Launcher *ui, int page, const OptionColumn *columns, 
 static void look_controls(Launcher *ui)
 {
     static const OptionColumn columns[] = {
-        {42, 240, "Graphics and audio", NULL, {MM3_LAUNCH_WIDESCREEN, MM3_LAUNCH_SKY, MM3_LAUNCH_NATIVE_FOG, MM3_LAUNCH_PAINT_SOFT, 0}},
+        {42, 240, "Graphics and audio", NULL, {MM3_LAUNCH_WIDESCREEN, MM3_LAUNCH_SKY, MM3_LAUNCH_NATIVE_FOG, MM3_LAUNCH_PAINT_SOFT,
+            MM3_LAUNCH_VULKAN, MM3_LAUNCH_NO_GPU_WAIT, 0}},
         {300, 250, "Improved visuals", NULL, {MM3_LAUNCH_DISTANCE, MM3_LAUNCH_CAR_LIGHT, MM3_LAUNCH_LAMP_LIGHT,
-            MM3_LAUNCH_WORLD_LIGHT, MM3_LAUNCH_FLARE_DEPTH, MM3_LAUNCH_EXHAUST, 0}},
+            MM3_LAUNCH_WORLD_LIGHT, MM3_LAUNCH_EXHAUST, 0}},
         {560, 260, "Menus and HUD", NULL, {MM3_LAUNCH_LOADING, MM3_LAUNCH_GRAPHICS_MENU, MM3_LAUNCH_QUIT,
             MM3_LAUNCH_SKIP_INTRO, MM3_LAUNCH_DLC_INFO, MM3_LAUNCH_NORTH_MARKER, 0}}
     };
@@ -1419,7 +1420,7 @@ static void gameplay_controls(Launcher *ui)
         {42, 240, "Driving", "Developer tools", {MM3_LAUNCH_DRAFTING, MM3_LAUNCH_ROLL_GUARD, MM3_LAUNCH_TREES, -1,
             MM3_LAUNCH_DEV_TOOLS, MM3_LAUNCH_DEV_HUD, MM3_LAUNCH_DEBUG_MENU, MM3_LAUNCH_CAMERAS, MM3_LAUNCH_E3, 0}},
         {300, 250, "Races and cars", NULL, {MM3_LAUNCH_CIRCUITS, MM3_LAUNCH_EXTRA_CARS, MM3_LAUNCH_AI_ALL_CARS,
-            MM3_LAUNCH_SAME_CAR, MM3_LAUNCH_AI_STOP_FINISH, MM3_LAUNCH_UNLOCK, 0}},
+            MM3_LAUNCH_SAME_CAR, MM3_LAUNCH_UNLOCK, 0}},
         {560, 260, "Navigation", NULL, {MM3_LAUNCH_ROUTE_NAVIGATION, MM3_LAUNCH_RACE_ARROW, 0}}
     };
     static const int damage[] = {0, 25, 50, 75, 100, 150, 200, 300}, time[] = {50, 75, 100, 125, 150, 200, 300};
@@ -2054,7 +2055,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         add(ui, -1, "STATIC", "", SS_NOPREFIX, ID_HELP_BODY, 880, 285, 295, 190);
         add(ui, -1, "STATIC", "WHAT TO EXPECT", 0, ID_GUIDE_HEAD2, 880, 489, 295, 24);
         add(ui, -1, "STATIC", "", SS_NOPREFIX, ID_HELP_EFFECT, 880, 521, 295, 100);
-        add(ui, -1, "STATIC", "Keyboard: Tab to move, Enter to activate. Controller: D-pad moves, A selects, LB/RB changes tab, Start plays.",
+        add(ui, -1, "STATIC", "In game, press F10 to open Settings: graphics, night brightness and Freeze opponents. Launcher: Tab moves, Enter activates; controller: D-pad moves, A selects, LB/RB changes tab, Start plays.",
             0, ID_STATUS, 25, 644, 1165, 45);
         push_button(ui, -1, "Restore defaults", ID_DEFAULTS, 25, 699, 155, 34);
         push_button(ui, -1, "Check for updates", ID_UPDATE, 195, 699, 175, 34);

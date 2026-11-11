@@ -161,6 +161,63 @@ static BOOL WINAPI mm3_console_control(DWORD event)
 }
 int mm3_launcher(void);
 
+#ifdef _WIN32
+/* The launcher's renderer choice (MM3_RENDERER_VULKAN): the DirectX 11 and the
+ * Vulkan game are two programs side by side (mm3_recomp.exe and
+ * mm3_recomp_vulkan.exe; their renderers share function names). When the
+ * choice is the other one, start it with the settings the launcher applied
+ * (inherited environment, launcher skipped) and end this one. 1 if started.
+ * A missing sibling keeps this renderer. */
+static int mm3_renderer_handoff(void)
+{
+    const char *want = getenv("MM3_RENDERER_VULKAN");
+    int vulkan = want && !strcmp(want, "1");
+#ifdef MM3_RENDERER_SDL3
+    const int built_vulkan = 1;
+#else
+    const int built_vulkan = 0;
+#endif
+    wchar_t path[MAX_PATH], self[MAX_PATH], *slash, *args;
+    const char *handed = getenv("MM3_RENDERER_HANDOFF");
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    if (vulkan == built_vulkan) return 0;
+    /* A program a hand-off started never hands off again: no chain of starts. */
+    if (handed && *handed) return 0;
+    if (!GetModuleFileNameW(NULL, self, MAX_PATH)) return 0;
+    wcscpy_s(path, MAX_PATH, self);
+    if (!(slash = wcsrchr(path, L'\\'))) return 0;
+    wcscpy_s(slash + 1, MAX_PATH - (size_t)(slash + 1 - path), vulkan ? L"mm3_recomp_vulkan.exe" : L"mm3_recomp.exe");
+    if (!_wcsicmp(path, self)) return 0;     /* a build folder's Vulkan program is itself mm3_recomp.exe */
+    if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) {
+        fprintf(stderr, "[MM3_RENDERER] %s chosen but %ls is missing; playing with %s\n",
+                vulkan ? "Vulkan" : "DirectX 11", path, built_vulkan ? "Vulkan" : "DirectX 11");
+        return 0;
+    }
+    _putenv_s("MM3_LAUNCHER", "0");         /* the settings are already applied */
+    _putenv_s("MM3_RENDERER_HANDOFF", "1");
+    args = GetCommandLineW();               /* keep the arguments, swap the program */
+    if (*args == L'"') { args = wcschr(args + 1, L'"'); args = args ? args + 1 : L""; }
+    else { while (*args && *args != L' ') ++args; }
+    {
+        static wchar_t command[4096];
+        swprintf(command, sizeof command / sizeof command[0], L"\"%ls\"%ls", path, args);
+        memset(&si, 0, sizeof si);
+        si.cb = sizeof si;
+        if (!CreateProcessW(path, command, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            fprintf(stderr, "[MM3_RENDERER] could not start %ls (error %lu); playing with %s\n",
+                    path, GetLastError(), built_vulkan ? "Vulkan" : "DirectX 11");
+            return 0;
+        }
+    }
+    fprintf(stderr, "[MM3_RENDERER] started %ls (%s)\n", path, vulkan ? "Vulkan" : "DirectX 11");
+    fflush(stderr);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return 1;
+}
+#endif
+
 /* Register the first XAPI worker before it can create background workers.
  * The runtime's debug handle changes on every spawn and cannot determine
  * the lifetime of the game. This wrapper preserves the guest register ABI. */
@@ -434,6 +491,7 @@ int main(void)
                 entered_directory);
 #ifdef _WIN32
     if (!mm3_launcher_run()) return 0;
+    if (mm3_renderer_handoff()) return 0;
 #else
     {
         /* Linux: launcher.ini (written by the Settings window, mm3_launcher.py, or by hand)
@@ -461,8 +519,6 @@ int main(void)
     }
     nv2a_d3d_prepare_distance_fog(!getenv("MM3_NATIVE_FOG") || strcmp(getenv("MM3_NATIVE_FOG"), "0"));
     xbox_FramebufferSetCloseHandler(mm3_close_game);
-    /* Lamp flare depth (MM3_MOD_FLARE_DEPTH) is the render policy in
-     * src/mods/render_policy.c, not a runtime switch. */
     nv2a_d3d_set_night_glass(!getenv("MM3_NIGHT_GLASS") || strcmp(getenv("MM3_NIGHT_GLASS"), "0"));
     nv2a_d3d_set_paint_softness(mm3_paint_softness());
     mm3_world_lighting_apply_gain();
