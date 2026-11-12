@@ -142,6 +142,14 @@ static void mm3_close_game(void)
      * firmware-exit bridge does. Windows releases its file/device handles. */
     fprintf(stderr, "[MM3_EXIT] close requested\n");
     fflush(stderr);
+#ifndef _WIN32
+    {
+        /* Linux ExitProcess is exit(): it unloads the GPU driver under a renderer still drawing
+         * (Steam Deck crash on quit). Stop the renderer first; the exit reports still run. */
+        extern void xbox_Nv2aStopRenderer(unsigned timeout_ms);
+        xbox_Nv2aStopRenderer(2000);
+    }
+#endif
     ExitProcess(0);
 }
 

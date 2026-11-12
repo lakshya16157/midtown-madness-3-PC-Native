@@ -113,6 +113,7 @@ Spanish voices in Spanish.
 | Night brightness | Launcher **Visual + audio mods** and **F10** | Xbox night | Darker to brighter, with Better night lighting |
 | Renderer: DirectX 11 or Vulkan | Launcher **Visual + audio mods** | Yes | Yes |
 | Don't wait for the GPU (off by default) | Launcher **Visual + audio mods** | Yes | Yes |
+| Load all shaders before playing (on by default) | Launcher **Visual + audio mods** | Yes | Yes |
 
 **Don't wait for the GPU** is for slow graphics chips such as the Steam Deck's. It is off on Windows and
 on in the native Linux build, where waiting was the main slowdown. Each frame the game
@@ -120,6 +121,13 @@ reads a few small pictures back from the GPU, as on the Xbox: which lamp glows a
 sun flare. Normally it waits until the GPU has finished them. Ticked, it carries on without waiting:
 faster when the GPU is slow, but it then reads last frame's pictures, so lamp glows can flash on
 building windows. On a fast PC it makes no difference to the frame rate, so leave it off.
+
+**Load all shaders before playing** (Vulkan only, on by default) stops the first-time stutter. The GPU has to
+build a "pipeline" the first time the game draws something in a new way. The game saves every pipeline it builds,
+and Setup adds a list built on the developer's PC. With this box ticked, start-up builds all of them on several
+threads before the first frame (a few seconds); unticked, they are built in the background while the game starts.
+A pipeline nobody has seen yet still builds once, the first time it is needed, and is then saved. DirectX 11 is
+not affected.
 
 While playing:
 

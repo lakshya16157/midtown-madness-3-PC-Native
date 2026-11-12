@@ -459,7 +459,8 @@ static void help_show(Launcher *ui, int id)
             "Skips the logo and intro movies when the game starts, as if you pressed Start. Untick it to watch the intro every time. Story movies always play.",
             "Car paint mirrors the scene a little blurred, so lamps are soft glows rather than hard bright spots. Untick it for the sharp mirror of the Xbox, which makes the reflections on cars easier to see. The Original look is always sharp.",
             "Play with the Vulkan renderer, the one Linux and the Steam Deck use, instead of DirectX 11. Same game and settings; it starts mm3_recomp_vulkan.exe from the game folder. Untick it for DirectX 11 if something looks wrong, and please report it.",
-            "Normally the game waits each frame until the GPU has handed back the small pictures it reads (lamp glow visibility, the sun flare), as on the Xbox. Tick this only on a slow GPU such as the Steam Deck: faster there, but lamp glows can flash on building windows. No speed difference on a fast PC."
+            "Normally the game waits each frame until the GPU has handed back the small pictures it reads (lamp glow visibility, the sun flare), as on the Xbox. Tick this only on a slow GPU such as the Steam Deck: faster there, but lamp glows can flash on building windows. No speed difference on a fast PC.",
+            "Vulkan only. Builds every graphics pipeline the game has seen before while it starts, so nothing is built mid-race and the game does not stutter the first time something is drawn. Start-up takes a few seconds longer. No effect with DirectX 11."
         };
         int option = id - ID_OPTION, on = checked(ui, id), master = mm3_launcher_option_master(option);
         title = option_caption(option);
@@ -1387,7 +1388,7 @@ static void look_controls(Launcher *ui)
 {
     static const OptionColumn columns[] = {
         {42, 240, "Graphics and audio", NULL, {MM3_LAUNCH_WIDESCREEN, MM3_LAUNCH_SKY, MM3_LAUNCH_NATIVE_FOG, MM3_LAUNCH_PAINT_SOFT,
-            MM3_LAUNCH_VULKAN, MM3_LAUNCH_NO_GPU_WAIT, 0}},
+            MM3_LAUNCH_VULKAN, MM3_LAUNCH_NO_GPU_WAIT, MM3_LAUNCH_PRELOAD_SHADERS, 0}},
         {300, 250, "Improved visuals", NULL, {MM3_LAUNCH_DISTANCE, MM3_LAUNCH_CAR_LIGHT, MM3_LAUNCH_LAMP_LIGHT,
             MM3_LAUNCH_WORLD_LIGHT, MM3_LAUNCH_EXHAUST, 0}},
         {560, 260, "Menus and HUD", NULL, {MM3_LAUNCH_LOADING, MM3_LAUNCH_GRAPHICS_MENU, MM3_LAUNCH_QUIT,

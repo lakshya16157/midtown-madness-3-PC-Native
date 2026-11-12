@@ -10129,7 +10129,7 @@ index 9aa67a0e..11dc3fa8 100644
          if (!settings_path(path, "") || !settings_path(lockpath, ".lock"))
              return STATUS_UNSUCCESSFUL;
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index d03b7cff..c34cedba 100644
+index d03b7cff..520d271b 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
 @@ -274,7 +274,8 @@ static void cap_exceeded(uint32_t site, const char *what, uint32_t limit, uint32
@@ -10392,7 +10392,7 @@ index d03b7cff..c34cedba 100644
      /* Bring-up: the first parameters each surface method carries. A wrong
       * pitch or clip is indistinguishable from a method never arriving unless
       * the values are visible. Cached: this runs for every method, and an
-@@ -4900,6 +5042,58 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -4900,6 +5042,64 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
          *r = param;
          return;
      }
@@ -10431,8 +10431,14 @@ index d03b7cff..c34cedba 100644
 +                uint8_t *s0 = mem + dma_resolve(s_blit.src), *d0 = mem + dma_resolve(s_blit.dst);
 +                /* A source the GPU drew into (the frame) is read from the
 +                 * render target: guest memory holds it only after a write-back. */
-+                uint32_t *px = bpp == 4 && use_d3d() && w * h <= 65536u ? (uint32_t *)malloc((size_t)w * h * 4) : NULL;
-+                if (px && nv2a_d3d_surface_read(s_blit.src, sx, sy, w, h, px)) {
++                int small4 = bpp == 4 && use_d3d() && w * h <= 65536u;
++                /* The renderer may write last frame's pixels for this read at once (no wait for the GPU). */
++                int queued = small4 && nv2a_d3d_surface_read_async(s_blit.src, sx, sy, w, h,
++                                                                   d0 + (size_t)dy * dp + (size_t)dx * bpp, dp);
++                uint32_t *px = small4 && !queued ? (uint32_t *)malloc((size_t)w * h * 4) : NULL;
++                if (queued) {
++                    /* written by the renderer */
++                } else if (px && nv2a_d3d_surface_read(s_blit.src, sx, sy, w, h, px)) {
 +                    for (y = 0; y < h; ++y)
 +                        memcpy(d0 + (dy + y) * dp + dx * bpp, px + (size_t)y * w, (size_t)w * 4);
 +                } else {
@@ -10451,7 +10457,7 @@ index d03b7cff..c34cedba 100644
      if (subch != 0) {                      /* 3D class lives on subchannel 0 */
          note_unhandled(method, param);
          return;
-@@ -5399,6 +5593,61 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -5399,6 +5599,61 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
      }
  }
  
@@ -11229,7 +11235,7 @@ index 408a10e5..632d8772 100644
  void nv2a_vsh_set_constant(uint32_t index, const float v[4]);
  const float *nv2a_vsh_constant(uint32_t index);   /* for traces */
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
-index b4a1fe00..272de415 100644
+index b4a1fe00..0373a7bb 100644
 --- a/src/kernel/xbox_memory_layout.c
 +++ b/src/kernel/xbox_memory_layout.c
 @@ -23,6 +23,7 @@
@@ -11587,7 +11593,7 @@ index b4a1fe00..272de415 100644
                      s_get_held = 1;
                      s_get_held_value = put;
                      s_get_held_notify = s_notify_executed;
-@@ -1730,7 +1875,8 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -1730,13 +1875,26 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
          }
          trace_begin = nv2a_ack_hitch_checkpoint(trace_frequency.QuadPart,
                                                 trace_begin, "ack_renderer_tick", 8);
@@ -11597,7 +11603,25 @@ index b4a1fe00..272de415 100644
          nv2a_ack_hitch_checkpoint(trace_frequency.QuadPart,
                                    trace_begin, "ack_yield", 8);
      }
-@@ -1745,7 +1891,7 @@ static void xbox_Nv2aAckStart(void)
+     return 0;
+ }
+ 
++/* Stop the acknowledgement thread (pushbuffer executor + renderer) and wait up to timeout_ms for it,
++ * leaving everything else as it is. For a process exit through exit() (Linux ExitProcess): that runs
++ * atexit handlers and unloads the GPU driver, and a renderer thread still drawing crashed inside the
++ * driver (Steam Deck logs 2026-11-12, after "[MM3_EXIT] close requested"). */
++void xbox_Nv2aStopRenderer(unsigned timeout_ms)
++{
++    if (!g_nv2a_ack_thread || GetCurrentThreadId() == g_nv2a_ack_thread_id) return;
++    InterlockedExchange(&g_nv2a_ack_stop, 1);
++    xbox_nv2a_wake_publish(&g_nv2a_wake);
++    WaitForSingleObject(g_nv2a_ack_thread, timeout_ms);
++}
++
+ static void xbox_Nv2aAckStart(void)
+ {
+ 
+@@ -1745,7 +1903,7 @@ static void xbox_Nv2aAckStart(void)
      xbox_nv2a_wake_init(&g_nv2a_wake);
      g_nv2a_ack_stop = 0;
      g_nv2a_ack_thread = CreateThread(NULL, 0, nv2a_ack_thread,
@@ -11606,7 +11630,7 @@ index b4a1fe00..272de415 100644
      if (g_nv2a_ack_thread) {
          fprintf(stderr, "  NV2A busy-bit ack: %zu register(s) acknowledged\n",
                  sizeof(NV2A_ACK) / sizeof(NV2A_ACK[0]));
-@@ -3564,6 +3710,19 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+@@ -3564,6 +3722,19 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
          }
      }
  
@@ -11626,7 +11650,7 @@ index b4a1fe00..272de415 100644
      xbox_WatchInit();
  #ifndef _WIN32
      /* Dynamic aliases use free slots and refuse foreign mappings. Exclude
-@@ -4161,6 +4320,8 @@ uint32_t xbox_ContiguousAllocRange(uint32_t size, uint32_t alignment,
+@@ -4161,6 +4332,8 @@ uint32_t xbox_ContiguousAllocRange(uint32_t size, uint32_t alignment,
          if (tail)
              contig_insert(i + 1, start + size, tail, 0);
          result = XBOX_CONTIG_BASE + start;
@@ -15060,7 +15084,7 @@ index 00000000..ba782e5c
 +#endif /* NV2A_BLACK_FRAME_LOGIC_ONLY */
 +#endif /* NV2A_BLACK_FRAME_H */
 diff --git a/src/video/nv2a_d3d11.c b/src/video/nv2a_d3d11.c
-index f4432e75..78bb8a94 100644
+index f4432e75..79f6b3d2 100644
 --- a/src/video/nv2a_d3d11.c
 +++ b/src/video/nv2a_d3d11.c
 @@ -19,9 +19,10 @@
@@ -16922,14 +16946,9 @@ index f4432e75..78bb8a94 100644
 +{
 +    s_local_light_sum = enabled != 0;
 +}
- 
--static int draw_forces_depth(const NvD3DState *st)
++
 +void nv2a_d3d_set_local_light_falloff(int enabled)
- {
--    Surface *source;
--    if (!s_overlay.force_depth_test) return 0;
--    source = surface_find(phys(st->tex[0].addr));
--    return s_overlay.force_depth_test(st, source ? source->w : 0, source ? source->h : 0);
++{
 +    s_local_light_falloff = enabled != 0;
 +}
 +
@@ -17050,13 +17069,18 @@ index f4432e75..78bb8a94 100644
 +           st->blend_sfactor == 1u && st->blend_dfactor == 1u &&
 +           st->blend_equation == 0x8006u;
 +}
-+
+ 
+-static int draw_forces_depth(const NvD3DState *st)
 +/* MM3's installed Light/LightApplyTex.psh as seen on a night frame: one
 + * eight-stage combiner (register words captured from the player-front night
 + * frame, see tests/nv2a_world_lighting) over the unlit frame and the light
 + * accumulation buffer. */
 +static int is_local_light_composite(const NvD3DState *st)
-+{
+ {
+-    Surface *source;
+-    if (!s_overlay.force_depth_test) return 0;
+-    source = surface_find(phys(st->tex[0].addr));
+-    return s_overlay.force_depth_test(st, source ? source->w : 0, source ? source->h : 0);
 +    /* Texture programs for the unlit frame and the light buffer (0x21) with
 +     * the composite's final combiner; the unlit LightApply/LightColor passes
 +     * sample only the frame (0x01). */
@@ -19677,7 +19701,7 @@ index f4432e75..78bb8a94 100644
  }
  
  /* ----------------------------------------------------- visibility tests */
-@@ -3525,6 +6657,64 @@ uint32_t nv2a_d3d_zpass_read(void)
+@@ -3525,6 +6657,66 @@ uint32_t nv2a_d3d_zpass_read(void)
      return px > 4294967295.0 ? 0xFFFFFFFFu : (uint32_t)px;
  }
  
@@ -19739,10 +19763,12 @@ index f4432e75..78bb8a94 100644
 +    return ok;
 +}
 +
++int nv2a_d3d_surface_read_async(uint32_t phys, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint8_t *dst, uint32_t dst_pitch) { (void)phys; (void)x; (void)y; (void)w; (void)h; (void)dst; (void)dst_pitch; return 0; }
++
  /* ---------------------------------------------------------------- present */
  
  static ID3D11Texture2D *s_ovl_tex;
-@@ -3532,10 +6722,43 @@ static ID3D11ShaderResourceView *s_ovl_srv;
+@@ -3532,10 +6724,43 @@ static ID3D11ShaderResourceView *s_ovl_srv;
  static UINT s_ovl_w, s_ovl_h;
  static uint32_t s_ovl_serial = 0xFFFFFFFFu;
  static DWORD s_last_present, s_last_flip;
@@ -19786,7 +19812,7 @@ index f4432e75..78bb8a94 100644
  static int ensure_swapchain(void)
  {
      HWND h = xbox_FramebufferWindowHandle();
-@@ -3547,6 +6770,8 @@ static int ensure_swapchain(void)
+@@ -3547,6 +6772,8 @@ static int ensure_swapchain(void)
      hh = (UINT)(rc.bottom - rc.top);
      if (!w || !hh) return 0;                    /* minimised */
      if (s_swap && s_swap_hwnd != h) {
@@ -19795,7 +19821,7 @@ index f4432e75..78bb8a94 100644
          IDXGISwapChain1_Release(s_swap);
          s_swap = NULL;
      }
-@@ -3564,8 +6789,31 @@ static int ensure_swapchain(void)
+@@ -3564,8 +6791,31 @@ static int ensure_swapchain(void)
          d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
          d.SampleDesc.Count = 1;
          d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -19828,7 +19854,7 @@ index f4432e75..78bb8a94 100644
          hr = fac ? IDXGIFactory2_CreateSwapChainForHwnd(fac, (IUnknown *)s_dev, h, &d,
                                                          NULL, NULL, &s_swap) : E_FAIL;
          if (fac) {
-@@ -3576,10 +6824,14 @@ static int ensure_swapchain(void)
+@@ -3576,10 +6826,14 @@ static int ensure_swapchain(void)
          if (dxdev) IDXGIDevice_Release(dxdev);
          if (FAILED(hr)) { fail("CreateSwapChainForHwnd", hr); return 0; }
          s_swap_hwnd = h; s_swap_w = w; s_swap_h = hh;
@@ -19845,7 +19871,7 @@ index f4432e75..78bb8a94 100644
              return 0;
          s_swap_w = w; s_swap_h = hh;
      }
-@@ -3642,6 +6894,7 @@ static void write_bmp(ID3D11Texture2D *bb, const char *path)
+@@ -3642,6 +6896,7 @@ static void write_bmp(ID3D11Texture2D *bb, const char *path)
   * seconds and 200 in a session; every spike is still logged. */
  static const char *s_spike_prefix = (const char *)-1;
  static double s_spike_ms = 50.0;
@@ -19853,7 +19879,7 @@ index f4432e75..78bb8a94 100644
  static unsigned s_spike_pending, s_spike_id, s_spike_shot;
  static int64_t s_spike_split[PROF_COUNT];
  static LONG s_spec_recent;
-@@ -3662,6 +6915,7 @@ static void spike_check(int64_t interval, int64_t pace)
+@@ -3662,6 +6917,7 @@ static void spike_check(int64_t interval, int64_t pace)
                  buf[c - buf] = 0;
              }
              s_spike_prefix = buf;
@@ -19861,7 +19887,7 @@ index f4432e75..78bb8a94 100644
              fprintf(stderr, "[SPIKE] capturing frames after flips over %.1f ms to %s-*\n",
                      s_spike_ms, s_spike_prefix);
          }
-@@ -3689,7 +6943,7 @@ static void spike_check(int64_t interval, int64_t pace)
+@@ -3689,7 +6945,7 @@ static void spike_check(int64_t interval, int64_t pace)
      s_spike_id++;
      fprintf(stderr, "[SPIKE] #%u frame %u: %.1f ms between flips (%.1f ms not pacing)%s\n",
              s_spike_id, s_frame, ms, work,
@@ -19870,7 +19896,7 @@ index f4432e75..78bb8a94 100644
      {
          int i;
          fprintf(stderr, "[SPIKE]   ms:");
-@@ -3698,7 +6952,7 @@ static void spike_check(int64_t interval, int64_t pace)
+@@ -3698,7 +6954,7 @@ static void spike_check(int64_t interval, int64_t pace)
          fprintf(stderr, " | %ld new shaders in 1 s\n", (long)s_spec_recent);
          recomp_sampler_report(ms);
      }
@@ -19879,7 +19905,7 @@ index f4432e75..78bb8a94 100644
          last_capture = GetTickCount();
          s_spike_pending = 2;
          s_spike_shot = 0;
-@@ -3720,19 +6974,99 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
+@@ -3720,19 +6976,99 @@ static void capture_backbuffer(ID3D11Texture2D *bb)
      if (!prefix) return;
      if (!remaining) {
          int count = 0;
@@ -19982,7 +20008,7 @@ index f4432e75..78bb8a94 100644
  
  /* Draw surface `s` (with the overlay described in *pc) into a w x h target,
   * letterboxed to the display aspect when asked. */
-@@ -3767,10 +7101,18 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3767,10 +7103,18 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
      pc->src_size[0] = (float)s->w; pc->src_size[1] = (float)s->h;
      pc->src_size[2] = (float)s->iw; pc->src_size[3] = (float)s->ih;
      pc->force_alpha[0] = 1.0f;
@@ -20001,7 +20027,7 @@ index f4432e75..78bb8a94 100644
      upload_cb(s_cb_present, pc, sizeof *pc);
      unbind_textures();
      unbind_targets();
-@@ -3781,11 +7123,11 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
+@@ -3781,11 +7125,11 @@ static void composite(ID3D11RenderTargetView *rtv, UINT w, UINT h, Surface *s,
      vp.MinDepth = 0; vp.MaxDepth = 1;
      sc.left = 0; sc.top = 0; sc.right = (LONG)w; sc.bottom = (LONG)h;
      ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
@@ -20018,7 +20044,7 @@ index f4432e75..78bb8a94 100644
      bind_vertex_shader(s_present_vs);
      bind_vertex_constants(s_cb_present);
      bind_pixel_shader(s_present_ps);
-@@ -3846,6 +7188,15 @@ static void prepare_overlay(PresentConsts *pc)
+@@ -3846,6 +7190,15 @@ static void prepare_overlay(PresentConsts *pc)
      pc->ovl_in[2] = 1.0f;
  }
  
@@ -20034,7 +20060,7 @@ index f4432e75..78bb8a94 100644
  /* RECOMP_CAPTURE_SURFACE: the composited guest image at internal resolution
   * (no window scaling or letterbox), for pixel comparisons. */
  static ID3D11Texture2D *s_cap_tex;
-@@ -3882,31 +7233,19 @@ static void keep_image(ID3D11Texture2D *bb)
+@@ -3882,31 +7235,19 @@ static void keep_image(ID3D11Texture2D *bb)
  /* The kept image presented again; 0 if there is none to show. */
  static int present_kept(void)
  {
@@ -20075,7 +20101,7 @@ index f4432e75..78bb8a94 100644
      s_last_present = GetTickCount();
      return 1;
  }
-@@ -3931,25 +7270,40 @@ static int pace_after_present(void)
+@@ -3931,25 +7272,40 @@ static int pace_after_present(void)
  
  static void pace_flip(FlipPacing *pacing)
  {
@@ -20117,7 +20143,7 @@ index f4432e75..78bb8a94 100644
          if (!s_cap_tex || s_cap_w != s->iw || s_cap_h != s->ih) {
              if (s_cap_rtv) ID3D11RenderTargetView_Release(s_cap_rtv);
              if (s_cap_tex) ID3D11Texture2D_Release(s_cap_tex);
-@@ -3965,45 +7319,108 @@ static void present_surface(Surface *s, FlipPacing *pacing)
+@@ -3965,45 +7321,108 @@ static void present_surface(Surface *s, FlipPacing *pacing)
              composite(s_cap_rtv, s->iw, s->ih, s, &pc, 0);
              capture_backbuffer(s_cap_tex);
          }
@@ -20248,7 +20274,7 @@ index f4432e75..78bb8a94 100644
  /* The flip completes at the display's next vertical blank, as it does on the
   * NV2A: FLIP_STALL holds the GPU until then, and the title, waiting on the
   * GPU, is paced by it. Completing it at once let menus run at hundreds of
-@@ -4015,23 +7432,31 @@ static void pace_vblank(void)
+@@ -4015,23 +7434,31 @@ static void pace_vblank(void)
      static LARGE_INTEGER freq;
      static int64_t next;
      static HANDLE timer;
@@ -20286,7 +20312,7 @@ index f4432e75..78bb8a94 100644
          return;
      {
          RECOMP_PROFILE_BEGIN("D3D11 pace");
-@@ -4046,30 +7471,46 @@ static void pace_vblank(void)
+@@ -4046,30 +7473,46 @@ static void pace_vblank(void)
   * the monitor's native resolution and shape). A resize applies once it has
   * settled for RESIZE_SETTLE_MS, by dropping every host surface; they are
   * rebuilt at the new size from guest memory, which the flip just updated.
@@ -20338,7 +20364,7 @@ index f4432e75..78bb8a94 100644
          scale = (float)atof(e);
      } else {
          /* RECOMP_SUPERSAMPLE=N (1..4) renders N x N host pixels per window
-@@ -4084,7 +7525,11 @@ static void display_config(int now)
+@@ -4084,7 +7527,11 @@ static void display_config(int now)
          if (scale < 1.0f) scale = 1.0f;
          if (scale > 8.0f) scale = 8.0f;
      }
@@ -20351,7 +20377,7 @@ index f4432e75..78bb8a94 100644
      if (!now && fabsf(scale - s_scale) < 1e-3f && fabsf(aspect - s_aspect) < 1e-4f)
          return;
      if (!now) {
-@@ -4098,6 +7543,11 @@ static void display_config(int now)
+@@ -4098,6 +7545,11 @@ static void display_config(int now)
      }
      s_scale = scale;
      s_aspect = aspect;
@@ -20363,7 +20389,7 @@ index f4432e75..78bb8a94 100644
      fprintf(stderr, "[D3D11] rendering %ux%u (window %ux%u, aspect %.3f)\n",
              (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
              w, h, aspect);
-@@ -4138,27 +7588,66 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
+@@ -4138,27 +7590,66 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
      return s;
  }
  
@@ -20432,7 +20458,7 @@ index f4432e75..78bb8a94 100644
          if (s_prof_on > 0) {
              s_prof[PROF_WRITEBACK] += t1 - t0;
              s_prof[PROF_PRESENT] += qpc() - t1 - pacing.ticks;
-@@ -4169,12 +7658,16 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
+@@ -4169,12 +7660,16 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
           * still completes exactly one paced guest flip. A failed Present has
           * already waited before the attempt and must not wait a second time. */
          pace_flip(&pacing);
@@ -20449,7 +20475,7 @@ index f4432e75..78bb8a94 100644
      s_frame++;
  }
  
-@@ -4252,6 +7745,8 @@ void nv2a_d3d_tick(void)
+@@ -4252,6 +7747,8 @@ void nv2a_d3d_tick(void)
  {
      DWORD now;
      uint32_t va, pitch;
@@ -20458,7 +20484,7 @@ index f4432e75..78bb8a94 100644
      /* CPU scanout and PVIDEO can precede the first pushbuffer flip. */
      if (s_init_state <= 0 && !nv2a_d3d_init())
          return;
-@@ -4287,13 +7782,19 @@ void nv2a_d3d_tick(void)
+@@ -4287,13 +7784,19 @@ void nv2a_d3d_tick(void)
      now = GetTickCount();
      if (now - s_last_present < 16)
          return;
@@ -20481,7 +20507,7 @@ index f4432e75..78bb8a94 100644
          s_frame++;
          return;
      }
-@@ -4307,23 +7808,36 @@ void nv2a_d3d_tick(void)
+@@ -4307,23 +7810,37 @@ void nv2a_d3d_tick(void)
           * Force the check because the submission epoch stops with the flips. */
          if (!s_wb_pending)
              surface_sync(s_shown, 1);
@@ -20512,6 +20538,7 @@ index f4432e75..78bb8a94 100644
 +int nv2a_d3d_set_present_options(int vsync, int fps) { (void)vsync; (void)fps; return 0; }
 +void nv2a_d3d_set_render_scale(float scale) { (void)scale; }
 +int nv2a_d3d_surface_read(uint32_t phys, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t *out) { (void)phys; (void)x; (void)y; (void)w; (void)h; (void)out; return 0; }
++int nv2a_d3d_surface_read_async(uint32_t phys, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint8_t *dst, uint32_t dst_pitch) { (void)phys; (void)x; (void)y; (void)w; (void)h; (void)dst; (void)dst_pitch; return 0; }
 +float nv2a_d3d_get_render_scale(void) { return -1.0f; }
 +int nv2a_d3d_set_readback_poll_us(int us) { (void)us; return 0; }
 +int nv2a_d3d_get_readback_poll_us(void) { return -1; }
@@ -20522,7 +20549,7 @@ index f4432e75..78bb8a94 100644
  int nv2a_d3d_prof_enabled(void) { return 0; }
  void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
  { (void)slot; (void)ticks; (void)verts; }
-@@ -4349,4 +7863,42 @@ void nv2a_d3d_zpass_clear(void) {}
+@@ -4349,4 +7866,42 @@ void nv2a_d3d_zpass_clear(void) {}
  uint32_t nv2a_d3d_zpass_read(void) { return 0; }
  float nv2a_d3d_display_aspect(void) { return 4.0f / 3.0f; }
  int nv2a_d3d_host_draw(const NvD3DState *st, int (*draw)(const NvHostTarget *, void *), void *user) { (void)st; (void)draw; (void)user; return 0; }
@@ -20566,7 +20593,7 @@ index f4432e75..78bb8a94 100644
 +void nv2a_d3d_hold_frame(void) {}
  #endif
 diff --git a/src/video/nv2a_d3d11.h b/src/video/nv2a_d3d11.h
-index 6af965b5..bf4dd669 100644
+index 6af965b5..2ab2bc21 100644
 --- a/src/video/nv2a_d3d11.h
 +++ b/src/video/nv2a_d3d11.h
 @@ -16,13 +16,16 @@
@@ -20797,7 +20824,7 @@ index 6af965b5..bf4dd669 100644
  
  /* A new pushbuffer segment is about to execute. */
  void     nv2a_d3d_kick(void);
-@@ -176,6 +350,10 @@ void     nv2a_d3d_kick(void);
+@@ -176,6 +350,13 @@ void     nv2a_d3d_kick(void);
  void     nv2a_d3d_zpass_enable(int on);
  void     nv2a_d3d_zpass_clear(void);
  uint32_t nv2a_d3d_zpass_read(void);
@@ -20805,10 +20832,13 @@ index 6af965b5..bf4dd669 100644
 + * alpha kept) for a 2D blit whose source the GPU has drawn. Returns 0 when no
 + * such target exists, and the caller copies guest memory instead. */
 +int nv2a_d3d_surface_read(uint32_t phys, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t *out);
++/* Like nv2a_d3d_surface_read, but without waiting for the GPU: dst (rows dst_pitch bytes apart) gets the
++ * pixels the same read returned in the last finished frame. 1 = written, 0 = nothing usable, read synchronously. */
++int nv2a_d3d_surface_read_async(uint32_t phys, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint8_t *dst, uint32_t dst_pitch);
  
  /* RECOMP_D3D_PROFILE stage accounting (slot 0 = vertex processing). */
  int  nv2a_d3d_prof_enabled(void);
-@@ -185,6 +363,21 @@ int  nv2a_d3d_writeback_busy(void);
+@@ -185,6 +366,21 @@ int  nv2a_d3d_writeback_busy(void);
  /* spike_sampler.c: the thread whose time a spike report breaks down. */
  void recomp_sampler_watch_current_thread(void);
  void recomp_sampler_report(double ms);
@@ -21931,7 +21961,7 @@ index e40d0bcf..b197e109 100644
  
  static uint32_t surface_color_bpp(uint32_t fmt)
 diff --git a/src/video/nv2a_sdlgpu.c b/src/video/nv2a_sdlgpu.c
-index fffccd5f..67a6c6f9 100644
+index fffccd5f..15b0c2b7 100644
 --- a/src/video/nv2a_sdlgpu.c
 +++ b/src/video/nv2a_sdlgpu.c
 @@ -43,9 +43,11 @@
@@ -21978,11 +22008,15 @@ index fffccd5f..67a6c6f9 100644
  
  void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
  {
-@@ -126,14 +137,33 @@ int nv2a_d3d_prof_enabled(void)
+@@ -126,14 +137,37 @@ int nv2a_d3d_prof_enabled(void)
      return s_prof_on;
  }
  
 +static uint32_t s_spec_hits, s_spec_misses, s_read_count;   /* defined with their users below */
++static uint32_t s_early_count, s_ar_latched;   /* early submits; sun reads served without a wait */
++/* Sun reads that fell back to the blocking read, by reason: more reads than slots, no result of
++ * that size/surface, nearest result moved too far, result too old, surface not readable. */
++static uint32_t s_ar_miss_full, s_ar_miss_none, s_ar_miss_far, s_ar_miss_old, s_ar_miss_surf;
 +static int64_t s_read_ticks;
 +/* Visibility (z-pass) results read back and the time spent on them (zpass_collect). */
 +static uint32_t s_zread_count;
@@ -22013,7 +22047,7 @@ index fffccd5f..67a6c6f9 100644
      prev = now;
      if (!last) { last = now; return; }
      if (now - last < freq) return;
-@@ -145,8 +175,18 @@ static void prof_report(void)
+@@ -145,8 +179,21 @@ static void prof_report(void)
      fprintf(stderr, " ms/frame | %llu verts %llu draws %llu passes/frame\n",
              (unsigned long long)(s_prof_verts / frames), (unsigned long long)(s_prof_draws / frames),
              (unsigned long long)(s_prof_passes / frames));
@@ -22023,6 +22057,9 @@ index fffccd5f..67a6c6f9 100644
 +            (double)s_zread_count / (double)frames, (double)s_zread_ticks * 1000.0 / (double)freq / (double)frames);
 +    s_zread_count = 0;
 +    s_zread_ticks = 0;
++    fprintf(stderr, "[SDLGPU_PROF] early submits %u, sun reads served without a wait %u, blocking: slots full %u, "
++            "no match %u, moved %u, old %u, surface %u (total)\n", s_early_count, s_ar_latched,
++            s_ar_miss_full, s_ar_miss_none, s_ar_miss_far, s_ar_miss_old, s_ar_miss_surf);
 +    if (s_pipes_built || s_draws_skipped)
 +        fprintf(stderr, "[SDLGPU_PROF] pipelines built in the background %u, draws skipped waiting for one %u, "
 +                "drawn with the generic shader meanwhile %u (total)\n", s_pipes_built, s_draws_skipped, s_stand_ins);
@@ -22032,7 +22069,7 @@ index fffccd5f..67a6c6f9 100644
      s_prof_verts = s_prof_draws = s_prof_passes = 0;
      frames = 0;
      worst = 0;
-@@ -203,6 +243,20 @@ static void frame_csv(int64_t pace)
+@@ -203,6 +250,20 @@ static void frame_csv(int64_t pace)
  }
  
  static uint32_t s_frame = 1;
@@ -22053,7 +22090,7 @@ index fffccd5f..67a6c6f9 100644
  /* Bumped at every pushbuffer kick (see nv2a_d3d11.c). */
  static uint32_t s_epoch = 1;
  
-@@ -225,6 +279,85 @@ void nv2a_d3d_set_overlay_hooks(const NvOverlayHooks *hooks)
+@@ -225,6 +286,85 @@ void nv2a_d3d_set_overlay_hooks(const NvOverlayHooks *hooks)
  
  static volatile float s_aspect;
  
@@ -22139,7 +22176,7 @@ index fffccd5f..67a6c6f9 100644
  /* The window's size in pixels; 0 if there is no window or it is minimised. */
  static int client_size(uint32_t *w, uint32_t *h)
  {
-@@ -243,7 +376,7 @@ float nv2a_d3d_display_aspect(void)
+@@ -243,7 +383,7 @@ float nv2a_d3d_display_aspect(void)
      float a = s_aspect;
      uint32_t w, h;
      if (a) return a;
@@ -22148,7 +22185,7 @@ index fffccd5f..67a6c6f9 100644
      if (client_size(&w, &h)) return s_aspect = clamp_aspect((float)w / (float)h);
      if (SDL_WasInit(SDL_INIT_VIDEO)) {
          /* No window yet (sizing it): the display it will open on. */
-@@ -312,6 +445,7 @@ static const ShaderSource s_shader_src[SH_COUNT] = {
+@@ -312,6 +452,7 @@ static const ShaderSource s_shader_src[SH_COUNT] = {
  #endif
  };
  static SDL_GPUShader *s_shader[SH_COUNT];
@@ -22156,7 +22193,7 @@ index fffccd5f..67a6c6f9 100644
  
  static int create_shaders(void)
  {
-@@ -331,6 +465,7 @@ static int create_shaders(void)
+@@ -331,6 +472,7 @@ static int create_shaders(void)
              ci.code = src->dxil;
              ci.code_size = src->dxil_size;
          } else if (formats & SDL_GPU_SHADERFORMAT_SPIRV) {
@@ -22164,7 +22201,7 @@ index fffccd5f..67a6c6f9 100644
              ci.format = SDL_GPU_SHADERFORMAT_SPIRV;
              ci.code = src->spirv;
              ci.code_size = src->spirv_size;
-@@ -477,11 +612,19 @@ static void rec_uniform(int fragment, uint32_t slot, const void *data, uint32_t
+@@ -477,11 +619,19 @@ static void rec_uniform(int fragment, uint32_t slot, const void *data, uint32_t
      }
  }
  
@@ -22184,7 +22221,7 @@ index fffccd5f..67a6c6f9 100644
      o->a = off;
      o->b = n;
  }
-@@ -591,6 +734,7 @@ static void flush_batch(void)
+@@ -591,6 +741,7 @@ static void flush_batch(void)
      SDL_EndGPURenderPass(rp);
  reset:
      graveyard_empty();
@@ -22192,7 +22229,61 @@ index fffccd5f..67a6c6f9 100644
      s_b.nops = 0;
      s_b.arena_len = 0;
      s_b.color = s_b.depth = NULL;
-@@ -800,6 +944,118 @@ static void graveyard_empty(void)
+@@ -619,6 +770,10 @@ static void target(SDL_GPUTexture *color, int *color_clear, SDL_GPUTexture *dept
+     s_b.i0 = s_b.i1 = s_ipos;
+ }
+ 
++/* Early submits (see submit_early). */
++static uint32_t s_early_draws;     /* draws recorded since the last submit */
++static int64_t s_early_last;       /* when the last submit was */
++
+ /* Submit the command buffer, optionally fenced; data rings start over. */
+ static void submit(SDL_GPUFence **fence)
+ {
+@@ -641,6 +796,42 @@ static void submit(SDL_GPUFence **fence)
+     s_cmd_serial++;
+     s_vpos = s_ipos = s_upos = 0;
+     s_b.v0 = s_b.v1 = s_b.i0 = s_b.i1 = 0;
++    s_early_draws = 0;
++    s_early_last = qpc();
++}
++
++static void copy_end(void);
++
++/* The frame used to reach the GPU in one piece at the flip: the GPU began it when the CPU had
++ * finished it, and the title waited at its flip for the whole GPU frame (4-5 ms a frame at render
++ * scale 2.25; Direct3D 11's driver sends work on while the frame is built). Now the draws recorded so
++ * far are submitted every RECOMP_SDLGPU_SUBMIT_DRAWS draws (default 128, 0 = only at the flip).
++ * The rings go on where they were: restarting them, as submit() does, would cycle a 32 MB and a
++ * 16 MB buffer per early submit. Marking them as mapped for the new command buffer keeps
++ * ring_reserve and upload_texture_extent from cycling as well; the data already in them belongs to
++ * copies the GPU has yet to run, and the new command buffer writes after it. */
++static int early_draws_limit(void)
++{
++    static int n = -1;
++    if (n < 0) {
++        const char *e = getenv("RECOMP_SDLGPU_SUBMIT_DRAWS");
++        n = e && *e ? atoi(e) : 128;
++        if (n < 0) n = 0;
++    }
++    return n;
++}
++
++static void submit_early(void)
++{
++    uint32_t v = s_vpos, i = s_ipos, u = s_upos;
++    if (!s_cmd) return;
++    copy_end();
++    submit(NULL);
++    s_vpos = v; s_ipos = i; s_upos = u;
++    s_b.v0 = s_b.v1 = v;
++    s_b.i0 = s_b.i1 = i;
++    s_vcmd = s_icmd = s_ucmd = s_cmd_serial;
++    s_early_count++;
+ }
+ 
+ /* --------------------------------------------------------- copy passes */
+@@ -800,6 +991,118 @@ static void graveyard_empty(void)
      s_samp_graveyard_n = 0;
  }
  
@@ -22311,7 +22402,7 @@ index fffccd5f..67a6c6f9 100644
  /* ------------------------------------------------------------- pipelines */
  
  enum { FMT_NONE, FMT_BGRA8, FMT_RGBA16, FMT_R32F };
-@@ -808,8 +1064,8 @@ static SDL_GPUTextureFormat s_depth_format;
+@@ -808,8 +1111,8 @@ static SDL_GPUTextureFormat s_depth_format;
  typedef struct {
      uint8_t vs, ps, color, depth, prim, blend_enable, write_mask, cull;
      uint8_t front_ccw, zt, zw, zfunc, st, sfunc, rmask, wmask;
@@ -22322,7 +22413,7 @@ index fffccd5f..67a6c6f9 100644
      int32_t bias;
      float slope;
  } PipeKey;
-@@ -898,77 +1154,382 @@ static SDL_GPUTextureFormat color_format(uint8_t f)
+@@ -898,77 +1201,470 @@ static SDL_GPUTextureFormat color_format(uint8_t f)
      }
  }
  
@@ -22478,26 +22569,62 @@ index fffccd5f..67a6c6f9 100644
 +    return hd;
 +}
 +
-+/* The keys earlier runs built (same build only), then the file is kept open to add new ones. */
++/* A key names its specialised shader by index (spec), and pipeline_create builds it from this build's
++ * list (an index past the end gets the generic shader), so a file from a shorter or older shader list
++ * is still safe to warm up: it may only build a few unused pipelines. Before, any change of the list
++ * (new states in src/shaders/mm3_ps_states.txt) threw the whole file away and every pipeline stalled
++ * once again. The key layout and the depth format must match. */
++static int pipe_header_ok(const PipeFileHeader *got, const PipeFileHeader *want)
++{
++    return !memcmp(got->magic, want->magic, 8) && got->key_size == want->key_size &&
++           got->depth_format == want->depth_format;
++}
++
++/* The keys earlier runs built, then the file is kept open to add new ones. */
 +static void pipe_file_open(void)
 +{
 +    char path[1024], dir[1024], *slash;
 +    PipeFileHeader want = pipe_file_header(), got;
 +    FILE *f;
++    uint32_t seed_n = 0;
++    int user_ok = 0;
 +    if (!pipe_file_path(path, sizeof path)) return;
 +    strcpy(dir, path);
 +    if ((slash = strrchr(dir, '/')) != NULL) { *slash = 0; SDL_CreateDirectory(dir); }
++    /* A list shipped next to the exe (sdlgpu-pipelines-seed.bin, a copy of a played-in cache file from
++     * a GPU with the same depth format) is built at start-up too: a first run then has no pipeline
++     * stalls (126-625 ms each, Fix 8 in VULKAN_PERF_PLAN.md). A list for another depth format (the
++     * Steam Deck's RADV uses D32S8, NVIDIA D24S8) fails pipe_header_ok and is ignored. */
++    {
++        const char *base = SDL_GetBasePath();
++        char seed[1024];
++        if (base && snprintf(seed, sizeof seed, "%ssdlgpu-pipelines-seed.bin", base) < (int)sizeof seed &&
++            (f = fopen(seed, "rb")) != NULL) {
++            if (fread(&got, sizeof got, 1, f) == 1 && pipe_header_ok(&got, &want)) {
++                s_warm = (PipeKey *)malloc(WARM_MAX * sizeof *s_warm);
++                while (s_warm && s_warm_n < WARM_MAX && fread(&s_warm[s_warm_n], sizeof(PipeKey), 1, f) == 1)
++                    s_warm_n++;
++                seed_n = s_warm_n;
++            }
++            fclose(f);
++        }
++    }
 +    f = fopen(path, "rb");
 +    if (f) {
-+        if (fread(&got, sizeof got, 1, f) == 1 && !memcmp(&got, &want, sizeof got)) {
-+            s_warm = (PipeKey *)malloc(WARM_MAX * sizeof *s_warm);
-+            while (s_warm && s_warm_n < WARM_MAX && fread(&s_warm[s_warm_n], sizeof(PipeKey), 1, f) == 1)
-+                s_warm_n++;
-+            s_pk_saved = s_warm_n;
++        if (fread(&got, sizeof got, 1, f) == 1 && pipe_header_ok(&got, &want)) {
++            PipeKey key;
++            user_ok = 1;
++            if (!s_warm) s_warm = (PipeKey *)malloc(WARM_MAX * sizeof *s_warm);
++            while (s_warm && fread(&key, sizeof key, 1, f) == 1) {
++                uint32_t w;
++                s_pk_saved++;
++                for (w = 0; w < seed_n && memcmp(&s_warm[w], &key, sizeof key); w++) {}
++                if (w == seed_n && s_warm_n < WARM_MAX) s_warm[s_warm_n++] = key;
++            }
 +        }
 +        fclose(f);
 +    }
-+    if (s_pk_saved) {
++    if (user_ok) {
 +        s_pk_file = fopen(path, "ab");
 +    } else {
 +        s_pk_file = fopen(path, "wb");
@@ -22505,16 +22632,23 @@ index fffccd5f..67a6c6f9 100644
 +    }
 +}
 +
-+static int pipe_worker(void *unused)
++/* RECOMP_SDLGPU_PRELOAD=1 (the launcher's "Load all shaders before playing", default on): start-up
++ * builds every saved pipeline (the warm-up list) on several threads and waits for them, so the first
++ * race has no first-use stutters from pipelines an earlier run or the shipped seed list knew. Without
++ * it one low-priority thread builds them in the background while the title boots. */
++static SDL_AtomicInt s_warm_next, s_warm_built, s_warm_active;
++
++static void warm_loop(void)
 +{
-+    int64_t t_start = qpc();
-+    uint32_t i, warmed = 0;
-+    SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_LOW);   /* the driver compiles on the handheld's few cores: the game thread comes first */
-+    for (i = 0; unused == NULL && i < s_warm_n; i++) {
-+        PipeKey *k = &s_warm[i];
-+        uint64_t h = hash_mem((const uint8_t *)k, sizeof *k);
++    for (;;) {
++        uint32_t i = (uint32_t)SDL_AddAtomicInt(&s_warm_next, 1);
++        PipeKey *k;
++        uint64_t h;
 +        SDL_GPUGraphicsPipeline *p;
 +        int have;
++        if (i >= s_warm_n) break;
++        k = &s_warm[i];
++        h = hash_mem((const uint8_t *)k, sizeof *k);
 +        pipe_lock();
 +        have = pipe_find_locked(k, h) != NULL;
 +        pipe_unlock();
@@ -22524,11 +22658,29 @@ index fffccd5f..67a6c6f9 100644
 +        pipe_lock();
 +        if (!pipe_insert_locked(k, h, p)) SDL_ReleaseGPUGraphicsPipeline(s_dev, p);
 +        pipe_unlock();
-+        warmed++;
++        SDL_AddAtomicInt(&s_warm_built, 1);
 +    }
-+    if (unused == NULL && s_warm_n)
-+        fprintf(stderr, "[SDLGPU] pipeline warm-up: %u of %u pipelines from earlier runs built in %.0f ms\n",
-+                warmed, s_warm_n, (qpc() - t_start) * 1000.0 / (double)qpf());
++}
++
++static int warm_helper(void *unused)
++{
++    (void)unused;
++    warm_loop();
++    SDL_AddAtomicInt(&s_warm_active, -1);
++    return 0;
++}
++
++static int pipe_worker(void *unused)
++{
++    int64_t t_start = qpc();
++    SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_LOW);   /* the driver compiles on the handheld's few cores: the game thread comes first */
++    if (unused == NULL) {
++        warm_loop();
++        if (s_warm_n)
++            fprintf(stderr, "[SDLGPU] pipeline warm-up: %d of %u pipelines from earlier runs built in %.0f ms\n",
++                    SDL_GetAtomicInt(&s_warm_built), s_warm_n, (qpc() - t_start) * 1000.0 / (double)qpf());
++        SDL_AddAtomicInt(&s_warm_active, -1);
++    }
 +    fflush(stderr);
 +    for (;;) {
 +        PipeKey key;
@@ -22582,11 +22734,31 @@ index fffccd5f..67a6c6f9 100644
 +    s_pq_sem = SDL_CreateSemaphore(0);
 +    if (!s_pipe_lock || !s_pq_sem) { s_async = 0; return; }
 +    pipe_file_open();
++    SDL_SetAtomicInt(&s_warm_active, 1);
 +    t = SDL_CreateThread(pipe_worker, "mm3 pipelines", NULL);
-+    if (!t) { s_async = 0; return; }
++    if (!t) { s_async = 0; SDL_SetAtomicInt(&s_warm_active, 0); return; }
 +    SDL_DetachThread(t);
 +    if ((t = SDL_CreateThread(pipe_worker, "mm3 pipelines 2", &s_async)) != NULL)   /* a second builder: no warm-up */
 +        SDL_DetachThread(t);
++    {
++        const char *pre = getenv("RECOMP_SDLGPU_PRELOAD");
++        if (pre && pre[0] == '1' && s_warm_n) {
++            int64_t t0 = qpc(), limit = 90 * qpf();       /* never hold the start longer than 90 s */
++            int helpers = SDL_GetNumLogicalCPUCores() / 2 - 1, n;
++            if (helpers < 1) helpers = 1;
++            if (helpers > 3) helpers = 3;
++            for (n = 0; n < helpers; n++) {
++                SDL_AddAtomicInt(&s_warm_active, 1);
++                if ((t = SDL_CreateThread(warm_helper, "mm3 pipelines warm", NULL)) != NULL) SDL_DetachThread(t);
++                else SDL_AddAtomicInt(&s_warm_active, -1);
++            }
++            while (SDL_GetAtomicInt(&s_warm_active) > 0 && qpc() - t0 < limit)
++                SDL_Delay(5);
++            fprintf(stderr, "[SDLGPU] shaders preloaded: %d of %u pipelines built in %.0f ms%s\n",
++                    SDL_GetAtomicInt(&s_warm_built), s_warm_n, (qpc() - t0) * 1000.0 / (double)qpf(),
++                    SDL_GetAtomicInt(&s_warm_active) > 0 ? " (stopped waiting, the rest builds in the background)" : "");
++        }
++    }
 +}
 +
 +/* While a specialised pipeline is still being built, the same state with the
@@ -22639,16 +22811,7 @@ index fffccd5f..67a6c6f9 100644
 +            pipe_unlock();
 +            p = pipeline(k);
 +            spent += qpc() - t0;
-+            if (p) {
-+                if (s_pk_file && s_pk_saved < WARM_MAX) {      /* the next run builds it at start-up */
-+                    pipe_lock();
-+                    fwrite(k, sizeof *k, 1, s_pk_file);
-+                    fflush(s_pk_file);
-+                    s_pk_saved++;
-+                    pipe_unlock();
-+                }
-+                return p;
-+            }
++            if (p) return p;
 +            pipe_lock();
 +        }
 +    }
@@ -22689,11 +22852,27 @@ index fffccd5f..67a6c6f9 100644
 +    {
 +        int64_t t_pipe = qpc();
 +        p = pipeline_create(k);
-+        stall_log("pipeline built on the drawing thread", t_pipe);
++        {
++            char what[96];
++            snprintf(what, sizeof what, "pipeline built on the drawing thread (vs %u ps %u spec %u color %u prim %u)",
++                     k->vs, k->ps, k->spec, k->color, k->prim);
++            stall_log(what, t_pipe);
++        }
 +        s_sync_pipes++;
 +    }
 +    if (!p) { fail("SDL_CreateGPUGraphicsPipeline"); return NULL; }
 +    pipe_lock();
++    /* Every state built on the drawing thread, the renderer's own passes included, goes in the
++     * cache file: the next run builds it at start-up instead of stalling the frame that needs it. */
++    if (s_pk_file && s_pk_saved < WARM_MAX) {
++        uint32_t w;
++        for (w = 0; w < s_warm_n && memcmp(&s_warm[w], k, sizeof *k); w++) {}
++        if (w == s_warm_n) {                 /* not already in the file (the warm-up may not have reached it yet) */
++            fwrite(k, sizeof *k, 1, s_pk_file);
++            fflush(s_pk_file);
++            s_pk_saved++;
++        }
++    }
 +    if (!pipe_insert_locked(k, h, p)) {
          /* Full: replace the home slot. A pipeline a recorded draw names stays
           * alive until SDL is done with it (release is deferred by SDL). */
@@ -22764,7 +22943,7 @@ index fffccd5f..67a6c6f9 100644
  }
  
  static void pipe_key_plain(PipeKey *k, uint8_t vs, uint8_t ps, uint8_t color, uint8_t prim)
-@@ -986,6 +1547,7 @@ typedef Nv2aSamplerSlot SampSlot;
+@@ -986,6 +1682,7 @@ typedef Nv2aSamplerSlot SampSlot;
  static SampSlot s_samp[SAMP_SLOTS];
  static SDL_GPUSampler *s_linear_clamp, *s_point_clamp;
  static SDL_GPUTexture *s_dummy_2d, *s_dummy_cube, *s_dummy_volume;
@@ -22772,7 +22951,7 @@ index fffccd5f..67a6c6f9 100644
  
  static SDL_GPUSamplerAddressMode addr_mode(uint32_t m)
  {
-@@ -1093,6 +1655,14 @@ int nv2a_d3d_init(void)
+@@ -1093,6 +1790,14 @@ int nv2a_d3d_init(void)
      }
      if (!s_dev) { fail("SDL_CreateGPUDevice"); return 0; }
      fprintf(stderr, "[SDLGPU] device: %s\n", SDL_GetGPUDeviceDriver(s_dev));
@@ -22787,7 +22966,7 @@ index fffccd5f..67a6c6f9 100644
      if (!create_shaders()) return 0;
      s_pipes = (PipeSlot *)calloc(PIPE_SLOTS, sizeof *s_pipes);
      if (!s_pipes) return 0;
-@@ -1100,6 +1670,8 @@ int nv2a_d3d_init(void)
+@@ -1100,6 +1805,8 @@ int nv2a_d3d_init(void)
      if (!SDL_GPUTextureSupportsFormat(s_dev, s_depth_format, SDL_GPU_TEXTURETYPE_2D,
              SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER))
          s_depth_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
@@ -22796,7 +22975,7 @@ index fffccd5f..67a6c6f9 100644
      {
          SDL_GPUBufferCreateInfo b;
          SDL_GPUTransferBufferCreateInfo t;
-@@ -1141,6 +1713,11 @@ int nv2a_d3d_init(void)
+@@ -1141,6 +1848,11 @@ int nv2a_d3d_init(void)
          s_dummy_volume = make_volume(1, 1, 1, 1);
          if (!s_dummy_volume || !s_dummy_2d || !s_dummy_cube || !s_linear_clamp || !s_point_clamp) return 0;
          upload_texture(s_dummy_2d, 0, 0, 1, 1, black, 4);
@@ -22808,7 +22987,7 @@ index fffccd5f..67a6c6f9 100644
          upload_texture(s_dummy_volume, 0, 0, 1, 1, black, 4);
          for (f = 0; f < 6; f++) upload_texture(s_dummy_cube, 0, (uint32_t)f, 1, 1, black + f, 4);
          copy_end();
-@@ -1152,7 +1729,7 @@ int nv2a_d3d_init(void)
+@@ -1152,7 +1864,7 @@ int nv2a_d3d_init(void)
              fail("SDL_ClaimWindowForGPUDevice");
              s_window = NULL;
          } else {
@@ -22817,7 +22996,7 @@ index fffccd5f..67a6c6f9 100644
              SDL_GPUPresentMode mode = SDL_GPU_PRESENTMODE_VSYNC;
              if (!vsync) {
                  if (SDL_WindowSupportsGPUPresentMode(s_dev, s_window, SDL_GPU_PRESENTMODE_IMMEDIATE))
-@@ -1161,6 +1738,10 @@ int nv2a_d3d_init(void)
+@@ -1161,6 +1873,10 @@ int nv2a_d3d_init(void)
                      mode = SDL_GPU_PRESENTMODE_MAILBOX;
              }
              SDL_SetGPUSwapchainParameters(s_dev, s_window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, mode);
@@ -22828,7 +23007,7 @@ index fffccd5f..67a6c6f9 100644
          }
      }
      display_config(1);
-@@ -1200,10 +1781,21 @@ typedef struct {
+@@ -1200,10 +1916,21 @@ typedef struct {
      int chain_levels;
      uint32_t chain_gen[16];
      uint8_t *shadow;
@@ -22850,7 +23029,7 @@ index fffccd5f..67a6c6f9 100644
  } Surface;
  
  typedef struct {
-@@ -1214,7 +1806,6 @@ typedef struct {
+@@ -1214,7 +1941,6 @@ typedef struct {
      int y16_clear;
      uint32_t zf, w, h;
      uint32_t gen, y16_gen, seq;
@@ -22858,7 +23037,7 @@ index fffccd5f..67a6c6f9 100644
      uint32_t used_frame;
  } Depth;
  
-@@ -1358,6 +1949,108 @@ static const uint8_t *surface_guest_rows(const Surface *s, uint32_t *pitch)
+@@ -1358,6 +2084,108 @@ static const uint8_t *surface_guest_rows(const Surface *s, uint32_t *pitch)
  static uint8_t *s_sync_rows;
  static size_t s_sync_cap;
  
@@ -22967,7 +23146,7 @@ index fffccd5f..67a6c6f9 100644
  /* CPU writes to a surface's guest memory, merged over what the GPU drew (see
   * surface_sync_impl in nv2a_d3d11.c). */
  static void surface_sync_impl(Surface *s, int force)
-@@ -1369,18 +2062,31 @@ static void surface_sync_impl(Surface *s, int force)
+@@ -1369,18 +2197,31 @@ static void surface_sync_impl(Surface *s, int force)
      const uint8_t *g;
      SDL_GPUTexture *img, *msk = NULL;
      float span0, span1;
@@ -23000,7 +23179,7 @@ index fffccd5f..67a6c6f9 100644
      }
      if (bytes > s_sync_cap) {
          uint8_t *rows = (uint8_t *)realloc(s_sync_rows, bytes);
-@@ -1412,7 +2118,10 @@ static void surface_sync_impl(Surface *s, int force)
+@@ -1412,7 +2253,10 @@ static void surface_sync_impl(Surface *s, int force)
                      if (x > x1) x1 = x;
                  }
          }
@@ -23012,7 +23191,7 @@ index fffccd5f..67a6c6f9 100644
          if (getenv("RECOMP_D3D_TRACE"))
              fprintf(stderr, "[SDLGPU] CPU wrote surface %08X (frame %u) %u,%u-%u,%u\n",
                      s->phys, s_frame, x0, y0, x1, y1);
-@@ -1435,6 +2144,9 @@ static void surface_sync_impl(Surface *s, int force)
+@@ -1435,6 +2279,9 @@ static void surface_sync_impl(Surface *s, int force)
          s_sync_rows = old_shadow;
          s_sync_cap = old_shadow ? bytes : 0;
      }
@@ -23022,7 +23201,7 @@ index fffccd5f..67a6c6f9 100644
      s->synced_frame = s_epoch;
      s->gen++;
  }
-@@ -1634,8 +2346,61 @@ typedef struct TexEntry {
+@@ -1634,8 +2481,61 @@ typedef struct TexEntry {
      size_t bytes;
      SDL_GPUTexture *tex;
      struct TexEntry *next;
@@ -23084,7 +23263,7 @@ index fffccd5f..67a6c6f9 100644
  #define TEX_BUCKETS 1024
  static TexEntry *s_tex_bucket[TEX_BUCKETS];
  static size_t s_tex_bytes, s_tex_count;
-@@ -1696,6 +2461,7 @@ static SDL_GPUTexture *texture_get_impl(const NvD3DTexture *t, int *guest_levels
+@@ -1696,6 +2596,7 @@ static SDL_GPUTexture *texture_get_impl(const NvD3DTexture *t, int *guest_levels
      uint32_t *pal = NULL, *px = NULL;
      SDL_GPUTextureFormat host_format;
      int hl, is_new, native;
@@ -23092,7 +23271,7 @@ index fffccd5f..67a6c6f9 100644
  
      if (guest_levels) *guest_levels = 1;
      if (!tex_layout(t, &L)) return NULL;
-@@ -1717,12 +2483,37 @@ static SDL_GPUTexture *texture_get_impl(const NvD3DTexture *t, int *guest_levels
+@@ -1717,12 +2618,37 @@ static SDL_GPUTexture *texture_get_impl(const NvD3DTexture *t, int *guest_levels
          e->used = s_frame;
          return e->tex;
      }
@@ -23130,7 +23309,7 @@ index fffccd5f..67a6c6f9 100644
          e->checked_epoch = s_epoch;
          e->used = s_frame;
          return e->tex;
-@@ -1786,6 +2577,7 @@ static SDL_GPUTexture *texture_get_impl(const NvD3DTexture *t, int *guest_levels
+@@ -1786,6 +2712,7 @@ static SDL_GPUTexture *texture_get_impl(const NvD3DTexture *t, int *guest_levels
      }
      e->hash = h;
      e->pal_hash = ph;
@@ -23138,7 +23317,7 @@ index fffccd5f..67a6c6f9 100644
      e->checked_epoch = s_epoch;
      e->used = s_frame;
      if (is_new) {
-@@ -1865,20 +2657,29 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
+@@ -1865,20 +2792,29 @@ static uint32_t write_mask(const NvD3DState *st, Surface *s)
  }
  
  static int s_draw_textured, s_draw_reads_wide;
@@ -23176,7 +23355,7 @@ index fffccd5f..67a6c6f9 100644
  /* The levels of a swizzled render target found as one chain (see
   * surface_chain in nv2a_d3d11.c). */
  static SDL_GPUTexture *surface_chain(Surface *rt, const NvD3DTexture *t, int *levels)
-@@ -2029,6 +2830,124 @@ static Op *draw_op(OpKind kind, uint32_t count, uint32_t first)
+@@ -2029,6 +2965,124 @@ static Op *draw_op(OpKind kind, uint32_t count, uint32_t first)
  
  /* Everything a draw needs apart from its vertices, recorded into the batch
   * (see setup_pipeline in nv2a_d3d11.c, which this follows step for step). */
@@ -23301,7 +23480,7 @@ index fffccd5f..67a6c6f9 100644
  static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                            uint32_t *out_gw, uint32_t *out_gh, uint32_t *out_zmax, int indexed)
  {
-@@ -2039,13 +2958,15 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2039,13 +3093,15 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      PSBorder pb;
      SDL_GPUTexture *srv[13] = { 0 };
      void *smp[4] = { 0 };
@@ -23319,7 +23498,7 @@ index fffccd5f..67a6c6f9 100644
      s_draw_tex_addr = 0;
      s_draw_bspline = 0;
  
-@@ -2075,17 +2996,23 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2075,17 +3131,23 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          rt = surface_find(phys(t->addr));
          if (rt && rt->bpp == 4) { surface_sync(rt, 0); surface_y16(rt); }
      }
@@ -23349,7 +23528,7 @@ index fffccd5f..67a6c6f9 100644
      memset(&pb, 0, sizeof pb);
      for (n = 0; n < 4; n++) {
          const NvD3DTexture *t = &st->tex[n];
-@@ -2105,11 +3032,14 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2105,11 +3167,14 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          s_draw_textured = 1;
          if (!s_draw_tex_addr) s_draw_tex_addr = t->addr;
          if (rt && rt->sx > rt->sy * 1.001f) s_draw_reads_wide = 1;
@@ -23364,7 +23543,7 @@ index fffccd5f..67a6c6f9 100644
          } else if (rt) {
              surface_sync(rt, 0);
              view = rt == s ? feedback_copy(rt) : rt->tex;
-@@ -2133,7 +3063,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2133,7 +3198,8 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
                  }
              }
          } else {
@@ -23374,7 +23553,7 @@ index fffccd5f..67a6c6f9 100644
              if (kind == K_LIN) {
                  pc.tex_scale[n][0] = 1.0f / (float)t->width;
                  pc.tex_scale[n][1] = 1.0f / (float)t->height;
-@@ -2146,11 +3077,24 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2146,11 +3212,24 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
              pc.tex_scale[n][2] = pc.tex_scale[n][3] = 1.0f;
          }
          if (!view) continue;
@@ -23401,7 +23580,7 @@ index fffccd5f..67a6c6f9 100644
              s_draw_bspline = 1;
          pc.tex_info[n][0] = (t->control0 >> 2) & 1;
          pc.tex_info[n][1] = (t->filter >> 28) | (tex_volume(t) ? 256u : 0u);
-@@ -2177,7 +3121,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2177,7 +3256,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      /* A sampled surface's CPU upload or a copy ended this draw's batch;
       * make its targets current again. */
      if (!(s_b.open && s_b.color == (s ? s->tex : NULL) && s_b.depth == (d ? d->tex : NULL)) &&
@@ -23410,7 +23589,7 @@ index fffccd5f..67a6c6f9 100644
          return 0;
  
      for (n = 0; n < 8; n++) {
-@@ -2197,6 +3141,41 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2197,6 +3276,41 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      pc.alpha_func = st->alpha_func;
      pc.alpha_ref = st->alpha_ref;
      pc.ps_flags = (st->rc_seen ? 1u : 0u) | (st->alpha_test ? 2u : 0u) | (s_draw_bspline ? 4u : 0u);
@@ -23452,7 +23631,7 @@ index fffccd5f..67a6c6f9 100644
      pc.clip_plane = st->clip_plane_mode;
      pc.other_input = st->other_stage_input;
      pc.dot_map = st->dot_rgb_mapping;
-@@ -2229,7 +3208,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2229,7 +3343,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      }
      /* Texture reads can end the batch. */
      if (!(s_b.open && s_b.color == (s ? s->tex : NULL) && s_b.depth == (d ? d->tex : NULL)) &&
@@ -23461,7 +23640,7 @@ index fffccd5f..67a6c6f9 100644
          return 0;
  
      if (st->poly_offset_fill && !(wdepth && d)) {
-@@ -2242,6 +3221,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2242,6 +3356,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
          static const uint8_t ps[4] = { SH_PS_MAIN, SH_PS_MAIN_FLAT, SH_PS_WDEPTH, SH_PS_WDEPTH_FLAT };
          k.vs = SH_UB_VS;
          k.ps = ps[v];
@@ -23469,7 +23648,7 @@ index fffccd5f..67a6c6f9 100644
      }
      k.color = s ? FMT_BGRA8 : FMT_NONE;
      k.depth = d ? 1 : 0;
-@@ -2252,15 +3232,16 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2252,15 +3367,16 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      k.sf = (uint16_t)st->blend_sfactor;
      k.df = (uint16_t)st->blend_dfactor;
      k.eq = (uint16_t)st->blend_equation;
@@ -23489,7 +23668,7 @@ index fffccd5f..67a6c6f9 100644
          k.st = st->stencil_test ? 1 : 0;
          k.sfunc = (uint8_t)(st->stencil_func & 7);
          k.rmask = (uint8_t)st->stencil_func_mask;
-@@ -2271,7 +3252,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
+@@ -2271,7 +3387,7 @@ static int setup_pipeline(const NvD3DState *st, int topology, Surface **out_s,
      } else {
          k.zfunc = 7; k.sfunc = 7;
      }
@@ -23498,7 +23677,7 @@ index fffccd5f..67a6c6f9 100644
      if ((st->blend_sfactor | st->blend_dfactor) & 0x8000) {
          float c[4];
          unpack4(st->blend_color, c);
-@@ -2362,6 +3343,74 @@ void nv2a_d3d_zpass_clear(void)
+@@ -2362,6 +3478,74 @@ void nv2a_d3d_zpass_clear(void)
      s_zpass = 0;
  }
  
@@ -23573,7 +23752,17 @@ index fffccd5f..67a6c6f9 100644
  uint32_t nv2a_d3d_zpass_read(void)
  {
      double px;
-@@ -2456,6 +3505,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -2427,6 +3611,9 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+     /* Room for this draw's data in the current command buffer, or a new one. */
+     if (need > VB_BYTES - s_vpos || ib_bytes > IB_BYTES - s_ipos)
+         submit(NULL);
++    else if (early_draws_limit() && s_early_draws >= (uint32_t)early_draws_limit())
++        submit_early();
++    s_early_draws++;
+ 
+     t_draw = s_prof_on > 0 ? qpc() : 0;
+     s_prof_draws++;
+@@ -2456,6 +3643,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
              d.x0 = xlo; d.y0 = ylo; d.x1 = xhi; d.y1 = yhi;
              d.tex = s_draw_tex_addr; d.textured = s_draw_textured; d.reads_wide = s_draw_reads_wide;
              use_dx = s_overlay.place(&d, count <= dx_cap ? dx : NULL, &squeeze, &shift);
@@ -23585,7 +23774,7 @@ index fffccd5f..67a6c6f9 100644
          }
      }
  
-@@ -2481,6 +3535,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -2481,6 +3673,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
                      s_overlay.sanitize_vertex_upload(p + uc.at[i][0] - s_vpos, &attr[i], i, lo, count);
      }
      uc.info[2] = 0xFFFFFFFFu;
@@ -23597,7 +23786,7 @@ index fffccd5f..67a6c6f9 100644
      if (use_dx) {
          memcpy(p + at, dx, count * 4);
          uc.info[2] = s_vpos + at;
-@@ -2501,9 +3560,22 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -2501,9 +3698,22 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
              uc.info[0] = start;
          }
          /* Every slot the vertex shader declares gets data at least once per
@@ -23623,7 +23812,7 @@ index fffccd5f..67a6c6f9 100644
          rec_uniform(0, 1, s_zero_block, sizeof s_zero_block);
      }
      uc.map[0] = 2.0f / (float)gw;
-@@ -2520,6 +3592,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
+@@ -2520,6 +3730,11 @@ void nv2a_d3d_draw_ub(const NvD3DState *st, int topology, const NvD3DAttrib attr
      rec_uniform(0, 0, &uc, sizeof uc);
      rec_uniform(1, 0, s_zero_block, sizeof s_zero_block);
      draw_op(OP_DRAWI, ni, first_index);
@@ -23635,7 +23824,7 @@ index fffccd5f..67a6c6f9 100644
      s_vpos += (at + 255) & ~255u;
      s_ipos += (ib_bytes + 255) & ~255u;
      s_b.v1 = s_vpos;
-@@ -2586,6 +3663,10 @@ void nv2a_sdlgpu_zcount(const NvD3DState *st, Surface *s, uint32_t first_index,
+@@ -2586,6 +3801,10 @@ void nv2a_sdlgpu_zcount(const NvD3DState *st, Surface *s, uint32_t first_index,
      target(s->tex, &s->clear, s_cur_ds ? s_cur_ds->tex : NULL, s_cur_ds ? &s_cur_ds->clear : NULL);
  }
  
@@ -23646,7 +23835,7 @@ index fffccd5f..67a6c6f9 100644
  static void zpass_collect(void)
  {
      SDL_GPUTransferBuffer *tb;
-@@ -2594,23 +3675,33 @@ static void zpass_collect(void)
+@@ -2594,23 +3813,33 @@ static void zpass_collect(void)
      SDL_GPUTextureTransferInfo info;
      uint32_t levels = 1, m, lw, lh;
      SDL_GPUTexture *sum;
@@ -23687,7 +23876,7 @@ index fffccd5f..67a6c6f9 100644
      memset(&r, 0, sizeof r);
      memset(&info, 0, sizeof info);
      r.texture = sum; r.mip_level = levels - 1; r.w = r.h = r.d = 1;
-@@ -2621,16 +3712,16 @@ static void zpass_collect(void)
+@@ -2621,16 +3850,16 @@ static void zpass_collect(void)
      if (fence) {
          float avg = 0;
          const float *v;
@@ -23707,7 +23896,7 @@ index fffccd5f..67a6c6f9 100644
  }
  
  /* ------------------------------------------------------------------ clear */
-@@ -2677,7 +3768,6 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
+@@ -2677,7 +3906,6 @@ void nv2a_d3d_clear(const NvD3DState *st, uint32_t flags, uint32_t color,
      if (y1 >= gh) y1 = gh - 1;
      if (x0 > x1 || y0 > y1)
          return;
@@ -23715,10 +23904,169 @@ index fffccd5f..67a6c6f9 100644
      pipe_key_plain(&k, SH_CLEAR_VS, SH_CLEAR_PS, s ? FMT_BGRA8 : FMT_NONE,
                     SDL_GPU_PRIMITIVETYPE_TRIANGLESTRIP);
      k.write_mask = (uint8_t)mask;
-@@ -2742,6 +3832,18 @@ static int s_wb_pending;
+@@ -2742,6 +3970,177 @@ static int s_wb_pending;
  static uint32_t s_wb_mask;
  static SDL_GPUFence *s_wb_fence;
  
++/* The sun flare's 8x8 frame copies (nv2a_d3d_surface_read) submit the frame so far and wait for
++ * the GPU: 4.8-5.5 ms each. The latched read does not wait: read number k of a frame writes at once
++ * what read number k of the last finished frame returned, and queues a download of the pixels as they
++ * are now for the next frame (its data arrives with the flip's write-back fence). The title rebuilds
++ * its 128x128 visibility picture every frame, so the write must happen here, in command order; pixels
++ * delivered later would be wiped before the flare is drawn. One frame of lag in the sun's visibility.
++ * Each slot keeps its transfer buffer (one per read made a GPU allocation per frame).
++ * RECOMP_SDLGPU_SYNC_READ=1: always the blocking read. */
++#define AR_MAX 32
++static int writeback_finish(int wait);
++typedef struct {
++    SDL_GPUTransferBuffer *tb;
++    uint32_t tb_bytes;
++    uint32_t *res;                 /* the last finished result, w x h guest pixels */
++    uint32_t res_cap, res_w, res_h, res_x, res_y, res_phys, res_frame;
++    int valid;
++    int pending;                   /* 1 download recorded, 2 its command buffer is behind s_wb_fence */
++    uint32_t phys, x, y, w, h, hx0, hy0, bw, bh, iw, ih, sw, sh;
++} AsyncRead;
++static AsyncRead s_ar[AR_MAX];
++static uint32_t s_ar_ord;          /* reads so far in this frame */
++static uint32_t s_ar_sub;          /* slots whose download waits for s_wb_fence */
++
++int nv2a_d3d_surface_read_async(uint32_t phys, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
++                                uint8_t *dst, uint32_t dst_pitch)
++{
++    static int off = -1;
++    Surface *s;
++    AsyncRead *a;
++    AsyncRead *best = NULL;
++    uint32_t hx0, hy0, hx1, hy1, j, k, best_d = 0xFFFFFFFFu;
++    int served = 0, any = 0, old = 0;
++    if (off < 0) off = getenv("RECOMP_D3D_NO_WRITEBACK") || getenv("RECOMP_SDLGPU_SYNC_READ");
++    if (off || !s_dev || !dst || !w || !h || w * h > 65536u) return 0;
++    s = surface_find(phys);
++    if (!s || !s->tex || s->bpp != 4 || !s->w || !s->h || x + w > s->w || y + h > s->h || s->clear) {
++        s_ar_miss_surf++;
++        return 0;
++    }
++    if (s_ar_ord >= AR_MAX) { s_ar_miss_full++; return 0; }
++    /* Take last frame's downloads as soon as the GPU has them (non-blocking): otherwise they were
++     * collected only at the next flip, and the lights' visibility lagged two frames instead of one. */
++    if (s_ar_sub && s_wb_fence && SDL_QueryGPUFence(s_dev, s_wb_fence))
++        writeback_finish(0);
++    a = &s_ar[s_ar_ord++];
++    hx0 = (uint32_t)((uint64_t)x * s->iw / s->w);
++    hy0 = (uint32_t)((uint64_t)y * s->ih / s->h);
++    hx1 = (uint32_t)((uint64_t)(x + w) * s->iw / s->w);
++    hy1 = (uint32_t)((uint64_t)(y + h) * s->ih / s->h);
++    if (hx1 <= hx0) hx1 = hx0 + 1;
++    if (hy1 <= hy0) hy1 = hy0 + 1;
++    if (hx1 > s->iw || hy1 > s->ih) { s_ar_miss_surf++; return 0; }
++    /* Last frame's result for this block: the nearest result of the same size and surface in any slot.
++     * Slot k alone missed whenever a light came into or left view (every later read of the frame
++     * shifted one slot: 738 blocking reads in one race, 2026-11-12). */
++    for (k = 0; k < AR_MAX; k++) {
++        AsyncRead *c = &s_ar[k];
++        uint32_t dx, dy, d;
++        if (!c->valid || c->res_w != w || c->res_h != h || c->res_phys != phys) continue;
++        any = 1;
++        if (s_frame - c->res_frame > 3u) { old = 1; continue; }
++        dx = x > c->res_x ? x - c->res_x : c->res_x - x;
++        dy = y > c->res_y ? y - c->res_y : c->res_y - y;
++        d = dx > dy ? dx : dy;
++        if (d < best_d) { best_d = d; best = c; }
++    }
++    if (best && best_d <= 32) {
++        for (j = 0; j < h; j++)
++            memcpy(dst + (size_t)j * dst_pitch, best->res + (size_t)j * w, (size_t)w * 4);
++        served = 1;
++        s_ar_latched++;
++    } else if (best) {
++        s_ar_miss_far++;
++    } else if (old) {
++        s_ar_miss_old++;
++    } else {
++        (void)any;
++        s_ar_miss_none++;
++    }
++    /* The pixels as they are now, for the next frame; a slot still waiting keeps its older download. */
++    if (!a->pending) {
++        uint32_t bytes = (hx1 - hx0) * (hy1 - hy0) * 4;
++        SDL_GPUTextureRegion r;
++        SDL_GPUTextureTransferInfo info;
++        if (a->tb && a->tb_bytes < bytes) {
++            SDL_ReleaseGPUTransferBuffer(s_dev, a->tb);
++            a->tb = NULL;
++        }
++        if (!a->tb) {
++            SDL_GPUTransferBufferCreateInfo ci;
++            memset(&ci, 0, sizeof ci);
++            ci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
++            ci.size = bytes;
++            a->tb = SDL_CreateGPUTransferBuffer(s_dev, &ci);
++            a->tb_bytes = a->tb ? bytes : 0;
++        }
++        if (a->tb && copy_begin()) {
++            memset(&r, 0, sizeof r);
++            memset(&info, 0, sizeof info);
++            r.texture = s->tex; r.x = hx0; r.y = hy0; r.w = hx1 - hx0; r.h = hy1 - hy0; r.d = 1;
++            info.transfer_buffer = a->tb;
++            SDL_DownloadFromGPUTexture(s_copy, &r, &info);
++            copy_end();
++            a->pending = 1;
++            a->phys = phys; a->x = x; a->y = y; a->w = w; a->h = h;
++            a->hx0 = hx0; a->hy0 = hy0; a->bw = hx1 - hx0; a->bh = hy1 - hy0;
++            a->iw = s->iw; a->ih = s->ih; a->sw = s->w; a->sh = s->h;
++        }
++    }
++    return served;
++}
++
++/* The downloads behind the finished fence become their slots' results (same sampling as
++ * nv2a_d3d_surface_read: each guest pixel reads the host pixel at its centre). */
++static void async_reads_complete(void)
++{
++    uint32_t k, i, j;
++    for (k = 0; k < AR_MAX; k++) {
++        AsyncRead *a = &s_ar[k];
++        const uint8_t *m;
++        if (a->pending != 2) continue;
++        a->pending = 0;
++        if (a->res_cap < a->w * a->h) {
++            uint32_t *nr = (uint32_t *)realloc(a->res, (size_t)a->w * a->h * 4);
++            if (!nr) { a->valid = 0; continue; }
++            a->res = nr; a->res_cap = a->w * a->h;
++        }
++        if (!(m = (const uint8_t *)SDL_MapGPUTransferBuffer(s_dev, a->tb, false))) { a->valid = 0; continue; }
++        for (j = 0; j < a->h; j++) {
++            uint32_t hy = (uint32_t)(((uint64_t)(a->y + j) * 2 + 1) * a->ih / ((uint64_t)a->sh * 2));
++            const uint32_t *row;
++            hy = hy < a->hy0 ? 0 : hy - a->hy0;
++            if (hy >= a->bh) hy = a->bh - 1;
++            row = (const uint32_t *)(m + (size_t)hy * a->bw * 4);
++            for (i = 0; i < a->w; i++) {
++                uint32_t hx = (uint32_t)(((uint64_t)(a->x + i) * 2 + 1) * a->iw / ((uint64_t)a->sw * 2));
++                hx = hx < a->hx0 ? 0 : hx - a->hx0;
++                if (hx >= a->bw) hx = a->bw - 1;
++                a->res[(size_t)j * a->w + i] = row[hx];
++            }
++        }
++        SDL_UnmapGPUTransferBuffer(s_dev, a->tb);
++        a->res_w = a->w; a->res_h = a->h; a->res_x = a->x; a->res_y = a->y; a->res_phys = a->phys;
++        a->res_frame = s_frame;
++        a->valid = 1;
++    }
++    s_ar_sub = 0;
++}
++
++/* At the flip: the downloads recorded this frame are behind the fence just taken (or already done). */
++static void async_reads_flip(int fenced)
++{
++    uint32_t k;
++    for (k = 0; k < AR_MAX; k++)
++        if (s_ar[k].pending == 1) { s_ar[k].pending = 2; s_ar_sub++; }
++    s_ar_ord = 0;
++    if (s_ar_sub && !fenced) async_reads_complete();
++}
++
 +/* RECOMP_READBACK_HOLD=0 (see xbox_readback_hold in xbox_memory_layout.c):
 + * read here too, so this renderer builds without the kernel (tests). */
 +static int readback_hold(void)
@@ -23734,7 +24082,16 @@ index fffccd5f..67a6c6f9 100644
  static void writeback_drop_surface(Surface *s)
  {
      unsigned slot = (unsigned)(s - s_surf);
-@@ -2791,7 +3893,7 @@ static int writeback_finish(int wait)
+@@ -2780,7 +4179,7 @@ static int wb_surface_ok(const Surface *s)
+ static int writeback_finish(int wait)
+ {
+     int i;
+-    if (!s_wb_pending) {
++    if (!s_wb_pending && !s_ar_sub) {
+         /* Every copy was dropped while its fence was pending: release it. */
+         if (s_wb_fence) {
+             SDL_ReleaseGPUFence(s_dev, s_wb_fence);
+@@ -2791,7 +4190,7 @@ static int writeback_finish(int wait)
      if (s_wb_fence) {
          if (!wait && !SDL_QueryGPUFence(s_dev, s_wb_fence))
              return 0;
@@ -23743,7 +24100,7 @@ index fffccd5f..67a6c6f9 100644
          SDL_ReleaseGPUFence(s_dev, s_wb_fence);
          s_wb_fence = NULL;
      }
-@@ -2801,7 +3903,7 @@ static int writeback_finish(int wait)
+@@ -2801,7 +4200,7 @@ static int writeback_finish(int wait)
          const uint8_t *m;
          uint8_t *dst;
          uint32_t x, y, rowb;
@@ -23752,7 +24109,7 @@ index fffccd5f..67a6c6f9 100644
          if (!(s_wb_mask & (1u << i)))
              continue;
          if (!wb_surface_ok(s) || k->w != s->w || k->h != s->h) {
-@@ -2814,16 +3916,19 @@ static int writeback_finish(int wait)
+@@ -2814,16 +4213,19 @@ static int writeback_finish(int wait)
              continue;
          k->pending = 0;
          s_wb_mask &= ~(1u << i);
@@ -23774,7 +24131,7 @@ index fffccd5f..67a6c6f9 100644
              if (s->bpp == 4) {
                  if (amode < 0) {
                      memcpy(row, src, rowb);
-@@ -2843,6 +3948,10 @@ static int writeback_finish(int wait)
+@@ -2843,18 +4245,42 @@ static int writeback_finish(int wait)
              memcpy(s->shadow + (size_t)y * rowb, row, rowb);
          }
          SDL_UnmapGPUTransferBuffer(s_dev, k->tb);
@@ -23783,9 +24140,42 @@ index fffccd5f..67a6c6f9 100644
 +        s->guest_hash_ok = kept;
 +        if (kept) s->guest_hash = surface_guest_hash(s);
      }
++    async_reads_complete();
      s_wb_pending = s_wb_mask != 0;
      return !s_wb_pending;
-@@ -2863,7 +3972,16 @@ static void writeback_surfaces(void)
+ }
+ 
+ int nv2a_d3d_writeback_busy(void)
+ {
+-    if (!s_wb_pending || writeback_finish(0))
++    if ((!s_wb_pending && !s_ar_sub) || writeback_finish(0))
+         return 0;
+     return 1;
+ }
+ 
++/* Renderer thread, when the title waits for the flip's read-back (nv2a_ack_idle_wait in
++ * xbox_memory_layout.c checked that): sleep 100 us instead of spinning on SDL_QueryGPUFence, as the
++ * Direct3D 11 renderer waits on its fence event with a 250 us deadline. 0 = nothing to wait for or the
++ * copy is already done, so the caller collects it now. RECOMP_SDLGPU_IDLE_WAIT=0: spin as before. */
++int nv2a_d3d_readback_idle_wait(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char *e = getenv("RECOMP_SDLGPU_IDLE_WAIT");
++        on = !(e && e[0] == '0' && !e[1]);
++    }
++    if (!on || !s_dev || !s_wb_fence || (!s_wb_pending && !s_ar_sub))
++        return 0;
++    if (SDL_QueryGPUFence(s_dev, s_wb_fence))
++        return 0;
++    SDL_DelayNS(100000);
++    return 1;
++}
++
+ static void writeback_surfaces(void)
+ {
+     static int enabled = -1;
+@@ -2863,7 +4289,18 @@ static void writeback_surfaces(void)
          enabled = !getenv("RECOMP_D3D_NO_WRITEBACK");
      if (!enabled)
          return;
@@ -23795,15 +24185,17 @@ index fffccd5f..67a6c6f9 100644
 +     * batch is still on the GPU this flip records none, and the surfaces stay
 +     * dirty for a later flip. */
 +    if (!readback_hold()) {
-+        if (!writeback_finish(0))
++        if (!writeback_finish(0)) {
++            s_ar_ord = 0;
 +            return;
++        }
 +    } else {
 +        writeback_finish(1);
 +    }
      for (i = 0; i < MAX_SURFACES; i++) {
          Surface *s = &s_surf[i];
          WbSlot *k = &s_wb[i];
-@@ -2889,6 +4007,16 @@ static void writeback_surfaces(void)
+@@ -2889,14 +4326,33 @@ static void writeback_surfaces(void)
          r.w = s->w; r.h = s->h; r.d = 1;
          info.transfer_buffer = k->tb;
          SDL_DownloadFromGPUTexture(s_copy, &r, &info);
@@ -23820,7 +24212,26 @@ index fffccd5f..67a6c6f9 100644
          s->gpu_dirty = 0;
          k->pending = 1;
          s_wb_mask |= 1u << i;
-@@ -2908,6 +4036,48 @@ static uint64_t s_last_present, s_last_flip;
+         s_wb_pending = 1;
+     }
+     copy_end();
+-    if (s_wb_pending)
+-        submit(&s_wb_fence);
++    {
++        uint32_t k;
++        int reads = 0;
++        for (k = 0; k < AR_MAX; k++) reads |= s_ar[k].pending == 1;
++        if (s_wb_pending || reads) {
++            submit(&s_wb_fence);
++            async_reads_flip(s_wb_fence != NULL);   /* no fence: submit() waited for the GPU instead */
++        } else {
++            s_ar_ord = 0;
++        }
++    }
+ }
+ 
+ /* ---------------------------------------------------------------- present */
+@@ -2908,6 +4364,48 @@ static uint64_t s_last_present, s_last_flip;
  static Surface *s_shown;
  
  /* Read a texture back and write it as a 24-bit BMP. */
@@ -23869,7 +24280,7 @@ index fffccd5f..67a6c6f9 100644
  static void write_bmp(SDL_GPUTexture *tex, uint32_t w, uint32_t h, const char *path)
  {
      SDL_GPUTransferBufferCreateInfo ci = { SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, w * h * 4, 0 };
-@@ -2926,7 +4096,7 @@ static void write_bmp(SDL_GPUTexture *tex, uint32_t w, uint32_t h, const char *p
+@@ -2926,7 +4424,7 @@ static void write_bmp(SDL_GPUTexture *tex, uint32_t w, uint32_t h, const char *p
      copy_end();
      submit(&fence);
      if (fence) {
@@ -23878,7 +24289,7 @@ index fffccd5f..67a6c6f9 100644
          SDL_ReleaseGPUFence(s_dev, fence);
      }
      if ((m = (const uint8_t *)SDL_MapGPUTransferBuffer(s_dev, tb, false)) != NULL) {
-@@ -2986,6 +4156,85 @@ static void capture_image(SDL_GPUTexture *tex, uint32_t w, uint32_t h)
+@@ -2986,6 +4484,85 @@ static void capture_image(SDL_GPUTexture *tex, uint32_t w, uint32_t h)
      remaining--;
  }
  
@@ -23964,7 +24375,7 @@ index fffccd5f..67a6c6f9 100644
  /* Draw surface s (with the overlay in *pc) into a w x h target, letterboxed
   * to the display aspect when asked. */
  static void composite(SDL_GPUTexture *dst, uint32_t w, uint32_t h, Surface *s,
-@@ -3125,10 +4374,15 @@ static int present_kept_image(FlipPacing *pacing)
+@@ -3125,10 +4702,15 @@ static int present_kept_image(FlipPacing *pacing)
      if (!s_window || !s_kept) return 0;
      copy_end();
      flush_batch();
@@ -23982,7 +24393,7 @@ index fffccd5f..67a6c6f9 100644
      RECOMP_PROFILE_END();
      if (sc) {
          SDL_GPUBlitInfo bi;
-@@ -3185,6 +4439,9 @@ static void present_surface(Surface *s, FlipPacing *pacing)
+@@ -3185,6 +4767,9 @@ static void present_surface(Surface *s, FlipPacing *pacing)
      composite(s_kept, w, h, s, &pc, 1);
      if (!getenv("RECOMP_CAPTURE_SURFACE"))
          capture_image(s_kept, w, h);
@@ -23992,7 +24403,7 @@ index fffccd5f..67a6c6f9 100644
      if (present_kept_image(pacing))
          s->cpu_present_pending = 0;
  }
-@@ -3192,9 +4449,26 @@ static void present_surface(Surface *s, FlipPacing *pacing)
+@@ -3192,9 +4777,26 @@ static void present_surface(Surface *s, FlipPacing *pacing)
  /* The flip completes at the display's next vertical blank (see pace_vblank
   * in nv2a_d3d11.c): RECOMP_FPS_LIMIT=N sets the rate (default 60, 0 =
   * unpaced). The wait is SDL_DelayPrecise, then a short spin. */
@@ -24020,7 +24431,7 @@ index fffccd5f..67a6c6f9 100644
      static int64_t next;
      int64_t now, freq = qpf();
      extern int xbox_FramebufferPaused(void);
-@@ -3203,9 +4477,7 @@ static void pace_vblank(void)
+@@ -3203,9 +4805,7 @@ static void pace_vblank(void)
          fbw_sdl_pump();
          next = 0;
      }
@@ -24031,7 +24442,7 @@ index fffccd5f..67a6c6f9 100644
      if (limit <= 0)
          return;
      now = qpc();
-@@ -3226,23 +4498,30 @@ static void display_config(int now)
+@@ -3226,23 +4826,30 @@ static void display_config(int now)
  {
      static uint32_t seen_w, seen_h, done_w, done_h;
      static uint64_t seen_at;
@@ -24065,7 +24476,7 @@ index fffccd5f..67a6c6f9 100644
          scale = (float)atof(e);
      } else {
          const char *ss = getenv("RECOMP_SUPERSAMPLE");
-@@ -3267,6 +4546,11 @@ static void display_config(int now)
+@@ -3267,6 +4874,11 @@ static void display_config(int now)
      }
      s_scale = scale;
      s_aspect = aspect;
@@ -24077,7 +24488,7 @@ index fffccd5f..67a6c6f9 100644
      fprintf(stderr, "[SDLGPU] rendering %ux%u (window %ux%u, aspect %.3f)\n",
              (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
              w, h, aspect);
-@@ -3303,12 +4587,25 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
+@@ -3303,12 +4915,25 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
      return s;
  }
  
@@ -24103,7 +24514,7 @@ index fffccd5f..67a6c6f9 100644
      fbw_sdl_pump();
      if (s_overlay.frame) s_overlay.frame();
      s = surface_find(phys(surface_addr));
-@@ -3316,12 +4613,16 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
+@@ -3316,12 +4941,16 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
          s = scan_surface(surface_addr, pitch);
      s_shown = s;
      s_last_flip = SDL_GetTicks();
@@ -24121,6 +24532,16 @@ index fffccd5f..67a6c6f9 100644
          if (s_prof_on > 0) {
              s_prof[PROF_WRITEBACK] += t1 - t0;
              s_prof[PROF_PRESENT] += qpc() - t1 - pacing.ticks;
+@@ -3403,6 +5032,9 @@ void nv2a_d3d_tick(void)
+     if (s_init_state <= 0 && !nv2a_d3d_init())
+         return;
+     fbw_sdl_pump();
++    /* A tail of draws does not wait for the next 128 while the title computes. */
++    if (early_draws_limit() && s_early_draws >= 24 && qpc() - s_early_last > qpf() / 2000)
++        submit_early();
+     if (SDL_GetAtomicInt(&s_interp_req)) {
+         extern int nv2a_pb_replay(float);
+         if (!nv2a_pb_replay(s_interp_t) && !present_kept_image(NULL))
 diff --git a/src/video/nv2a_shader_cache.h b/src/video/nv2a_shader_cache.h
 index b1b85c0b..ca0f979b 100644
 --- a/src/video/nv2a_shader_cache.h
@@ -32422,14 +32843,15 @@ index 00000000..d09ca8d9
 +    return 0;
 +}
 diff --git a/tests/kernel_dispatch/nv2a_texaddr_test.c b/tests/kernel_dispatch/nv2a_texaddr_test.c
-index 97c19755..597c3f6b 100644
+index 97c19755..15b63b8e 100644
 --- a/tests/kernel_dispatch/nv2a_texaddr_test.c
 +++ b/tests/kernel_dispatch/nv2a_texaddr_test.c
-@@ -74,6 +74,7 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
+@@ -74,6 +74,8 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
  void nv2a_d3d_zpass_enable(int on) { (void)on; STUB_HIT("nv2a_d3d_zpass_enable"); }
  void nv2a_d3d_zpass_clear(void) { STUB_HIT("nv2a_d3d_zpass_clear"); }
  uint32_t nv2a_d3d_zpass_read(void) { STUB_HIT("nv2a_d3d_zpass_read"); return 0; }
 +int nv2a_d3d_surface_read(uint32_t phys, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t *out) { (void)phys; (void)x; (void)y; (void)w; (void)h; (void)out; return 0; }
++int nv2a_d3d_surface_read_async(uint32_t phys, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint8_t *dst, uint32_t dst_pitch) { (void)phys; (void)x; (void)y; (void)w; (void)h; (void)dst; (void)dst_pitch; return 0; }
  void xbox_FramebufferWindowSet(uint32_t fb_va, uint32_t pitch)
  { (void)fb_va; (void)pitch; STUB_HIT("xbox_FramebufferWindowSet"); }
  void xbox_FramebufferWindowStart(void) { STUB_HIT("xbox_FramebufferWindowStart"); }
@@ -35651,14 +36073,15 @@ index 00000000..f68ee985
 +    return fails != 0;
 +}
 diff --git a/tests/nv2a_exec_stubs.c b/tests/nv2a_exec_stubs.c
-index b3c6af1f..b9ffa811 100644
+index b3c6af1f..be5cbd51 100644
 --- a/tests/nv2a_exec_stubs.c
 +++ b/tests/nv2a_exec_stubs.c
-@@ -17,6 +17,7 @@ void nv2a_d3d_flip_present(uint32_t va, uint32_t pitch, int now) { (void)va; (vo
+@@ -17,6 +17,8 @@ void nv2a_d3d_flip_present(uint32_t va, uint32_t pitch, int now) { (void)va; (vo
  void nv2a_d3d_zpass_enable(int on) { (void)on; }
  void nv2a_d3d_zpass_clear(void) {}
  uint32_t nv2a_d3d_zpass_read(void) { return 0; }
 +int nv2a_d3d_surface_read(uint32_t phys, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t *out) { (void)phys; (void)x; (void)y; (void)w; (void)h; (void)out; return 0; }
++int nv2a_d3d_surface_read_async(uint32_t phys, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint8_t *dst, uint32_t dst_pitch) { (void)phys; (void)x; (void)y; (void)w; (void)h; (void)dst; (void)dst_pitch; return 0; }
  
  int xbox_ContiguousRangeAllocated(uint32_t physical_offset, uint32_t size)
  { (void)physical_offset; (void)size; return 1; }

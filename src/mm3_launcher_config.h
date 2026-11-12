@@ -35,6 +35,9 @@ enum MM3LauncherOption {
      * read-back pictures (lamp glow visibility, flare mask) are in guest memory. Faster on
      * a slow GPU (Steam Deck), but lamp glows can flash on windows. Default off. */
     MM3_LAUNCH_NO_GPU_WAIT,
+    /* MM3_PRELOAD_SHADERS sets RECOMP_SDLGPU_PRELOAD=1: the Vulkan renderer builds every saved
+     * pipeline before the first frame (no first-use stutter). Default on; no effect on DirectX 11. */
+    MM3_LAUNCH_PRELOAD_SHADERS,
     MM3_LAUNCH_OPTION_COUNT
 };
 

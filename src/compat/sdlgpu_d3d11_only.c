@@ -17,8 +17,8 @@ void nv2a_d3d_distance_fog(const NvD3DState *st, float depth_to_world, float far
 void nv2a_d3d_sky_fog_ramp(uint32_t addr, uint32_t format, float row, float scale, float knee)
 { (void)addr; (void)format; (void)row; (void)scale; (void)knee; }
 
-/* Render-target read-back fence (D3D11 only): never waits, reports off. */
-int nv2a_d3d_readback_idle_wait(void) { return 0; }
+/* Render-target read-back fence settings (D3D11 only): report off. The idle wait itself
+ * (nv2a_d3d_readback_idle_wait) is in nv2a_sdlgpu.c. */
 int nv2a_d3d_set_readback_fence(int enabled) { return enabled == 0 || enabled == 1; }
 int nv2a_d3d_get_readback_fence(void) { return 0; }
 int nv2a_d3d_set_readback_poll_us(int us) { return us >= 0 && us <= 1000; }

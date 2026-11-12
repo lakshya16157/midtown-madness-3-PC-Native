@@ -61,6 +61,7 @@ OPTIONS = [
     ("MM3_SOFT_CAR_REFLECTIONS", "Softer car paint reflections", 1),
     ("MM3_RENDERER_VULKAN", "Vulkan renderer (instead of DirectX 11)", 0),
     ("MM3_NO_GPU_WAIT", "Don't wait for the GPU (slow GPUs)", 0),
+    ("MM3_PRELOAD_SHADERS", "Load all shaders before playing (Vulkan)", 1),
 ]
 DEFAULTS = {key: default for key, _label, default in OPTIONS}
 if sys.platform != "win32":

@@ -58,7 +58,8 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"MM3_MOD_SKIP_INTRO", "Skip intro movies", 1},
     {"MM3_SOFT_CAR_REFLECTIONS", "Softer car paint reflections", 1},
     {"MM3_RENDERER_VULKAN", "Vulkan renderer (instead of DirectX 11)", 0},
-    {"MM3_NO_GPU_WAIT", "Don't wait for the GPU (slow GPUs)", 0}
+    {"MM3_NO_GPU_WAIT", "Don't wait for the GPU (slow GPUs)", 0},
+    {"MM3_PRELOAD_SHADERS", "Load all shaders before playing (Vulkan)", 1}
 };
 
 typedef struct { int option; const char *value; } MM3ForcedOption;
@@ -621,6 +622,10 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
      * an explicit RECOMP_READBACK_HOLD (tests, benchmarks) is kept unless it is ticked. */
     if (config->option[MM3_LAUNCH_NO_GPU_WAIT] || !getenv("RECOMP_READBACK_HOLD"))
         SET("RECOMP_READBACK_HOLD", config->option[MM3_LAUNCH_NO_GPU_WAIT] ? "0" : "1");
+    /* The Vulkan renderer builds every saved pipeline at start-up (nv2a_sdlgpu.c, RECOMP_SDLGPU_PRELOAD).
+     * An explicit value (tests, benchmarks) is kept unless the box is ticked. */
+    if (config->option[MM3_LAUNCH_PRELOAD_SHADERS] || !getenv("RECOMP_SDLGPU_PRELOAD"))
+        SET("RECOMP_SDLGPU_PRELOAD", config->option[MM3_LAUNCH_PRELOAD_SHADERS] ? "1" : "0");
     /* OHCI automatically exposes at least this many root-hub ports. Keep an
      * explicitly supplied RECOMP_USB_NDP (and the default two-port hub). */
     if (config->controller_count) snprintf(number, sizeof number, "%d", config->controller_count);

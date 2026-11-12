@@ -132,6 +132,10 @@ def stage_payload(payload: Path, repo: Path, packages: Path, downloads: Path,
             sys.exit(f"Missing {runtime}; build with an official Windows x64 Python installation.")
         shutil.copy2(runtime, payload / runtime.name)
 
+    # Vulkan pipelines for a first run (the game checks the build and GPU depth format itself).
+    seed = repo / "src" / "shaders" / "sdlgpu-pipelines-seed.bin"
+    if seed.is_file():
+        shutil.copy2(seed, payload / seed.name)
     stage_branding(payload, repo)
     (payload / "scripts").mkdir()
     shutil.copy2(repo / "scripts" / "extract_disc.py", payload / "scripts")
