@@ -49,7 +49,7 @@ from pathlib import Path
 # PyInstaller see and include them (it only analyses this file's own imports).
 _PAYLOAD_STDLIB = (argparse, collections, copy, hashlib, math, re, struct, tempfile, zipfile, zlib)
 
-VERSION = "2.7 beta 2"
+VERSION = "2.7"
 TITLE = "Midtown Madness 3 - Setup"
 # "Check for updates" asks GitHub for the newest release and downloads the MM3-Setup.exe attached to it.
 RELEASES_API = "https://api.github.com/repos/lakshya16157/midtown-madness-3-PC-Native/releases/latest"
