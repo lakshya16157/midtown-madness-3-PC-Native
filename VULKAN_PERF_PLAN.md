@@ -264,3 +264,18 @@ with the installer would remove the first-run stalls.
   Limit: it can only build pipelines it has seen (seed + the user's cache). A never-seen combination still
   builds once on first use. The seed is for NVIDIA/Intel (D24S8); the Deck needs its own seed
   (ask a Deck player for their %XDG_DATA_HOME%/xboxrecomp/sdlgpu-pipelines.bin).
+- 2026-11-12 17:31 after 2.7 (reports: window lights flicker + "previous light stays when I look up" in Vulkan on Windows;
+  Steam Deck issue #27: FPS locked at 40, wrong textures on Eiffel Tower / Louvre). Not yet run in game:
+  1. nv2a_sdlgpu.c `depth_find_texture` (port of nv2a_d3d11.c's 10-28 fix): the Y16 depth view the light pass reads is the
+     most recent depth buffer at that address that COVERS the texture, not just the most recently bound one (MM3's 40x30
+     brightness probe binds a small depth buffer at the scene's address right before the light pass). Log line
+     `[SDLGPU_LIGHT] depth view at ... reads the WxH depth buffer, not the wxh one` shows when the old lookup would have
+     been wrong. `RECOMP_D3D_DEPTH_LAST_BOUND=1` restores the old lookup for comparison. F9 saves frame history
+     (logs/f9-history-N-*.bmp) if the ghost is still there.
+  2. Linux: texture write watch (guest_write_watch.c) now OFF by default on non-Windows (RECOMP_TEXTURE_WATCH=1 enables):
+     suspected cause of stale/wrong textures on landmarks (old poster textures where lattice belongs). Unproven; the watch
+     was new in 2.7 beta 1 and only tested on Windows.
+  3. FPS 40: the photo in issue #27 shows Gamescope Display 80 Hz, FPS 40 = the Deck's own frame limit 40 (QAM
+     Performance > Frame limit puts the panel at 80 Hz); the game's limit is not the cause. New log line every ~5 s:
+     `[SDLGPU_PROF] display refresh X Hz, game frame limit N, vsync V`.
+  Needs a 2.7.1 release (Windows Setup + Linux tarball) after the user confirms; Linux binary not rebuilt yet.
