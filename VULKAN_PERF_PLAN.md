@@ -279,3 +279,11 @@ with the installer would remove the first-run stalls.
      Performance > Frame limit puts the panel at 80 Hz); the game's limit is not the cause. New log line every ~5 s:
      `[SDLGPU_PROF] display refresh X Hz, game frame limit N, vsync V`.
   Needs a 2.7.1 release (Windows Setup + Linux tarball) after the user confirms; Linux binary not rebuilt yet.
+- 2026-11-13 2.7.2 (Deck first-run stalls, issue #27 follow-up report: 11-39 stalls of 0.6-1.0 s per first run, built on
+  the drawing thread). nv2a_sdlgpu.c: (1) `s_build_ms` running estimate of one pipeline build (note_build_ms from the
+  background worker, the warm-up and the sync path; starts at 100): pipeline_draw builds a missing pipeline on the
+  drawing thread only without a stand-in or when spent + estimate fits the 30 ms frame budget, so slow drivers use the
+  generic stand-in + background build. (2) pipe_header_ok no longer compares the depth format (PipeKey has no GPU
+  state), so the shipped seed list works on the Deck/AMD. (3) warm_loop also builds each key's generic twin (spec 0).
+  (4) preload wait cap 90 s -> 40 s. Seed refreshed (190 keys). Not run on a Deck. Left: the rare 31-40 ms blocking
+  sun read on a busy GPU.
