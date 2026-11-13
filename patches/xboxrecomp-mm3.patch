@@ -6940,10 +6940,10 @@ index 1f0dc4c4..8ab0027d 100644
      nv2a_pb_scan.c
 diff --git a/src/kernel/guest_write_watch.c b/src/kernel/guest_write_watch.c
 new file mode 100644
-index 00000000..eb8f3e1e
+index 00000000..80aac2c5
 --- /dev/null
 +++ b/src/kernel/guest_write_watch.c
-@@ -0,0 +1,463 @@
+@@ -0,0 +1,453 @@
 +/* Write stamps for guest pages of the contiguous window; see the header. */
 +#include "kernel.h"
 +#include "guest_write_watch.h"
@@ -7299,16 +7299,6 @@ index 00000000..eb8f3e1e
 +        fprintf(stderr, "  Texture write watch: off (RECOMP_TEXTURE_WATCH=0)\n");
 +        return 0;
 +    }
-+#ifndef _WIN32
-+    /* Off by default on Linux (2.7 Steam Deck report, 2026-11-12: wrong textures on the Eiffel Tower
-+     * and the Louvre, old poster textures where the lattice belongs). The watch was new in 2.7 beta 1
-+     * and has only been checked on Windows; every texture check reads and hashes its bytes instead,
-+     * as 2.6.3 did. RECOMP_TEXTURE_WATCH=1 turns it on again to compare. */
-+    if (!(setting && !strcmp(setting, "1"))) {
-+        fprintf(stderr, "  Texture write watch: off on Linux (RECOMP_TEXTURE_WATCH=1 turns it on)\n");
-+        return 0;
-+    }
-+#endif
 +#ifdef _WIN32
 +    {
 +        SYSTEM_INFO si;
@@ -8572,7 +8562,7 @@ index 00000000..162d4a3b
 +
 +#endif
 diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
-index d81cda6c..f6e425ba 100644
+index d81cda6c..db74ff07 100644
 --- a/src/kernel/kernel_file.c
 +++ b/src/kernel/kernel_file.c
 @@ -16,10 +16,12 @@
@@ -9038,6 +9028,22 @@ index d81cda6c..f6e425ba 100644
      IoStatusBlock->Status = STATUS_UNSUCCESSFUL;
      IoStatusBlock->Information = 0;
      return STATUS_UNSUCCESSFUL;
+@@ -1662,7 +1884,15 @@ NTSTATUS __stdcall xbox_NtReadFile(
+     if (ByteOffset && ByteOffset->QuadPart >= 0)
+         lseek(fd, (off_t)ByteOffset->QuadPart, SEEK_SET);
+ 
++    /* As the Windows path does: the kernel copies into Buffer, and a write-watched
++     * (read-only) page fails the read with EFAULT instead of faulting into the
++     * watch's handler, so the data never arrived and the watch kept the old
++     * texture (the wrong landmark textures on Linux). */
++    gww_host_write_begin(Buffer, Length);
+     ssize_t n = read(fd, Buffer, Length);
++    int read_error = errno;
++    gww_host_write_end(Buffer, Length);
++    errno = read_error;
+     if (n < 0) {
+         XBOX_TRACE(XBOX_LOG_FILE, "NtReadFile(handle=%p) errno=%d", FileHandle, errno);
+         IoStatusBlock->Status = STATUS_UNSUCCESSFUL;
 diff --git a/src/kernel/kernel_file_buffering.h b/src/kernel/kernel_file_buffering.h
 new file mode 100644
 index 00000000..297af926
