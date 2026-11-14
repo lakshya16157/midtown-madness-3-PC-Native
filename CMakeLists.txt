@@ -776,6 +776,7 @@ add_executable(${PROJECT_NAME}
  src/mm3_lua_natives.c
  src/mm3_ui_guard.c
  src/mm3_heap_guard.c
+ src/mm3_heap_list_watch.c
  src/mm3_heap_trace.c
  src/mm3_unresolved_observe.c
  src/mm3_car_selection_compat.c

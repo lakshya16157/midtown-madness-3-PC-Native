@@ -23,6 +23,7 @@
 #include "mm3_collision_profile.h"
 #include "mm3_direct_log.h"
 #include "mm3_cheat_keys.h"
+#include "mm3_heap_list_watch.h"
 #include "mods/mods.h"
 #include <xbox_host.h>
 #include <xinput_xbox.h>
@@ -661,6 +662,7 @@ int main(void)
         *(uint32_t *)((uint8_t *)kernel_probe + 0x3Cu) = 0x80u;
 
     mm3_mods_init();
+    mm3_heap_list_watch_start();   /* MM3_HEAP_LIST_WATCH (diagnostic) */
     /* XPP submits stack-backed USB requests whose callback signals an inline
      * KEVENT. Its explicit wait treats an invalid handle as completion, so
      * the request can outlive its stack frame. Permit only the verified XPP
