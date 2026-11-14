@@ -1,66 +1,36 @@
 # Midtown Madness 3 recompilation
 
-Play the Xbox racing game **Midtown Madness 3** natively on **Windows and Linux**: your screen's
-resolution and widescreen, up to 120 fps, controller or keyboard, two-player split screen, and
-optional mods. You need your own copy of the Xbox game.
+**The recompile is done.** Midtown Madness 3, the 2003 Xbox racing game, is recompiled into a native PC
+program: it runs as a real Windows and Linux game, not in an emulator.
 
-- **Windows 10/11:** **[Download MM3-Setup.exe](https://github.com/lakshya16157/midtown-madness-3-PC-Native/releases/latest)**
-  (under **Assets** on the latest release).
-- **Linux** (native, no Wine or Proton): download **MM3-Linux-x86_64.tar.gz** from the
-  [releases](https://github.com/lakshya16157/midtown-madness-3-PC-Native/releases), see
-  [Native Linux](#native-linux-no-wine-or-proton). **For now the Windows Setup through Proton runs better than the
-  native Linux build (also on the Steam Deck)**, see [Proton or Wine](#proton-or-wine-the-windows-build). The native
-  build is still in progress, so please report any problem you hit.
+- **Native DirectX 11 and Vulkan.** Both renderers draw the game directly on your graphics card, and the Vulkan
+  one runs as smoothly as DirectX 11. That is why it also **runs natively on Linux and the Steam Deck**, with no
+  Wine or Proton needed.
+- Your screen's resolution and widescreen, up to 120 fps, controller or keyboard, two-player split screen,
+  System Link, and optional mods.
+- You need your own copy of the Xbox game.
+
+| Your system | Download |
+|---|---|
+| **Windows 10/11** | **[MM3-Setup.exe](https://github.com/lakshya16157/midtown-madness-3-PC-Native/releases/latest)** (under **Assets**) |
+| **Linux and Steam Deck** | **[MM3-Linux-x86_64.tar.gz](https://github.com/lakshya16157/midtown-madness-3-PC-Native/releases/latest)**, see [Linux and Steam Deck](#linux-and-steam-deck) |
 
 ## Install and play
 
-1. **Run MM3-Setup.exe.** Windows may say "Windows protected your PC" because the file is
-   not code-signed: choose **More info**, then **Run anyway**.
-2. **Pick your game image**: a disc image of your own Midtown Madness 3 Xbox disc (`.iso`
-   or `.xiso`). The Europe/Australia and USA releases both work. See
-   [Ownership, disc images and DLC](#ownership-disc-images-and-dlc) for where to get one.
-   Setup looks for it by itself in your Downloads, Desktop and Documents folders and fills it
-   in; it tells you in plain words if a file is not the game, is another release, or is
-   incomplete, and shows how much disk space the install needs before you press Install.
-3. **Choose options** (you can change them later by running Setup again):
-   - **Add extra cars**: nine community cars (see [credits](#extra-car-credits)).
-   - **Add game improvements** (on by default): sharper image defaults. Untick it to start
-     with the plain Xbox picture settings.
-   - **Official DLC** (optional): point Setup at the DLC ZIP or folder
-     ([download link below](#ownership-disc-images-and-dlc)) if you are entitled to use it.
-     It adds 14 cars and 40 Blitz and Checkpoint races.
-4. Click **Install**, then **Play now**. Later, start the game from the **Midtown Madness 3**
-   shortcut on your Desktop or in the Start menu (Setup adds them unless you untick the box),
-   or with **Play Midtown Madness 3.cmd** in the install folder. **Cancel install** stops
-   safely; the next Install continues where it left off. If something goes wrong, **Copy
-   details** and **Report a problem on GitHub** show up under the progress bar. **Uninstall...**
-   (shown when Setup finds an install in the folder) removes the game program and shortcuts and
-   keeps your saved games unless you also ask to delete them.
-   **Already installed?** Run the new Setup next to (or pointing at) your install folder and press
-   **Update this install**: it needs no disc image and no DLC pack. It reuses the game files and DLC you
-   already have, refreshes the game program, extra cars and shortcuts, and keeps your saved games and
-   settings. Setup first checks that the game files are complete; if something is missing or damaged
-   it says what and asks for the image to repair it.
-5. **Updates:** click **Check for updates** at the bottom left of Setup. If a newer release
-   is published, Setup downloads it (checking it against the release's checksum), replaces
-   itself and restarts. Then press **Update this install** to put the new game program in your
-   existing install; no image is needed, your saves and DLC stay, and the extra cars and
-   improvements boxes start as you left them. (Setup 2.1 and later have the button; with an older Setup,
-   download the latest release by hand once.) The game's own launcher window, the one you
-   see before the game starts, has the same **Check for updates** button: it downloads the
-   new Setup (checked the same way) into an `updates` folder in the install, closes, and
-   opens that Setup for your install folder, ready for you to press **Update this install**.
-   The launcher also has a **Quick preset** (Low power, Balanced, Quality) on the Settings tab
-   that fills in resolution, anti-aliasing, filtering, distances and the FPS limit in one step,
-   a **Folders and logs** button (game, logs and settings folders, and a copy of the version and
-   folder paths for a bug report, without your Windows user name), and it says so, instead of
-   starting a game that cannot run, when files of the game are missing: run Setup again with
-   your image to put them back.
+1. **Run MM3-Setup.exe.** Windows may warn because the file is not code-signed: choose **More info**, then
+   **Run anyway**.
+2. **Pick your game image**: an `.iso` or `.xiso` of your own Midtown Madness 3 Xbox disc (Europe/Australia
+   or USA). Setup finds it in Downloads, Desktop or Documents by itself. See
+   [Ownership, disc images and DLC](#ownership-disc-images-and-dlc).
+3. **Choose options**: extra cars, game improvements (on by default) and, if you are entitled to it, the
+   official DLC (14 cars, 40 races).
+4. Click **Install**, then **Play now**. Later, use the **Midtown Madness 3** shortcut.
 
-You need Windows 10 or 11 (64-bit) with a Direct3D 11 graphics card and about 6 GB of free
-disk space, or Linux with a Vulkan graphics driver and about 10 GB ([native Linux](#native-linux-no-wine-or-proton);
-Proton or Wine also work for the Windows build, see [Linux and Steam Deck](#linux-and-steam-deck)).
-The first start shows the intro movies for about 3½ minutes; the game has not frozen.
+**Updating:** press **Check for updates** in Setup or in the game's launcher, then **Update this install**.
+No disc image is needed, and your saves, settings and DLC stay.
+
+You need a Direct3D 11 graphics card and about 6 GB of free space on Windows, or a Vulkan driver and about
+10 GB on Linux. The first start plays the intro movies for about 3½ minutes; the game has not frozen.
 
 ## Look and gameplay
 
@@ -228,8 +198,8 @@ players, is in [docs/MULTIPLAYER.md](docs/MULTIPLAYER.md).
 
 ### Native Linux (no Wine or Proton)
 
-**Currently the Windows Setup through Proton (next section) runs better than the native build,**
-Steam Deck included. The native build is still in progress.
+The native build runs on the Vulkan renderer, the same one Windows can use, so it plays as smoothly as on
+Windows; this is the way to play on the Steam Deck.
 
 Download **`MM3-Linux-x86_64.tar.gz`** from the [latest release](https://github.com/lakshya16157/midtown-madness-3-PC-Native/releases),
 unpack it and run the installer. You need your own game image (`.iso`), Python 3.9 or newer
@@ -245,8 +215,11 @@ It installs to `~/Games/Midtown Madness 3`, adds a Desktop and applications-menu
 `play-midtown-madness-3.sh` there. The build runs on Ubuntu 22.04 / Debian 12 or newer (any distribution
 with glibc 2.35+, including the Steam Deck's SteamOS). Unlike Windows, the downloadable races' loading
 screens are not drawn (they keep the car picture), and Setup does not update itself: download the new
-tarball. Saves and settings are kept when you install again. The Linux build is new: please report
-problems on the [issue page](https://github.com/lakshya16157/midtown-madness-3-PC-Native/issues).
+tarball. Saves and settings are kept when you install again. Please report problems on the
+[issue page](https://github.com/lakshya16157/midtown-madness-3-PC-Native/issues).
+
+**Steam Deck tip:** Steam's own frame limit (Quick Access menu, Performance) caps every game. If the game stays
+at 40 fps whatever you choose in its settings, set that frame limit to **Off**.
 
 ### Proton or Wine (the Windows build)
 
