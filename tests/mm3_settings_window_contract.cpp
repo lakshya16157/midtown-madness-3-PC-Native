@@ -23,6 +23,8 @@ int mm3_dev_tools_request(unsigned) { return 0; }
 void mm3_dev_tools_status(char *text, unsigned size) { snprintf(text, size, "off"); }
 int mm3_cheat_ai_frozen(void) { return g_frozen; }
 void mm3_cheat_set_ai_frozen(int on) { g_frozen = on; }
+int mm3_cheat_timer_stopped(void) { return 0; }
+void mm3_cheat_set_timer_stopped(int) {}
 void mm3_display_settings_get(MM3DisplaySettings *s) { *s = g_settings; }
 int mm3_display_settings_commit(const MM3DisplaySettings *s, char *status, size_t capacity)
 {

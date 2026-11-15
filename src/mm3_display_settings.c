@@ -508,6 +508,7 @@ static INT_PTR CALLBACK display_dialog(HWND dialog, UINT message, WPARAM wparam,
         mm3_display_settings_get(&current);
         populate(dialog, &current);
         CheckDlgButton(dialog, IDC_DISPLAY_FREEZE_AI, mm3_cheat_ai_frozen() ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(dialog, IDC_DISPLAY_STOP_TIMER, mm3_cheat_timer_stopped() ? BST_CHECKED : BST_UNCHECKED);
         update_status(dialog, 0);
         fit_to_screen(dialog);
         if (GetWindowRect(GetParent(dialog), &parent) && GetWindowRect(dialog, &bounds)) {
@@ -546,6 +547,9 @@ static INT_PTR CALLBACK display_dialog(HWND dialog, UINT message, WPARAM wparam,
         }
         case IDC_DISPLAY_FREEZE_AI:       /* at once, not on Apply */
             mm3_cheat_set_ai_frozen(IsDlgButtonChecked(dialog, IDC_DISPLAY_FREEZE_AI) == BST_CHECKED);
+            return TRUE;
+        case IDC_DISPLAY_STOP_TIMER:      /* at once, not on Apply */
+            mm3_cheat_set_timer_stopped(IsDlgButtonChecked(dialog, IDC_DISPLAY_STOP_TIMER) == BST_CHECKED);
             return TRUE;
         case IDC_DISPLAY_MODE:
             EnableWindow(GetDlgItem(dialog, IDC_DISPLAY_RESOLUTION),

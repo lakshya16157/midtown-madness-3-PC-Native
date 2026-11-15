@@ -27,6 +27,9 @@ void mm3_world_lighting_set_night_light(int percent) { night_published = percent
 static int ai_frozen;
 int mm3_cheat_ai_frozen(void) { return ai_frozen; }
 void mm3_cheat_set_ai_frozen(int frozen) { ai_frozen = frozen; }
+static int timer_stopped;
+int mm3_cheat_timer_stopped(void) { return timer_stopped; }
+void mm3_cheat_set_timer_stopped(int stopped) { timer_stopped = stopped; }
 
 static HWND wait_dialog(void)
 {
@@ -224,6 +227,11 @@ static DWORD WINAPI drive_fixed(LPVOID argument)
     CHECK(ai_frozen);                                   /* Freeze opponents works at once */
     SendMessageA(GetDlgItem(dialog, IDC_DISPLAY_FREEZE_AI), BM_CLICK, 0, 0);
     CHECK(!ai_frozen);
+    CHECK(!timer_stopped);
+    SendMessageA(GetDlgItem(dialog, IDC_DISPLAY_STOP_TIMER), BM_CLICK, 0, 0);
+    CHECK(timer_stopped && !ai_frozen);                 /* Stop the time limit works at once, on its own */
+    SendMessageA(GetDlgItem(dialog, IDC_DISPLAY_STOP_TIMER), BM_CLICK, 0, 0);
+    CHECK(!timer_stopped);
     PostMessageA(dialog, WM_COMMAND, IDCANCEL, 0);
     return 0;
 }

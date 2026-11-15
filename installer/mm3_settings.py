@@ -84,7 +84,6 @@ NUMBERS = {
     "MM3_FOV_DEGREES": ("Field of view, degrees (0 = the game's own, otherwise 60-110)", 0, 110, 0),
     "MM3_DAMAGE_PERCENT": ("Crash damage to every car, % of the Xbox's", 0, 400, 100),
     "MM3_OWN_DAMAGE_PERCENT": ("Extra crash damage to your own car, %", 0, 400, 100),
-    "MM3_TIME_PERCENT": ("Race and job time limits and bonuses, %", 25, 400, 100),
     "MM3_AI_LEVEL": ("Opponents' difficulty, 0-9 (5 = the Xbox)", 0, 9, 5),
     "RECOMP_NET_PORT": ("System Link port", 1, 65535, 3075),
 }
@@ -123,7 +122,7 @@ def read_ini(path=INI):
         key = key.strip()
         if key in MANAGED:
             values[key] = value.strip()
-        elif key != "MM3_SETTINGS_REVISION":
+        elif key not in ("MM3_SETTINGS_REVISION", "MM3_TIME_PERCENT"):  # Time limits: gone, now F10
             others.append(f"{key}={value.strip()}")
     return values, others
 
@@ -293,7 +292,7 @@ def window():
     gameplay.columnconfigure(1, weight=1)
     sliders = ttk.LabelFrame(gameplay, text="Difficulty", padding=8)
     sliders.grid(row=0, column=1, rowspan=19, sticky="nsew", padx=6)
-    for index, key in enumerate(("MM3_DAMAGE_PERCENT", "MM3_OWN_DAMAGE_PERCENT", "MM3_TIME_PERCENT", "MM3_AI_LEVEL")):
+    for index, key in enumerate(("MM3_DAMAGE_PERCENT", "MM3_OWN_DAMAGE_PERCENT", "MM3_AI_LEVEL")):
         label, low, high, _default = NUMBERS[key]
         ttk.Label(sliders, text=label, wraplength=330).grid(row=index * 2, column=0, sticky="w", pady=(6, 0))
         ttk.Spinbox(sliders, from_=low, to=high, textvariable=numbers[key], width=6).grid(

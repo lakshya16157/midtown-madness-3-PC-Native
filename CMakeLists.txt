@@ -246,9 +246,8 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_000F8DCE sub_000F8750)
 # Car damage: src/mm3_damage_diagnostics.c logs each scaled hit and keeps every
 # car's impulse over an Xbox frame's four physics steps for the damage step.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00021DCF sub_001CDB6C)
-# Launcher time limits scale the scripts' race_timer and its bonuses
-# (src/mm3_time_limits.c).
-list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001F5F24 sub_001F5A5A)
+# F10's Stop the time limit holds the scripts' race_timer (src/mm3_stop_timer.c).
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001F5F24 sub_001F5DBF sub_001F5E01)
 # One-frame light volume jumps are watched at the native volume builder
 # (src/mm3_light_watch.c, [MM3_LIGHT_JUMP]).
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00013068)
@@ -762,7 +761,7 @@ add_executable(${PROJECT_NAME}
  src/mm3_exhaust.c
  src/mm3_lua_errors.c
  src/mm3_damage_diagnostics.c
- src/mm3_time_limits.c
+ src/mm3_stop_timer.c
  src/mm3_map_pins.c
  src/mm3_language.c
  src/mm3_vehicle_dynamics.c

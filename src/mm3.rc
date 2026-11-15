@@ -9,8 +9,9 @@ STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Display Settings"
 FONT 9, "Segoe UI"
 BEGIN
-    LTEXT "Display changes apply when you choose Apply or OK.", -1, 14, 12, 340, 13
-    AUTOCHECKBOX "Freeze opponents (works at once, until you untick it or quit the game)", IDC_DISPLAY_FREEZE_AI, 14, 30, 340, 14, WS_TABSTOP
+    LTEXT "Display changes apply on Apply or OK. These two boxes work at once, until unticked or you quit:", -1, 14, 12, 340, 13
+    AUTOCHECKBOX "Freeze opponents", IDC_DISPLAY_FREEZE_AI, 14, 30, 150, 14, WS_TABSTOP
+    AUTOCHECKBOX "Stop the time limit", IDC_DISPLAY_STOP_TIMER, 180, 30, 170, 14, WS_TABSTOP
     GROUPBOX "Display", -1, 10, 50, 348, 155
     LTEXT "Window resolution", -1, 22, 68, 103, 12
     COMBOBOX IDC_DISPLAY_RESOLUTION, 138, 65, 204, 140, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP

@@ -62,11 +62,11 @@ Spanish voices in Spanish.
 | Exhaust smoke from each car's own pipes (off by default) | Route line on the map, race arrow hidden |
 | Quit in the main menu, minimap compass pins hidden | Improved minimap, which shows more of the map at speed |
 | Softer car paint reflections | Opponents match your car (off by default) |
-| Photo mode: **F2** holds the race and flies the camera, **F3** saves a picture, **F4** hides the HUD | Car damage and time limits, from no damage to 3x and from half to 3x the time (Xbox values by default) |
+| Photo mode: **F2** holds the race and flies the camera, **F3** saves a picture, **F4** hides the HUD | Car damage, from no damage to 3x (Xbox values by default) |
 | | Your car's damage, on top of car damage: invulnerable to 3x (Xbox by default) |
 | | Opponents' difficulty 0 to 9 (5 = Xbox by default) |
 | | Free camera on a key of your choice (on with Modded gameplay) |
-| | Freeze opponents: a check box in the **F10** settings window, until you untick it or quit |
+| | Freeze opponents and Stop the time limit: check boxes in the **F10** settings window, until you untick them or quit |
 | | Unlock all vehicles, developer tools (off by default) |
 
 ## Graphics settings
@@ -103,11 +103,12 @@ While playing:
 
 - **F10** opens the settings window with either look. Changes that need a restart say so.
   The **Freeze opponents** box at its top holds every race opponent's car where it is, at once,
-  until you untick it (your own car is never held). The window can be moved and resized.
+  until you untick it (your own car is never held). **Stop the time limit** beside it holds the
+  time left in Blitz races and timed Career jobs the same way. The window can be moved and resized.
   Settings the launcher fixes for this run (for example the Xbox view distance in the
   Original look) are greyed out, with the reason.
   **On Linux** F10 opens the same kind of window inside the game (the Windows one is a separate
-  dialog): Freeze opponents, Maximum FPS, VSync, FPS in the title, Internal resolution and Night
+  dialog): Freeze opponents, Stop the time limit, Maximum FPS, VSync, FPS in the title, Internal resolution and Night
   brightness, each applied and saved at once. Window size, anti-aliasing, texture filtering and view
   distance still change in the launcher Settings (restart). On a controller, Back plus a click of the
   right stick opens it.

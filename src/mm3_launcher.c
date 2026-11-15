@@ -76,7 +76,7 @@ enum {
     ID_CAPTURE, ID_UNBIND, ID_SOURCE, ID_BIND_LABEL, ID_PAD_STATUS, ID_PAD_PORT, ID_PAD_COUNT,
     ID_RESOLUTION, ID_MODE, ID_FPS, ID_VSYNC, ID_SCALE, ID_ASPECT, ID_MSAA,
     ID_ANISO, ID_DRAW, ID_VIEW, ID_SHOW_FPS, ID_MINIMAP, ID_FOV, ID_PORT, ID_PEERS,
-    ID_SCREEN, ID_ORIGINAL, ID_XBOX_GAMEPLAY, ID_DAMAGE, ID_TIME, ID_NIGHT, ID_UPDATE,
+    ID_SCREEN, ID_ORIGINAL, ID_XBOX_GAMEPLAY, ID_DAMAGE, ID_NIGHT, ID_UPDATE,
     ID_PRESET, ID_TOOLS,
     ID_HELP_TITLE, ID_HELP_VALUE, ID_HELP_BODY, ID_HELP_EFFECT, ID_REQUIRED,
     ID_PAD_SUMMARY, ID_PAD_HINT, ID_TAB_BAR, ID_OWN_DAMAGE, ID_AI_LEVEL, ID_CAMERA_KEY,
@@ -719,15 +719,6 @@ static void help_show(Launcher *ui, int id)
                      selected > MM3_NIGHT_LIGHT_DEFAULT ? "Brighter nights: more of the city shows away from lamps." :
                      "The default: dark nights lit mostly by lamps, headlights and windows.";
             break;
-        case ID_TIME:
-            title = "Time limits";
-            selected = combo_value(control(ui, id));
-            body = "Scale the time you race against: the time limit of Blitz races and timed Career jobs, and the time each delivery or checkpoint adds. 100% is the Xbox game. The race clock, time penalties and goals such as surviving a set time are unchanged.";
-            effect = !checked(ui, ID_OPTION + MM3_LAUNCH_GAMEPLAY) ? "Xbox gameplay is selected, so the Xbox time limits (100%) are used. Choose Modded gameplay to change them." :
-                     selected > 100 ? "More time: Blitz races and timed jobs are easier." :
-                     selected < 100 ? "Less time: Blitz races and timed jobs are harder, and some may not be possible." :
-                     "The Xbox time limits.";
-            break;
         case ID_REQUIRED:
             title = "Collision-cell safety repair"; snprintf(value, sizeof value, "Always on");
             body = "Repair decoded collision cells before the game's collision queries use them. This compatibility fix is required for reliable native gameplay.";
@@ -1160,9 +1151,9 @@ static void populate(Launcher *ui)
     snprintf(text, sizeof text, "%d", ui->config.fov_degrees); SetWindowTextA(control(ui, ID_FOV), text);
     combo_select(control(ui, ID_AI_LEVEL), ui->config.ai_level);
     combo_select(control(ui, ID_CAMERA_KEY), ui->config.free_camera_key);
-    for (int i = 0; i < 3; ++i) { /* a saved value not in the list stays chosen */
-        HWND percent = control(ui, i == 2 ? ID_TIME : i ? ID_OWN_DAMAGE : ID_DAMAGE);
-        int value = i == 2 ? ui->config.time_percent : i ? ui->config.own_damage_percent : ui->config.damage_percent;
+    for (int i = 0; i < 2; ++i) { /* a saved value not in the list stays chosen */
+        HWND percent = control(ui, i ? ID_OWN_DAMAGE : ID_DAMAGE);
+        int value = i ? ui->config.own_damage_percent : ui->config.damage_percent;
         combo_select(percent, value);
         if (combo_value(percent) != value) {
             snprintf(text, sizeof text, "%d%%", value);
@@ -1220,7 +1211,6 @@ static int read_controls(Launcher *ui, char *error, size_t capacity)
     ui->config.player2 = combo_value(control(ui, ID_PLAYER2));
     ui->config.damage_percent = combo_value(control(ui, ID_DAMAGE));
     ui->config.own_damage_percent = combo_value(control(ui, ID_OWN_DAMAGE));
-    ui->config.time_percent = combo_value(control(ui, ID_TIME));
     ui->config.ai_level = combo_value(control(ui, ID_AI_LEVEL));
     ui->config.free_camera_key = combo_value(control(ui, ID_CAMERA_KEY));
     for (int i = 1; i < MM3_LAUNCH_OPTION_COUNT; ++i)
@@ -1424,7 +1414,7 @@ static void gameplay_controls(Launcher *ui)
             MM3_LAUNCH_SAME_CAR, MM3_LAUNCH_UNLOCK, 0}},
         {560, 260, "Navigation", NULL, {MM3_LAUNCH_ROUTE_NAVIGATION, MM3_LAUNCH_RACE_ARROW, 0}}
     };
-    static const int damage[] = {0, 25, 50, 75, 100, 150, 200, 300}, time[] = {50, 75, 100, 125, 150, 200, 300};
+    static const int damage[] = {0, 25, 50, 75, 100, 150, 200, 300};
     HWND fixed, c;
     check(ui, 3, ID_XBOX_GAMEPLAY, "Xbox gameplay", 42, 92, 240);
     check(ui, 3, ID_OPTION + MM3_LAUNCH_GAMEPLAY, mm3_launcher_options[MM3_LAUNCH_GAMEPLAY].label, 300, 92, 250);
@@ -1458,13 +1448,7 @@ static void gameplay_controls(Launcher *ui)
         else snprintf(name, sizeof name, "Invulnerable");
         combo_item(c, name, damage[i]);
     }
-    c = combo(ui, 3, ID_TIME, "Time limits", 560, 412, 260);
-    for (int i = 0; i < (int)(sizeof time / sizeof time[0]); ++i) {
-        char name[32];
-        snprintf(name, sizeof name, "%d%%%s", time[i], time[i] == 100 ? " (Xbox)" : "");
-        combo_item(c, name, time[i]);
-    }
-    c = combo(ui, 3, ID_AI_LEVEL, "Opponents' difficulty", 560, 468, 260);
+    c = combo(ui, 3, ID_AI_LEVEL, "Opponents' difficulty", 560, 412, 260);
     for (int i = 0; i <= 9; ++i) {
         char name[32];
         snprintf(name, sizeof name, "%d%s", i, i == 0 ? " (easiest)" : i == 5 ? " (Xbox)" : i == 9 ? " (hardest)" : "");
@@ -1493,7 +1477,6 @@ static void mods_enable(Launcher *ui)
     EnableWindow(control(ui, ID_NIGHT), improved && checked(ui, ID_OPTION + MM3_LAUNCH_WORLD_LIGHT));
     EnableWindow(control(ui, ID_DAMAGE), modded);
     EnableWindow(control(ui, ID_OWN_DAMAGE), modded);
-    EnableWindow(control(ui, ID_TIME), modded);
     EnableWindow(control(ui, ID_AI_LEVEL), modded);
     EnableWindow(control(ui, ID_CAMERA_KEY), modded && checked(ui, ID_OPTION + MM3_LAUNCH_FREE_CAMERA));
 }

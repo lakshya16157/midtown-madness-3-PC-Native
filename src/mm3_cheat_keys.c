@@ -155,6 +155,22 @@ void mm3_cheat_set_ai_frozen(int frozen)
     }
 }
 
+/* Stop the time limit: a check box in the F10 settings window, for this session only. */
+static volatile LONG s_timer_stopped;
+
+int mm3_cheat_timer_stopped(void)
+{
+    return (int)s_timer_stopped;
+}
+
+void mm3_cheat_set_timer_stopped(int stopped)
+{
+    if (InterlockedExchange(&s_timer_stopped, stopped ? 1 : 0) != (stopped ? 1 : 0)) {
+        fprintf(stderr, "[MM3_TIME] time limit %s\n", stopped ? "stopped" : "running again");
+        fflush(stderr);
+    }
+}
+
 int mm3_cheat_camera_presses(void)
 {
     return (int)InterlockedExchange(&s_camera_presses, 0);

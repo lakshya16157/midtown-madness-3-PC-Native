@@ -48,7 +48,6 @@ typedef struct MM3LauncherConfig {
     /* Gameplay mods, percent of the Xbox's (100); Xbox gameplay uses 100. */
     int damage_percent; /* crash damage to every car, 0..400 */
     int own_damage_percent; /* and again to the player's own car, 0..400 */
-    int time_percent;   /* race and job time limits and time bonuses, 25..400 */
     int ai_level;       /* race opponents' difficulty, 0..9 (5 = the Xbox) */
     int free_camera_key; /* Win32 VK of the free camera key, one of mm3_launcher_camera_keys */
     int network_port;

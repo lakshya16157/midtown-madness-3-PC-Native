@@ -207,6 +207,9 @@ void draw_settings()
         bool frozen = mm3_cheat_ai_frozen() != 0;
         if (ImGui::Checkbox("Freeze opponents", &frozen)) mm3_cheat_set_ai_frozen(frozen);
         ImGui::TextDisabled("Holds every race opponent's car where it is, at once, until you untick it or quit.");
+        bool stopped = mm3_cheat_timer_stopped() != 0;
+        if (ImGui::Checkbox("Stop the time limit", &stopped)) mm3_cheat_set_timer_stopped(stopped);
+        ImGui::TextDisabled("Blitz races and timed jobs keep their time left, at once, until you untick it or quit.");
         ImGui::Separator();
         ImGui::TextDisabled("Display: each change applies and saves at once");
         MM3DisplaySettings next = settings_now;

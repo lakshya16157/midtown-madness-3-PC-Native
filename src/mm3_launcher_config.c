@@ -259,7 +259,7 @@ void mm3_launcher_config_defaults(MM3LauncherConfig *config)
     for (int i = 0; i < MM3_LAUNCHER_DRIVE_KEYS; ++i) config->drive_keys2[i] = second.drive[i];
     config->controller_count = 0;   /* automatic: one per connected controller */
     config->network_port = 3075;
-    config->damage_percent = config->own_damage_percent = config->time_percent = 100;
+    config->damage_percent = config->own_damage_percent = 100;
     config->ai_level = 5;
     config->free_camera_key = 0x77;   /* F8 */
 }
@@ -273,7 +273,6 @@ int mm3_launcher_config_valid(const MM3LauncherConfig *config)
         (config->fov_degrees < 60 || config->fov_degrees > 110)) ||
         config->damage_percent < 0 || config->damage_percent > 400 ||
         config->own_damage_percent < 0 || config->own_damage_percent > 400 ||
-        config->time_percent < 25 || config->time_percent > 400 ||
         config->ai_level < 0 || config->ai_level > 9 || !camera_key_valid(config->free_camera_key) ||
         config->network_port < 1 || config->network_port > 65535 ||
         !memchr(config->peers, 0, sizeof config->peers) || !peers_valid(config->peers)) return 0;
@@ -334,10 +333,6 @@ int mm3_launcher_config_assign(MM3LauncherConfig *config, const char *key, const
     if (!strcmp(key, "MM3_FREE_CAMERA_KEY")) {
         if (!integer(value, 1, 255, &number) || !camera_key_valid(number)) return 0;
         config->free_camera_key = number; return 1;
-    }
-    if (!strcmp(key, "MM3_TIME_PERCENT")) {
-        if (!integer(value, 25, 400, &number)) return 0;
-        config->time_percent = number; return 1;
     }
     if (!strcmp(key, "RECOMP_USB_PADS")) {
         if (!strncmp(value, "auto", 4)) { config->controller_count = 0; return 1; }
@@ -448,9 +443,10 @@ int mm3_launcher_config_load(MM3LauncherConfig *config, char *error, size_t capa
          * dropped quietly; the next save leaves them out. MM3_AI_STOP_FINISH
          * (Opponents stop before the finish) became F10's Freeze opponents;
          * MM3_MOD_FLARE_DEPTH (Flares hide behind objects) cut the road's lamp
-         * reflections once the game's own flare visibility worked (issue #25). */
+         * reflections once the game's own flare visibility worked (issue #25);
+         * MM3_TIME_PERCENT (Time limits) became F10's Stop the time limit. */
         if (!strcmp(key, "MM3_CHEAT_CODES") || !strcmp(key, "MM3_AI_STOP_FINISH") ||
-            !strcmp(key, "MM3_MOD_FLARE_DEPTH")) continue;
+            !strcmp(key, "MM3_MOD_FLARE_DEPTH") || !strcmp(key, "MM3_TIME_PERCENT")) continue;
         if (!strcmp(key, "MM3_SETTINGS_REVISION")) {
             if (!integer(value, 1, INT_MAX, &revision))
                 error_set(error, capacity, "Some unknown or invalid launcher settings were ignored.");
@@ -544,8 +540,8 @@ int mm3_launcher_config_save(const MM3LauncherConfig *config, char *error, size_
                 SETTINGS_REVISION) < 0) failed = 1;
     for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i)
         if (fprintf(file, "%s=%d\n", mm3_launcher_options[i].key, config->option[i]) < 0) failed = 1;
-    if (fprintf(file, "MM3_DAMAGE_PERCENT=%d\nMM3_OWN_DAMAGE_PERCENT=%d\nMM3_TIME_PERCENT=%d\n",
-                config->damage_percent, config->own_damage_percent, config->time_percent) < 0)
+    if (fprintf(file, "MM3_DAMAGE_PERCENT=%d\nMM3_OWN_DAMAGE_PERCENT=%d\n",
+                config->damage_percent, config->own_damage_percent) < 0)
         failed = 1;
     if (fprintf(file, "MM3_AI_LEVEL=%d\nMM3_FREE_CAMERA_KEY=%d\n", config->ai_level, config->free_camera_key) < 0)
         failed = 1;
@@ -576,7 +572,7 @@ int mm3_launcher_config_startup(MM3LauncherConfig *config, char *error, size_t c
 {
     static const char *const extra[] = {"RECOMP_USB_PADS", "MM3_FOV_DEGREES", "RECOMP_NET_PORT", "RECOMP_NET_PEERS",
                                        "RECOMP_KEYMAP", "MM3_DRIVE_KEYMAP", "RECOMP_PADMAP",
-                                       "MM3_DAMAGE_PERCENT", "MM3_OWN_DAMAGE_PERCENT", "MM3_TIME_PERCENT",
+                                       "MM3_DAMAGE_PERCENT", "MM3_OWN_DAMAGE_PERCENT",
                                        "MM3_AI_LEVEL", "MM3_FREE_CAMERA_KEY", "RECOMP_KEYMAP2", "MM3_DRIVE_KEYMAP2",
                                        "MM3_PLAYER1_INPUT", "MM3_PLAYER2_INPUT"};
     int loaded;
@@ -639,8 +635,6 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
     snprintf(number, sizeof number, "%d", config->option[MM3_LAUNCH_GAMEPLAY] ? config->ai_level : 5);
     SET("MM3_AI_LEVEL", number);
     snprintf(number, sizeof number, "%d", config->free_camera_key); SET("MM3_FREE_CAMERA_KEY", number);
-    snprintf(number, sizeof number, "%d", config->option[MM3_LAUNCH_GAMEPLAY] ? config->time_percent : 100);
-    SET("MM3_TIME_PERCENT", number);
     snprintf(number, sizeof number, "%d", config->network_port); SET("RECOMP_NET_PORT", number);
     SET("RECOMP_NET_PEERS", config->peers);
     format_map(keys, sizeof keys, config->keys, MM3_LAUNCHER_KEYS, mm3_launcher_key_names, 0);

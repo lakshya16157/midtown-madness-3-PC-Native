@@ -11,6 +11,10 @@ int mm3_cheat_ai_level(void);
 /* Freeze opponents (F10 settings window): race opponents hold still, engine cut and brakes on. */
 int mm3_cheat_ai_frozen(void);
 void mm3_cheat_set_ai_frozen(int frozen);
+/* Stop the time limit (F10 settings window): the race_timer of Blitz races and
+ * timed jobs holds its time left (src/mm3_stop_timer.c). */
+int mm3_cheat_timer_stopped(void);
+void mm3_cheat_set_timer_stopped(int stopped);
 /* Presses of the free camera key (MM3_FREE_CAMERA_KEY, F8 by default) since
  * the last call; none with MM3_FREE_CAMERA=0. */
 int mm3_cheat_camera_presses(void);
