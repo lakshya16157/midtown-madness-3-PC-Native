@@ -78,7 +78,7 @@ Spanish voices in Spanish.
 | Quit in the main menu, minimap compass pins hidden | Improved minimap, which shows more of the map at speed |
 | Softer car paint reflections | Opponents match your car (off by default) |
 | Photo mode: **F2** holds the race and flies the camera, **F3** saves a picture, **F4** hides the HUD | Car damage, from no damage to 3x (Xbox values by default) |
-| HD HUD: speedometers, icons and fonts at 4x (fonts 2x), made by Setup from your own disc | Your car's damage, on top of car damage: invulnerable to 3x (Xbox by default) |
+| HD HUD: speedometers, icons and arrows at 4x, made by Setup from your own disc | Your car's damage, on top of car damage: invulnerable to 3x (Xbox by default) |
 | | Opponents' difficulty 0 to 9 (5 = Xbox by default) |
 | | Free camera on a key of your choice (on with Modded gameplay) |
 | | Freeze opponents and Stop the time limit: check boxes in the **F10** settings window, until you untick them or quit |

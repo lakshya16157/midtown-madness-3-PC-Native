@@ -1274,7 +1274,7 @@ def remove_shortcuts(paths) -> list[Path]:
 
 
 def make_hd_hud(game_dir: Path, dest: Path, log) -> None:
-    """HD HUD (issue #33): sharper HUD and font textures, upscaled from the player's own disc into
+    """HD HUD (issue #33): sharper HUD textures, upscaled from the player's own disc into
     hd_textures (tools/hud/hd_hud.py; the game uses them with the Improved look). Never fails the
     install: without them the game shows the Xbox's own."""
     script = PAYLOAD / "tools" / "hud" / "hd_hud.py"

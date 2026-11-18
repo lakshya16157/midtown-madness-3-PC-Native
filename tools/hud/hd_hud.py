@@ -1,9 +1,9 @@
-"""HD HUD: higher-resolution copies of the HUD and font textures, made from the player's own disc.
+"""HD HUD: higher-resolution copies of the HUD textures, made from the player's own disc.
 
 Setup runs this after installing (installer.py `make_hd_hud`). Game artwork is never shipped or
 committed: everything here is derived on the player's machine from game_files/Data/Data_dvd.zip.
 
-Each texture is upscaled 4x (fonts 2x) by `upscale`: premultiplied-alpha Lanczos, then iterative
+Each texture is upscaled 4x by `upscale`: premultiplied-alpha Lanczos, then iterative
 back-projection (the upscaled image, scaled back down, must equal the original, which restores the
 edges Lanczos softens), then crisp alpha edges where the original has a hard cut-out. The result is
 saved as hd_textures/<w>x<h>_<fnv>.dds (BC3 with a mip chain, or BGRA8 when this Pillow cannot
@@ -22,8 +22,10 @@ import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-VERSION = 1                      # bump to rebuild existing installs' textures
-FOLDERS = {"Menu/Gfx/HUD/": 4, "Menu/Font/": 2}
+VERSION = 2                      # bump to rebuild existing installs' textures
+# Not Menu/Font/: the font atlases keep the fill in blue and the outline in black pixels, and
+# upscaling blends the two, so letters fill in (issue #42: i -> l, 0 -> 8, C -> G).
+FOLDERS = {"Menu/Gfx/HUD/": 4}
 MAX_SIZE = 4096                  # largest replacement edge
 SKIP = ("_bak", "old.cdds")      # left-over artist copies the game never loads
 
@@ -207,7 +209,7 @@ def build(game_files: Path, out: Path, log=print, only: str | None = None) -> in
                 log(f"HD HUD: {name} skipped ({error}).")
     if not only:
         stamp.write_text(signature + "\n")
-    log(f"HD HUD: made {count} higher-resolution HUD and font textures"
+    log(f"HD HUD: made {count} higher-resolution HUD textures"
         + ("." if bc3 else " (uncompressed: this Pillow cannot write BC3)."))
     return count
 
