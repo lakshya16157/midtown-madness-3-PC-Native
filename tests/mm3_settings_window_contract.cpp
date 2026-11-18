@@ -12,6 +12,7 @@
 /* ---- fakes for what the overlay talks to ---- */
 static int g_frozen, g_commits, g_last_fps, g_last_night;
 static MM3DisplaySettings g_settings;
+static MM3NextLaunchSettings g_next_launch = {0, 1, 15};
 
 extern "C" {
 void xbox_FramebufferSetHostOverlay(const XboxHostOverlay *) {}
@@ -33,6 +34,13 @@ int mm3_display_settings_commit(const MM3DisplaySettings *s, char *status, size_
     return 1;
 }
 const char *mm3_display_setting_fixed(MM3FixedSetting) { return nullptr; }
+void mm3_next_launch_settings_get(MM3NextLaunchSettings *settings) { *settings = g_next_launch; }
+int mm3_next_launch_settings_save(const MM3NextLaunchSettings *settings, char *status, size_t capacity)
+{
+    g_next_launch = *settings;
+    snprintf(status, capacity, "Saved for the next launch.");
+    return 1;
+}
 }
 bool ImGui_ImplSDL3_InitForSDLGPU(SDL_Window *) { return true; }
 void ImGui_ImplSDL3_Shutdown() {}
@@ -76,6 +84,7 @@ int main()
     for (int i = 0; i < 20; ++i) frame();
     assert(settings_visible);
     assert(vertices > 500);
+    assert(!next_launch.show_launcher && next_launch.wheel_enabled && next_launch.wheel_ffb == 15);
 
     /* The window opens centred, 560 x 470: its first checkbox, Freeze opponents, is near the top left. */
     ImGuiWindow *win = ImGui::FindWindowByName("Midtown Madness 3 | Settings (F10)");

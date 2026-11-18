@@ -151,6 +151,40 @@ static int integer(const char *text, long minimum, long maximum, int *result)
     *result = (int)value;
     return 1;
 }
+
+static int wheel_device_valid(const char *device)
+{
+    if (!*device) return 1;
+    if (strlen(device) != 9 || device[4] != ':' ||
+        !strncmp(device, "0000", 4) || !strcmp(device + 5, "0000")) return 0;
+    for (int i = 0; i < 9; ++i)
+        if (i != 4 && !isxdigit((unsigned char)device[i])) return 0;
+    return 1;
+}
+
+static int wheel_axes_format(const char *text, char *axes_text, size_t capacity)
+{
+    int axes[3];
+    if (text[strspn(text, "0123456789+-, \t")]) return 0;
+    for (int i = 0; i < 3; ++i) {
+        char *end;
+        text += strspn(text, " \t");
+        const char *digits = text + (*text == '-' || *text == '+');
+        size_t count = strspn(digits, "0123456789");
+        if (count < 1 || count > 3) return 0;
+        errno = 0;
+        long value = strtol(text, &end, 10);
+        end += strspn(end, " \t");
+        if (end == text || errno || !value || value < -255 || value > 255 ||
+            *end != (i < 2 ? ',' : '\0')) return 0;
+        axes[i] = (int)value;
+        text = end + 1;
+    }
+    if (abs(axes[0]) == abs(axes[1]) || abs(axes[0]) == abs(axes[2]) || abs(axes[1]) == abs(axes[2])) return 0;
+    int length = snprintf(axes_text, capacity, "%d,%d,%d", axes[0], axes[1], axes[2]);
+    return length >= 0 && (size_t)length < capacity;
+}
+
 static int peers_valid(const char *value)
 {
     const char *at = value;
@@ -258,6 +292,7 @@ void mm3_launcher_config_defaults(MM3LauncherConfig *config)
     for (int i = 0; i < MM3_LAUNCHER_KEYS; ++i) config->keys2[i] = second.keys[i];
     for (int i = 0; i < MM3_LAUNCHER_DRIVE_KEYS; ++i) config->drive_keys2[i] = second.drive[i];
     config->controller_count = 0;   /* automatic: one per connected controller */
+    strcpy(config->wheel_axes, "1,-2,-3");
     config->network_port = 3075;
     config->damage_percent = config->own_damage_percent = 100;
     config->ai_level = 5;
@@ -268,7 +303,14 @@ static int key_valid(int vk) { return vk >= 0 && vk <= 255 && vk != VK_F10 && vk
 
 int mm3_launcher_config_valid(const MM3LauncherConfig *config)
 {
-    if (!config || config->controller_count < 0 || config->controller_count > 4 ||
+    char axes[sizeof config->wheel_axes];
+    if (!config || config->skip_launcher < 0 || config->skip_launcher > 1 ||
+        config->wheel_enabled < 0 || config->wheel_enabled > 1 ||
+        config->wheel_ffb < 0 || config->wheel_ffb > 25 ||
+        !memchr(config->wheel_device, 0, sizeof config->wheel_device) || !wheel_device_valid(config->wheel_device) ||
+        !memchr(config->wheel_axes, 0, sizeof config->wheel_axes) ||
+        !wheel_axes_format(config->wheel_axes, axes, sizeof axes) || strcmp(config->wheel_axes, axes) ||
+        config->controller_count < 0 || config->controller_count > 4 ||
         (config->fov_degrees != 0 &&
         (config->fov_degrees < 60 || config->fov_degrees > 110)) ||
         config->damage_percent < 0 || config->damage_percent > 400 ||
@@ -311,6 +353,28 @@ int mm3_launcher_config_assign(MM3LauncherConfig *config, const char *key, const
         else if (i == MM3_LAUNCH_NETWORK && !_stricmp(value, "nat")) number = 1;
         else if (!integer(value, 0, 1, &number)) return 0;
         config->option[i] = number;
+        return 1;
+    }
+    if (!strcmp(key, "MM3_SKIP_LAUNCHER"))
+        return integer(value, 0, 1, &config->skip_launcher);
+    if (!strcmp(key, "MM3_WHEEL_ENABLED"))
+        return integer(value, 0, 1, &config->wheel_enabled);
+    if (!strcmp(key, "MM3_WHEEL_FFB"))
+        return integer(value, 0, 25, &config->wheel_ffb);
+    if (!strcmp(key, "MM3_WHEEL_DEVICE")) {
+        char device[sizeof config->wheel_device] = {0};
+        value += strspn(value, " \t");
+        size_t length = strcspn(value, " \t");
+        if (length >= sizeof device || value[length + strspn(value + length, " \t")]) return 0;
+        for (size_t i = 0; i < length; ++i) device[i] = (char)tolower((unsigned char)value[i]);
+        if (!wheel_device_valid(device)) return 0;
+        memcpy(config->wheel_device, device, sizeof device);
+        return 1;
+    }
+    if (!strcmp(key, "MM3_WHEEL_AXES")) {
+        char axes[sizeof config->wheel_axes] = {0};
+        if (!wheel_axes_format(value, axes, sizeof axes)) return 0;
+        memcpy(config->wheel_axes, axes, sizeof axes);
         return 1;
     }
     if (!strcmp(key, "MM3_FOV_DEGREES")) {
@@ -538,6 +602,9 @@ int mm3_launcher_config_save(const MM3LauncherConfig *config, char *error, size_
     format_map(drive2, sizeof drive2, config->drive_keys2, MM3_LAUNCHER_DRIVE_KEYS, mm3_launcher_drive_names, 0);
     if (fprintf(file, "# Midtown Madness 3 launcher preferences\n[launcher]\nMM3_SETTINGS_REVISION=%d\n",
                 SETTINGS_REVISION) < 0) failed = 1;
+    if (fprintf(file, "MM3_SKIP_LAUNCHER=%d\n", config->skip_launcher) < 0) failed = 1;
+    if (fprintf(file, "MM3_WHEEL_ENABLED=%d\nMM3_WHEEL_FFB=%d\nMM3_WHEEL_DEVICE=%s\nMM3_WHEEL_AXES=%s\n",
+                config->wheel_enabled, config->wheel_ffb, config->wheel_device, config->wheel_axes) < 0) failed = 1;
     for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i)
         if (fprintf(file, "%s=%d\n", mm3_launcher_options[i].key, config->option[i]) < 0) failed = 1;
     if (fprintf(file, "MM3_DAMAGE_PERCENT=%d\nMM3_OWN_DAMAGE_PERCENT=%d\n",
@@ -574,7 +641,8 @@ int mm3_launcher_config_startup(MM3LauncherConfig *config, char *error, size_t c
                                        "RECOMP_KEYMAP", "MM3_DRIVE_KEYMAP", "RECOMP_PADMAP",
                                        "MM3_DAMAGE_PERCENT", "MM3_OWN_DAMAGE_PERCENT",
                                        "MM3_AI_LEVEL", "MM3_FREE_CAMERA_KEY", "RECOMP_KEYMAP2", "MM3_DRIVE_KEYMAP2",
-                                       "MM3_PLAYER1_INPUT", "MM3_PLAYER2_INPUT"};
+                                       "MM3_PLAYER1_INPUT", "MM3_PLAYER2_INPUT", "MM3_WHEEL_ENABLED",
+                                       "MM3_WHEEL_FFB", "MM3_WHEEL_DEVICE", "MM3_WHEEL_AXES"};
     int loaded;
     mm3_launcher_config_defaults(config);
     loaded = mm3_launcher_config_load(config, error, capacity);
@@ -609,6 +677,17 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
     }
 #define SET(key, value) do { if (_putenv_s((key), (value))) { \
     error_set(error, capacity, "Cannot apply launcher environment settings."); return 0; } } while (0)
+    {
+        const char *wheel = getenv("RECOMP_WHEEL");
+        int enabled = wheel ? *wheel && strcmp(wheel, "0") : config->wheel_enabled;
+        if (!wheel && enabled)
+            SET("RECOMP_WHEEL", *config->wheel_device ? config->wheel_device : "1");
+        if (enabled && !getenv("RECOMP_WHEEL_AXES")) SET("RECOMP_WHEEL_AXES", config->wheel_axes);
+        if (enabled && !getenv("RECOMP_WHEEL_FFB")) {
+            snprintf(number, sizeof number, "%d", config->wheel_ffb);
+            SET("RECOMP_WHEEL_FFB", number);
+        }
+    }
     for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i) {
         const char *value = config->option[i] ? "1" : "0";
         if (i == MM3_LAUNCH_NETWORK) value = config->option[i] ? "nat" : "0";

@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("mm3_installer_experience", ROOT / "installer/installer.py")
 setup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(setup)
+setup.legacy_folders = lambda: (None, None)   # never touch this PC's real per-user folders
 
 
 def xbe(title_id, base=0x10000):
@@ -415,6 +416,37 @@ class UninstallTest(unittest.TestCase):
         setup.uninstall(self.dest, lambda _: None, delete_game_files=True)
         self.assertFalse((self.dest / "game_files").exists())
         self.assertEqual(self.files(), ["logs/last-run.log"])
+
+    def test_cache_settings_and_old_per_user_folders(self):
+        old_data, old_settings = self.dest.parent / "xboxrecomp", self.dest.parent / "MM3Recomp"
+        for path in ("cache/Partition1.img", "cache/ShaderCache/ab", "display.ini", "launcher.ini"):
+            (self.dest / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.dest / path).write_bytes(b"x")
+        for path in ("Partition5.img", "Cache/Paris.pak", "Cache/Data/Data_hd.zip", "ShaderCache/ab"):
+            (old_data / path).parent.mkdir(parents=True, exist_ok=True)
+            (old_data / path).write_bytes(b"x")
+        old_settings.mkdir()
+        (old_settings / "display.ini").write_text("x")
+        with patch.object(setup, "legacy_folders", return_value=(old_data, old_settings)):
+            setup.uninstall(self.dest, lambda _: None)
+            # Keeping the game files keeps the settings; the disposable cache goes, old and new.
+            self.assertFalse((self.dest / "cache").exists() or old_data.exists())
+            self.assertTrue((self.dest / "display.ini").is_file() and (old_settings / "display.ini").is_file())
+            (self.dest / "setup-options.json").write_text(json.dumps({"shortcuts": []}))
+            setup.uninstall(self.dest, lambda _: None, delete_game_files=True)
+        self.assertFalse((self.dest / "display.ini").exists() or (self.dest / "launcher.ini").exists())
+        self.assertFalse(old_settings.exists())
+
+    def test_an_old_cache_folder_with_foreign_files_is_left_alone(self):
+        old_data = self.dest.parent / "xboxrecomp"
+        for path in ("Partition1.img", "Cache/Paris.pak", "Cache/OtherGame.pak"):
+            (old_data / path).parent.mkdir(parents=True, exist_ok=True)
+            (old_data / path).write_bytes(b"x")
+        lines = []
+        with patch.object(setup, "legacy_folders", return_value=(old_data, None)):
+            setup.remove_legacy_data(lines.append)
+        self.assertTrue((old_data / "Cache/OtherGame.pak").is_file() and (old_data / "Partition1.img").is_file())
+        self.assertIn("did not make", lines[0])
 
     def test_a_folder_setup_did_not_make_is_refused_untouched(self):
         (self.dest / "setup-options.json").unlink()

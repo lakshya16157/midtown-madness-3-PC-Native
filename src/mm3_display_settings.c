@@ -11,6 +11,7 @@
 #include "mm3_display_settings.h"
 #include "mm3_display_settings_ids.h"
 #include "mm3_frame_limit.h"
+#include "mm3_launcher_config.h"
 #include "mm3_world_lighting.h"
 #include "mm3_cheat_keys.h"
 
@@ -154,6 +155,32 @@ int mm3_display_settings_commit(const MM3DisplaySettings *requested,
     return 1;
 }
 
+void mm3_next_launch_settings_get(MM3NextLaunchSettings *settings)
+{
+    MM3LauncherConfig config;
+    char error[160];
+    mm3_launcher_config_defaults(&config);
+    if (!mm3_launcher_config_load(&config, error, sizeof error))
+        mm3_launcher_config_defaults(&config);
+    settings->show_launcher = !config.skip_launcher;
+    settings->wheel_enabled = config.wheel_enabled;
+    settings->wheel_ffb = config.wheel_ffb;
+}
+
+int mm3_next_launch_settings_save(const MM3NextLaunchSettings *settings,
+                                 char *status, size_t capacity)
+{
+    MM3LauncherConfig config;
+    mm3_launcher_config_defaults(&config);
+    if (!mm3_launcher_config_load(&config, status, capacity)) return 0;
+    config.skip_launcher = !settings->show_launcher;
+    config.wheel_enabled = settings->wheel_enabled;
+    config.wheel_ffb = settings->wheel_ffb;
+    if (!mm3_launcher_config_save(&config, status, capacity)) return 0;
+    snprintf(status, capacity, "Saved for the next launch.");
+    return 1;
+}
+
 /* The F10 Display Settings dialog is a Win32 dialog resource (mm3.rc). Off Windows the
  * game's own Graphics menu (mm3_graphics_menu.c) is the settings page. */
 #ifdef _WIN32
@@ -180,6 +207,28 @@ static LPARAM combo_value(HWND dialog, int id)
     HWND control = GetDlgItem(dialog, id);
     LRESULT index = SendMessageA(control, CB_GETCURSEL, 0, 0);
     return index == CB_ERR ? CB_ERR : SendMessageA(control, CB_GETITEMDATA, index, 0);
+}
+
+static void show_next_launch(HWND dialog, const MM3NextLaunchSettings *settings)
+{
+    CheckDlgButton(dialog, IDC_DISPLAY_SHOW_LAUNCHER, settings->show_launcher ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(dialog, IDC_DISPLAY_WHEEL, settings->wheel_enabled ? BST_CHECKED : BST_UNCHECKED);
+    combo_select(dialog, IDC_DISPLAY_WHEEL_FFB, settings->wheel_ffb);
+    EnableWindow(GetDlgItem(dialog, IDC_DISPLAY_WHEEL_FFB), settings->wheel_enabled);
+}
+
+static void save_next_launch(HWND dialog)
+{
+    MM3NextLaunchSettings next = {
+        IsDlgButtonChecked(dialog, IDC_DISPLAY_SHOW_LAUNCHER) == BST_CHECKED,
+        IsDlgButtonChecked(dialog, IDC_DISPLAY_WHEEL) == BST_CHECKED,
+        (int)combo_value(dialog, IDC_DISPLAY_WHEEL_FFB)
+    };
+    char status[256] = "";
+    if (!mm3_next_launch_settings_save(&next, status, sizeof status))
+        mm3_next_launch_settings_get(&next);
+    show_next_launch(dialog, &next);
+    SetDlgItemTextA(dialog, IDC_DISPLAY_STATUS, status);
 }
 
 static LPARAM float_value(float value)
@@ -505,10 +554,18 @@ static INT_PTR CALLBACK display_dialog(HWND dialog, UINT message, WPARAM wparam,
         MONITORINFO monitor = { sizeof monitor };
         s_dialog = dialog;
         MM3DisplaySettings current;
+        MM3NextLaunchSettings next;
         mm3_display_settings_get(&current);
         populate(dialog, &current);
         CheckDlgButton(dialog, IDC_DISPLAY_FREEZE_AI, mm3_cheat_ai_frozen() ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(dialog, IDC_DISPLAY_STOP_TIMER, mm3_cheat_timer_stopped() ? BST_CHECKED : BST_UNCHECKED);
+        for (int i = 0; i <= 25; ++i) {
+            char label[12];
+            snprintf(label, sizeof label, "%d%%", i);
+            combo_add(dialog, IDC_DISPLAY_WHEEL_FFB, label, i);
+        }
+        mm3_next_launch_settings_get(&next);
+        show_next_launch(dialog, &next);
         update_status(dialog, 0);
         fit_to_screen(dialog);
         if (GetWindowRect(GetParent(dialog), &parent) && GetWindowRect(dialog, &bounds)) {
@@ -550,6 +607,13 @@ static INT_PTR CALLBACK display_dialog(HWND dialog, UINT message, WPARAM wparam,
             return TRUE;
         case IDC_DISPLAY_STOP_TIMER:      /* at once, not on Apply */
             mm3_cheat_set_timer_stopped(IsDlgButtonChecked(dialog, IDC_DISPLAY_STOP_TIMER) == BST_CHECKED);
+            return TRUE;
+        case IDC_DISPLAY_SHOW_LAUNCHER:
+        case IDC_DISPLAY_WHEEL:
+            if (HIWORD(wparam) == BN_CLICKED) save_next_launch(dialog);
+            return TRUE;
+        case IDC_DISPLAY_WHEEL_FFB:
+            if (HIWORD(wparam) == CBN_SELCHANGE) save_next_launch(dialog);
             return TRUE;
         case IDC_DISPLAY_MODE:
             EnableWindow(GetDlgItem(dialog, IDC_DISPLAY_RESOLUTION),

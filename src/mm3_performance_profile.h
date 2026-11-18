@@ -38,8 +38,11 @@ static inline const MM3PerformanceProfile *mm3_performance_profile(const char *n
 #endif
     static const MM3PerformanceProfile quality = {"Quality", "3.0", "8", "2", "16", "60"};
     static const MM3PerformanceProfile low_power = {"LowPower", "1.5", "1", "1", "16", "30"};
+    /* Slow PCs (issue #36): the Xbox's own 480 lines, no filtering extras. */
+    static const MM3PerformanceProfile lowest = {"Lowest", "1.0", "1", "1", "1", "30"};
     if (mm3_profile_name_equal(name, quality.name)) return &quality;
     if (mm3_profile_name_equal(name, low_power.name)) return &low_power;
+    if (mm3_profile_name_equal(name, lowest.name)) return &lowest;
     return &balanced;
 }
 

@@ -13,6 +13,16 @@ void mm3_display_settings_get(MM3DisplaySettings *settings);
 int mm3_display_settings_commit(const MM3DisplaySettings *settings,
                                char *status, size_t capacity);
 
+typedef struct MM3NextLaunchSettings {
+    int show_launcher;
+    int wheel_enabled;
+    int wheel_ffb;
+} MM3NextLaunchSettings;
+
+void mm3_next_launch_settings_get(MM3NextLaunchSettings *settings);
+int mm3_next_launch_settings_save(const MM3NextLaunchSettings *settings,
+                                 char *status, size_t capacity);
+
 /* Settings the launcher fixes for this run, as it greys them out there: the
  * aspect with the widescreen mod off, both distances with the Original look
  * or the distance mod off, the minimap with the Original look or Xbox

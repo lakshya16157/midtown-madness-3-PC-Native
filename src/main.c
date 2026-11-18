@@ -408,9 +408,61 @@ static const wchar_t *mm3_enter_game_directory(void)
     return NULL;
 }
 
+/* Portable install (issue #38): settings and the disposable cache (partition
+ * images, the game's Z: cache, shaders) live in the game's folder, beside
+ * game_files, so deleting that folder removes everything. Explicit environment
+ * wins; a read-only folder keeps the old per-user places. Settings an older
+ * version kept in %LOCALAPPDATA%\MM3Recomp are copied once and left there. */
+static void mm3_portable_folders(void)
+{
+    static const wchar_t *const names[] = {L"display.ini", L"launcher.ini", L"language.ini"};
+    wchar_t root[4096], path[4200], old[4200];
+    const wchar_t *local = _wgetenv(L"LOCALAPPDATA");
+    DWORD length = GetCurrentDirectoryW(4096, root);
+
+    if (!length || length >= 4096 || !mm3_is_file(L"game_files\\default.xbe"))
+        return;
+    _snwprintf_s(path, 4200, _TRUNCATE, L"%ls\\cache", root);
+    if (!CreateDirectoryW(path, NULL) && GetLastError() != ERROR_ALREADY_EXISTS)
+        return;
+    if (!_wgetenv(L"RECOMP_DATA_DIR"))
+        _wputenv_s(L"RECOMP_DATA_DIR", path);
+    _snwprintf_s(path, 4200, _TRUNCATE, L"%ls\\cache\\ShaderCache", root);
+    if (!_wgetenv(L"RECOMP_SHADER_CACHE_DIR"))
+        _wputenv_s(L"RECOMP_SHADER_CACHE_DIR", path);
+    if (_wgetenv(L"MM3_DISPLAY_CONFIG"))
+        return;
+    for (int i = 0; local && *local && i < 3; ++i) {
+        _snwprintf_s(path, 4200, _TRUNCATE, L"%ls\\%ls", root, names[i]);
+        _snwprintf_s(old, 4200, _TRUNCATE, L"%ls\\MM3Recomp\\%ls", local, names[i]);
+        CopyFileW(old, path, TRUE);   /* fails harmlessly when either side says no */
+    }
+    _snwprintf_s(path, 4200, _TRUNCATE, L"%ls\\display.ini", root);
+    _wputenv_s(L"MM3_DISPLAY_CONFIG", path);
+}
+
 #else
 #include <unistd.h>
 #include <sys/stat.h>
+#include <errno.h>
+/* POSIX: the same as the Windows version. display.ini was already relative to
+ * the game folder here, so there is nothing to copy. */
+static void mm3_portable_folders(void)
+{
+    char root[4096], path[4200];
+    struct stat st;
+    if (!getcwd(root, sizeof root) || stat("game_files/default.xbe", &st) || !S_ISREG(st.st_mode))
+        return;
+    if (mkdir("cache", 0755) && errno != EEXIST)
+        return;
+    snprintf(path, sizeof path, "%s/cache", root);
+    setenv("RECOMP_DATA_DIR", path, 0);
+    snprintf(path, sizeof path, "%s/cache/ShaderCache", root);
+    setenv("RECOMP_SHADER_CACHE_DIR", path, 0);
+    snprintf(path, sizeof path, "%s/display.ini", root);
+    setenv("MM3_DISPLAY_CONFIG", path, 0);
+}
+
 /* POSIX: the same search as below, from /proc/self/exe. */
 static const wchar_t *mm3_enter_game_directory(void)
 {
@@ -439,6 +491,67 @@ static const wchar_t *mm3_enter_game_directory(void)
 }
 
 #endif
+
+#ifndef MM3_VERSION
+#define MM3_VERSION "unknown"
+#endif
+
+/* Options for game launchers (Playnite, Steam, RecompLauncher). Every setting
+ * is an environment variable already, so --set reaches all of them and the
+ * named options are shorthands. Returns -1 to start, else the exit code. */
+static int mm3_command_line(int argc, char **argv)
+{
+    for (int i = 1; i < argc; ++i) {
+        const char *arg = argv[i], *value = i + 1 < argc ? argv[i + 1] : NULL;
+        if (!strcmp(arg, "--help") || !strcmp(arg, "-h") || !strcmp(arg, "/?")) {
+            printf("Midtown Madness 3 PC Native %s\n\n"
+                   "Usage: mm3_recomp [options]\n"
+                   "  --play                 start the game without the settings window\n"
+                   "  --settings             show the settings window first\n"
+                   "  --fullscreen           start fullscreen (RECOMP_FULLSCREEN=1)\n"
+                   "  --windowed             start in a window (RECOMP_FULLSCREEN=0)\n"
+                   "  --window-size WxH      window size, e.g. 1920x1080 (RECOMP_WINDOW_SIZE)\n"
+                   "  --set NAME=VALUE       any MM3_ or RECOMP_ setting for this launch\n"
+                   "  --version              print the version\n"
+                   "  --help                 print this text\n\n"
+                   "Options win over saved settings for this launch only. Settings, cache and\n"
+                   "logs stay in the game folder (beside game_files).\n", MM3_VERSION);
+            return 0;
+        }
+        if (!strcmp(arg, "--version")) { printf("%s\n", MM3_VERSION); return 0; }
+        if (!strcmp(arg, "--play") || !strcmp(arg, "--settings")) continue;   /* mm3_launcher_run */
+        if (!strcmp(arg, "--fullscreen") || !strcmp(arg, "--windowed")) {
+            _putenv_s("RECOMP_FULLSCREEN", arg[2] == 'f' ? "1" : "0");
+            continue;
+        }
+        if (!strcmp(arg, "--window-size") && value) {
+            _putenv_s("RECOMP_WINDOW_SIZE", value);
+            ++i;
+            continue;
+        }
+        if (!strcmp(arg, "--set") && value) {
+            char name[64];
+            const char *equals = strchr(value, '=');
+            size_t length = equals ? (size_t)(equals - value) : 0;
+            int valid = length > 0 && length < sizeof name &&
+                        (!strncmp(value, "MM3_", 4) || !strncmp(value, "RECOMP_", 7));
+            for (size_t c = 0; valid && c < length; ++c)
+                valid = (value[c] >= 'A' && value[c] <= 'Z') || (value[c] >= '0' && value[c] <= '9') || value[c] == '_';
+            if (!valid) {
+                fprintf(stderr, "--set needs NAME=VALUE with an MM3_ or RECOMP_ name, not '%s'.\n", value);
+                return 2;
+            }
+            memcpy(name, value, length);
+            name[length] = 0;
+            _putenv_s(name, equals + 1);
+            ++i;
+            continue;
+        }
+        /* A launcher may add arguments of its own: say so, but still start. */
+        fprintf(stderr, "[MM3_ARGS] ignoring unknown option '%s' (see --help)\n", arg);
+    }
+    return -1;
+}
 
 /* Car paint mirrors the screen copy as sharply as glass, so lamps showed on
  * it as hard bright spots. A slightly rough finish (user, 10-29: "slightly
@@ -474,11 +587,15 @@ static void mm3_full_speed(void)
 #endif
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     void *xbe_data = NULL;
     size_t xbe_size = 0;
     const wchar_t *entered_directory = mm3_enter_game_directory();
+    int command = mm3_command_line(argc, argv);
+    if (command >= 0)
+        return command;
+    mm3_portable_folders();
 
     mm3_direct_launch_log();
     mm3_full_speed();
@@ -499,9 +616,11 @@ int main(void)
         fprintf(stderr, "[MM3_CWD] game_files not in the launch folder; working directory is now %ls\n",
                 entered_directory);
 #ifdef _WIN32
-    if (!mm3_launcher_run()) return 0;
+    if (!mm3_launcher_run(argc, argv)) return 0;
     if (mm3_renderer_handoff()) return 0;
 #else
+    (void)argc;
+    (void)argv;
     {
         /* Linux: launcher.ini (written by the Settings window, mm3_launcher.py, or by hand)
          * holds the same mod choices as on Windows; explicit environment wins. */
@@ -515,6 +634,21 @@ int main(void)
         }
     }
 #endif
+    /* HD HUD (issue #33): Setup upscales the HUD and font textures of the
+     * player's own disc into hd_textures (installer/hd_hud.py). The renderer
+     * swaps them in (nv2a_texture_pack.h); the Original look keeps the Xbox's. */
+    {
+        const char *look = getenv("MM3_IMPROVED");
+#ifdef _WIN32
+        DWORD attributes = GetFileAttributesW(L"hd_textures");
+        int present = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY);
+#else
+        struct stat folder;
+        int present = !stat("hd_textures", &folder) && S_ISDIR(folder.st_mode);
+#endif
+        if (present && !getenv("RECOMP_TEXTURE_PACK_DIR") && !(look && !strcmp(look, "0")))
+            _putenv_s("RECOMP_TEXTURE_PACK_DIR", "hd_textures");
+    }
     /* Bootstrap capture uses the real audio engine without displaying a game
      * window or changing the user's device volume or saved preferences. */
     if (getenv("MM3_DSP_CAPTURE") && !strcmp(getenv("MM3_DSP_CAPTURE"), "1"))

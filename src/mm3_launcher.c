@@ -77,7 +77,8 @@ enum {
     ID_RESOLUTION, ID_MODE, ID_FPS, ID_VSYNC, ID_SCALE, ID_ASPECT, ID_MSAA,
     ID_ANISO, ID_DRAW, ID_VIEW, ID_SHOW_FPS, ID_MINIMAP, ID_FOV, ID_PORT, ID_PEERS,
     ID_SCREEN, ID_ORIGINAL, ID_XBOX_GAMEPLAY, ID_DAMAGE, ID_NIGHT, ID_UPDATE,
-    ID_PRESET, ID_TOOLS,
+    ID_PRESET, ID_TOOLS, ID_SKIP_LAUNCHER,
+    ID_WHEEL_ENABLED, ID_WHEEL_FFB, ID_WHEEL_AXES, ID_WHEEL_DEVICE,
     ID_HELP_TITLE, ID_HELP_VALUE, ID_HELP_BODY, ID_HELP_EFFECT, ID_REQUIRED,
     ID_PAD_SUMMARY, ID_PAD_HINT, ID_TAB_BAR, ID_OWN_DAMAGE, ID_AI_LEVEL, ID_CAMERA_KEY,
     ID_TITLE, ID_SUBTITLE, ID_GUIDE_HEAD1, ID_GUIDE_HEAD2, ID_PLAYER1, ID_PLAYER2, ID_GPU,
@@ -325,6 +326,13 @@ static int checked(Launcher *ui, int id)
 { return SendMessageA(control(ui, id), BM_GETCHECK, 0, 0) == BST_CHECKED; }
 static void set_checked(Launcher *ui, int id, int on)
 { SendMessageA(control(ui, id), BM_SETCHECK, on ? BST_CHECKED : BST_UNCHECKED, 0); }
+
+static void wheel_fields_enable(Launcher *ui)
+{
+    int enabled = checked(ui, ID_WHEEL_ENABLED);
+    for (int id = ID_WHEEL_FFB; id <= ID_WHEEL_DEVICE; ++id)
+        EnableWindow(control(ui, id), enabled);
+}
 static void key_name(int vk, char *text, size_t capacity)
 {
     char key[80];
@@ -356,8 +364,9 @@ static void key_name(int vk, char *text, size_t capacity)
  * game already has: mm3_performance_profile.h). It saves nothing of its own: the six controls it
  * sets are what Play saves, so launcher.ini and display.ini keep their format. The box shows
  * whichever preset the controls spell out, or Custom. */
-static const char *const preset_names[] = {NULL, "LowPower", "Balanced", "Quality"};
-static const char *const preset_labels[] = {"Custom (your own choices)", "Low power", "Balanced", "Quality"};
+static const char *const preset_names[] = {NULL, "Lowest", "LowPower", "Balanced", "Quality"};
+static const char *const preset_labels[] = {"Custom (your own choices)", "Lowest (slow PCs)", "Low power", "Balanced", "Quality"};
+#define PRESET_COUNT ((int)(sizeof preset_names / sizeof preset_names[0]))
 
 static int preset_scale(const MM3PerformanceProfile *profile)
 { return (int)lroundf((float)atof(profile->render_scale) * 1000.f); }
@@ -368,7 +377,7 @@ static int preset_current(Launcher *ui)
 {
     char fps[32];
     GetWindowTextA(control(ui, ID_FPS), fps, sizeof fps);
-    for (int i = 1; i < 4; ++i) {
+    for (int i = 1; i < PRESET_COUNT; ++i) {
         const MM3PerformanceProfile *p = mm3_performance_profile(preset_names[i]);
         if (combo_value(control(ui, ID_SCALE)) == preset_scale(p) && combo_value(control(ui, ID_MSAA)) == atoi(p->msaa) &&
             combo_value(control(ui, ID_ANISO)) == atoi(p->aniso) &&
@@ -397,7 +406,7 @@ static void preset_apply(Launcher *ui, int preset)
 {
     const MM3PerformanceProfile *p;
     char text[320], fps[24], line[480];
-    if (preset < 1 || preset > 3) return;
+    if (preset < 1 || preset >= PRESET_COUNT) return;
     p = mm3_performance_profile(preset_names[preset]);
     combo_select(control(ui, ID_SCALE), preset_scale(p));
     combo_select(control(ui, ID_MSAA), atoi(p->msaa));
@@ -616,6 +625,26 @@ static void help_show(Launcher *ui, int id)
             body = "Use keyboard and mouse bindings for player 1 while the game window has focus. A controller can still be used alongside them.";
             effect = checked(ui, id) ? "Edit Xbox-button bindings or driving shortcuts below. F10 and F11 remain reserved for graphics settings and fullscreen." : "Keyboard gameplay bindings are disabled. Controllers and reserved window shortcuts remain available.";
             break;
+        case ID_WHEEL_ENABLED:
+            title = "Racing wheel";
+            body = "A detected racing wheel automatically uses the original Xbox Configuration C for player 1. Connect the wheel in its native mode.";
+            effect = "Controller Setup shows your saved gamepad preset. It applies again when the game next sets up driving controls without the wheel.";
+            break;
+        case ID_WHEEL_FFB:
+            title = "Wheel feedback strength";
+            body = "Set steering feedback from 0 to 25 percent. The game's vibration option drives short effects on compatible wheels.";
+            effect = "Set this to 0 to keep the wheel motor idle.";
+            break;
+        case ID_WHEEL_AXES:
+            title = "Wheel axes";
+            body = "Enter the axis numbers for steering, accelerator and brake in that order, starting at 1. Use a minus sign to reverse an axis.";
+            effect = "Try 1,-2,-3 first. Use three different axes.";
+            break;
+        case ID_WHEEL_DEVICE:
+            title = "Wheel USB ID";
+            body = "Leave this blank to use the first recognized racing wheel, or enter the wheel's USB vendor and product ID as VID:PID.";
+            effect = "A specific ID is useful when more than one wheel is connected.";
+            break;
         case ID_PLAYER1: case ID_PLAYER2: {
             int player = id == ID_PLAYER2;
             title = player ? "Player 2 plays with" : "Player 1 plays with";
@@ -734,10 +763,16 @@ static void help_show(Launcher *ui, int id)
             body = "Play validates and saves every tab, then launches the game with these preferences. Changing a control here does not alter a game that is already running.";
             effect = "Hover over, focus or change any setting to see its current value and what it does. In-game Graphics Settings are available with F10.";
             break;
+        case ID_SKIP_LAUNCHER:
+            title = "Skip the settings window next time";
+            snprintf(value, sizeof value, "%s", checked(ui, id) ? "Start the game directly" : "Show settings at startup");
+            body = "Play saves this choice along with the rest of your settings.";
+            effect = "To reopen this window, start the game with --settings.";
+            break;
         case ID_PRESET: {
             int pick = preset_current(ui);
             title = "Quick preset";
-            body = "Fill in resolution, anti-aliasing, texture filtering, distances and the FPS limit in one step. Low power suits laptops and older graphics cards, Balanced is the default, Quality asks for a strong graphics card. You can still change every value afterwards.";
+            body = "Fill in resolution, anti-aliasing, texture filtering, distances and the FPS limit in one step. Lowest is for slow PCs (the Xbox's own resolution, 30 FPS), Low power suits laptops and older graphics cards, Balanced is the default, Quality asks for a strong graphics card. You can still change every value afterwards.";
             if (!pick) {
                 effect = "These graphics choices are your own mix. Pick a preset to replace them; nothing is saved until you press Play.";
             } else {
@@ -1104,6 +1139,7 @@ static void populate(Launcher *ui)
       combo_select(screen, at); }
     snprintf(text, sizeof text, "%d", s->fps_limit); SetWindowTextA(control(ui, ID_FPS), text);
     set_checked(ui, ID_VSYNC, s->vsync); set_checked(ui, ID_SHOW_FPS, s->show_fps);
+    set_checked(ui, ID_SKIP_LAUNCHER, ui->config.skip_launcher);
     combo_select(control(ui, ID_SCALE), (int)lroundf(s->render_scale * 1000.f));
     if (combo_value(control(ui, ID_SCALE)) < 0) {
         mm3_custom_label(s->render_scale, text, sizeof text);
@@ -1140,6 +1176,12 @@ static void populate(Launcher *ui)
         combo_select(control(ui, ID_NIGHT), s->night_light);
     }
     set_checked(ui, ID_KEYBOARD, ui->config.option[MM3_LAUNCH_KEYBOARD]);
+    set_checked(ui, ID_WHEEL_ENABLED, ui->config.wheel_enabled);
+    snprintf(text, sizeof text, "%d", ui->config.wheel_ffb);
+    SetWindowTextA(control(ui, ID_WHEEL_FFB), text);
+    SetWindowTextA(control(ui, ID_WHEEL_AXES), ui->config.wheel_axes);
+    SetWindowTextA(control(ui, ID_WHEEL_DEVICE), ui->config.wheel_device);
+    wheel_fields_enable(ui);
     combo_select(control(ui, ID_PAD_COUNT), ui->config.controller_count);
     combo_select(control(ui, ID_PLAYER1), mm3_launcher_player1_for(ui->config.player1, ui->config.player2));
     combo_select(control(ui, ID_PLAYER2), ui->config.player2);
@@ -1191,6 +1233,21 @@ static int read_controls(Launcher *ui, char *error, size_t capacity)
     if (!read_integer(ui, ID_PORT, 1, 65535, &ui->config.network_port)) {
         snprintf(error, capacity, "Enter a network port between 1 and 65535."); return 0;
     }
+    ui->config.wheel_enabled = checked(ui, ID_WHEEL_ENABLED);
+    if (ui->config.wheel_enabled) {
+        char text[64];
+        if (!read_integer(ui, ID_WHEEL_FFB, 0, 25, &ui->config.wheel_ffb)) {
+            snprintf(error, capacity, "Enter a wheel feedback strength from 0 to 25 percent."); return 0;
+        }
+        GetWindowTextA(control(ui, ID_WHEEL_AXES), text, sizeof text);
+        if (!mm3_launcher_config_assign(&ui->config, "MM3_WHEEL_AXES", text)) {
+            snprintf(error, capacity, "Enter three different wheel axes from 1 to 255. Use a minus sign to reverse an axis."); return 0;
+        }
+        GetWindowTextA(control(ui, ID_WHEEL_DEVICE), text, sizeof text);
+        if (!mm3_launcher_config_assign(&ui->config, "MM3_WHEEL_DEVICE", text)) {
+            snprintf(error, capacity, "Enter a wheel USB ID as VID:PID, or leave it blank for automatic detection."); return 0;
+        }
+    }
     s->window_width = resolution / 10000; s->window_height = resolution % 10000;
     s->fullscreen = combo_value(control(ui, ID_MODE));
     { int at = combo_value(control(ui, ID_SCREEN));
@@ -1198,6 +1255,7 @@ static int read_controls(Launcher *ui, char *error, size_t capacity)
           snprintf(s->monitor, sizeof s->monitor, "%s", ui->screens[at - 1].device);
       else if (at != SCREEN_MISSING) strcpy(s->monitor, "primary"); }
     s->vsync = checked(ui, ID_VSYNC); s->show_fps = checked(ui, ID_SHOW_FPS);
+    ui->config.skip_launcher = checked(ui, ID_SKIP_LAUNCHER);
     s->render_scale = (float)combo_value(control(ui, ID_SCALE)) / 1000.f;
     GetWindowTextA(control(ui, ID_ASPECT), s->aspect, sizeof s->aspect);
     s->msaa = combo_value(control(ui, ID_MSAA)); s->aniso = combo_value(control(ui, ID_ANISO));
@@ -1297,7 +1355,7 @@ static void settings_controls(Launcher *ui)
         }
     }
     c = combo(ui, 0, ID_PRESET, "Quick preset", 42, 302, 238);
-    for (int i = 0; i < 4; ++i) combo_item(c, preset_labels[i], i);
+    for (int i = 0; i < PRESET_COUNT; ++i) combo_item(c, preset_labels[i], i);
     combo_select(c, 0);
     c = combo(ui, 0, ID_MINIMAP, "Minimap style", 310, 302, 238);
     for (int i = 0; i < 2; ++i) combo_item(c, mm3_minimap_names[i], i);
@@ -1346,8 +1404,18 @@ static void controls_controls(Launcher *ui)
     combo_select(c, 0);
     push_button(ui, 1, "Capture controller button", ID_CAPTURE, 417, 414, 399, 32);
     push_button(ui, 1, "Clear selected binding", ID_UNBIND, 417, 458, 399, 30);
-    add(ui, 1, "STATIC", "Select an action, then capture a key/button or select a controller source. Escape cancels capture. Stick axes stay analog. Controller bindings apply equally to players 1-4.",
-         0, -1, 417, 504, 399, 80);
+    add(ui, 1, "STATIC", "Select an action to bind. Escape cancels capture.", 0, -1, 42, 568, 345, 40);
+    check(ui, 1, ID_WHEEL_ENABLED, "Enable racing wheel for player 1", 417, 510, 399);
+    label(ui, 1, "Feedback %", 417, 543, 108);
+    label(ui, 1, "Wheel axes", 533, 543, 128);
+    label(ui, 1, "USB ID (optional)", 669, 543, 147);
+    c = add(ui, 1, "EDIT", "", ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, ID_WHEEL_FFB, 417, 568, 108, 28);
+    SendMessageA(c, EM_SETLIMITTEXT, 8, 0);
+    c = add(ui, 1, "EDIT", "", ES_AUTOHSCROLL | WS_TABSTOP, ID_WHEEL_AXES, 533, 568, 128, 28);
+    SendMessageA(c, EM_SETLIMITTEXT, 48, 0);
+    c = add(ui, 1, "EDIT", "", ES_AUTOHSCROLL | WS_TABSTOP, ID_WHEEL_DEVICE, 669, 568, 147, 28);
+    SendMessageA(c, EM_SETLIMITTEXT, 48, 0);
+    SendMessageW(c, EM_SETCUEBANNER, 0, (LPARAM)L"Automatic");
 }
 typedef struct OptionColumn { int x, width; const char *title, *subtitle; int options[11]; } OptionColumn;
 /* A mods tab's columns of options (0 ends a column, -1 starts its subtitle). */
@@ -2044,6 +2112,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         push_button(ui, -1, "Restore defaults", ID_DEFAULTS, 25, 699, 155, 34);
         push_button(ui, -1, "Check for updates", ID_UPDATE, 195, 699, 175, 34);
         push_button(ui, -1, "Folders and logs", ID_TOOLS, 385, 699, 175, 34);
+        check(ui, -1, ID_SKIP_LAUNCHER, "Skip the settings window next time", 597, 704, 315);
         push_button(ui, -1, "Play", IDOK, 933, 699, 122, 34);
         push_button(ui, -1, "Cancel", IDCANCEL, 1068, 699, 122, 34);
         populate(ui); page_show(ui, 0);
@@ -2078,11 +2147,13 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             return 0;
         }
         if (HIWORD(wparam) == BN_CLICKED && (LOWORD(wparam) == ID_KEYBOARD ||
-            LOWORD(wparam) == ID_VSYNC || LOWORD(wparam) == ID_SHOW_FPS ||
+            LOWORD(wparam) == ID_VSYNC || LOWORD(wparam) == ID_SHOW_FPS || LOWORD(wparam) == ID_SKIP_LAUNCHER ||
+            LOWORD(wparam) == ID_WHEEL_ENABLED ||
             (LOWORD(wparam) >= ID_OPTION && LOWORD(wparam) < ID_OPTION + MM3_LAUNCH_OPTION_COUNT))) {
             int id = LOWORD(wparam);
             set_checked(ui, id, !checked(ui, id));
             if (id == ID_KEYBOARD) { if (checked(ui, id)) keyboard_layout_follow(ui); else players_keyboard_off(ui); }
+            if (id == ID_WHEEL_ENABLED) wheel_fields_enable(ui);
             if (id == ID_OPTION + MM3_LAUNCH_WORLD_LIGHT || id == ID_OPTION + MM3_LAUNCH_FREE_CAMERA)
                 mods_enable(ui);   /* Night brightness, the free camera key */
             help_show(ui, id);
@@ -2257,7 +2328,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         if (wparam == 2) {
             static const int important[] = {ID_MODE, ID_FPS, ID_MINIMAP, ID_KEYBOARD, ID_PLAYER1, ID_PLAYER2,
                 ID_GROUP, ID_BINDINGS, ID_SOURCE, ID_CAPTURE, ID_PAD_COUNT, ID_PAD_STATUS,
-                ID_PAD_SUMMARY, ID_PAD_HINT, ID_FOV, IDOK, IDCANCEL};
+                ID_PAD_SUMMARY, ID_PAD_HINT, ID_FOV, ID_SKIP_LAUNCHER, IDOK, IDCANCEL};
             int valid = 1;
             for (int i = 0; i < (int)(sizeof important / sizeof important[0]); ++i)
                 if (!control(ui, important[i])) valid = 0;
@@ -2331,10 +2402,23 @@ static float layout_scale(const RECT *work, float desired)
     return desired < 0.4f ? 0.4f : desired;
 }
 
-int mm3_launcher_run(void)
+static int show_settings(int skip_launcher, int argc, char *const argv[])
 {
-    const char *mode = getenv("MM3_LAUNCHER"), *script = getenv("RECOMP_PB_EXEC");
-    int show = mode && !strcmp(mode, "1") ? 1 : mode && !strcmp(mode, "0") ? 0 : !script;
+    const char *handoff = getenv("MM3_RENDERER_HANDOFF");
+    const char *mode = getenv("MM3_LAUNCHER");
+    int show = !skip_launcher && ((mode && !strcmp(mode, "auto")) || !getenv("RECOMP_PB_EXEC"));
+    if (handoff && *handoff) return 0;
+    if (mode && !strcmp(mode, "1")) show = 1;
+    if (mode && !strcmp(mode, "0")) show = 0;
+    for (int i = 1; i < argc; ++i) {
+        if (!strcmp(argv[i], "--settings")) show = 1;
+        if (!strcmp(argv[i], "--play")) show = 0;
+    }
+    return show;
+}
+
+int mm3_launcher_run(int argc, char *const argv[])
+{
     Launcher ui;
     char warning[512] = "", display_warning[512] = "";
     const char *smoke = getenv("MM3_LAUNCHER_SMOKE");
@@ -2344,7 +2428,7 @@ int mm3_launcher_run(void)
         fprintf(stderr, "[MM3_LAUNCHER] %s\n", warning);
     if (!mm3_display_settings_startup(&ui.display, display_warning, sizeof display_warning) || *display_warning)
         fprintf(stderr, "[MM3_LAUNCHER] %s\n", display_warning);
-    if (show || ui.smoke) {
+    if (show_settings(ui.config.skip_launcher, argc, argv) || ui.smoke) {
         INITCOMMONCONTROLSEX common = {sizeof common, ICC_TAB_CLASSES};
         WNDCLASSA wc = {0};
         RECT bounds, work;

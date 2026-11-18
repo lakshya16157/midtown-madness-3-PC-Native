@@ -25,7 +25,7 @@ static void clear_settings(void)
 }
 
 static void profile(const char *name, const char *scale, const char *msaa,
-                    const char *distance, const char *fps)
+                    const char *distance, const char *fps, const char *aniso)
 {
     clear_settings();
     assert(mm3_apply_performance_defaults(name) == NULL);
@@ -33,7 +33,7 @@ static void profile(const char *name, const char *scale, const char *msaa,
     assert(strcmp(getenv("RECOMP_MSAA"), msaa) == 0);
     assert(strcmp(getenv("RECOMP_DRAW_DISTANCE"), distance) == 0);
     assert(strcmp(getenv("RECOMP_VIEW_DISTANCE"), distance) == 0);
-    assert(strcmp(getenv("RECOMP_ANISO"), "16") == 0);
+    assert(strcmp(getenv("RECOMP_ANISO"), aniso) == 0);
     assert(strcmp(getenv("RECOMP_FPS_LIMIT"), fps) == 0);
     assert(strcmp(getenv("RECOMP_BUFFERED_ASSET_READS"), "1") == 0);
     assert(strcmp(getenv("RECOMP_READBACK_FENCE"), "1") == 0);
@@ -54,12 +54,13 @@ int main(void)
 #else
 #define BALANCED_SCALE "1.5"
 #endif
-    profile(NULL, BALANCED_SCALE, "4", "2", "60");
-    profile("", BALANCED_SCALE, "4", "2", "60");
-    profile("unknown", BALANCED_SCALE, "4", "2", "60");
-    profile("Balanced", BALANCED_SCALE, "4", "2", "60");
-    profile("quality", "3.0", "8", "2", "60");
-    profile("LOWPOWER", "1.5", "1", "1", "30");
+    profile(NULL, BALANCED_SCALE, "4", "2", "60", "16");
+    profile("", BALANCED_SCALE, "4", "2", "60", "16");
+    profile("unknown", BALANCED_SCALE, "4", "2", "60", "16");
+    profile("Balanced", BALANCED_SCALE, "4", "2", "60", "16");
+    profile("quality", "3.0", "8", "2", "60", "16");
+    profile("LOWPOWER", "1.5", "1", "1", "30", "16");
+    profile("lowest", "1.0", "1", "1", "30", "1");
 
     clear_settings();
     for (i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i)

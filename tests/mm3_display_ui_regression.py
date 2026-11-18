@@ -22,11 +22,12 @@ def main():
             "/I" + str(ROOT / "tools/xboxrecomp/src"),
             "/I" + str(ROOT / "tools/xboxrecomp/src/input"),
             str(ROOT / "tests/mm3_display_ui_contract.c"),
-            str(ROOT / "src/mm3_display_config.c"), str(resource),
+            str(ROOT / "src/mm3_display_config.c"), str(ROOT / "src/mm3_launcher_config.c"), str(resource),
             "/Fe:" + str(executable), "/link", "user32.lib", "gdi32.lib",
         ], check=True, cwd=folder)
         environment = {key: value for key, value in os.environ.items()
                        if not key.startswith(("MM3_", "RECOMP_")) or key == "MM3_UI_CAPTURE"}
+        environment["MM3_LAUNCHER_CONFIG"] = str(folder / "launcher.ini")
         subprocess.run([str(executable), str(folder / "settings.ini")],
                        check=True, cwd=folder, env=environment, timeout=40)
         subprocess.run([str(executable), str(folder / "fixed.ini"), "fixed"],

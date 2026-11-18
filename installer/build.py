@@ -36,7 +36,7 @@ RACE_FILES = ("circuits.py", "circuits.json", "logic_circuit.lua", "dlc_icons.js
 # The DLC races' loading screens read the city maps (CDDS) and draw with Pillow.
 TEXTURE_FILES = ("mm3_textures.py", "cdds_codebooks.json")
 STDLIB_HIDDEN =("argparse", "collections", "copy", "hashlib", "math", "re", "struct", "tempfile", "zipfile", "zlib")
-PILLOW_HIDDEN = ("PIL.Image", "PIL.ImageChops", "PIL.ImageDraw", "PIL.ImageFilter", "PIL.ImageFont",
+PILLOW_HIDDEN = ("PIL.Image", "PIL.ImageChops", "PIL.ImageDraw", "PIL.ImageFilter", "PIL.ImageFont", "PIL.ImageMath",
                  "PIL.ImageOps", "PIL.DdsImagePlugin", "PIL.TgaImagePlugin", "PIL.PngImagePlugin")
 
 
@@ -158,6 +158,9 @@ def stage_payload(payload: Path, repo: Path, packages: Path, downloads: Path,
     textures.mkdir(parents=True)
     for name in TEXTURE_FILES:
         shutil.copy2(repo / "tools" / "car-models" / name, textures)
+    # HD HUD: Setup upscales the HUD and fonts from the player's disc (needs mm3_textures above).
+    (payload / "tools" / "hud").mkdir(parents=True)
+    shutil.copy2(repo / "tools" / "hud" / "hd_hud.py", payload / "tools" / "hud")
     # cars.local.json is the maintainer's tuned setup; the tracked cars.json is the untuned preset
     # (and carries no model packages). Either way, model_package paths are ../../out/car-models/packages.
     manifest = repo / "tools" / "car-mods" / "cars.local.json"

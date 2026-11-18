@@ -61,7 +61,7 @@ $defaults = @{
     RECOMP_PB_EXEC = '1'; RECOMP_FB_WINDOW = '1'; RECOMP_USB = '1'
     RECOMP_APU_DSP_ACK = '0x80458810'; MM3_PERFORMANCE_PROFILE = $Profile
     RECOMP_KEYBOARD_LAYOUT = 'mm3'
-    MM3_LAUNCHER = $(if ($NoLauncher) { '0' } else { '1' })
+    MM3_LAUNCHER = $(if ($NoLauncher) { '0' } else { 'auto' })
 }
 if ($PSBoundParameters.ContainsKey('FpsLimit')) { $defaults.RECOMP_FPS_LIMIT = "$FpsLimit" }
 if ($PSBoundParameters.ContainsKey('Fov')) {

@@ -1128,7 +1128,7 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `RECOMP_APU_DSP_ACK` | unset | DSP acknowledgement address(es) the audio needs; use `0x80458810`. |
 | `RECOMP_APU_IRQ_HOLDOFF` | `0` | Diagnostic: delay the audio interrupt up to this many frames while a guest thread runs at DISPATCH_LEVEL or above (0 = never delay). The interrupt routine itself never runs beside DISPATCH_LEVEL code except where that code stalls, as on the console's one processor. |
 | `MM3_DISPLAY_CONFIG` | `%LOCALAPPDATA%\MM3Recomp\display.ini` | Override the saved display-settings file. F10 opens the settings dialog. |
-| `MM3_LAUNCHER` | automatic | `1` opens Settings/Controls/Mods; `0` skips the window while applying saved preferences. The play script opens it by default; `-NoLauncher` skips it. |
+| `MM3_LAUNCHER` | automatic | On Windows, `auto` uses the saved startup preference. `1` opens the window and `0` skips it. Launch arguments `--settings` and `--play` take precedence. For `scripts/play.ps1`, `-NoLauncher` selects direct launch. |
 | `MM3_LAUNCHER_CONFIG` | beside `display.ini` | Override `launcher.ini`, which stores bindings, Mods and network settings. |
 | `RECOMP_KEYMAP` / `MM3_DRIVE_KEYMAP` | saved bindings | Keyboard/mouse bindings and driving actions, edited through Controls. Explicit environment maps use `ACTION:VK` pairs with hexadecimal Win32 key codes. |
 | `RECOMP_PADMAP` | saved bindings | Controller button/trigger bindings, edited through Controls; maps use `DESTINATION:SOURCE` pairs such as `A:RB`. Applies to all four XInput ports. |
@@ -1151,6 +1151,9 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `MM3_EXHAUST_TRIANGLES` | saved setting or `0` | `1`: exhaust smoke from each car's own pipes (Visual + audio mods tab, "Exhaust smoke"). |
 | `RECOMP_LINE_WIDTH` | `1` | Width of line and point lists (MM3's rain streaks) in guest pixels at the raised internal resolution; `2` doubles it, `0` keeps them one screen pixel (the old, nearly invisible rain). |
 | `RECOMP_RUMBLE` | `1` | Controller vibration: the game's own rumble goes to the XInput pad (Steam Input passes it on to PlayStation pads). The game's vibration option turns it off in play; `0` keeps the controller still. |
+| `RECOMP_WHEEL` | `0` | `1` opts player 1 into the first SDL racing wheel. A four-digit hex `VID:PID` selects a specific raw joystick. |
+| `RECOMP_WHEEL_AXES` | `1,-2,-3` | One-based raw joystick axes for steering, accelerator and brake. A negative index reverses the axis. The two pedals each use the full signed SDL axis range. |
+| `RECOMP_WHEEL_FFB` | `0` | Wheel haptic gain from 0 to 25 percent. A supported steering motor receives brief sine effects driven by the title's controller vibration output. `RECOMP_RUMBLE=0` disables that output. |
 | `RECOMP_NET` | saved setting or `0` | `nat` or `1` enables the System Link adapter and UDP peer transport. |
 | `RECOMP_NET_PORT` / `RECOMP_NET_PEERS` | `3075` / empty | Local UDP tunnel port and up to eight comma-separated peer `host:port` entries. |
 | `RECOMP_DSP_PROGRAM_DIR` | `game_files/dsp` | Runtime DSP capture cache. Native compilation uses CMake's `XBOXRECOMP_DSP_PROGRAM_DIR`, with the same default. |
@@ -1187,10 +1190,18 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `RECOMP_PS_SPEC` | `1` | `0`: skip specialised pixel shaders (slow; for debugging). |
 | `RECOMP_PS_PREWARM` | `1` | Prepare previously used pixel shader states during startup; `0` disables learning and prewarming. |
 | `RECOMP_SHADER_CACHE` | `1` | Save compiled shaders between launches; `0` disables the cache. |
-| `RECOMP_SHADER_CACHE_DIR` | built-in | Shader cache folder; defaults to `%LOCALAPPDATA%\xboxrecomp\ShaderCache`. |
+| `RECOMP_SHADER_CACHE_DIR` | built-in | Shader cache folder (D3D11 shaders and the SDL GPU pipeline list). MM3 sets `<game folder>\cache\ShaderCache` (`mm3_portable_folders` in `src/main.c`); the toolkit default is `%LOCALAPPDATA%\xboxrecomp\ShaderCache`. |
+| `RECOMP_DATA_DIR` | built-in | Folder for the disposable Xbox data: partition images, the Z: cache, `NonVolatileSettings.bin`. Saves stay where they were. MM3 sets `<game folder>\cache`, so an install keeps everything in its own folder (issue #38); the toolkit default is `%LOCALAPPDATA%\xboxrecomp` (`$XDG_DATA_HOME/xboxrecomp`). MM3 also points `MM3_DISPLAY_CONFIG` at `<game folder>\display.ini` (so `launcher.ini` and `language.ini` sit beside it) and copies the old `%LOCALAPPDATA%\MM3Recomp` files there once. |
+| `RECOMP_TEXTURE_PACK_DIR` | unset | Folder of higher-resolution replacements for guest DXT textures, named `<w>x<h>_<fnv1a64 of the guest bytes>.dds` (BC3 or BGRA8, same aspect, optional mips); see `nv2a_texture_pack.h`. MM3 sets `hd_textures` (made by Setup with `tools/hud/hd_hud.py` from the player's disc, issue #33) unless the launcher's Original look is on. `RECOMP_TEXTURE_PACK_LOG=1` also logs candidate textures without a replacement. Test: `tests/texture_pack_regression.py`. |
 | `MM3_SAVE_DIR` | built-in | Explicit save root for UDATA/TDATA, including mounted U:/T: and direct HDD paths. |
 | `MM3_UNLOCK_ALL_CARS` | off | Exactly `1` makes every installed car selectable; otherwise earned availability applies to original cars. |
 | `MM3_DEBUG_TELEPORT` | off | Enable the teleport pipe (`tools\powershell\Send-MM3Teleport.ps1`). |
+
+Player 1 uses the original Xbox **Configuration C** automatically when the enabled wheel
+is connected at driving-input setup. The generated seam at `sub_001F47E4` replaces only
+the layout value passed to the original binding selector, so Controller Setup still shows
+the saved gamepad preset. The two pedals send separate Xbox trigger inputs, like the
+period hardware. [Mad Catz MC2 manual](https://m.media-amazon.com/images/I/71R612w5VdL.pdf)
 
 ### Automation and measurement
 

@@ -2,10 +2,10 @@
 #define MM3_LAUNCHER_H
 
 /* Before runtime initialization: 1 = play/automated launch, 0 = cancelled.
- * MM3_LAUNCHER=1 forces the launcher; =0 skips it. Scripts supplying
- * RECOMP_PB_EXEC skip the UI unless forced. Preferences still load, with
- * explicit environment taking precedence. MM3_LAUNCHER_SMOKE=1 creates and
- * checks the real controls, then cancels without saving or starting the game. */
-int mm3_launcher_run(void);
+ * --settings and --play override MM3_LAUNCHER. Set MM3_LAUNCHER to 1 to show
+ * the window, 0 to skip it, or auto to use the saved startup preference.
+ * Scripts supplying only RECOMP_PB_EXEC skip the UI. The game still loads its
+ * preferences. MM3_LAUNCHER_SMOKE=1 checks the real controls, then cancels. */
+int mm3_launcher_run(int argc, char *const argv[]);
 
 #endif

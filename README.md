@@ -26,15 +26,30 @@ program: it runs as a real Windows and Linux game, not in an emulator.
    official DLC (14 cars, 40 races).
 4. Click **Install**, then **Play now**. Later, use the **Midtown Madness 3** shortcut.
 
+For controller-first launches, tick **Skip the settings window next time** beside **Play**.
+To bring it back, open **F10 → Next launch** in the game and tick **Show the settings window**.
+For a one-time override in Playnite or Steam, add `--play` to start directly or
+`--settings` to open the launcher. On Windows these options work with `mm3_recomp.exe`
+and the launch script. On native Linux, pass them to `play-midtown-madness-3.sh`.
+Launchers can also use `--fullscreen`, `--windowed`, `--window-size 1920x1080` and
+`--set NAME=VALUE` for any `MM3_` or `RECOMP_` setting; `mm3_recomp.exe --help` lists them.
+
+**Everything stays in the install folder:** the game files and saves (`game_files`), your
+settings (`display.ini`, `launcher.ini`, `language.ini`), the cache (`cache`) and the logs (`logs`).
+Earlier versions kept the cache in `%LocalAppData%\xboxrecomp` and the settings in
+`%LocalAppData%\MM3Recomp`; the game copies those settings once, and Setup removes the old cache.
+The old cache's `Partition*.img` files look large in Explorer, but they are sparse files that use
+almost no disk space (check **Size on disk**).
+
 **Updating:** press **Check for updates** in Setup or in the game's launcher, then **Update this install**.
 No disc image is needed, and your saves, settings and DLC stay.
 
-You need a Direct3D 11 graphics card and about 6 GB of free space on Windows, or a Vulkan driver and about
-10 GB on Linux. The first start plays the intro movies for about 3½ minutes; the game has not frozen.
+You need a Direct3D 11 graphics card and about 6 GB of free space on Windows while Setup runs (about
+4.2 GB stays in use afterwards), or a Vulkan driver and about 10 GB on Linux. The first start plays the intro movies for about 3½ minutes; the game has not frozen.
 
 ## Look and gameplay
 
-The launcher opens before the game. Its two mods tabs each start with a choice:
+The launcher opens before the game by default. Its two mods tabs each start with a choice:
 
 - **Visual + audio mods**: the **Original look** (the Xbox visuals, camera, menus and HUD) or the
   **Improved look** (default), with the visual mods below, most with their own switch.
@@ -63,7 +78,7 @@ Spanish voices in Spanish.
 | Quit in the main menu, minimap compass pins hidden | Improved minimap, which shows more of the map at speed |
 | Softer car paint reflections | Opponents match your car (off by default) |
 | Photo mode: **F2** holds the race and flies the camera, **F3** saves a picture, **F4** hides the HUD | Car damage, from no damage to 3x (Xbox values by default) |
-| | Your car's damage, on top of car damage: invulnerable to 3x (Xbox by default) |
+| HD HUD: speedometers, icons and fonts at 4x (fonts 2x), made by Setup from your own disc | Your car's damage, on top of car damage: invulnerable to 3x (Xbox by default) |
 | | Opponents' difficulty 0 to 9 (5 = Xbox by default) |
 | | Free camera on a key of your choice (on with Modded gameplay) |
 | | Freeze opponents and Stop the time limit: check boxes in the **F10** settings window, until you untick them or quit |
@@ -183,6 +198,24 @@ The full guide is in [tools/car-mods/README.md](tools/car-mods/README.md).
 - **Change bindings** in the launcher's **Controls** tab (Keyboard 2 has its own lists).
 - **Graphics:** see [Graphics settings](#graphics-settings).
 
+### Racing wheel
+
+In the launcher's **Controls → Racing wheel** section, enable the wheel for Player 1 and
+set the **Force feedback strength**. The wheel handles steering and separate accelerator and brake
+pedals. Use a controller or keyboard for menus and buttons.
+
+When the game sets up driving controls with a detected wheel, it automatically uses the original
+Xbox **Configuration C** for Player 1. **Options → Controller Setup** continues to show your
+saved gamepad preset. The game uses that preset again the next time it sets up driving controls
+without the wheel. Set **Vibration** to **On** in Controller Setup to feel wheel effects.
+
+If the defaults don't match your wheel, adjust the three axis numbers. Add a minus sign to reverse
+an axis. Leave the USB ID empty for automatic detection or enter your wheel's `VID:PID`.
+
+**F10 → Next launch** also lets you enable the wheel and adjust feedback for the next session.
+Feedback defaults to 0% and uses the game's vibration signal on drivers that expose the steering
+motor. Use the wheel's native device mode so the game can detect its axes and motor.
+
 ## Multiplayer (System Link)
 
 Every player needs the same version and their own game files.
@@ -260,7 +293,13 @@ on Windows (`logs` in the install folder). Proton 7 and older are not supported.
   [Open an issue](https://github.com/lakshya16157/midtown-madness-3-PC-Native/issues) and
   attach it.
 
-Your saves are kept when you run Setup again. To uninstall, delete the install folder.
+Your saves are kept when you run Setup again.
+
+**Uninstall:** in Setup, pick the install folder and press **Uninstall...**. It removes the
+program, the shortcuts and the cache, then asks whether to delete `game_files` (saved games and
+settings) as well. From a command line: `MM3-Setup.exe --uninstall --dest <folder>`, plus
+`--delete-game-files` to remove the saves too. Deleting the install folder by hand also works;
+then remove the Desktop and Start menu shortcuts yourself.
 
 ## Official known issues
 

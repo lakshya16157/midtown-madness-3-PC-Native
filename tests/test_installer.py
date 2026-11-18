@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("mm3_installer_test", ROOT / "installer/installer.py")
 setup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(setup)
+setup.legacy_folders = lambda: (None, None)   # never touch this PC's real per-user folders
 PACK = "4d53002a00000005"
 
 
@@ -173,8 +174,11 @@ class DiscReuseTest(unittest.TestCase):
             self.assertTrue(text.startswith("#!/bin/sh\n"))
             for name, value in setup.launch_settings(False).items():
                 self.assertIn(f"export {name}='{value}'\n", text)
-            self.assertIn('"${WINE:-wine}" ./mm3_recomp.exe > logs/last-run.log', text)
-            self.assertTrue((target / setup.LAUNCHER).is_file())
+            self.assertIn('[ -n "${MM3_LAUNCHER:-}" ] || export MM3_LAUNCHER=auto', text)
+            self.assertIn('"${WINE:-wine}" ./mm3_recomp.exe "$@" > logs/last-run.log', text)
+            windows = (target / setup.LAUNCHER).read_text(encoding="ascii")
+            self.assertIn('if not defined MM3_LAUNCHER set "MM3_LAUNCHER=auto"', windows)
+            self.assertIn('"%~dp0mm3_recomp.exe" %* >', windows)
 
     def test_installs_game_with_bundled_visual_cpp_runtime(self):
         with tempfile.TemporaryDirectory() as scratch:
@@ -517,8 +521,17 @@ class NativeLinuxTest(unittest.TestCase):
             for name, value in setup.launch_settings(False).items():
                 if name != "RECOMP_KEYBOARD":          # launcher.ini's keyboard switch, default on
                     self.assertIn(f"[ -n \"${{{name}:-}}\" ] || export {name}='{value}'\n", text)
-            self.assertIn("exec python3 mm3_settings.py", text)
+            self.assertIn('"${MM3_SETTINGS_APPLIED:-}" != 1', text)
+            self.assertIn('exec python3 mm3_settings.py "$@"', text)
+            self.assertIn('export MM3_LAUNCHER_CONFIG="${MM3_LAUNCHER_CONFIG:-$PWD/launcher.ini}"', text)
             self.assertFalse((target / "Play Midtown Madness 3.cmd").exists())   # no Windows script
+
+    def test_play_now_uses_the_native_direct_launch_path(self):
+        target = Path("Games") / "Midtown Madness 3"
+        with patch.object(setup, "game_running", return_value=False), patch.object(setup.subprocess, "Popen") as start:
+            setup.launch_game(target)
+        start.assert_called_once_with(["sh", "./play-midtown-madness-3.sh", "--play"], cwd=target,
+                                      start_new_session=True)
 
     def test_desktop_entries_quote_the_path_and_are_removed_again(self):
         with tempfile.TemporaryDirectory() as scratch:

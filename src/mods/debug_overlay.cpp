@@ -157,9 +157,14 @@ void draw_tools(const Mm3TeleportState &state)
 
 #if defined(XBOXRECOMP_SDL3)
 MM3DisplaySettings settings_now;
+MM3NextLaunchSettings next_launch;
 char settings_status[200];
 bool settings_loaded;
 const int kNightLights[] = {10, 15, 20, MM3_NIGHT_LIGHT_DEFAULT, 35, 50, 75, 100};
+const int kWheelStrengths[] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25
+};
 
 void settings_commit(MM3DisplaySettings &next)
 {
@@ -200,6 +205,7 @@ void draw_settings()
     bool open = true;
     if (!settings_loaded) {
         mm3_display_settings_get(&settings_now);
+        mm3_next_launch_settings_get(&next_launch);
         settings_status[0] = 0;
         settings_loaded = true;
     }
@@ -247,6 +253,21 @@ void draw_settings()
         ImGui::Separator();
         ImGui::TextWrapped("Window size, anti-aliasing, texture filtering and view distance change in the "
                            "launcher Settings and need a restart.");
+        ImGui::SeparatorText("Next launch");
+        bool show_launcher = next_launch.show_launcher != 0, wheel = next_launch.wheel_enabled != 0;
+        bool startup_changed = ImGui::Checkbox("Show the settings window", &show_launcher);
+        ImGui::SameLine();
+        startup_changed |= ImGui::Checkbox("Use racing wheel", &wheel);
+        ImGui::BeginDisabled(!wheel);
+        startup_changed |= int_combo("Force feedback strength", &next_launch.wheel_ffb,
+                                     kWheelStrengths, MM3_CHOICE_COUNT(kWheelStrengths), "%");
+        ImGui::EndDisabled();
+        if (startup_changed) {
+            next_launch.show_launcher = show_launcher;
+            next_launch.wheel_enabled = wheel;
+            if (!mm3_next_launch_settings_save(&next_launch, settings_status, sizeof settings_status))
+                mm3_next_launch_settings_get(&next_launch);
+        }
         if (settings_status[0]) ImGui::TextWrapped("%s", settings_status);
         ImGui::TextDisabled("F10 or Esc closes this window. Controller: Back + right stick click opens it; "
                             "D-pad and A move and change.");

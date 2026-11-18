@@ -43,6 +43,11 @@ enum MM3LauncherOption {
 
 typedef struct MM3LauncherConfig {
     int option[MM3_LAUNCH_OPTION_COUNT];
+    int skip_launcher; /* Automatic launches go directly to the game. */
+    int wheel_enabled;
+    int wheel_ffb; /* Steering feedback strength in percent, 0..25. */
+    char wheel_device[10]; /* Empty for automatic, or a USB VID:PID. */
+    char wheel_axes[32]; /* Signed one-based steering, accelerator and brake axes. */
     int controller_count; /* 1..4 USB controllers exposed to the game; 0 one per connected controller. */
     int fov_degrees; /* 0 = retail, otherwise 60..110 horizontal degrees. */
     /* Gameplay mods, percent of the Xbox's (100); Xbox gameplay uses 100. */

@@ -232,6 +232,14 @@ static DWORD WINAPI drive_fixed(LPVOID argument)
     CHECK(timer_stopped && !ai_frozen);                 /* Stop the time limit works at once, on its own */
     SendMessageA(GetDlgItem(dialog, IDC_DISPLAY_STOP_TIMER), BM_CLICK, 0, 0);
     CHECK(!timer_stopped);
+    CHECK(IsWindowVisible(GetDlgItem(dialog, IDC_DISPLAY_SHOW_LAUNCHER)));
+    CHECK(IsDlgButtonChecked(dialog, IDC_DISPLAY_SHOW_LAUNCHER) == BST_UNCHECKED);
+    CHECK(!IsWindowEnabled(GetDlgItem(dialog, IDC_DISPLAY_WHEEL_FFB)));
+    SendMessageA(GetDlgItem(dialog, IDC_DISPLAY_SHOW_LAUNCHER), BM_CLICK, 0, 0);
+    SendMessageA(GetDlgItem(dialog, IDC_DISPLAY_WHEEL), BM_CLICK, 0, 0);
+    CHECK(IsWindowEnabled(GetDlgItem(dialog, IDC_DISPLAY_WHEEL_FFB)));
+    combo_select(dialog, IDC_DISPLAY_WHEEL_FFB, 15);
+    notify(dialog, IDC_DISPLAY_WHEEL_FFB, CBN_SELCHANGE);
     PostMessageA(dialog, WM_COMMAND, IDCANCEL, 0);
     return 0;
 }
@@ -241,6 +249,7 @@ static int fixed_contract(const char *path)
     HWND owner;
     HANDLE thread;
     MM3DisplaySettings loaded;
+    MM3LauncherConfig launcher;
     char error[512];
     FILE *file = fopen(path, "w");
     CHECK(file);
@@ -251,6 +260,11 @@ static int fixed_contract(const char *path)
     CHECK(_putenv_s("MM3_MOD_WIDESCREEN", "0") == 0 && _putenv_s("RECOMP_ASPECT", "4:3") == 0);
     CHECK(_putenv_s("MM3_MOD_DRAW_DISTANCE", "0") == 0);
     CHECK(_putenv_s("RECOMP_DRAW_DISTANCE", "1") == 0 && _putenv_s("RECOMP_VIEW_DISTANCE", "1") == 0);
+    mm3_launcher_config_defaults(&launcher);
+    launcher.skip_launcher = 1;
+    CHECK(mm3_launcher_config_assign(&launcher, "MM3_WHEEL_DEVICE", "046d:c24f"));
+    CHECK(mm3_launcher_config_assign(&launcher, "MM3_WHEEL_AXES", "1,3,-2"));
+    CHECK(mm3_launcher_config_save(&launcher, error, sizeof error));
     mm3_display_settings_init();
     CHECK(settings_handler && fabsf(published_aspect - 4.f / 3.f) < 0.0001f);
     owner = CreateWindowExA(0, "STATIC", "Display contract owner", WS_OVERLAPPEDWINDOW,
@@ -268,6 +282,10 @@ static int fixed_contract(const char *path)
     CHECK(loaded.msaa == 2);
     CHECK(strcmp(loaded.aspect, "16:9") == 0 && loaded.draw_distance == 3.f && loaded.view_distance == 4.f);
     CHECK(loaded.minimap_improved == 1 && loaded.night_light == 40);
+    mm3_launcher_config_defaults(&launcher);
+    CHECK(mm3_launcher_config_load(&launcher, error, sizeof error));
+    CHECK(!launcher.skip_launcher && launcher.wheel_enabled && launcher.wheel_ffb == 15);
+    CHECK(!_stricmp(launcher.wheel_device, "046d:c24f") && !strcmp(launcher.wheel_axes, "1,3,-2"));
     DestroyWindow(owner);
     puts("PASS: settings the launcher fixed (aspect, distances, minimap) are greyed with the reason, keep their "
          "forced values through Restore defaults and Apply, and the file keeps the player's own choices; a window "

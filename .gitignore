@@ -107,3 +107,10 @@ game_files_dlc/
 
 # Launcher settings (src/mm3_launcher.cpp)
 mm3_settings.ini
+
+# Portable settings and cache the game keeps beside game_files (src/main.c mm3_portable_folders)
+/cache/
+/display.ini
+/launcher.ini
+/language.ini
+/hd_textures/

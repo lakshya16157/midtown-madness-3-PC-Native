@@ -147,7 +147,6 @@ CAR_CREDITS = {
 
 # The game needs these to run at all; play.ps1 sets the same ones.
 LAUNCH_ESSENTIALS = {
-    "MM3_LAUNCHER": "1",
     "RECOMP_PB_EXEC": "1",
     "RECOMP_FB_WINDOW": "1",
     "RECOMP_USB": "1",
@@ -908,16 +907,18 @@ def write_native_launcher(dest: Path, settings: dict, improvements: bool) -> Non
         "  echo 'Midtown Madness 3 is already running. Close it first.'",
         "  exit 1",
         "fi",
+        'export MM3_LAUNCHER_CONFIG="${MM3_LAUNCHER_CONFIG:-$PWD/launcher.ini}"',
+    ]
+    # Python loads the launcher preferences for both windowed and direct launches.
+    # It returns here after choosing settings, with the recursion guard and its display choices set.
+    lines += [
+        'if [ "${MM3_SETTINGS_APPLIED:-}" != 1 ] && [ -f mm3_settings.py ] && command -v python3 >/dev/null 2>&1; then',
+        '  export MM3_SETTINGS_APPLIED=1',
+        '  exec python3 mm3_settings.py "$@"',
+        "fi",
         'export LD_LIBRARY_PATH="$PWD/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"',
     ]
-    # The Settings window (mm3_settings.py, the Windows launcher's mod choices) opens first; its Play
-    # button runs this script again with MM3_NO_SETTINGS set. What it exports wins over the values below,
-    # and the keyboard switch is launcher.ini's (default on) rather than pinned here.
-    lines += [
-        'if [ -z "$MM3_NO_SETTINGS" ] && [ -f mm3_settings.py ] && [ -n "$DISPLAY$WAYLAND_DISPLAY" ] && python3 -c "import tkinter" >/dev/null 2>&1; then',
-        "  exec python3 mm3_settings.py",
-        "fi",
-    ]
+    # The keyboard switch is launcher.ini's (default on) rather than pinned here.
     lines += [f'[ -n "${{{name}:-}}" ] || export {name}={quoted(value)}'
               for name, value in settings.items() if name != "RECOMP_KEYBOARD"]
     # Light frame timing in the log (a few frames a second of text), so a slow session shows where the time went.
@@ -947,13 +948,14 @@ def write_launcher(dest: Path, improvements: bool) -> None:
         "  pause",
         "  exit /b 1",
         ")",
+        'if not defined MM3_LAUNCHER set "MM3_LAUNCHER=auto"',
     ]
     lines += [f'set "{name}={value}"' for name, value in settings.items()]
     # Explicit, quoted paths: the install folder may contain spaces, and cmd may be configured
     # (NoDefaultCurrentDirectoryInExePath) not to find programs in the current folder.
     lines += [
         'if not exist "%~dp0logs" mkdir "%~dp0logs"',
-        f'"%~dp0{GAME_EXE}" > "%~dp0logs\\last-run.log" 2>&1',
+        f'"%~dp0{GAME_EXE}" %* > "%~dp0logs\\last-run.log" 2>&1',
         "if errorlevel 1 (",
         '  echo The game stopped with an error. Details: "%~dp0logs\\last-run.log"',
         "  pause",
@@ -978,11 +980,12 @@ def write_linux_launcher(dest: Path, settings: dict) -> None:
         "  echo 'Midtown Madness 3 is already running. Close it first.'",
         "  exit 1",
         "fi",
+        '[ -n "${MM3_LAUNCHER:-}" ] || export MM3_LAUNCHER=auto',
     ]
     lines += [f"export {name}={quoted(value)}" for name, value in settings.items()]
     lines += [
         "mkdir -p logs",
-        f'"${{WINE:-wine}}" ./{GAME_EXE} > logs/last-run.log 2>&1 || '
+        f'"${{WINE:-wine}}" ./{GAME_EXE} "$@" > logs/last-run.log 2>&1 || '
         "echo 'The game stopped with an error. Details: logs/last-run.log'",
     ]
     (dest / LINUX_LAUNCHER).write_text("\n".join(lines) + "\n", encoding="ascii", newline="\n")
@@ -1127,8 +1130,11 @@ def install(iso_path, dest, extra_cars: bool, improvements: bool, log, progress,
         log(f"To change the new cars, use Car Workshop, the car toolkit: {CAR_WORKSHOP_URL}")
     else:
         (dest / "Extra cars - credits.txt").unlink(missing_ok=True)
+    progress(0.94, "Making the HD HUD...")
+    make_hd_hud(game_dir, dest, log)
     progress(0.98, "Writing the launcher...")
     write_launcher(dest, improvements)
+    remove_legacy_data(log)
     # Shortcuts made by an earlier Setup are replaced (or removed when this run has none), so the
     # list below always names exactly the ones that exist.
     remove_shortcuts(saved_options(dest).get("shortcuts"))
@@ -1166,6 +1172,9 @@ def launch_game(dest: Path) -> None:
     """Start the installed game directly (no console window), with the saved settings."""
     if game_running():
         raise InstallError("Midtown Madness 3 is already running. Close it first.")
+    if NATIVE_LINUX:
+        subprocess.Popen(["sh", f"./{LAUNCHER}", "--play"], cwd=dest, start_new_session=True)
+        return
     try:
         improvements = bool(json.loads((dest / "setup-options.json").read_text())["game_improvements"])
     except (OSError, ValueError, KeyError):
@@ -1173,8 +1182,7 @@ def launch_game(dest: Path) -> None:
     (dest / "logs").mkdir(exist_ok=True)
     env = dict(os.environ)
     env.update(launch_settings(improvements))
-    if NATIVE_LINUX:
-        env["LD_LIBRARY_PATH"] = str(dest / "lib") + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
+    env.setdefault("MM3_LAUNCHER", "auto")
     with open(dest / "logs" / "last-run.log", "wb") as log:
         subprocess.Popen([str(dest / GAME_EXE)], cwd=dest, env=env, stdout=log, stderr=subprocess.STDOUT,
                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -1265,14 +1273,69 @@ def remove_shortcuts(paths) -> list[Path]:
     return removed
 
 
+def make_hd_hud(game_dir: Path, dest: Path, log) -> None:
+    """HD HUD (issue #33): sharper HUD and font textures, upscaled from the player's own disc into
+    hd_textures (tools/hud/hd_hud.py; the game uses them with the Improved look). Never fails the
+    install: without them the game shows the Xbox's own."""
+    script = PAYLOAD / "tools" / "hud" / "hd_hud.py"
+    if not script.is_file():
+        return
+    try:
+        load_module("mm3_hd_hud", script).build(game_dir, dest / "hd_textures", log)
+    except Exception as error:       # Pillow missing or too old, a full disk: the game still runs
+        log(f"HD HUD skipped ({error}). The game uses the original HUD.")
+
+
+SETTINGS_FILES = ("display.ini", "launcher.ini", "language.ini")
+# What versions up to 2.7.4 kept in the per-user data folder (now <install>\cache): all disposable.
+LEGACY_DATA_NAMES = {"NonVolatileSettings.bin", "NonVolatileSettings.bin.lock", "Cache", "ShaderCache",
+                     "SystemData", "TitleCache", "TitleData", "UserData", "UDATA", "TDATA",
+                     *(f"Partition{n}.img" for n in range(6))}
+LEGACY_CACHE_NAMES = {"Paris.pak", "Paris.toc", "Washington.pak", "Washington.toc", "Data"}
+
+
+def legacy_folders() -> tuple[Path | None, Path | None]:
+    """(old disposable data folder, old settings folder) from before the portable layout."""
+    if NATIVE_LINUX:
+        return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "xboxrecomp", None
+    local = os.environ.get("LOCALAPPDATA")
+    return (Path(local) / "xboxrecomp", Path(local) / "MM3Recomp") if local else (None, None)
+
+
+def remove_legacy_data(log) -> None:
+    """Delete the old per-user cache folder when it holds only what this game made there.
+
+    Everything in it is rebuilt on demand, and the game now keeps it in <install>\\cache. A folder
+    with anything else (another xboxrecomp game, saves) is left alone. Never fails the install.
+    """
+    data, _ = legacy_folders()
+    try:
+        if not data or not data.is_dir() or data.is_symlink():
+            return
+        names = {entry.name for entry in data.iterdir()}
+        cache = data / "Cache"
+        if not names <= LEGACY_DATA_NAMES or (cache.is_dir() and not {e.name for e in cache.iterdir()} <= LEGACY_CACHE_NAMES):
+            log(f"Left {data} in place: it holds files this game did not make.")
+            return
+        for sub in ("UDATA", "TDATA"):   # saves only ever went here with an explicit save folder: keep any
+            if (data / sub).is_dir() and any((data / sub).iterdir()):
+                log(f"Left {data} in place: it holds saved data.")
+                return
+        shutil.rmtree(data)
+        log(f"Removed the old cache folder {data} (the game now keeps its cache in its own folder).")
+    except OSError as error:
+        log(f"Could not remove the old cache folder {data} ({error.strerror or error}).")
+
+
 def uninstall(dest, log, delete_game_files: bool = False) -> list[str]:
     """Remove what Setup put in `dest`; the game's own files and saves stay unless asked.
 
     Only a folder with setup-options.json (written by Setup) is touched, so the developer's build
     folder and a folder the user picked by mistake are refused.  Removed: the shortcuts Setup
     made, the game program and its runtime, the start script, the credits file, the downloaded
-    Setup in updates\\.  Kept: game_files (saved games, DLC, Car Workshop backups) and logs, unless
-    delete_game_files is set; then game_files goes too, but never through a link or junction.
+    Setup in updates\\, the cache folder and the old per-user cache.  Kept: game_files (saved games,
+    DLC, Car Workshop backups), settings and logs, unless delete_game_files is set; then game_files
+    and the settings go too, but never through a link or junction.
     Returns what was removed, for the window.
     """
     dest = Path(dest)
@@ -1297,10 +1360,24 @@ def uninstall(dest, log, delete_game_files: bool = False) -> list[str]:
         except FileNotFoundError:
             pass
     shutil.rmtree(dest / "updates", ignore_errors=True)
+    for folder in ("cache", "hd_textures"):       # both made again on demand
+        if (dest / folder).is_dir() and not (dest / folder).is_symlink():
+            shutil.rmtree(dest / folder, ignore_errors=True)
+            removed.append(folder)
+    remove_legacy_data(log)
     if delete_game_files and game_dir.exists():
         shutil.rmtree(game_dir.with_name("game_files.partial"), ignore_errors=True)
         shutil.rmtree(game_dir)
         removed.append("game_files (the game's files and saved games)")
+    if delete_game_files:
+        for name in SETTINGS_FILES:
+            if (dest / name).is_file():
+                (dest / name).unlink()
+                removed.append(name)
+        _, settings = legacy_folders()
+        if settings and settings.is_dir() and not settings.is_symlink():
+            shutil.rmtree(settings, ignore_errors=True)
+            removed.append(f"old settings folder {settings}")
     (dest / "setup-options.json").unlink(missing_ok=True)
     if not any(dest.iterdir()):
         dest.rmdir()
@@ -2078,11 +2155,12 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
             if (folder / "game_files").is_dir() else 0
         kept = f" ({size / 1e9:.1f} GB)" if size else ""
         if not messagebox.askyesno(TITLE, f"Remove Midtown Madness 3 from {shorten(str(folder), 60)}?\n\n"
-                                   "Removed: the game program, the start script, the shortcuts and the downloaded "
-                                   f"Setup.\nKept: game_files, with your saved games and DLC{kept}.", icon="question"):
+                                   "Removed: the game program, the start script, the shortcuts, the cache and the "
+                                   f"downloaded Setup.\nKept: game_files, with your saved games and DLC{kept}, "
+                                   "and your settings.", icon="question"):
             return
         wipe = bool(size) and messagebox.askyesno(
-            TITLE, f"Also delete game_files ({size / 1e9:.1f} GB), including your saved games?\n\n"
+            TITLE, f"Also delete game_files ({size / 1e9:.1f} GB), including your saved games and settings?\n\n"
             "This cannot be undone. Choose No to keep them: a later Setup finds them again.",
             icon="warning", default="no")
         try:

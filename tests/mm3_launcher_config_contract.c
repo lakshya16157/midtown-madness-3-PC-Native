@@ -12,7 +12,9 @@ static void clear_environment(void)
         "RECOMP_KEYMAP", "MM3_DRIVE_KEYMAP", "RECOMP_PADMAP", "RECOMP_ASPECT", "RECOMP_DRAW_DISTANCE", "RECOMP_VIEW_DISTANCE",
         "MM3_GLOW_LIFT", "MM3_NIGHT_GLASS", "MM3_PAINT_SOFTNESS", "MM3_DAMAGE_PERCENT", "MM3_OWN_DAMAGE_PERCENT",
         "MM3_TIME_PERCENT", "MM3_AI_LEVEL", "MM3_FREE_CAMERA_KEY", "RECOMP_KEYMAP2", "MM3_DRIVE_KEYMAP2",
-        "MM3_PLAYER1_INPUT", "MM3_PLAYER2_INPUT", "RECOMP_INPUT_P1", "RECOMP_INPUT_P2"};
+        "MM3_PLAYER1_INPUT", "MM3_PLAYER2_INPUT", "RECOMP_INPUT_P1", "RECOMP_INPUT_P2",
+        "MM3_WHEEL_ENABLED", "MM3_WHEEL_DEVICE", "MM3_WHEEL_AXES", "MM3_WHEEL_FFB",
+        "RECOMP_WHEEL", "RECOMP_WHEEL_AXES", "RECOMP_WHEEL_FFB"};
     for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i) assert(!_putenv_s(mm3_launcher_options[i].key, ""));
     for (int i = 0; i < (int)(sizeof extra / sizeof extra[0]); ++i) assert(!_putenv_s(extra[i], ""));
 }
@@ -27,6 +29,8 @@ int main(int argc, char **argv)
     mm3_launcher_config_defaults(&config);
     assert(mm3_launcher_config_valid(&config));
     assert(config.controller_count == 0);                            /* automatic */
+    assert(!config.wheel_enabled && !config.wheel_ffb && !*config.wheel_device &&
+           !strcmp(config.wheel_axes, "1,-2,-3"));
     assert(config.damage_percent == 100 && config.own_damage_percent == 100);
     assert(config.ai_level == 5 && config.free_camera_key == 0x77);
     assert(config.option[MM3_LAUNCH_FREE_CAMERA]);
@@ -140,6 +144,18 @@ int main(int argc, char **argv)
     assert(!mm3_launcher_config_assign(&config, "MM3_FREE_CAMERA_KEY", "65"));    /* A */
     assert(mm3_launcher_config_assign(&config, "MM3_AI_LEVEL", "8"));
     assert(mm3_launcher_config_assign(&config, "MM3_FREE_CAMERA_KEY", "36"));     /* Home */
+    assert(!mm3_launcher_config_assign(&config, "MM3_WHEEL_ENABLED", "2"));
+    assert(!mm3_launcher_config_assign(&config, "MM3_WHEEL_FFB", "26"));
+    assert(!mm3_launcher_config_assign(&config, "MM3_WHEEL_DEVICE", "046d:c29Z"));
+    assert(!mm3_launcher_config_assign(&config, "MM3_WHEEL_AXES", "2,-2,3"));
+    assert(!mm3_launcher_config_assign(&config, "MM3_WHEEL_AXES", "1,0,-3"));
+    assert(!mm3_launcher_config_assign(&config, "MM3_WHEEL_AXES", "1,-2,-256"));
+    assert(mm3_launcher_config_assign(&config, "MM3_WHEEL_ENABLED", "1"));
+    assert(mm3_launcher_config_assign(&config, "MM3_WHEEL_FFB", "15"));
+    assert(mm3_launcher_config_assign(&config, "MM3_WHEEL_DEVICE", " 046D:C29B "));
+    assert(!strcmp(config.wheel_device, "046d:c29b"));
+    assert(mm3_launcher_config_assign(&config, "MM3_WHEEL_AXES", " +2 , -1, 3 "));
+    assert(!strcmp(config.wheel_axes, "2,-1,3"));
     assert(config.ai_level == 8 && config.free_camera_key == 36);
     assert(config.damage_percent == 0 && config.own_damage_percent == 25);
     before = config;
@@ -176,6 +192,16 @@ int main(int argc, char **argv)
     loaded.option[MM3_LAUNCH_WIDESCREEN] = 0; loaded.option[MM3_LAUNCH_DISTANCE] = 0;
     assert(!_putenv_s("RECOMP_USB_NDP", "1"));
     assert(mm3_launcher_config_apply(&loaded, error, sizeof error));
+    assert(!strcmp(getenv("RECOMP_WHEEL"), "046d:c29b"));
+    assert(!strcmp(getenv("RECOMP_WHEEL_AXES"), "2,-1,3"));
+    assert(!strcmp(getenv("RECOMP_WHEEL_FFB"), "15"));
+    assert(!_putenv_s("RECOMP_WHEEL", "1"));
+    assert(!_putenv_s("RECOMP_WHEEL_AXES", "1,2,-3"));
+    assert(!_putenv_s("RECOMP_WHEEL_FFB", "5"));
+    assert(mm3_launcher_config_apply(&loaded, error, sizeof error));
+    assert(!strcmp(getenv("RECOMP_WHEEL"), "1"));
+    assert(!strcmp(getenv("RECOMP_WHEEL_AXES"), "1,2,-3"));
+    assert(!strcmp(getenv("RECOMP_WHEEL_FFB"), "5"));
     assert(!strcmp(getenv("RECOMP_ASPECT"), "4:3"));
     assert(!strcmp(getenv("RECOMP_DRAW_DISTANCE"), "1"));
     assert(!strcmp(getenv("RECOMP_VIEW_DISTANCE"), "1"));

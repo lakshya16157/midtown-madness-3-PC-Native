@@ -324,6 +324,10 @@ static void controllers_layout(HWND window)
     CHECK(hint.top >= count.bottom && hint.right <= status.left);
     CHECK(hint.bottom <= bindings.top - (LONG)lroundf(24.f * ui->scale));
     CHECK(status.bottom <= child_bounds(window, ID_BIND_LABEL).top);
+    CHECK(child_bounds(window, ID_UNBIND).bottom < child_bounds(window, ID_WHEEL_ENABLED).top);
+    CHECK(child_bounds(window, ID_WHEEL_DEVICE).bottom <= child_bounds(window, ID_STATUS).top);
+    CHECK(child_bounds(window, ID_WHEEL_FFB).right < child_bounds(window, ID_WHEEL_AXES).left);
+    CHECK(child_bounds(window, ID_WHEEL_AXES).right < child_bounds(window, ID_WHEEL_DEVICE).left);
     text_fits(window, ID_PAD_STATUS); text_fits(window, ID_PAD_HINT);
     controller_summary_layout(window);
 }
@@ -740,38 +744,43 @@ static void presets(HWND window)
     char status[512];
     HWND preset = GetDlgItem(window, ID_PRESET);
     select_page(window, 0);
-    CHECK(IsWindowVisible(preset) && SendMessageA(preset, CB_GETCOUNT, 0, 0) == 4);
+    CHECK(IsWindowVisible(preset) && SendMessageA(preset, CB_GETCOUNT, 0, 0) == 5);
     SendMessageA(window, WM_COMMAND, ID_DEFAULTS, 0);
-    CHECK(combo_value(preset) == 2);                              /* the defaults are the Balanced profile */
-    choose(window, ID_PRESET, 1);                                 /* Low power */
+    CHECK(combo_value(preset) == 3);                              /* the defaults are the Balanced profile */
+    choose(window, ID_PRESET, 1);                                 /* Lowest (slow PCs) */
+    CHECK(combo_is(window, ID_SCALE, 1000) && combo_is(window, ID_MSAA, 1) && combo_is(window, ID_ANISO, 1));
+    CHECK(combo_is(window, ID_DRAW, 1000) && combo_is(window, ID_VIEW, 1000));
+    edit_is(window, ID_FPS, "30");
+    CHECK(combo_value(preset) == 1 && help_contains(window, "Lowest"));
+    choose(window, ID_PRESET, 2);                                 /* Low power */
     CHECK(combo_is(window, ID_SCALE, 1500) && combo_is(window, ID_MSAA, 1) && combo_is(window, ID_ANISO, 16));
     CHECK(combo_is(window, ID_DRAW, 1000) && combo_is(window, ID_VIEW, 1000));
     edit_is(window, ID_FPS, "30");
     GetDlgItemTextA(window, ID_STATUS, status, sizeof status);
     CHECK(strstr(status, "Low power filled in") && strstr(status, "30 FPS") && strstr(status, "Cancel discards"));
-    CHECK(combo_value(preset) == 1 && help_contains(window, "Low power") && help_contains(window, "no anti-aliasing"));
-    choose(window, ID_PRESET, 3);                                 /* Quality */
+    CHECK(combo_value(preset) == 2 && help_contains(window, "Low power") && help_contains(window, "no anti-aliasing"));
+    choose(window, ID_PRESET, 4);                                 /* Quality */
     CHECK(combo_is(window, ID_SCALE, 3000) && combo_is(window, ID_MSAA, 8) && combo_is(window, ID_DRAW, 2000));
     edit_is(window, ID_FPS, "60");
-    CHECK(combo_value(preset) == 3 && help_contains(window, "8x MSAA"));
+    CHECK(combo_value(preset) == 4 && help_contains(window, "8x MSAA"));
     /* Any other choice for one of its values makes the box say Custom, and the old one back puts it right. */
     choose(window, ID_MSAA, 4);
     CHECK(combo_value(preset) == 0);
     choose(window, ID_MSAA, 8);
-    CHECK(combo_value(preset) == 3);
+    CHECK(combo_value(preset) == 4);
     edit_value(window, ID_FPS, "45");
     CHECK(combo_value(preset) == 0);
     edit_value(window, ID_FPS, "60");
-    CHECK(combo_value(preset) == 3);
+    CHECK(combo_value(preset) == 4);
     /* Picking Custom changes nothing. */
     choose(window, ID_PRESET, 0);
     CHECK(combo_is(window, ID_SCALE, 3000) && combo_is(window, ID_MSAA, 8));
     CHECK(help_contains(window, "your own mix") || help_contains(window, "Custom"));
     /* Other settings the presets do not touch stay as they were. */
     choose(window, ID_RESOLUTION, 1920 * 10000 + 1080);
-    choose(window, ID_PRESET, 2);
+    choose(window, ID_PRESET, 3);
     CHECK(combo_is(window, ID_RESOLUTION, 1920 * 10000 + 1080) && combo_is(window, ID_SCALE, 2000));
-    CHECK(combo_value(preset) == 2);
+    CHECK(combo_value(preset) == 3);
     SendMessageA(window, WM_COMMAND, ID_DEFAULTS, 0);
 }
 
@@ -851,9 +860,10 @@ static DWORD WINAPI exercise(void *unused)
     }
     GetWindowRect(window, &bounds); SystemParametersInfoA(SPI_GETWORKAREA, 0, &work, 0);
     CHECK(bounds.left >= work.left && bounds.top >= work.top && bounds.right <= work.right && bounds.bottom <= work.bottom);
-    HWND play = GetDlgItem(window, IDOK); RECT footer;
+    HWND play = GetDlgItem(window, IDOK), skip = GetDlgItem(window, ID_SKIP_LAUNCHER); RECT footer;
     GetWindowRect(play, &footer);
     CHECK(footer.bottom <= bounds.bottom && footer.top >= bounds.top && IsWindowVisible(play));
+    CHECK(IsWindowVisible(skip) && SendMessageA(skip, BM_GETCHECK, 0, 0) == BST_UNCHECKED);
     tab_bar_clear(window);
     controller_detection(window, "controls-detected");
     contextual_help(window);
@@ -902,6 +912,13 @@ static DWORD WINAPI exercise(void *unused)
     GetDlgItemTextA(window, ID_BIND_LABEL, status, sizeof status); CHECK(strstr(status, "W"));
     HelpText hint; help_text(window, &hint); CHECK(strstr(hint.value, "<- W"));
     capture_page(window, "controls");
+    HWND wheel = GetDlgItem(window, ID_WHEEL_ENABLED);
+    CHECK(IsWindowVisible(wheel) && !IsWindowEnabled(GetDlgItem(window, ID_WHEEL_FFB)));
+    SendMessageA(wheel, BM_CLICK, 0, 0);
+    CHECK(help_contains(window, "Racing wheel") && IsWindowEnabled(GetDlgItem(window, ID_WHEEL_FFB)));
+    SetDlgItemTextA(window, ID_WHEEL_FFB, "15");
+    SetDlgItemTextA(window, ID_WHEEL_AXES, "2,-1,3");
+    SetDlgItemTextA(window, ID_WHEEL_DEVICE, "046d:c29b");
     SendMessageA(group, CB_SETCURSEL, 0, 0);
     SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_GROUP, CBN_SELCHANGE), (LPARAM)group);
     SendMessageA(list, LB_SETCURSEL, 0, 0);
@@ -926,6 +943,9 @@ static DWORD WINAPI exercise(void *unused)
     choose(window, ID_SCREEN, 1);
     CHECK(help_contains(window, "Screen") && help_contains(window, "Selected"));
     capture_page(window, "settings");
+    SendMessageA(skip, BM_CLICK, 0, 0);
+    CHECK(SendMessageA(skip, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    CHECK(help_contains(window, "--settings"));
     SendMessageA(window, WM_COMMAND, s_play ? IDOK : IDCANCEL, 0);
     return 0;
 }
@@ -1048,7 +1068,7 @@ static void update_runs(const char *port, const char *folder)
     for (s_update_run = 0; s_update_run < 3; ++s_update_run) {
         s_update_opened = 0; s_update_setup[0] = 0;
         thread = CreateThread(NULL, 0, update_exercise, NULL, 0, NULL); CHECK(thread);
-        CHECK(!mm3_launcher_run());
+        CHECK(!mm3_launcher_run(0, NULL));
         CHECK(WaitForSingleObject(thread, 10000) == WAIT_OBJECT_0); CloseHandle(thread);
         if (s_update_run < 2) CHECK(s_update_opened == 0);
     }
@@ -1140,13 +1160,13 @@ int main(int argc, char **argv)
     CHECK(!_putenv_s("MM3_LAUNCHER_SMOKE", ""));
     s_game_files = 0;
     thread = CreateThread(NULL, 0, exercise, NULL, 0, NULL); CHECK(thread);
-    CHECK(!mm3_launcher_run());
+    CHECK(!mm3_launcher_run(0, NULL));
     CHECK(WaitForSingleObject(thread, 10000) == WAIT_OBJECT_0); CloseHandle(thread);
     CHECK(GetFileAttributesA(display_path) == INVALID_FILE_ATTRIBUTES);
     CHECK(GetFileAttributesA(launcher_path) == INVALID_FILE_ATTRIBUTES);
     s_play = 1;
     thread = CreateThread(NULL, 0, exercise, NULL, 0, NULL); CHECK(thread);
-    CHECK(mm3_launcher_run());
+    CHECK(mm3_launcher_run(0, NULL));
     CHECK(WaitForSingleObject(thread, 10000) == WAIT_OBJECT_0); CloseHandle(thread);
     CHECK(!strcmp(getenv("RECOMP_FPS_LIMIT"), "30"));
     CHECK(!strcmp(getenv("RECOMP_ASPECT"), "4:3"));
@@ -1155,12 +1175,22 @@ int main(int argc, char **argv)
     CHECK(!strcmp(getenv("RECOMP_FB_WINDOW"), "1"));
     CHECK(!strcmp(getenv("RECOMP_USB"), "1"));
     CHECK(!strcmp(getenv("RECOMP_USB_PADS"), "4"));
+    CHECK(!strcmp(getenv("RECOMP_WHEEL"), "046d:c29b"));
+    CHECK(!strcmp(getenv("RECOMP_WHEEL_AXES"), "2,-1,3"));
+    CHECK(!strcmp(getenv("RECOMP_WHEEL_FFB"), "15"));
+    {   /* The sibling renderer inherits the process environment. */
+        char wheel[32];
+        CHECK(GetEnvironmentVariableA("RECOMP_WHEEL", wheel, sizeof wheel) == 9 && !strcmp(wheel, "046d:c29b"));
+    }
     CHECK(!strcmp(getenv("RECOMP_APU_DSP_ACK"), "0x80458810"));
     CHECK(!strcmp(getenv("RECOMP_KEYBOARD_LAYOUT"), "mm3"));
     CHECK(strstr(getenv("MM3_DRIVE_KEYMAP"), "THROTTLE:57"));
     CHECK(strstr(getenv("RECOMP_PADMAP"), "A:RT"));
     mm3_launcher_config_defaults(&config);
     CHECK(mm3_launcher_config_load(&config, error, sizeof error));
+    CHECK(config.skip_launcher);
+    CHECK(config.wheel_enabled && config.wheel_ffb == 15 &&
+          !strcmp(config.wheel_device, "046d:c29b") && !strcmp(config.wheel_axes, "2,-1,3"));
     CHECK(config.drive_keys[0] == 'W' && config.pad[0] == 15 && config.fov_degrees == 95);
     CHECK(config.controller_count == 4);
     /* Xbox gameplay by default: the game sees every gameplay mod off. */
@@ -1171,14 +1201,29 @@ int main(int argc, char **argv)
     CHECK(display.fps_limit == 30 && display.vsync);
     /* Screen 1 of this PC, by its Windows device name, reaches the game. */
     CHECK(!strncmp(display.monitor, "\\\\.\\", 4) && !strcmp(getenv("RECOMP_MONITOR"), display.monitor));
-    CHECK(!_putenv_s("MM3_LAUNCHER", "0"));
+    CHECK(!_putenv_s("MM3_LAUNCHER", "auto"));
+    CHECK(show_settings(0, 0, NULL) && !show_settings(1, 0, NULL));
+    {
+        char *settings[] = {"mm3_recomp.exe", "--settings"};
+        char *play[] = {"mm3_recomp.exe", "--settings", "--play"};
+        CHECK(show_settings(1, 2, settings));
+        CHECK(!show_settings(0, 3, play));
+        CHECK(!_putenv_s("MM3_LAUNCHER", "0"));
+        CHECK(show_settings(1, 2, settings));
+        CHECK(!_putenv_s("MM3_LAUNCHER", "1"));
+        CHECK(!show_settings(0, 3, play));
+        CHECK(!_putenv_s("MM3_RENDERER_HANDOFF", "1"));
+        CHECK(!show_settings(0, 2, settings));
+        CHECK(!_putenv_s("MM3_RENDERER_HANDOFF", ""));
+        CHECK(!_putenv_s("MM3_LAUNCHER", "auto"));
+    }
     CHECK(!_putenv_s("MM3_FOV_DEGREES", "100"));
     CHECK(!_putenv_s("RECOMP_USB_PADS", "2"));
     CHECK(!_putenv_s("RECOMP_USB_NDP", "1"));
-    CHECK(mm3_launcher_run()); CHECK(!strcmp(getenv("MM3_FOV_DEGREES"), "100"));
+    CHECK(mm3_launcher_run(0, NULL)); CHECK(!strcmp(getenv("MM3_FOV_DEGREES"), "100"));
     CHECK(!strcmp(getenv("RECOMP_USB_PADS"), "2") && !strcmp(getenv("RECOMP_USB_NDP"), "1"));
     CHECK(!_putenv_s("MM3_LAUNCHER_SMOKE", "1"));
-    CHECK(!mm3_launcher_run());
+    CHECK(!mm3_launcher_run(0, NULL));
     smaller_layout();
     DeleteFileA(display_path); DeleteFileA(launcher_path);
     update_runs(argv[2], argv[1]);

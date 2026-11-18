@@ -6,19 +6,27 @@ at start-up (src/mm3_launcher_config.c), so a choice made here is what the Windo
 launcher would save. Only the keys this window manages are rewritten; any other
 line of the file (the key bindings) is kept as it is.
 
-    python3 mm3_settings.py            the window (needs python3-tk)
+    python3 mm3_settings.py            use the saved launch preference
     python3 mm3_settings.py --play     start the game with the saved choices, no window
+    python3 mm3_settings.py --settings open the window (needs python3-tk)
 """
 import os
-import subprocess
+import re
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-INI = Path(os.environ.get("MM3_LAUNCHER_CONFIG") or HERE / "launcher.ini")
+INI = Path(os.environ.get("MM3_LAUNCHER_CONFIG") or HERE / "launcher.ini").absolute()
 EXTRA = HERE / "launcher-display.ini"          # this window's own graphics choices
 START = HERE / "play-midtown-madness-3.sh"
 REVISION = 2                                   # SETTINGS_REVISION in mm3_launcher_config.c
+SKIP_LAUNCHER = "MM3_SKIP_LAUNCHER"
+WHEEL_DEFAULTS = {
+    "MM3_WHEEL_ENABLED": 0,
+    "MM3_WHEEL_DEVICE": "",
+    "MM3_WHEEL_AXES": "1,-2,-3",
+    "MM3_WHEEL_FFB": 0,
+}
 
 # (key, label, default) in MM3LauncherOption order; mm3_launcher_options in the C source is the reference.
 OPTIONS = [
@@ -64,6 +72,7 @@ OPTIONS = [
     ("MM3_PRELOAD_SHADERS", "Load all shaders before playing (Vulkan)", 1),
 ]
 DEFAULTS = {key: default for key, _label, default in OPTIONS}
+DEFAULTS[SKIP_LAUNCHER] = 0
 if sys.platform != "win32":
     # Linux and the Steam Deck: on (as in 2.6.3), waiting for the GPU every frame was their slowdown.
     DEFAULTS["MM3_NO_GPU_WAIT"] = 1
@@ -92,7 +101,7 @@ CAMERA_KEYS = [("F1", 0x70), ("F2", 0x71), ("F3", 0x72), ("F4", 0x73), ("F5", 0x
                ("End", 0x23), ("Page Up", 0x21), ("Page Down", 0x22)]
 PLAYER1 = ["Controller 1 + keyboard", "Controller 1", "Keyboard (arrows)", "Keyboard 2 (WASD)", "Controller 2"]
 PLAYER2 = ["Controller 2", "Controller 1", "Keyboard (arrows)", "Keyboard 2 (WASD)"]
-PROFILES = ["Balanced", "Quality", "LowPower"]
+PROFILES = ["Balanced", "Quality", "LowPower", "Lowest"]
 SCALES = [("Profile's own", ""), ("1x", "1"), ("1.5x", "1.5"), ("2x", "2"), ("3x", "3")]
 FPS_LIMITS = ["30", "45", "60", "90", "120"]
 
@@ -127,8 +136,9 @@ def read_ini(path=INI):
     return values, others
 
 
-MANAGED = set(DEFAULTS) | set(NUMBERS) | {"MM3_FREE_CAMERA_KEY", "RECOMP_USB_PADS", "RECOMP_NET_PEERS",
-                                          "MM3_PLAYER1_INPUT", "MM3_PLAYER2_INPUT"}
+MANAGED = set(DEFAULTS) | set(NUMBERS) | set(WHEEL_DEFAULTS) | {
+    "MM3_FREE_CAMERA_KEY", "RECOMP_USB_PADS", "RECOMP_NET_PEERS", "MM3_PLAYER1_INPUT", "MM3_PLAYER2_INPUT",
+}
 
 
 def clamp(text, low, high, default):
@@ -137,6 +147,38 @@ def clamp(text, low, high, default):
     except ValueError:
         return default
     return number if low <= number <= high else default
+
+
+def wheel_values(values, *, strict=False):
+    """Validate the racing wheel fields, or replace invalid saved fields individually."""
+    out = dict(WHEEL_DEFAULTS)
+    enabled = str(values.get("MM3_WHEEL_ENABLED", out["MM3_WHEEL_ENABLED"])).strip()
+    if enabled in ("0", "1"):
+        out["MM3_WHEEL_ENABLED"] = int(enabled)
+    elif strict:
+        raise ValueError("Turn the racing wheel on or off.")
+
+    device = str(values.get("MM3_WHEEL_DEVICE", out["MM3_WHEEL_DEVICE"])).strip()
+    if not device or (re.fullmatch(r"[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}", device)
+                      and all(int(part, 16) for part in device.split(":"))):
+        out["MM3_WHEEL_DEVICE"] = device.lower()
+    elif strict:
+        raise ValueError("Leave the wheel Device ID blank, or enter two nonzero four-digit hex IDs, such as 046d:c24f.")
+
+    axes = [part.strip() for part in str(values.get("MM3_WHEEL_AXES", out["MM3_WHEEL_AXES"])).split(",")]
+    indices = [int(axis) for axis in axes if re.fullmatch(r"[+-]?[0-9]{1,3}", axis)]
+    if (len(axes) == len(indices) == 3 and all(1 <= abs(axis) <= 255 for axis in indices)
+            and len({abs(axis) for axis in indices}) == 3):
+        out["MM3_WHEEL_AXES"] = ",".join(str(axis) for axis in indices)
+    elif strict:
+        raise ValueError("Give steering, accelerator and brake different axis numbers from 1 to 255. Add a minus sign to reverse one.")
+
+    strength = str(values.get("MM3_WHEEL_FFB", out["MM3_WHEEL_FFB"])).strip()
+    if re.fullmatch(r"[0-9]{1,2}", strength) and int(strength) <= 25:
+        out["MM3_WHEEL_FFB"] = int(strength)
+    elif strict:
+        raise ValueError("Enter a feedback strength from 0 to 25.")
+    return out
 
 
 def normalise(values):
@@ -157,6 +199,7 @@ def normalise(values):
     out["RECOMP_NET_PEERS"] = " ".join(str(values.get("RECOMP_NET_PEERS", "")).replace(",", " ").split())
     out["MM3_PLAYER1_INPUT"] = clamp(values.get("MM3_PLAYER1_INPUT", 0), 0, len(PLAYER1) - 1, 0)
     out["MM3_PLAYER2_INPUT"] = clamp(values.get("MM3_PLAYER2_INPUT", 0), 0, len(PLAYER2) - 1, 0)
+    out.update(wheel_values(values))
     return out
 
 
@@ -164,6 +207,7 @@ def write_ini(values, others, path=INI):
     values = normalise(values)
     lines = ["# Midtown Madness 3 launcher preferences", "[launcher]", f"MM3_SETTINGS_REVISION={REVISION}"]
     lines += [f"{key}={values[key]}" for key in DEFAULTS]
+    lines += [f"{key}={values[key]}" for key in WHEEL_DEFAULTS]
     for key in NUMBERS:
         lines.append(f"{key}={values[key]}")
     for key in ("MM3_FREE_CAMERA_KEY", "RECOMP_USB_PADS", "RECOMP_NET_PEERS", "MM3_PLAYER1_INPUT", "MM3_PLAYER2_INPUT"):
@@ -175,19 +219,20 @@ def write_ini(values, others, path=INI):
     os.replace(temporary, path)
 
 
-def read_display(path=EXTRA):
-    out = {"MM3_PERFORMANCE_PROFILE": "Balanced", "RECOMP_RENDER_SCALE": "", "RECOMP_FPS_LIMIT": "",
-           "RECOMP_FULLSCREEN": "0"}
+def read_display(path=EXTRA, *, use_defaults=True):
+    defaults = {"MM3_PERFORMANCE_PROFILE": "Balanced", "RECOMP_RENDER_SCALE": "", "RECOMP_FPS_LIMIT": "",
+                "RECOMP_FULLSCREEN": "0"}
+    saved = {}
     try:
-        for line in Path(path).read_text(encoding="utf-8").splitlines():
+        for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
             key, equals, value = line.partition("=")
-            if equals and key.strip() in out:
-                out[key.strip()] = value.strip()
+            if equals and key.strip() in defaults:
+                saved[key.strip()] = value.strip()
     except OSError:
         pass
-    if out["MM3_PERFORMANCE_PROFILE"] not in PROFILES:
-        out["MM3_PERFORMANCE_PROFILE"] = "Balanced"
-    return out
+    if saved.get("MM3_PERFORMANCE_PROFILE") not in PROFILES:
+        saved.pop("MM3_PERFORMANCE_PROFILE", None)
+    return defaults | saved if use_defaults else saved
 
 
 def write_display(values, path=EXTRA):
@@ -195,13 +240,15 @@ def write_display(values, path=EXTRA):
                           encoding="utf-8", newline="\n")
 
 
-def play(display):
-    """Start the game through the start script; explicit environment is only what the user picked here."""
-    env = dict(os.environ, MM3_NO_SETTINGS="1", MM3_LAUNCHER_CONFIG=str(INI))
+def play(display, *, override=False):
+    """Pass display choices to the start script and keep the launch process attached to the game."""
+    env = dict(os.environ, MM3_NO_SETTINGS="1", MM3_SETTINGS_APPLIED="1", MM3_LAUNCHER_CONFIG=str(INI))
     for key, value in display.items():
-        if value:
+        if value and override:
             env[key] = value
-    subprocess.Popen(["sh", str(START)], env=env, cwd=str(HERE), start_new_session=True)
+        elif value:
+            env.setdefault(key, value)
+    os.execvpe("sh", ["sh", str(START)], env)
 
 
 def window():
@@ -211,10 +258,13 @@ def window():
     saved, others = read_ini()
     values = normalise(saved)
     display = read_display()
+    chosen_display = None
     root = tk.Tk()
     root.title("Midtown Madness 3 - Settings")
     root.geometry("900x640")
     root.minsize(760, 520)
+    root.columnconfigure(0, weight=1)
+    root.rowconfigure(0, weight=1)
     status = tk.StringVar(value="Choose your settings, then press Play.")
     options = {key: tk.IntVar(value=values[key]) for key in DEFAULTS}
     numbers = {key: tk.StringVar(value=str(values[key])) for key in NUMBERS}
@@ -222,6 +272,10 @@ def window():
     pads = tk.StringVar(value=values["RECOMP_USB_PADS"])
     player1 = tk.StringVar(value=PLAYER1[values["MM3_PLAYER1_INPUT"]])
     player2 = tk.StringVar(value=PLAYER2[values["MM3_PLAYER2_INPUT"]])
+    wheel_enabled = tk.IntVar(value=values["MM3_WHEEL_ENABLED"])
+    wheel_device = tk.StringVar(value=values["MM3_WHEEL_DEVICE"])
+    wheel_axes = [tk.StringVar(value=axis) for axis in values["MM3_WHEEL_AXES"].split(",")]
+    wheel_ffb = tk.StringVar(value=str(values["MM3_WHEEL_FFB"]))
     peers = tk.StringVar(value=values["RECOMP_NET_PEERS"])
     profile = tk.StringVar(value=display["MM3_PERFORMANCE_PROFILE"])
     scale = tk.StringVar(value=next((n for n, v in SCALES if v == display["RECOMP_RENDER_SCALE"]), SCALES[0][0]))
@@ -232,7 +286,7 @@ def window():
     boxes = {}
 
     notebook = ttk.Notebook(root)
-    notebook.pack(fill="both", expand=True, padx=10, pady=(10, 0))
+    notebook.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 0))
 
     def tab(title):
         frame = ttk.Frame(notebook, padding=12)
@@ -312,6 +366,23 @@ def window():
     ttk.Label(controls, text="Controllers shown to the game").grid(row=3, column=0, sticky="w")
     ttk.Combobox(controls, textvariable=pads, values=["auto", "1", "2", "3", "4"], state="readonly", width=8).grid(
         row=3, column=1, sticky="w", pady=2)
+
+    wheel = ttk.LabelFrame(players, text="Racing wheel", padding=8)
+    wheel.pack(fill="x", padx=6, pady=6)
+    ttk.Checkbutton(wheel, text="Enable racing wheel for Player 1", variable=wheel_enabled).grid(
+        row=0, column=0, columnspan=6, sticky="w", pady=(0, 4))
+    ttk.Label(wheel, text="Device ID (VID:PID)").grid(row=1, column=0, sticky="w", padx=(0, 6))
+    ttk.Entry(wheel, textvariable=wheel_device, width=10).grid(row=1, column=1, sticky="w", padx=(0, 16))
+    ttk.Label(wheel, text="Feedback strength (%)").grid(row=1, column=2, sticky="w", padx=(0, 6))
+    ttk.Spinbox(wheel, from_=0, to=25, textvariable=wheel_ffb, width=5).grid(row=1, column=3, sticky="w")
+    for index, (label, axis) in enumerate(zip(("Steering axis", "Accelerator axis", "Brake axis"), wheel_axes)):
+        ttk.Label(wheel, text=label).grid(row=2, column=index * 2, sticky="w", padx=(0, 6), pady=4)
+        ttk.Entry(wheel, textvariable=axis, width=5).grid(row=2, column=index * 2 + 1, sticky="w", padx=(0, 16))
+    ttk.Label(wheel, wraplength=640, justify="left", text=(
+        "A detected wheel uses Configuration C automatically. The game's Vibration option controls feedback. "
+        "Leave Device ID blank for automatic detection. Axis numbers start at 1. Use a minus sign to reverse an axis."
+    )).grid(row=3, column=0, columnspan=6, sticky="w")
+
     ttk.Label(players, wraplength=700, justify="left", text=(
         "Keys with a keyboard: arrows drive, Z X A S are A B X Y, Enter is Start, Backspace is Back, "
         "Escape is the menu back. Custom key and button bindings: edit the RECOMP_KEYMAP, "
@@ -326,8 +397,11 @@ def window():
     ttk.Entry(network, textvariable=peers, width=60).grid(row=3, column=0, columnspan=3, sticky="w")
 
     bar = ttk.Frame(root, padding=10)
-    bar.pack(fill="x")
-    ttk.Label(bar, textvariable=guide, wraplength=560).pack(side="left", fill="x", expand=True)
+    bar.grid(row=1, column=0, sticky="ew")
+    bar.columnconfigure(0, weight=1)
+    ttk.Label(bar, textvariable=guide, wraplength=300).grid(row=0, column=0, sticky="ew")
+    ttk.Checkbutton(bar, text="Skip the settings window next time", variable=options[SKIP_LAUNCHER]).grid(
+        row=0, column=1, padx=4)
 
     def collect():
         merged = {key: options[key].get() for key in DEFAULTS}
@@ -337,6 +411,12 @@ def window():
         merged["RECOMP_NET_PEERS"] = peers.get()
         merged["MM3_PLAYER1_INPUT"] = PLAYER1.index(player1.get())
         merged["MM3_PLAYER2_INPUT"] = PLAYER2.index(player2.get())
+        merged.update(wheel_values({
+            "MM3_WHEEL_ENABLED": wheel_enabled.get(),
+            "MM3_WHEEL_DEVICE": wheel_device.get(),
+            "MM3_WHEEL_AXES": ",".join(axis.get() for axis in wheel_axes),
+            "MM3_WHEEL_FFB": wheel_ffb.get(),
+        }, strict=True))
         return merged
 
     def shown():
@@ -344,35 +424,52 @@ def window():
                 "RECOMP_FPS_LIMIT": fps.get(), "RECOMP_FULLSCREEN": "1" if fullscreen.get() else "0"}
 
     def save():
-        write_ini(collect(), others)
-        write_display(shown())
+        try:
+            write_ini(collect(), others)
+            write_display(shown())
+        except ValueError as error:
+            notebook.select(players)
+            status.set(str(error))
+            return False
+        except OSError as error:
+            status.set(f"Cannot save settings: {error}")
+            return False
         status.set("Saved.")
+        return True
 
     def start():
-        try:
-            save()
-            play(shown())
-        except OSError as error:
-            status.set(f"Cannot save or start: {error}")
+        nonlocal chosen_display
+        if not save():
             return
+        chosen_display = shown()
         root.destroy()
 
-    ttk.Button(bar, text="Save", command=save).pack(side="right", padx=4)
-    ttk.Button(bar, text="Play", command=start).pack(side="right", padx=4)
-    ttk.Label(root, textvariable=status).pack(fill="x", padx=12, pady=(0, 8))
+    ttk.Button(bar, text="Play", command=start).grid(row=0, column=2, padx=4)
+    ttk.Button(bar, text="Save", command=save).grid(row=0, column=3, padx=4)
+    ttk.Label(root, textvariable=status, wraplength=700).grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 8))
     refresh()
     root.mainloop()
+    return chosen_display
 
 
 def main(argv):
-    if "--play" in argv:
-        play(read_display())
-        return 0
-    try:
-        window()
-    except Exception as error:     # no Tk or no display: start the game with the saved choices
-        print(f"Settings window unavailable ({error}); starting the game.", file=sys.stderr)
-        play(read_display())
+    show = None
+    for arg in argv:
+        if arg in ("--play", "--settings"):
+            show = arg == "--settings"
+    if show is None:
+        show = not os.environ.get("MM3_NO_SETTINGS") and not normalise(read_ini()[0])[SKIP_LAUNCHER]
+    has_display = sys.platform == "win32" or os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    if show and has_display:
+        try:
+            display = window()
+        except Exception as error:     # no Tk or no display: start the game with the saved choices
+            print(f"Settings window unavailable ({error}); starting the game.", file=sys.stderr)
+        else:
+            if display is not None:
+                play(display, override=True)
+            return 0
+    play(read_display(use_defaults=False))
     return 0
 
 
