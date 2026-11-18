@@ -22,7 +22,7 @@ import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-VERSION = 1                      # bump to rebuild existing installs' textures
+VERSION = 2                      # bump to rebuild existing installs' textures
 FOLDERS = {"Menu/Gfx/HUD/": 4, "Menu/Font/": 2}
 MAX_SIZE = 4096                  # largest replacement edge
 SKIP = ("_bak", "old.cdds")      # left-over artist copies the game never loads
@@ -97,9 +97,11 @@ def upscale(image, factor: int, rounds: int = 4):
     histogram = original_alpha.histogram()
     if sum(histogram[1:255]) < 0.02 * w * h:
         # One-bit alpha (DXT1 fonts): the staircase is the source's, not the shape's. Smooth it,
-        # then cut at half: glyph outlines come out as clean curves.
+        # then cut at half: glyph outlines come out as clean curves. The cut stays one-bit, as the
+        # source is: a soft ramp's faint rim pixels showed in the menus as speckled, ragged
+        # letter outlines (#42).
         smooth = original_alpha.resize(big, Image.BILINEAR).filter(ImageFilter.GaussianBlur(factor * 0.55))
-        alpha = _to_byte(_math("(a - 127.5) * k + 127.5", a=smooth.convert("F"), k=float(factor) * 0.9))
+        alpha = smooth.point(lambda v: 255 if v >= 128 else 0)
         # Colour bled outward from the shapes, so the new smooth rim has the shape's own colour.
         bled = image.convert("RGB").filter(ImageFilter.MaxFilter(5))
         bled.paste(image.convert("RGB"), mask=original_alpha.point(lambda v: 255 if v else 0))
