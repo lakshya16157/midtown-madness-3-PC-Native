@@ -19,8 +19,8 @@ program: it runs as a real Windows and Linux game, not in an emulator.
 
 1. **Run MM3-Setup.exe.** Windows may warn because the file is not code-signed: choose **More info**, then
    **Run anyway**.
-2. **Pick your game image**: an `.iso` or `.xiso` of your own Midtown Madness 3 Xbox disc (Europe/Australia
-   or USA). Setup finds it in Downloads, Desktop or Documents by itself. See
+2. **Pick your game image**: an `.iso` or `.xiso` of your own Midtown Madness 3 Xbox disc (Europe/Australia,
+   USA or Japan; not Asia, see [Supported discs](#supported-discs)). Setup finds it in Downloads, Desktop or Documents by itself. See
    [Ownership, disc images and DLC](#ownership-disc-images-and-dlc).
 3. **Choose options**: extra cars, game improvements (on by default) and, if you are entitled to it, the
    official DLC (14 cars, 40 races).
@@ -344,6 +344,17 @@ A PC DVD drive cannot read Xbox discs: copy the disc with a modded original Xbox
 file-manager dashboard such as XBMC4Xbox or UnleashX) or a drive with Kreon firmware, then
 make the image with `extract-xiso -c <copied folder> MidtownMadness3.iso`. Setup's
 **Make an image...** button shows the same steps.
+
+### Supported discs
+
+| Disc | Supported |
+|---|---|
+| Europe/Australia (English, French, German, Spanish, Italian) | Yes |
+| USA | Yes |
+| Japan | Yes |
+| Asia | No: its game program is a different build, so Setup refuses it |
+
+Setup checks the disc's game program and tells you if your image is not one of the supported ones.
 
 These are the game image and DLC Setup was tested with. Download them only if you own a
 legal copy of the game and your local law allows it:
