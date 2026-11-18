@@ -127,8 +127,8 @@ def _encode_level(image, bc3: bool) -> tuple[bytes, bytes]:
 def can_write_bc3() -> bool:
     try:
         from PIL import Image
-        _encode_level(Image.new("RGBA", (4, 4)), True)
-        return True
+        # Older Pillow ignores pixel_format and writes plain RGBA: check what it wrote.
+        return _encode_level(Image.new("RGBA", (4, 4)), True)[0][84:88] == b"DXT5"
     except Exception:
         return False
 
@@ -192,7 +192,11 @@ def build(game_files: Path, out: Path, log=print, only: str | None = None) -> in
                     continue
                 w, h, payload = guest
                 factor = FOLDERS[folder]
-                while factor > 1 and max(w, h) * factor > MAX_SIZE:
+                # Uncompressed is 4x the size on disk: at most 2x and 1024 px keeps it near 60 MB.
+                limit = MAX_SIZE if bc3 else 1024
+                if not bc3:
+                    factor = min(factor, 2)
+                while factor > 1 and max(w, h) * factor > limit:
                     factor //= 2
                 if factor < 2:
                     continue
