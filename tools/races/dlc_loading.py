@@ -93,13 +93,17 @@ def tga(image):
 class Painter:
     def __init__(self, pil, data):
         self.Image, self.ImageChops, self.ImageDraw, self.ImageFilter, self.ImageFont, self.ImageOps = pil
+        # Pillow 9.1 grouped these as Image.Transpose and Image.Resampling; before it they are
+        # Image.FLIP_TOP_BOTTOM and Image.LANCZOS (Ubuntu 22.04's Pillow is 9.0).
+        self.flip_top_bottom = getattr(self.Image, "Transpose", self.Image).FLIP_TOP_BOTTOM
+        self.lanczos = getattr(self.Image, "Resampling", self.Image).LANCZOS
         colours = data["colours"]
         table = base64.b64decode(colours["table"])
         size = colours["size"]
         self.colours = self.ImageFilter.Color3DLUT(
             size, [tuple(table[i + c] / 255.0 for c in range(3)) for i in range(0, len(table), 3)])
-        self.title_font = self.ImageFont.truetype(*TITLE_FONT)
-        self.text_font = self.ImageFont.truetype(*TEXT_FONT)
+        self.title_font = self._truetype(*TITLE_FONT)
+        self.text_font = self._truetype(*TEXT_FONT)
         self.balls = {kind: self._ball(*spec) for kind, spec in BALLS.items()}
         self.maps = {}
 
@@ -110,7 +114,7 @@ class Painter:
             textures = _module("mm3_textures", HERE.parent / "car-models" / "mm3_textures.py")
             dds = textures.cdds_to_dds(dvd.read(CITY_MAPS[city][0]))
             image = self.Image.open(io.BytesIO(dds)).convert("RGB")
-            image = image.transpose(self.Image.Transpose.FLIP_TOP_BOTTOM)
+            image = image.transpose(self.flip_top_bottom)
             self.maps[city] = (self.ImageOps.expand(image, MAP_PAD, fill=(0, 0, 0)), image.height)
         return self.maps[city]
 
@@ -121,7 +125,7 @@ class Painter:
         u0 = a * x0 + b + 0.5 + MAP_PAD
         v0 = height - 0.5 - (c * z0 + d) + MAP_PAD
         box = (u0, v0, u0 + a * PANEL[2] / scale, v0 + c * PANEL[3] / scale)
-        return texture.resize(PANEL[2:], self.Image.Resampling.LANCZOS, box=box).filter(self.colours)
+        return texture.resize(PANEL[2:], self.lanczos, box=box).filter(self.colours)
 
     def _ball(self, diameter, colour):
         """A lit red or green ball, as retail marks the start, checkpoints and finish."""
@@ -174,7 +178,7 @@ class Painter:
         for kind, (x, y) in marks:
             ball = self.balls[kind]
             layer.alpha_composite(ball, (round(x - ball.width / 2), round(y - ball.height / 2)))
-        return layer.convert("RGBa").resize(PANEL[2:], Image.Resampling.LANCZOS).convert("RGBA")
+        return layer.convert("RGBa").resize(PANEL[2:], self.lanczos).convert("RGBA")
 
     # --- text -------------------------------------------------------------
 
@@ -247,6 +251,14 @@ class Painter:
         inside.paste(255, area)
         screen.paste((4, 8, 22), (0, 0), self.ImageChops.multiply(shade, inside))
         screen.paste((248, 248, 250), (0, 0), self.ImageChops.multiply(glyphs, inside))
+
+    def _truetype(self, name, size):
+        """The font at a fractional size, or the nearest whole size on Pillow before 10.1, which
+        takes only whole sizes (Ubuntu 22.04 ships 9.0; the Linux Setup uses the system's Pillow)."""
+        try:
+            return self.ImageFont.truetype(name, size)
+        except TypeError:
+            return self.ImageFont.truetype(name, round(size))
 
     def title(self, screen, name):
         left, baseline, width = TITLE_AT
