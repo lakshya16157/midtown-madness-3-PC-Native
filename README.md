@@ -10,6 +10,9 @@ program: it runs as a real Windows and Linux game, not in an emulator.
   System Link, and optional mods.
 - You need your own copy of the Xbox game.
 
+**Support the project:** if you enjoy it, you can [donate with Revolut](https://revolut.me/lakshyasingh). It is
+optional, and the game stays free.
+
 | Your system | Download |
 |---|---|
 | **Windows 10/11** | **[MM3-Setup.exe](https://github.com/lakshya16157/midtown-madness-3-PC-Native/releases/latest)** (under **Assets**) |
