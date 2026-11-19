@@ -175,9 +175,11 @@ int mm3_launcher(void);
  * Vulkan game are two programs side by side (mm3_recomp.exe and
  * mm3_recomp_vulkan.exe; their renderers share function names). When the
  * choice is the other one, start it with the settings the launcher applied
- * (inherited environment, launcher skipped) and end this one. 1 if started.
- * A missing sibling keeps this renderer. */
-static int mm3_renderer_handoff(void)
+ * (inherited environment, launcher skipped) and wait for it: Steam (play time,
+ * game recording, overlay) and the start script track the process they
+ * started, so it must live as long as the game. 1 if started (*result = its
+ * exit code), 0 when this renderer plays. A missing sibling keeps it. */
+static int mm3_renderer_handoff(int *result)
 {
     const char *want = getenv("MM3_RENDERER_VULKAN");
     int vulkan = want && !strcmp(want, "1");
@@ -190,6 +192,7 @@ static int mm3_renderer_handoff(void)
     const char *handed = getenv("MM3_RENDERER_HANDOFF");
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
+    DWORD exit_code = 0;
     if (vulkan == built_vulkan) return 0;
     /* A program a hand-off started never hands off again: no chain of starts. */
     if (handed && *handed) return 0;
@@ -197,7 +200,7 @@ static int mm3_renderer_handoff(void)
     wcscpy_s(path, MAX_PATH, self);
     if (!(slash = wcsrchr(path, L'\\'))) return 0;
     wcscpy_s(slash + 1, MAX_PATH - (size_t)(slash + 1 - path), vulkan ? L"mm3_recomp_vulkan.exe" : L"mm3_recomp.exe");
-    if (!_wcsicmp(path, self)) return 0;     /* a build folder's Vulkan program is itself mm3_recomp.exe */
+    if (!_wcsicmp(path, self)) return 0;    /* a build folder's Vulkan program is itself mm3_recomp.exe */
     if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) {
         fprintf(stderr, "[MM3_RENDERER] %s chosen but %ls is missing; playing with %s\n",
                 vulkan ? "Vulkan" : "DirectX 11", path, built_vulkan ? "Vulkan" : "DirectX 11");
@@ -219,10 +222,13 @@ static int mm3_renderer_handoff(void)
             return 0;
         }
     }
-    fprintf(stderr, "[MM3_RENDERER] started %ls (%s)\n", path, vulkan ? "Vulkan" : "DirectX 11");
+    fprintf(stderr, "[MM3_RENDERER] started %ls (%s); waiting for it to end\n", path, vulkan ? "Vulkan" : "DirectX 11");
     fflush(stderr);
     CloseHandle(pi.hThread);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    if (!GetExitCodeProcess(pi.hProcess, &exit_code)) exit_code = 0;
     CloseHandle(pi.hProcess);
+    *result = (int)exit_code;
     return 1;
 }
 #endif
@@ -617,7 +623,10 @@ int main(int argc, char **argv)
                 entered_directory);
 #ifdef _WIN32
     if (!mm3_launcher_run(argc, argv)) return 0;
-    if (mm3_renderer_handoff()) return 0;
+    {
+        int handed_off_exit = 0;
+        if (mm3_renderer_handoff(&handed_off_exit)) return handed_off_exit;
+    }
 #else
     (void)argc;
     (void)argv;
