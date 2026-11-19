@@ -60,7 +60,7 @@ static inline const MM3PerformanceProfile *mm3_performance_profile(const char *n
      * 1280x800 panel. */
     static const MM3PerformanceProfile balanced = {"Balanced", "1.5", "4", "2", "16", "60", "1", "1"};
 #endif
-    static const MM3PerformanceProfile quality = {"Quality", "3.0", "8", "2", "16", "60", "1", "1"};
+    static const MM3PerformanceProfile quality = {"Quality", "3.0", "8", "2", "16", "120", "1", "1"};
     static const MM3PerformanceProfile low_power = {"LowPower", "1.5", "1", "1", "16", "30", "1", "1"};
     /* Slow PCs (issue #36): the Xbox's own 480 lines, no filtering extras, and
      * the voice-processor mix instead of the interpreted sound DSP, and 3D

@@ -63,7 +63,7 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"MM3_PRELOAD_SHADERS", "Load all shaders before playing (Vulkan)", 1},
     {"RECOMP_APU_HRTF", "3D headphone sound (HRTF)", 1},
     {"MM3_UNLOCK_ALL_PAINTS", "Unlock all paint jobs", 0},
-    {"MM3_DIGITAL_SPEEDO", "Digital speed readout", 0}
+    {"MM3_DIGITAL_SPEEDO", "Digital speed readout", 1}
 };
 
 typedef struct { int option; const char *value; } MM3ForcedOption;
@@ -92,9 +92,12 @@ static const MM3ForcedOption xbox_gameplay[] = {
 /* The launcher saves every option, so a changed default would never reach a
  * saved file. Files from before this revision get these options back at
  * their new default once. Revision 2: drafting and the rollover assist change
- * how cars drive, so they start off, as on the Xbox. */
-#define SETTINGS_REVISION 2
-static const int revision_defaults[] = {MM3_LAUNCH_DRAFTING, MM3_LAUNCH_ROLL_GUARD};
+ * how cars drive, so they start off, as on the Xbox. Revision 3: the digital
+ * speed readout starts on (cars added with the Car Workshop showed a blank
+ * numeric HUD). Each option resets only for files older than its revision. */
+#define SETTINGS_REVISION 3
+static const struct { int option, revision; } revision_defaults[] = {
+    {MM3_LAUNCH_DRAFTING, 2}, {MM3_LAUNCH_ROLL_GUARD, 2}, {MM3_LAUNCH_DIGITAL, 3}};
 
 int mm3_launcher_option_master(int option)
 {
@@ -537,9 +540,11 @@ int mm3_launcher_config_load(MM3LauncherConfig *config, char *error, size_t capa
     if (fclose(file)) failed = 1;
     if (failed) error_set(error, capacity, "Cannot finish reading launcher settings.");
     else keys2_first_layout_update(config);
-    if (!failed && revision < SETTINGS_REVISION)
+    if (!failed)
         for (size_t i = 0; i < sizeof revision_defaults / sizeof revision_defaults[0]; ++i)
-            config->option[revision_defaults[i]] = mm3_launcher_options[revision_defaults[i]].default_value;
+            if (revision < revision_defaults[i].revision)
+                config->option[revision_defaults[i].option] =
+                    mm3_launcher_options[revision_defaults[i].option].default_value;
     return !failed;
 }
 

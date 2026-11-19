@@ -796,7 +796,7 @@ static void presets(HWND window)
     CHECK(level_is(window, "Xbox", 1) && help_contains(window, "no anti-aliasing"));
     slide(window, 3);                                             /* Max */
     CHECK(combo_is(window, ID_SCALE, 3000) && combo_is(window, ID_MSAA, 8) && combo_is(window, ID_DRAW, 2000));
-    edit_is(window, ID_FPS, "60");
+    edit_is(window, ID_FPS, "120");
     CHECK(level_is(window, "Max", 3) && help_contains(window, "8x MSAA"));
     /* Any other choice for one of its values makes the caption say Custom, and the old one back puts it right. */
     choose(window, ID_MSAA, 4);
@@ -805,7 +805,7 @@ static void presets(HWND window)
     CHECK(level_is(window, "Max", 3));
     edit_value(window, ID_FPS, "45");
     CHECK(level_is(window, "Custom", -1));
-    edit_value(window, ID_FPS, "60");
+    edit_value(window, ID_FPS, "120");
     CHECK(level_is(window, "Max", 3));
     click(window, ID_OPTION + MM3_LAUNCH_DSP);
     CHECK(level_is(window, "Custom", -1));

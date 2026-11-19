@@ -65,7 +65,7 @@ int main(void)
     profile("", BALANCED_SCALE, "4", "2", "60", "16");
     profile("unknown", BALANCED_SCALE, "4", "2", "60", "16");
     profile("Balanced", BALANCED_SCALE, "4", "2", "60", "16");
-    profile("quality", "3.0", "8", "2", "60", "16");
+    profile("quality", "3.0", "8", "2", "120", "16");
     profile("LOWPOWER", "1.5", "1", "1", "30", "16");
     profile("lowest", "1.0", "1", "1", "30", "1");
     profile("xbox", "1.0", "1", "1", "30", "1");
