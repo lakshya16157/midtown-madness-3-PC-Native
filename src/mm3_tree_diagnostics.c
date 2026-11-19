@@ -493,8 +493,8 @@ void sub_001D137B(void)
 /* Tree watch (mm3_tree_watch.c) through weak links: tests that #include this
  * file without the watch get the no-op versions. */
 int tree_watch_wanted_absent(void) { return 0; }
-void tree_watch_begin_absent(MM3TreeVisit *visit, uint32_t object, uint32_t camera, int is_tree)
-{ (void)visit; (void)object; (void)camera; (void)is_tree; }
+void tree_watch_begin_absent(MM3TreeVisit *visit, uint32_t object, uint32_t camera, uint32_t transform, int is_tree)
+{ (void)visit; (void)object; (void)camera; (void)transform; (void)is_tree; }
 void tree_watch_finish_absent(MM3TreeVisit *visit) { (void)visit; }
 #if defined(_MSC_VER)
 #pragma comment(linker, "/alternatename:mm3_tree_watch_wanted=tree_watch_wanted_absent")
@@ -531,11 +531,12 @@ static void tree_render_traced(void);
 void sub_0016AEDB(void)
 {
     MM3TreeVisit visit;
-    uint32_t object, camera;
+    uint32_t object, camera, transform;
     if (!TREE_WATCH_LINKED() || !mm3_tree_watch_wanted()) { tree_render_traced(); return; }
     object = tree_word_at((uint64_t)g_esp + 4u);
-    camera = tree_word_at((uint64_t)g_esp + 0x18u);
-    mm3_tree_watch_begin(&visit, object, camera,
+    camera = tree_word_at((uint64_t)g_esp + 0x08u);       /* argument 2: camera position (original ebp+0xC) */
+    transform = tree_word_at((uint64_t)g_esp + 0x18u);    /* argument 6: instance transform (original ebp+0x1C) */
+    mm3_tree_watch_begin(&visit, object, camera, transform,
                          object && tree_descriptor_is_tree(tree_word_at((uint64_t)object + 0xA0u)));
     tree_render_traced();
     mm3_tree_watch_finish(&visit);
