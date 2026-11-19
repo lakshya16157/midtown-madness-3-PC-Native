@@ -517,6 +517,7 @@ static void check_mouse(HWND window)
     CHECK(client.right > 0 && client.bottom > 0);
     xbox_InputSetMenuProbe(fixture_menu);
     xbox_InputSetMenuClickHandler(fixture_mouse_press);
+    report(out);   /* a poll first: the keyboard layer learns from it that a menu is up */
     /* Down/up between USB polls must survive, using the press coordinates,
      * without also activating the old focus through a synthetic A button. */
     SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(10, 12));
@@ -525,6 +526,7 @@ static void check_mouse(HWND window)
     CHECK(press_x == 10.0f / client.right && press_y == 12.0f / client.bottom);
     report(out); CHECK(out[4] == 0);
     driving_context = TRUE;
+    report(out);
     SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(10, 12));
     CHECK(mouse_presses == 1 && xbox_FramebufferKeyDown(VK_LBUTTON));
     SendMessageA(window, WM_LBUTTONUP, 0, 0);
@@ -544,6 +546,9 @@ int main(int argc, char **argv)
     if (argc < 2 || argc > 3) { fprintf(stderr, "Usage: mm3_input_contract mm3|legacy [saved-maps]\n"); return 2; }
     mm3 = mod_on = _stricmp(argv[1], "mm3") == 0;
     _putenv_s("RECOMP_KEYBOARD", "1");
+    /* These cases exercise the legacy layout alongside MM3's aliases, rather
+     * than depending on the generic runtime's newer WASD defaults. */
+    if (argc != 3) _putenv_s("RECOMP_KEYMAP", "X:41,Y:53,LX-:64,LX+:66,LY-:62,LY+:68");
     if (!strcmp(argv[1], "mouse")) _putenv_s("RECOMP_MENU_KEYS", "1");
     _putenv_s("RECOMP_PAD_SCRIPT", ""); _putenv_s("RECOMP_PAD_PRESS", "");
     _putenv_s("RECOMP_PAD_LIVE", ""); _putenv_s("RECOMP_INPUT_DIAG", "");

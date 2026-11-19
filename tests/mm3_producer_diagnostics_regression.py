@@ -66,6 +66,7 @@ RECOMP_TLS uint32_t g_eax,g_ecx,g_edx,g_esp,g_ebx,g_esi,g_edi,g_ebp,g_seh_ebp,g_
 RECOMP_TLS int g_fp_top,g_df,g_fp_cmp;
 RECOMP_TLS uint16_t g_fp_control_word,g_fp_cc;
 RECOMP_TLS double g_fp_stack[8];
+void xbox_PlaceThread(int role) { (void)role; }
 static void xbox_Nv2aWbcWait(uint32_t address){(void)address;assert(!"Unexpected lag in observer fixture");}
 /* Production kick-bound state with renderer profiling off (the default). */
 static uint32_t s_kick_lag=0x40000u;

@@ -18,7 +18,7 @@ def production_bodies(source):
         raise ValueError("Missing production FlipPacing type")
     bodies = [pacing.group()]
     for name in ("frame_csv_present", "frame_csv", "pace_after_present", "pace_flip",
-                 "present_surface", "nv2a_d3d_hold_frame", "held_flip", "nv2a_d3d_flip", "nv2a_d3d_tick"):
+                 "present_surface", "nv2a_d3d_hold_frame", "held_flip", "nv2a_d3d_flip_present", "nv2a_d3d_flip", "nv2a_d3d_tick"):
         match = re.search(r"^(?:static )?(?:int|void) " + name + r"\([^\n]*\)\n\{.*?^\}", source, re.M | re.S)
         if match is None:
             raise ValueError(f"Missing production {name} body")
@@ -39,7 +39,7 @@ def main():
         folder = Path(folder)
         (folder / "production_pacing.inc").write_text(production_bodies(source))
         executable = folder / "contract.exe"
-        subprocess.run(["cl", "/nologo", "/W4", "/WX", "/Od", "/std:c11",
+        subprocess.run(["cl", "/nologo", "/W4", "/WX", "/wd4210", "/Od", "/std:c11",
                         "/D_CRT_SECURE_NO_WARNINGS", "/I" + str(folder),
                         str(ROOT / "tests/mm3_present_pacing_contract.c"),
                         "/Fo:" + str(folder / "contract.obj"), "/Fe:" + str(executable)],

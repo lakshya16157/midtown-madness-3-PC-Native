@@ -9,7 +9,8 @@
 static const char *keys[] = {
     "RECOMP_RENDER_SCALE", "RECOMP_MSAA", "RECOMP_DRAW_DISTANCE", "RECOMP_VIEW_DISTANCE",
     "RECOMP_ANISO", "RECOMP_FPS_LIMIT", "RECOMP_BUFFERED_ASSET_READS",
-    "RECOMP_READBACK_FENCE", "RECOMP_AUDIO_HIRES_WAIT", "RECOMP_AUDIO_DSP_HANDOFF", "RECOMP_READBACK_HOLD"
+    "RECOMP_READBACK_FENCE", "RECOMP_AUDIO_HIRES_WAIT", "RECOMP_AUDIO_DSP_HANDOFF", "RECOMP_READBACK_HOLD",
+    "RECOMP_APU_DSP", "RECOMP_APU_HRTF"
 };
 
 static void setting(const char *key, const char *value)
@@ -39,15 +40,21 @@ static void profile(const char *name, const char *scale, const char *msaa,
     assert(strcmp(getenv("RECOMP_READBACK_FENCE"), "1") == 0);
     assert(strcmp(getenv("RECOMP_AUDIO_HIRES_WAIT"), "1") == 0);
     assert(strcmp(getenv("RECOMP_AUDIO_DSP_HANDOFF"), "1") == 0);
-    assert(!getenv("RECOMP_READBACK_HOLD") || !*getenv("RECOMP_READBACK_HOLD"));   /* the launcher's choice */
+    if (name && !strcmp(name, "lowest")) {
+        /* Slow PCs: no sound DSP or HRTF and no per-frame wait for the GPU. */
+        assert(!strcmp(getenv("RECOMP_APU_DSP"), "0") && !strcmp(getenv("RECOMP_APU_HRTF"), "0"));
+        assert(!strcmp(getenv("RECOMP_READBACK_HOLD"), "0"));
+    } else {
+        assert(!getenv("RECOMP_READBACK_HOLD") || !*getenv("RECOMP_READBACK_HOLD"));   /* the launcher's choice */
+    }
     assert(mm3_frame_limit(getenv("RECOMP_FPS_LIMIT")) == atoi(fps));
     assert(recomp_frame_limit_parse(getenv("RECOMP_FPS_LIMIT")) == atoi(fps));
 }
 
 int main(void)
 {
-    const char *names[] = {"Balanced", "Quality", "LowPower"};
-    const char *overrides[] = {"2.25", "8", "1.25", "3.5", "4", "45", "0", "0", "0", "0", "1"};
+    const char *names[] = {"Balanced", "Quality", "LowPower", "Xbox"};
+    const char *overrides[] = {"2.25", "8", "1.25", "3.5", "4", "45", "0", "0", "0", "0", "1", "1", "0"};
     size_t i, j;
 #ifdef _WIN32
 #define BALANCED_SCALE "2.0"
@@ -61,6 +68,8 @@ int main(void)
     profile("quality", "3.0", "8", "2", "60", "16");
     profile("LOWPOWER", "1.5", "1", "1", "30", "16");
     profile("lowest", "1.0", "1", "1", "30", "1");
+    profile("xbox", "1.0", "1", "1", "30", "1");
+    assert(!strcmp(mm3_performance_profile("Xbox")->apu_dsp, "1") && !mm3_performance_profile("Xbox")->no_gpu_wait);
 
     clear_settings();
     for (i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i)

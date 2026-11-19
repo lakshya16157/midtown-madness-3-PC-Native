@@ -34,7 +34,7 @@ def main():
         folder = Path(temporary)
         (folder / "production_game_directory.inc").write_text(source[begin:end])
         built = folder / "contract.exe"
-        subprocess.run(["cl", "/nologo", "/W3", "/WX", "/O2", "/std:c11",
+        subprocess.run(["cl", "/nologo", "/W3", "/WX", "/O2", "/std:c11", "/D_CRT_SECURE_NO_WARNINGS",
                         "/I" + str(ROOT / "src"), "/I" + str(folder),
                         str(ROOT / "tests/mm3_game_directory_contract.c"),
                         "/Fo:" + str(folder / "contract.obj"),

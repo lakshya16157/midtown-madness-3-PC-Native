@@ -29,6 +29,7 @@ static unsigned dispatched, logged;
 static uint32_t log_words[256];
 static void nv2a_vsh_program_word(uint32_t word) { log_words[logged++ & 255] = 0x10000000u ^ word; }
 static void nv2a_vsh_constant_word(uint32_t word) { log_words[logged++ & 255] = 0x20000000u ^ word; }
+static void nv2a_vsh_constant_words(const uint32_t *words, uint32_t n) { while (n--) nv2a_vsh_constant_word(*words++); }
 static void cap_exceeded(uint32_t site, const char *what, uint32_t limit, uint32_t lost)
 { (void)site; (void)what; (void)limit; (void)lost; }
 /* The frame recorder is off: the bulk run takes its fast path. */

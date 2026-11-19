@@ -11,6 +11,7 @@ CONTRACT = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include "mm3_direct_log.h"
+unsigned xbox_HostCpuCount(void) { return 16; }
 static const char *value(const char *key) { const char *v = getenv(key); return v ? v : "-"; }
 int main(void)
 {

@@ -4,6 +4,31 @@
 #include "recomp_types.h"
 
 extern void sub_001DEA30_original(void);
+extern void sub_001E50A9_original(void);
+
+/* Profile key lookup (this = EAX, the profile's key set; the key is the stack
+ * argument; RET 4, AL = found). The car-selection builder sub_001DE752 asks it
+ * for "<car>.<n>" (the "." at 0x3AF02C) for n = 1.. and counts each found
+ * paint job into the catalog entry's +0x7C; a hideout pickup adds that key
+ * (sub_00212E8F). MM3_UNLOCK_ALL_PAINTS=1 answers "found" at that one call
+ * site (return address 0x001DE940) only: the save is not written, the
+ * hideouts still work and every other key keeps its stored answer. */
+void sub_001E50A9(void)
+{
+    static int on = -1;
+    uint32_t return_va = MEM32(g_esp);
+    sub_001E50A9_original();
+    if (on < 0) {
+        const char *setting = getenv("MM3_UNLOCK_ALL_PAINTS");
+        on = setting && !strcmp(setting, "1");
+        if (on) {
+            fprintf(stderr, "[MM3_CARS] all paint jobs available\n");
+            fflush(stderr);
+        }
+    }
+    if (on && return_va == 0x001DE940u)
+        SET_LO8(g_eax, 1);
+}
 
 /* PAL vehicle availability refresh. ESI identifies an already loaded catalog
  * entry; +0x29 is its LOCKED byte. The parser and both refresh paths use this

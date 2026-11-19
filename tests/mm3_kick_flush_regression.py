@@ -54,6 +54,7 @@ static void mm3_kick_report(int64_t now) { (void)now; assert(!"report without pr
 /* The runtime's wait, minus its executor thread: spin until the flush word is
  * acknowledged (bounded, so a missing acknowledgement fails the test). */
 static unsigned wait_calls;
+void xbox_PlaceThread(int role) { (void)role; }
 void xbox_Nv2aWbcWait(uint32_t register_va)
 {
     ULONGLONG start = GetTickCount64();

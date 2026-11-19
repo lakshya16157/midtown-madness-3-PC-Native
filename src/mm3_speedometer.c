@@ -6,6 +6,7 @@
 #include "xbox_memory_layout.h"
 #include <stdio.h>
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 #include "recomp_types.h"
 #include "mm3_speedometer.h"
@@ -139,6 +140,10 @@ static int player_alias(char alias[32])
 
 int mm3_speedometer_hide_readout(void)
 {
+    /* MM3_DIGITAL_SPEEDO (launcher: Digital speed readout): keep the built-in number on added cars too. */
+    static int digital = -1;
+    if (digital < 0) { const char *v = getenv("MM3_DIGITAL_SPEEDO"); digital = v && *v == '1'; }
+    if (digital) return 0;
     /* Pristine PAL Cars/Tweak aliases, including both hidden bonus cars.
      * Use the loaded vehicle identity, never its donor gauge type: added cars
      * can share the stock artwork while keeping their previous HUD behavior. */

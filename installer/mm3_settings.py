@@ -70,6 +70,9 @@ OPTIONS = [
     ("MM3_RENDERER_VULKAN", "Vulkan renderer (instead of DirectX 11)", 0),
     ("MM3_NO_GPU_WAIT", "Don't wait for the GPU (slow GPUs)", 0),
     ("MM3_PRELOAD_SHADERS", "Load all shaders before playing (Vulkan)", 1),
+    ("RECOMP_APU_HRTF", "3D headphone sound (HRTF)", 1),
+    ("MM3_UNLOCK_ALL_PAINTS", "Unlock all paint jobs", 0),
+    ("MM3_DIGITAL_SPEEDO", "Digital speed readout", 0),
 ]
 DEFAULTS = {key: default for key, _label, default in OPTIONS}
 DEFAULTS[SKIP_LAUNCHER] = 0
@@ -82,9 +85,9 @@ LABELS = {key: label for key, label, _default in OPTIONS}
 ORIGINAL_LOOK = ["MM3_MOD_DRAW_DISTANCE", "MM3_MOD_CAR_LIGHTING", "MM3_MOD_LAMP_LIGHTING",
                  "MM3_MOD_WORLD_LIGHTING", "RECOMP_LOADING_SPINNER",
                  "MM3_HUD_NORTH_MARKER", "MM3_GRAPHICS_MENU", "MM3_DLC_RACE_INFO",
-                 "MM3_EXHAUST_TRIANGLES", "MM3_MENU_QUIT"]
+                 "MM3_EXHAUST_TRIANGLES", "MM3_MENU_QUIT", "MM3_DIGITAL_SPEEDO"]
 XBOX_GAMEPLAY = ["MM3_DRAFTING", "MM3_ROLL_GUARD", "MM3_FALLING_TREES", "MM3_EXTRA_CIRCUITS",
-                 "MM3_EXTRA_CARS", "MM3_AI_ALL_CARS", "MM3_UNLOCK_ALL_CARS", "MM3_ROUTE_NAVIGATION",
+                 "MM3_EXTRA_CARS", "MM3_AI_ALL_CARS", "MM3_UNLOCK_ALL_CARS", "MM3_UNLOCK_ALL_PAINTS", "MM3_ROUTE_NAVIGATION",
                  "MM3_HUD_RACE_ARROW", "MM3_MOD_DEV_TOOLS", "MM3_DEV_HUD", "MM3_DEBUG_MENU",
                  "MM3_EXTENDED_CAMERAS", "MM3_E3_PRESET", "MM3_SAME_CAR", "MM3_FREE_CAMERA"]
 
@@ -101,7 +104,7 @@ CAMERA_KEYS = [("F1", 0x70), ("F2", 0x71), ("F3", 0x72), ("F4", 0x73), ("F5", 0x
                ("End", 0x23), ("Page Up", 0x21), ("Page Down", 0x22)]
 PLAYER1 = ["Controller 1 + keyboard", "Controller 1", "Keyboard (arrows)", "Keyboard 2 (WASD)", "Controller 2"]
 PLAYER2 = ["Controller 2", "Controller 1", "Keyboard (arrows)", "Keyboard 2 (WASD)"]
-PROFILES = ["Balanced", "Quality", "LowPower", "Lowest"]
+PROFILES = ["Balanced", "Quality", "LowPower", "Xbox", "Lowest"]
 SCALES = [("Profile's own", ""), ("1x", "1"), ("1.5x", "1.5"), ("2x", "2"), ("3x", "3")]
 FPS_LIMITS = ["30", "45", "60", "90", "120"]
 
@@ -327,9 +330,9 @@ def window():
     look = ttk.LabelFrame(graphics, text="Look", padding=8)
     look.grid(row=1, column=0, sticky="nsew", padx=6, pady=6)
     check(look, "MM3_IMPROVED", 0)
-    for index, key in enumerate(("MM3_MOD_WIDESCREEN", "MM3_MOD_SKY", "MM3_NATIVE_FOG", "RECOMP_APU_DSP"), 1):
+    for index, key in enumerate(("MM3_MOD_WIDESCREEN", "MM3_MOD_SKY", "MM3_NATIVE_FOG", "RECOMP_APU_DSP", "RECOMP_APU_HRTF"), 1):
         check(look, key, index)
-    for index, key in enumerate(ORIGINAL_LOOK, 5):
+    for index, key in enumerate(ORIGINAL_LOOK, 6):
         check(look, key, index, indent=18)
     lower = ttk.LabelFrame(graphics, text="Extras", padding=8)
     lower.grid(row=1, column=1, sticky="nsew", padx=6, pady=6)

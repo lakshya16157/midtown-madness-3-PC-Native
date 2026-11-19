@@ -17,6 +17,7 @@
 #include <string.h>
 #include <wchar.h>
 #include "mm3_direct_log.h"
+extern unsigned xbox_HostCpuCount(void);   /* the process's usable CPUs */
 
 enum { MM3_DIRECT_LOGS_KEPT = 5, MM3_OVERLAY_CHECK_MS = 30000, MM3_POWER_CHECK_MS = 30000 };
 
@@ -176,7 +177,10 @@ void mm3_direct_launch_log(void)
         !WideCharToMultiByte(CP_UTF8, 0, full, -1, csv, (int)sizeof csv, NULL, NULL))
         csv[0] = 0;
     default_setting("RECOMP_D3D_PROFILE", "1");
-    default_setting("RECOMP_HITCH_TRACE", "1");
+    /* The hitch trace reads the clock twice per pushbuffer packet (10-20 thousand
+     * a frame): on a PC with 4 or fewer logical CPUs it is left to an explicit
+     * RECOMP_HITCH_TRACE=1. The once-a-second profile lines stay on. */
+    if (xbox_HostCpuCount() > 4) default_setting("RECOMP_HITCH_TRACE", "1");
     if (csv[0]) default_setting("RECOMP_FRAME_CSV", csv);
     parent_name(parent, sizeof parent);
     if (!GetFullPathNameW(log_path, MAX_PATH, full, NULL) ||
@@ -267,7 +271,7 @@ void mm3_direct_launch_log(void)
     if (dup2(fd, STDERR_FILENO) < 0) { close(fd); return; }
     close(fd);
     default_setting("RECOMP_D3D_PROFILE", "1");
-    default_setting("RECOMP_HITCH_TRACE", "1");
+    if (sysconf(_SC_NPROCESSORS_ONLN) > 4) default_setting("RECOMP_HITCH_TRACE", "1");   /* see the Windows note */
     default_setting("RECOMP_FRAME_CSV", csv);
     default_setting("RECOMP_SDLGPU_SPEC", "log");
     if (!getcwd(cwd, sizeof cwd)) strcpy(cwd, ".");

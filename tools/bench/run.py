@@ -36,6 +36,7 @@ PROFILES = {
     "Quality": {"scale": "3.0", "msaa": "8", "distance": "2", "fps": 60},
     "LowPower": {"scale": "1.5", "msaa": "1", "distance": "1", "fps": 30},
     "Balanced": {"scale": "2.0", "msaa": "4", "distance": "2", "fps": 60},
+    "Lowest": {"scale": "1.0", "msaa": "1", "distance": "1", "fps": 30},
 }
 TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
 
@@ -76,24 +77,26 @@ def main():
     parser.add_argument("--exe")
     parser.add_argument("--save", required=True, help="save template directory (copied, never modified)")
     parser.add_argument("--tag", default="bench-" + uuid.uuid4().hex)
-    parser.add_argument("--profile", choices=["Balanced", "Quality", "LowPower"], default="Balanced")
+    parser.add_argument("--profile", choices=["Balanced", "Quality", "LowPower", "Lowest"], default="Balanced")
     parser.add_argument("--scenario", choices=["Stationary", "Driving"], default="Stationary")
     parser.add_argument("--hitch-trace", dest="hitch_trace", action="store_true")
-    parser.add_argument("--fps-limit", dest="fps_limit", type=int, help="1-90 (default from profile)")
+    parser.add_argument("--fps-limit", dest="fps_limit", type=int, help="1-120 (default from profile)")
     parser.add_argument("--secs", type=int, default=20, help="measurement window, 5-300 (default 20)")
     parser.add_argument("--particle-budget", dest="particle_budget", type=int, default=24, help="1-255")
     parser.add_argument("--shader-cache-seed", dest="shader_cache_seed")
     parser.add_argument("--x", type=float)
     parser.add_argument("--z", type=float)
     parser.add_argument("--heading", type=float, default=0.0)
+    parser.add_argument("--affinity", help="CPU mask in hex for the game process (e.g. F: four logical CPUs)")
+    parser.add_argument("--env", action="append", default=[], help="KEY=VALUE passed to the game (repeatable)")
     args = parser.parse_args()
 
     if not TAG_RE.match(args.tag):
         die("--tag must start with a letter or digit and contain only letters, digits, '_' and '-' (max 80)")
     if not 5 <= args.secs <= 300:
         die("--secs must be between 5 and 300")
-    if args.fps_limit is not None and not 1 <= args.fps_limit <= 90:
-        die("--fps-limit must be between 1 and 90")
+    if args.fps_limit is not None and not 1 <= args.fps_limit <= 120:
+        die("--fps-limit must be between 1 and 120")
     if not 1 <= args.particle_budget <= 255:
         die("--particle-budget must be between 1 and 255")
 
@@ -160,6 +163,11 @@ def main():
         "RECOMP_HITCH_TRACE": "1" if args.hitch_trace else None,
         "RECOMP_PRESENT_CAPTURE": None, "RECOMP_CAPTURE_SURFACE": None,
     }
+    for item in args.env:
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            die("--env takes KEY=VALUE")
+        envs[key] = value
     child_env = dict(os.environ)
     for key, value in envs.items():
         if value is None:
@@ -208,11 +216,16 @@ def main():
         log_f = open(log, "wb")
         proc = subprocess.Popen([exe], cwd=repo, env=child_env, stdout=stdout_f, stderr=log_f,
                                 startupinfo=hidden_startupinfo())
+        if args.affinity and os.name == "nt":
+            import ctypes
+            if not ctypes.windll.kernel32.SetProcessAffinityMask(ctypes.c_void_p(int(proc._handle)),
+                                                                 ctypes.c_size_t(int(args.affinity, 16))):
+                die("SetProcessAffinityMask failed")
         with open(exe, "rb") as f:
             digest = hashlib.sha256(f.read()).hexdigest().upper()
         write_json("run.json", {
             "executable": exe, "sha256": digest,
-            "process_id": proc.pid, "profile": args.profile, "scenario": args.scenario,
+            "process_id": proc.pid, "profile": args.profile, "scenario": args.scenario, "affinity": args.affinity, "env": args.env,
             "settings": envs, "explicit_position": explicit_position,
             "coordinates": [args.x or 0.0, args.z or 0.0], "heading": args.heading,
             "save_template": save, "shader_cache_seed": seed, "logical_processors": os.cpu_count(),

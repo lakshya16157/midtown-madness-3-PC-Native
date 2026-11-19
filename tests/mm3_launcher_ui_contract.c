@@ -666,7 +666,7 @@ static void contextual_help(HWND window)
         int id = ID_OPTION + i;
         HWND child = GetDlgItem(window, id);
         if (i == MM3_LAUNCH_IMPROVED || i == MM3_LAUNCH_GAMEPLAY) continue;
-        select_page(window, i == MM3_LAUNCH_DSP || i == MM3_LAUNCH_NETWORK ? 0 :
+        select_page(window, i == MM3_LAUNCH_DSP || i == MM3_LAUNCH_HRTF || i == MM3_LAUNCH_NETWORK ? 0 :
                     mm3_launcher_option_master(i) == MM3_LAUNCH_GAMEPLAY || i == MM3_LAUNCH_PHOTO_MODE ? 3 : 2);
         CHECK(child && IsWindowVisible(child));
         focus_control(window, id); help_text(window, &previous); help_layout(window);
@@ -737,50 +737,85 @@ static void edit_is(HWND window, int id, const char *value)
     CHECK(!strcmp(text, value));
 }
 
-/* Quick presets fill in the graphics choices from the game's performance profiles, follow later edits
- * back to Custom, and save nothing of their own. */
+/* The graphics slider fills in the graphics choices from the game's performance profiles, follows
+ * later edits back to Custom, and saves nothing of its own. Advanced shows or hides the values. */
+static void slide(HWND window, int stop)
+{
+    HWND slider = GetDlgItem(window, ID_PRESET);
+    SendMessageA(slider, TBM_SETPOS, TRUE, stop);
+    SendMessageA(window, WM_HSCROLL, MAKEWPARAM(TB_THUMBPOSITION, stop), (LPARAM)slider);
+}
+static int level_is(HWND window, const char *name, int stop)
+{
+    char caption[128], expected[128];
+    GetDlgItemTextA(window, ID_PRESET_NAME, caption, sizeof caption);
+    snprintf(expected, sizeof expected, "Graphics quality: %s", name);
+    return !strcmp(caption, expected) &&
+           (stop < 0 || SendMessageA(GetDlgItem(window, ID_PRESET), TBM_GETPOS, 0, 0) == stop);
+}
+static void click(HWND window, int id)
+{ SendMessageA(window, WM_COMMAND, MAKEWPARAM(id, BN_CLICKED), (LPARAM)GetDlgItem(window, id)); }
+
 static void presets(HWND window)
 {
     char status[512];
-    HWND preset = GetDlgItem(window, ID_PRESET);
+    HWND slider = GetDlgItem(window, ID_PRESET);
+    int open;
     select_page(window, 0);
-    CHECK(IsWindowVisible(preset) && SendMessageA(preset, CB_GETCOUNT, 0, 0) == 5);
+    CHECK(IsWindowVisible(slider) && SendMessageA(slider, TBM_GETRANGEMAX, 0, 0) == 3);
+    CHECK(IsWindowVisible(GetDlgItem(window, ID_ADVANCED)));
+    /* Advanced swaps the detail choices and the summary line; the slider stays. */
+    open = IsWindowVisible(GetDlgItem(window, ID_SCALE)) != 0;
+    CHECK(open != (IsWindowVisible(GetDlgItem(window, ID_PRESET_SUMMARY)) != 0));
+    click(window, ID_ADVANCED);
+    CHECK((IsWindowVisible(GetDlgItem(window, ID_SCALE)) != 0) == !open);
+    CHECK((IsWindowVisible(GetDlgItem(window, ID_FPS)) != 0) == !open);
+    CHECK((IsWindowVisible(GetDlgItem(window, ID_PRESET_SUMMARY)) != 0) == open);
+    CHECK(IsWindowVisible(slider) && help_contains(window, "Advanced settings"));
+    click(window, ID_ADVANCED);
+    CHECK((IsWindowVisible(GetDlgItem(window, ID_SCALE)) != 0) == open);
+    select_page(window, 1);
+    CHECK(!IsWindowVisible(GetDlgItem(window, ID_SCALE)) && !IsWindowVisible(GetDlgItem(window, ID_PRESET_SUMMARY)));
+    select_page(window, 0);
+
     SendMessageA(window, WM_COMMAND, ID_DEFAULTS, 0);
-    CHECK(combo_value(preset) == 3);                              /* the defaults are the Balanced profile */
-    choose(window, ID_PRESET, 1);                                 /* Lowest (slow PCs) */
+    CHECK(level_is(window, "Medium", 2));                         /* the defaults are the Balanced profile */
+    slide(window, 0);                                             /* Lowest */
     CHECK(combo_is(window, ID_SCALE, 1000) && combo_is(window, ID_MSAA, 1) && combo_is(window, ID_ANISO, 1));
     CHECK(combo_is(window, ID_DRAW, 1000) && combo_is(window, ID_VIEW, 1000));
     edit_is(window, ID_FPS, "30");
-    CHECK(combo_value(preset) == 1 && help_contains(window, "Lowest"));
-    choose(window, ID_PRESET, 2);                                 /* Low power */
-    CHECK(combo_is(window, ID_SCALE, 1500) && combo_is(window, ID_MSAA, 1) && combo_is(window, ID_ANISO, 16));
-    CHECK(combo_is(window, ID_DRAW, 1000) && combo_is(window, ID_VIEW, 1000));
+    CHECK(!SendMessageA(GetDlgItem(window, ID_OPTION + MM3_LAUNCH_DSP), BM_GETCHECK, 0, 0));
+    CHECK(level_is(window, "Lowest", 0) && help_contains(window, "Lowest"));
+    slide(window, 1);                                             /* Xbox: the same picture, full sound chip */
+    CHECK(combo_is(window, ID_SCALE, 1000) && combo_is(window, ID_MSAA, 1) && combo_is(window, ID_DRAW, 1000));
     edit_is(window, ID_FPS, "30");
+    CHECK(SendMessageA(GetDlgItem(window, ID_OPTION + MM3_LAUNCH_DSP), BM_GETCHECK, 0, 0) == BST_CHECKED);
+    CHECK(SendMessageA(GetDlgItem(window, ID_OPTION + MM3_LAUNCH_HRTF), BM_GETCHECK, 0, 0) == BST_CHECKED);
     GetDlgItemTextA(window, ID_STATUS, status, sizeof status);
-    CHECK(strstr(status, "Low power filled in") && strstr(status, "30 FPS") && strstr(status, "Cancel discards"));
-    CHECK(combo_value(preset) == 2 && help_contains(window, "Low power") && help_contains(window, "no anti-aliasing"));
-    choose(window, ID_PRESET, 4);                                 /* Quality */
+    CHECK(strstr(status, "Xbox graphics filled in") && strstr(status, "30 FPS") && strstr(status, "Cancel discards"));
+    CHECK(level_is(window, "Xbox", 1) && help_contains(window, "no anti-aliasing"));
+    slide(window, 3);                                             /* Max */
     CHECK(combo_is(window, ID_SCALE, 3000) && combo_is(window, ID_MSAA, 8) && combo_is(window, ID_DRAW, 2000));
     edit_is(window, ID_FPS, "60");
-    CHECK(combo_value(preset) == 4 && help_contains(window, "8x MSAA"));
-    /* Any other choice for one of its values makes the box say Custom, and the old one back puts it right. */
+    CHECK(level_is(window, "Max", 3) && help_contains(window, "8x MSAA"));
+    /* Any other choice for one of its values makes the caption say Custom, and the old one back puts it right. */
     choose(window, ID_MSAA, 4);
-    CHECK(combo_value(preset) == 0);
+    CHECK(level_is(window, "Custom", -1));
     choose(window, ID_MSAA, 8);
-    CHECK(combo_value(preset) == 4);
+    CHECK(level_is(window, "Max", 3));
     edit_value(window, ID_FPS, "45");
-    CHECK(combo_value(preset) == 0);
+    CHECK(level_is(window, "Custom", -1));
     edit_value(window, ID_FPS, "60");
-    CHECK(combo_value(preset) == 4);
-    /* Picking Custom changes nothing. */
-    choose(window, ID_PRESET, 0);
-    CHECK(combo_is(window, ID_SCALE, 3000) && combo_is(window, ID_MSAA, 8));
-    CHECK(help_contains(window, "your own mix") || help_contains(window, "Custom"));
-    /* Other settings the presets do not touch stay as they were. */
+    CHECK(level_is(window, "Max", 3));
+    click(window, ID_OPTION + MM3_LAUNCH_DSP);
+    CHECK(level_is(window, "Custom", -1));
+    click(window, ID_OPTION + MM3_LAUNCH_DSP);
+    CHECK(level_is(window, "Max", 3));
+    /* Other settings the levels do not touch stay as they were. */
     choose(window, ID_RESOLUTION, 1920 * 10000 + 1080);
-    choose(window, ID_PRESET, 3);
+    slide(window, 2);
     CHECK(combo_is(window, ID_RESOLUTION, 1920 * 10000 + 1080) && combo_is(window, ID_SCALE, 2000));
-    CHECK(combo_value(preset) == 3);
+    CHECK(level_is(window, "Medium", 2));
     SendMessageA(window, WM_COMMAND, ID_DEFAULTS, 0);
 }
 
@@ -1227,6 +1262,6 @@ int main(int argc, char **argv)
     smaller_layout();
     DeleteFileA(display_path); DeleteFileA(launcher_path);
     update_runs(argv[2], argv[1]);
-    puts("PASS launcher UI: deterministic XInput detection (zero/one/four and sparse ports), DualSense/Edge HID filtering and hotplug, live buttons/triggers/sticks, unplug/reconnect, persistent summary, stable idle text, normal/720p controller/help layout, contextual explanations and live values, keyboard capture/reserved keys, pad mapping, Cancel isolation, Play persistence, defaults, explicit USB overrides and bypass bootstrap, Check for updates (latest, offline, declined, bad checksum, Cancel during a check, download then Setup opened), quick presets (Low power/Balanced/Quality fill in and follow edits back to Custom), Folders and logs menu and support info, Play refused with the game files missing");
+    puts("PASS launcher UI: deterministic XInput detection (zero/one/four and sparse ports), DualSense/Edge HID filtering and hotplug, live buttons/triggers/sticks, unplug/reconnect, persistent summary, stable idle text, normal/720p controller/help layout, contextual explanations and live values, keyboard capture/reserved keys, pad mapping, Cancel isolation, Play persistence, defaults, explicit USB overrides and bypass bootstrap, Check for updates (latest, offline, declined, bad checksum, Cancel during a check, download then Setup opened), graphics slider (Lowest/Xbox/Medium/Max fill in and follow edits back to Custom, Advanced shows the values), Folders and logs menu and support info, Play refused with the game files missing");
     return 0;
 }

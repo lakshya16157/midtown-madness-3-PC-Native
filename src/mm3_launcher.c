@@ -82,6 +82,7 @@ enum {
     ID_HELP_TITLE, ID_HELP_VALUE, ID_HELP_BODY, ID_HELP_EFFECT, ID_REQUIRED,
     ID_PAD_SUMMARY, ID_PAD_HINT, ID_TAB_BAR, ID_OWN_DAMAGE, ID_AI_LEVEL, ID_CAMERA_KEY,
     ID_TITLE, ID_SUBTITLE, ID_GUIDE_HEAD1, ID_GUIDE_HEAD2, ID_PLAYER1, ID_PLAYER2, ID_GPU,
+    ID_PRESET_NAME, ID_PRESET_SUMMARY, ID_ADVANCED,
     ID_OPTION = 300,
     /* The "Folders and logs" menu's items. */
     ID_TOOL_GAME = 700, ID_TOOL_LOGS, ID_TOOL_SETTINGS, ID_TOOL_COPY,
@@ -103,7 +104,8 @@ typedef struct UpdateJob {
     wchar_t target[2 * MAX_PATH];
     char message[512];
 } UpdateJob;
-typedef struct LauncherControl { HWND window; int page; } LauncherControl;
+/* advanced: 0 always shown on its page, 1 only with Advanced open, 2 only with it closed. */
+typedef struct LauncherControl { HWND window; int page, advanced; } LauncherControl;
 /* A connected display, for the Screen choice. number is the N of \\.\DISPLAYN,
  * which is usually the number Windows shows when it identifies displays. */
 typedef struct LauncherScreen {
@@ -115,9 +117,10 @@ typedef struct Launcher {
     HWND window, tabs;
     HFONT font, heading, section;
     HBRUSH accent, tab_idle;
-    LauncherControl controls[160];
+    LauncherControl controls[192];
     int control_count, page, result, done, smoke, capture, capture_armed, group;
     int page_shift;                 /* pixels page content moves down to clear the tab bar */
+    int advanced, adding_advanced;  /* Settings' Advanced graphics open; the group add() is filling */
     WORD previous_pad[4];
     int pad_seen[4];
     int dualsense_count;
@@ -221,6 +224,7 @@ static HWND add(Launcher *ui, int page, const char *kind, const char *text,
             SetWindowSubclass(child, help_proc, 2, (DWORD_PTR)ui);
         if (ui->control_count < (int)(sizeof ui->controls / sizeof ui->controls[0])) {
             ui->controls[ui->control_count].window = child;
+            ui->controls[ui->control_count].advanced = ui->adding_advanced;
             ui->controls[ui->control_count++].page = page;
         }
     }
@@ -359,13 +363,14 @@ static void key_name(int vk, char *text, size_t capacity)
     else snprintf(text, capacity, "VK %02X", vk);
 }
 
-/* ---- Quick presets -------------------------------------------------------
- * A preset fills in the graphics choices with one performance profile's values (the profiles the
- * game already has: mm3_performance_profile.h). It saves nothing of its own: the six controls it
- * sets are what Play saves, so launcher.ini and display.ini keep their format. The box shows
- * whichever preset the controls spell out, or Custom. */
-static const char *const preset_names[] = {NULL, "Lowest", "LowPower", "Balanced", "Quality"};
-static const char *const preset_labels[] = {"Custom (your own choices)", "Lowest (slow PCs)", "Low power", "Balanced", "Quality"};
+/* ---- Graphics quality slider ---------------------------------------------
+ * A level fills in the graphics choices with one performance profile's values (the profiles the
+ * game already has: mm3_performance_profile.h). It saves nothing of its own: the controls it
+ * sets are what Play saves, so launcher.ini and display.ini keep their format. The slider shows
+ * whichever level the controls spell out; otherwise its caption says Custom. Slider stop i is
+ * level i + 1. The LowPower profile stays for MM3_PERFORMANCE_PROFILE but has no stop. */
+static const char *const preset_names[] = {NULL, "Lowest", "Xbox", "Balanced", "Quality"};
+static const char *const preset_labels[] = {"Custom", "Lowest", "Xbox", "Medium", "Max"};
 #define PRESET_COUNT ((int)(sizeof preset_names / sizeof preset_names[0]))
 
 static int preset_scale(const MM3PerformanceProfile *profile)
@@ -382,14 +387,42 @@ static int preset_current(Launcher *ui)
         if (combo_value(control(ui, ID_SCALE)) == preset_scale(p) && combo_value(control(ui, ID_MSAA)) == atoi(p->msaa) &&
             combo_value(control(ui, ID_ANISO)) == atoi(p->aniso) &&
             combo_value(control(ui, ID_DRAW)) == preset_distance(p) &&
-            combo_value(control(ui, ID_VIEW)) == preset_distance(p) && atoi(fps) == atoi(p->fps_limit))
+            combo_value(control(ui, ID_VIEW)) == preset_distance(p) && atoi(fps) == atoi(p->fps_limit) &&
+            checked(ui, ID_OPTION + MM3_LAUNCH_DSP) == atoi(p->apu_dsp) &&    /* Lowest and Xbox differ only here */
+            checked(ui, ID_OPTION + MM3_LAUNCH_HRTF) == atoi(p->apu_hrtf))
             return i;
     }
     return 0;
 }
 
+static void preset_summary(const MM3PerformanceProfile *p, char *text, size_t capacity);
+/* The slider, its caption and the closed-Advanced summary follow what the controls spell out. */
 static void preset_show(Launcher *ui)
-{ if (control(ui, ID_PRESET)) combo_select(control(ui, ID_PRESET), preset_current(ui)); }
+{
+    int pick = preset_current(ui);
+    char caption[64], summary[320], text[400];
+    if (!control(ui, ID_PRESET)) return;
+    if (pick) SendMessageA(control(ui, ID_PRESET), TBM_SETPOS, TRUE, pick - 1);
+    snprintf(caption, sizeof caption, "Graphics quality: %s", preset_labels[pick]);
+    SetWindowTextA(control(ui, ID_PRESET_NAME), caption);
+    if (pick) {
+        preset_summary(mm3_performance_profile(preset_names[pick]), summary, sizeof summary);
+        snprintf(text, sizeof text, "%s: %s.", preset_labels[pick], summary);
+    } else
+        snprintf(text, sizeof text, "Custom: your own graphics choices. Open Advanced settings to see or change them.");
+    SetWindowTextA(control(ui, ID_PRESET_SUMMARY), text);
+}
+
+/* Show the Settings controls of the open or closed Advanced state (on page 0 only). */
+static void advanced_show(Launcher *ui)
+{
+    for (int i = 0; i < ui->control_count; ++i)
+        if (ui->controls[i].advanced)
+            ShowWindow(ui->controls[i].window, ui->controls[i].page == ui->page &&
+                       ui->controls[i].advanced == 2 - ui->advanced ? SW_SHOW : SW_HIDE);
+    if (control(ui, ID_ADVANCED))
+        SetWindowTextA(control(ui, ID_ADVANCED), ui->advanced ? "Hide advanced settings" : "Advanced settings");
+}
 
 /* What a preset sets, in words (also the guide's text and the status line). */
 static void preset_summary(const MM3PerformanceProfile *p, char *text, size_t capacity)
@@ -398,8 +431,9 @@ static void preset_summary(const MM3PerformanceProfile *p, char *text, size_t ca
     snprintf(filtering, sizeof filtering, "%sx", p->aniso);
     if (atoi(p->msaa) > 1) snprintf(antialiasing, sizeof antialiasing, "%sx MSAA", p->msaa);
     else snprintf(antialiasing, sizeof antialiasing, "no anti-aliasing");
-    snprintf(text, capacity, "%.1fx internal resolution, %s, %s texture filtering, %sx distances, %s FPS",
-             atof(p->render_scale), antialiasing, filtering, p->draw_distance, p->fps_limit);
+    snprintf(text, capacity, "%.1fx internal resolution, %s, %s texture filtering, %sx distances, %s FPS%s",
+             atof(p->render_scale), antialiasing, filtering, p->draw_distance, p->fps_limit,
+             atoi(p->apu_dsp) ? "" : ", accurate sound processor and 3D headphone sound off, no wait for the GPU");
 }
 
 static void preset_apply(Launcher *ui, int preset)
@@ -415,8 +449,15 @@ static void preset_apply(Launcher *ui, int preset)
     combo_select(control(ui, ID_VIEW), preset_distance(p));
     snprintf(fps, sizeof fps, "%d", atoi(p->fps_limit));
     SetWindowTextA(control(ui, ID_FPS), fps);
+    set_checked(ui, ID_OPTION + MM3_LAUNCH_DSP, atoi(p->apu_dsp));
+    set_checked(ui, ID_OPTION + MM3_LAUNCH_HRTF, atoi(p->apu_hrtf));
+#ifdef _WIN32
+    set_checked(ui, ID_OPTION + MM3_LAUNCH_NO_GPU_WAIT, p->no_gpu_wait);
+#else
+    set_checked(ui, ID_OPTION + MM3_LAUNCH_NO_GPU_WAIT, 1);   /* Linux always defaults to it */
+#endif
     preset_summary(p, text, sizeof text);
-    snprintf(line, sizeof line, "%s filled in: %s. Play saves it; Cancel discards it.", preset_labels[preset], text);
+    snprintf(line, sizeof line, "%s graphics filled in: %s. Play saves it; Cancel discards it.", preset_labels[preset], text);
     SetWindowTextA(control(ui, ID_STATUS), line);
 }
 
@@ -469,7 +510,10 @@ static void help_show(Launcher *ui, int id)
             "Car paint mirrors the scene a little blurred, so lamps are soft glows rather than hard bright spots. Untick it for the sharp mirror of the Xbox, which makes the reflections on cars easier to see. The Original look is always sharp.",
             "Play with the Vulkan renderer, the one Linux and the Steam Deck use, instead of DirectX 11. Same game and settings; it starts mm3_recomp_vulkan.exe from the game folder. Untick it for DirectX 11 if something looks wrong, and please report it.",
             "Normally the game waits each frame until the GPU has handed back the small pictures it reads (lamp glow visibility, the sun flare), as on the Xbox. Tick this only on a slow GPU such as the Steam Deck: faster there, but lamp glows can flash on building windows. No speed difference on a fast PC.",
-            "Vulkan only. Builds every graphics pipeline the game has seen before while it starts, so nothing is built mid-race and the game does not stutter the first time something is drawn. Start-up takes a few seconds longer. No effect with DirectX 11."
+            "Vulkan only. Builds every graphics pipeline the game has seen before while it starts, so nothing is built mid-race and the game does not stutter the first time something is drawn. Start-up takes a few seconds longer. No effect with DirectX 11.",
+            "The Xbox sound chip filters every positioned sound (cars, sirens, crashes) so it seems to come from its place around you on headphones. Untick it on a slow PC: those sounds are then panned left and right only, which costs less CPU. The Lowest preset turns it off.",
+            "Changes the gameplay. Every car offers all its paint jobs in the car selection, as if you had found every paint-job hideout in Cruise. Your save is not changed: untick it and only the paint jobs you found remain.",
+            "Show the game's built-in digital speed number on the HUD for every car, including cars added with the Car Workshop, which hide it. The original cars already show it, next to or in place of the dial. Off leaves the HUD as it is. Needs the Improved look.",
         };
         int option = id - ID_OPTION, on = checked(ui, id), master = mm3_launcher_option_master(option);
         title = option_caption(option);
@@ -484,6 +528,9 @@ static void help_show(Launcher *ui, int id)
         else if (master == MM3_LAUNCH_GAMEPLAY && !checked(ui, ID_OPTION + master))
             effect = option_inverted(option) ? "Xbox gameplay is selected, so the game shows it, as on the Xbox. Choose Modded gameplay to hide it." :
                      "Xbox gameplay is selected, so this stays off, as on the Xbox. Choose Modded gameplay to use it.";
+        else if (option == MM3_LAUNCH_HRTF)
+            effect = on ? "Positioned sounds (cars, sirens) are filtered the way the Xbox's sound chip does for headphones, at some CPU cost." :
+                          "Positioned sounds are panned in plain stereo. Uses less CPU (the Lowest preset).";
         else if (option == MM3_LAUNCH_DSP)
             effect = MM3_LAUNCHER_AUDIO ? (on ? "More accurate effects and mixing, with higher CPU use. Turn off if audio processing limits performance." : "Uses less CPU, with simpler audio effects and mixing.") : "This build does not include the sound-processor option.";
         else if (option >= MM3_LAUNCH_DEV_HUD && option <= MM3_LAUNCH_E3)
@@ -771,16 +818,23 @@ static void help_show(Launcher *ui, int id)
             break;
         case ID_PRESET: {
             int pick = preset_current(ui);
-            title = "Quick preset";
-            body = "Fill in resolution, anti-aliasing, texture filtering, distances and the FPS limit in one step. Lowest is for slow PCs (the Xbox's own resolution, 30 FPS), Low power suits laptops and older graphics cards, Balanced is the default, Quality asks for a strong graphics card. You can still change every value afterwards.";
+            title = "Graphics quality";
+            snprintf(value, sizeof value, "%s", preset_labels[pick]);
+            body = "Slide to set resolution, anti-aliasing, filtering, distances, the FPS limit and the sound processor at once. Lowest: slow PCs such as 2-core laptops. Xbox: as on the console. Medium: the default. Max: a strong graphics card. Advanced settings shows every value.";
             if (!pick) {
-                effect = "These graphics choices are your own mix. Pick a preset to replace them; nothing is saved until you press Play.";
+                effect = "These graphics choices are your own mix. Move the slider to replace them; nothing is saved until you press Play.";
             } else {
                 preset_summary(mm3_performance_profile(preset_names[pick]), consequence, sizeof consequence);
                 effect = consequence;
             }
             break;
         }
+        case ID_ADVANCED:
+            title = "Advanced settings";
+            snprintf(value, sizeof value, "%s", ui->advanced ? "Shown" : "Hidden");
+            body = "Show or hide the individual graphics choices the slider sets: FPS limit, internal resolution, anti-aliasing, texture filtering and the two distances.";
+            effect = "Hiding them changes nothing. Any value you change makes the slider say Custom.";
+            break;
         case ID_TOOLS:
             title = "Folders and logs"; value[0] = 0;
             body = "Open the game folder, the logs folder or the settings folder in Explorer, or copy the version and folder paths to the clipboard. The log of the last run is the first thing to send when something goes wrong.";
@@ -822,6 +876,7 @@ static void page_show(Launcher *ui, int page)
     for (int i = 0; i < ui->control_count; ++i)
         if (ui->controls[i].page >= 0)
             ShowWindow(ui->controls[i].window, ui->controls[i].page == page ? SW_SHOW : SW_HIDE);
+    advanced_show(ui);
     TabCtrl_SetCurSel(ui->tabs, page);
     help_show(ui, ID_TABS);
     InvalidateRect(ui->window, NULL, TRUE);
@@ -1324,55 +1379,65 @@ static void settings_controls(Launcher *ui)
     c = combo(ui, 0, ID_ASPECT, "Aspect ratio", 666, 98, 150);
     for (int i = 0; i < (int)(sizeof mm3_aspect_choices / sizeof mm3_aspect_choices[0]); ++i)
         SendMessageA(c, CB_ADDSTRING, 0, (LPARAM)mm3_aspect_choices[i]);
-    label(ui, 0, "Maximum FPS (1-120, engine limit)", 42, 166, 260);
-    c = add(ui, 0, "COMBOBOX", "", CBS_DROPDOWN | WS_TABSTOP, ID_FPS, 42, 190, 110, 160);
+    /* Graphics quality: one slider of four levels; Advanced shows the values it sets. */
+    add(ui, 0, "STATIC", "", 0, ID_PRESET_NAME, 42, 166, 506, 24);
+    c = add(ui, 0, TRACKBAR_CLASSA, "", TBS_HORZ | TBS_AUTOTICKS | TBS_BOTTOM | WS_TABSTOP, ID_PRESET, 42, 190, 506, 32);
+    SendMessageA(c, TBM_SETRANGE, TRUE, MAKELPARAM(0, PRESET_COUNT - 2));
+    SendMessageA(c, TBM_SETPAGESIZE, 0, 1);
+    for (int i = 1; i < PRESET_COUNT; ++i)   /* under the stops: ends flush, the middle two centred */
+        add(ui, 0, "STATIC", preset_labels[i], i == 1 ? SS_LEFT : i == PRESET_COUNT - 1 ? SS_RIGHT : SS_CENTER, -1,
+            i == 1 ? 42 : i == PRESET_COUNT - 1 ? 448 : 54 + (i - 1) * 482 / (PRESET_COUNT - 2) - 50, 222, 100, 22);
+    push_button(ui, 0, "Advanced settings", ID_ADVANCED, 578, 190, 238, 32);
+    ui->adding_advanced = 2;
+    add(ui, 0, "STATIC", "", SS_NOPREFIX, ID_PRESET_SUMMARY, 42, 256, 774, 100);
+    ui->adding_advanced = 1;
+    label(ui, 0, "Maximum FPS (1-120, engine limit)", 42, 252, 260);
+    c = add(ui, 0, "COMBOBOX", "", CBS_DROPDOWN | WS_TABSTOP, ID_FPS, 42, 276, 110, 160);
     for (int i = 0; i < MM3_CHOICE_COUNT(mm3_fps_choices); ++i) {
         mm3_fps_label(mm3_fps_choices[i], name, sizeof name);
         combo_item(c, name, mm3_fps_choices[i]);
     }
-    check(ui, 0, ID_VSYNC, "VSync", 172, 190, 100);
-    c = combo(ui, 0, ID_SCALE, "Internal resolution", 310, 166, 238);
+    c = combo(ui, 0, ID_SCALE, "Internal resolution", 310, 252, 238);
     for (int i = 0; i < MM3_CHOICE_COUNT(mm3_scale_choices); ++i) {
         mm3_scale_label(mm3_scale_choices[i], name, sizeof name);
         combo_item(c, name, (int)lroundf(mm3_scale_choices[i] * 1000.f));
     }
-    c = combo(ui, 0, ID_MSAA, "Anti-aliasing", 578, 166, 238);
+    c = combo(ui, 0, ID_MSAA, "Anti-aliasing", 578, 252, 238);
     for (int i = 0; i < MM3_CHOICE_COUNT(mm3_msaa_choices); ++i) {
         mm3_msaa_label(mm3_msaa_choices[i], name, sizeof name);
         combo_item(c, name, mm3_msaa_choices[i]);
     }
-    c = combo(ui, 0, ID_ANISO, "Texture filtering", 42, 234, 238);
+    c = combo(ui, 0, ID_ANISO, "Texture filtering", 42, 316, 238);
     for (int i = 0; i < MM3_CHOICE_COUNT(mm3_aniso_choices); ++i) {
         mm3_aniso_label(mm3_aniso_choices[i], name, sizeof name);
         combo_item(c, name, mm3_aniso_choices[i]);
     }
     for (int view = 0; view < 2; ++view) {
         c = combo(ui, 0, view ? ID_VIEW : ID_DRAW, view ? "Building view distance" : "Object detail distance",
-                  view ? 578 : 310, 234, 238);
+                  view ? 578 : 310, 316, 238);
         for (int i = 0; i < MM3_CHOICE_COUNT(mm3_distance_choices); ++i) {
             mm3_distance_label(mm3_distance_choices[i], name, sizeof name);
             combo_item(c, name, (int)lroundf(mm3_distance_choices[i] * 1000.f));
         }
     }
-    c = combo(ui, 0, ID_PRESET, "Quick preset", 42, 302, 238);
-    for (int i = 0; i < PRESET_COUNT; ++i) combo_item(c, preset_labels[i], i);
-    combo_select(c, 0);
-    c = combo(ui, 0, ID_MINIMAP, "Minimap style", 310, 302, 238);
+    ui->adding_advanced = 0;
+    c = combo(ui, 0, ID_MINIMAP, "Minimap style", 42, 380, 238);
     for (int i = 0; i < 2; ++i) combo_item(c, mm3_minimap_names[i], i);
-    check(ui, 0, ID_SHOW_FPS, "Show FPS in window title", 578, 328, 238);
-    check(ui, 0, ID_OPTION + MM3_LAUNCH_DSP, mm3_launcher_options[MM3_LAUNCH_DSP].label, 42, 379, 390);
+    check(ui, 0, ID_VSYNC, "VSync", 310, 406, 238);
+    check(ui, 0, ID_SHOW_FPS, "Show FPS in window title", 578, 406, 238);
+    check(ui, 0, ID_OPTION + MM3_LAUNCH_DSP, mm3_launcher_options[MM3_LAUNCH_DSP].label, 42, 446, 390);
     EnableWindow(control(ui, ID_OPTION + MM3_LAUNCH_DSP), MM3_LAUNCHER_AUDIO);
-    label(ui, 0, MM3_LAUNCHER_AUDIO ? "Console DSP effects and mixing." : "Sound-processor controls will be enabled when the audio update is installed.", 42, 407, 774);
-    check(ui, 0, ID_OPTION + MM3_LAUNCH_NETWORK, "Enable System Link", 42, 450, 230);
+    check(ui, 0, ID_OPTION + MM3_LAUNCH_HRTF, mm3_launcher_options[MM3_LAUNCH_HRTF].label, 440, 446, 376);
+    check(ui, 0, ID_OPTION + MM3_LAUNCH_NETWORK, "Enable System Link", 42, 486, 230);
     EnableWindow(control(ui, ID_OPTION + MM3_LAUNCH_NETWORK), MM3_LAUNCHER_NETWORK);
-    label(ui, 0, "Local UDP port", 310, 450, 145);
-    add(ui, 0, "EDIT", "3075", WS_BORDER | ES_NUMBER | WS_TABSTOP, ID_PORT, 455, 447, 100, 25);
-    label(ui, 0, "Peers (host:port, comma separated)", 42, 492, 774);
-    add(ui, 0, "EDIT", "", ES_AUTOHSCROLL | WS_TABSTOP, ID_PEERS, 42, 518, 774, 26);
+    label(ui, 0, "Local UDP port", 310, 486, 145);
+    add(ui, 0, "EDIT", "3075", WS_BORDER | ES_NUMBER | WS_TABSTOP, ID_PORT, 455, 483, 100, 25);
+    label(ui, 0, "Peers (host:port, comma separated)", 42, 520, 774);
+    add(ui, 0, "EDIT", "", ES_AUTOHSCROLL | WS_TABSTOP, ID_PEERS, 42, 544, 774, 26);
     SendMessageA(control(ui, ID_PEERS), EM_SETLIMITTEXT, 511, 0);
     EnableWindow(control(ui, ID_PORT), MM3_LAUNCHER_NETWORK);
     EnableWindow(control(ui, ID_PEERS), MM3_LAUNCHER_NETWORK);
-    label(ui, 0, MM3_LAUNCHER_NETWORK ? "Copies on one PC need separate ports and saves. Xbox Live sign-in is separate." : "System Link controls will be enabled when networking is installed.", 42, 552, 774);
+    label(ui, 0, MM3_LAUNCHER_NETWORK ? "Copies on one PC need separate ports and saves. Xbox Live sign-in is separate." : "System Link controls will be enabled when networking is installed.", 42, 576, 774);
 }
 
 static void controls_controls(Launcher *ui)
@@ -1450,7 +1515,7 @@ static void look_controls(Launcher *ui)
         {300, 250, "Improved visuals", NULL, {MM3_LAUNCH_DISTANCE, MM3_LAUNCH_CAR_LIGHT, MM3_LAUNCH_LAMP_LIGHT,
             MM3_LAUNCH_WORLD_LIGHT, MM3_LAUNCH_EXHAUST, 0}},
         {560, 260, "Menus and HUD", NULL, {MM3_LAUNCH_LOADING, MM3_LAUNCH_GRAPHICS_MENU, MM3_LAUNCH_QUIT,
-            MM3_LAUNCH_SKIP_INTRO, MM3_LAUNCH_DLC_INFO, MM3_LAUNCH_NORTH_MARKER, 0}}
+            MM3_LAUNCH_SKIP_INTRO, MM3_LAUNCH_DLC_INFO, MM3_LAUNCH_NORTH_MARKER, MM3_LAUNCH_DIGITAL, 0}}
     };
     static const int nights[] = {10, 15, 20, MM3_NIGHT_LIGHT_DEFAULT, 35, 50, 75, 100};
     HWND c;
@@ -1479,7 +1544,7 @@ static void gameplay_controls(Launcher *ui)
         {42, 240, "Driving", "Developer tools", {MM3_LAUNCH_DRAFTING, MM3_LAUNCH_ROLL_GUARD, MM3_LAUNCH_TREES, -1,
             MM3_LAUNCH_DEV_TOOLS, MM3_LAUNCH_DEV_HUD, MM3_LAUNCH_DEBUG_MENU, MM3_LAUNCH_CAMERAS, MM3_LAUNCH_E3, 0}},
         {300, 250, "Races and cars", NULL, {MM3_LAUNCH_CIRCUITS, MM3_LAUNCH_EXTRA_CARS, MM3_LAUNCH_AI_ALL_CARS,
-            MM3_LAUNCH_SAME_CAR, MM3_LAUNCH_UNLOCK, 0}},
+            MM3_LAUNCH_SAME_CAR, MM3_LAUNCH_UNLOCK, MM3_LAUNCH_PAINTS, 0}},
         {560, 260, "Navigation", NULL, {MM3_LAUNCH_ROUTE_NAVIGATION, MM3_LAUNCH_RACE_ARROW, 0}}
     };
     static const int damage[] = {0, 25, 50, 75, 100, 150, 200, 300};
@@ -1790,7 +1855,7 @@ static void banner_make(Launcher *ui)
 static int is_push_button(int id)
 {
     return id == ID_DEFAULTS || id == ID_UPDATE || id == ID_TOOLS || id == IDOK || id == IDCANCEL ||
-           id == ID_CAPTURE || id == ID_UNBIND;
+           id == ID_CAPTURE || id == ID_UNBIND || id == ID_ADVANCED;
 }
 
 /* Owner-drawn push buttons track the pointer themselves: bit 0 of the user data means "pointer over". */
@@ -2156,13 +2221,15 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             if (id == ID_WHEEL_ENABLED) wheel_fields_enable(ui);
             if (id == ID_OPTION + MM3_LAUNCH_WORLD_LIGHT || id == ID_OPTION + MM3_LAUNCH_FREE_CAMERA)
                 mods_enable(ui);   /* Night brightness, the free camera key */
+            if (id == ID_OPTION + MM3_LAUNCH_DSP || id == ID_OPTION + MM3_LAUNCH_HRTF)
+                preset_show(ui);   /* the graphics levels set these too */
             help_show(ui, id);
             return 0;
         }
-        if (HIWORD(wparam) == CBN_SELCHANGE && LOWORD(wparam) == ID_PRESET) {
-            int pick = combo_value(control(ui, ID_PRESET));
-            if (pick > 0) preset_apply(ui, pick);
-            help_show(ui, ID_PRESET);
+        if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == ID_ADVANCED) {
+            ui->advanced = !ui->advanced;
+            advanced_show(ui);
+            help_show(ui, ID_ADVANCED);
             return 0;
         }
         if (HIWORD(wparam) == CBN_SELCHANGE || HIWORD(wparam) == CBN_EDITCHANGE ||
@@ -2258,6 +2325,15 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         DeleteObject(edge);
         return 1;
     }
+    case WM_HSCROLL:
+        if ((HWND)lparam == control(ui, ID_PRESET)) {
+            int pick = (int)SendMessageA((HWND)lparam, TBM_GETPOS, 0, 0) + 1;
+            if (pick != preset_current(ui)) preset_apply(ui, pick);
+            preset_show(ui);
+            help_show(ui, ID_PRESET);
+            return 0;
+        }
+        break;
     case WM_CTLCOLORSTATIC: {
         int id = GetDlgCtrlID((HWND)lparam);
         HDC dc = (HDC)wparam;
@@ -2429,7 +2505,7 @@ int mm3_launcher_run(int argc, char *const argv[])
     if (!mm3_display_settings_startup(&ui.display, display_warning, sizeof display_warning) || *display_warning)
         fprintf(stderr, "[MM3_LAUNCHER] %s\n", display_warning);
     if (show_settings(ui.config.skip_launcher, argc, argv) || ui.smoke) {
-        INITCOMMONCONTROLSEX common = {sizeof common, ICC_TAB_CLASSES};
+        INITCOMMONCONTROLSEX common = {sizeof common, ICC_TAB_CLASSES | ICC_BAR_CLASSES};
         WNDCLASSA wc = {0};
         RECT bounds, work;
         MSG message;

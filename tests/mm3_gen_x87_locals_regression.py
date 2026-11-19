@@ -29,6 +29,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+import mm3_gen_gpr_locals as gpr  # noqa: E402
+import mm3_gen_gpr_locals as gpr  # noqa: E402
 import mm3_gen_x87_locals as x87  # noqa: E402
 
 FUNCTION = re.compile(r"(?ms)^void (\w+)\(void\)\n\{\n(.*?)^\}\n")
@@ -176,6 +178,8 @@ static void stub_effect(uint32_t which)
     g_esp += 4;
     g_eax = mix(g_eax ^ which ^ (uint32_t)s_stub_calls);
     g_ecx ^= which;
+    g_edx += which;
+    if (which & 4) { g_ebx ^= which >> 3; g_esi += which >> 5; g_edi -= which >> 7; }
     if (which & 1) {          /* a float result on the stack */
         g_fp_top = (g_fp_top + 7) & 7;
         g_fp_stack[g_fp_top] = (double)(which & 0xFFF) / 3.0;
@@ -292,6 +296,24 @@ static int produced_nan(const Result *r)
  *   SKIP memory      both versions ran through more guest memory than the
  *                    harness keeps (the inputs, not the code)
  *   FAIL ...         a real difference */
+/* GPR_BENCH=N: the fastest of N runs of one version from the same inputs, in
+ * TSC ticks (the pages it touched are refilled before each run). */
+static unsigned long long bench(fn_t fn, uint32_t seed, int iters)
+{
+    unsigned long long best = ~0ull, t0, t1;
+    int k;
+    LONG i;
+    for (k = 0; k < iters; ++k) {
+        s_seed = seed;
+        for (i = 0; i < touched_count; ++i) fill(touched[i]);
+        setup(seed);
+        t0 = __rdtsc();
+        __try { fn(); } __except (EXCEPTION_EXECUTE_HANDLER) { }
+        t1 = __rdtsc();
+        if (t1 - t0 < best) best = t1 - t0;
+    }
+    return best;
+}
 static void fail(const char *name, unsigned c, const char *what, const Result *a, const Result *b)
 {
     printf("FAIL %s case %u profile %u: %s (code %08lX/%08lX top %d/%d cw %04X/%04X eax %08X/%08X memory %d)\n",
@@ -353,6 +375,14 @@ int main(int argc, char **argv)
         }
         if (a.df != b.df || a.stubs != b.stubs || (nan ? a.canonical != b.canonical : a.memory != b.memory)) {
             if (nan) { puts("SKIP nan-derived"); return 0; }
+            /* An integer divide fault (#DE): with registers in locals (--gpr)
+             * the compiler may compute the division before guest stores that
+             * precede it, so fewer stores are done when it faults. The game
+             * never resumes after #DE; the same calls must still have run. */
+            if ((a.code == 0xC0000094u || a.code == 0xC0000095u) && a.df == b.df && a.stubs == b.stubs) {
+                puts("SAME fault divide");
+                return 0;
+            }
             fail(pairs[f].name, c, "state differs at the fault", &a, &b);
             return 1;
         }
@@ -378,6 +408,11 @@ int main(int argc, char **argv)
             fail(pairs[f].name, c, "state differs", &a, &b);
             return 1;
         }
+        if (getenv("GPR_BENCH")) {
+            int n = atoi(getenv("GPR_BENCH"));
+            unsigned long long ta = bench(pairs[f].original, seed, n), tb = bench(pairs[f].locals, seed, n);
+            printf("BENCH %llu %llu\n", ta, tb);
+        }
         puts("SAME");
         return 0;
     }
@@ -391,10 +426,11 @@ int main(int argc, char **argv)
 """
 
 
-CASE_SECONDS = 4.0
+CASE_SECONDS = float(os.environ.get("X87_CASE_SECONDS", "4.0"))
 
 
-OUTCOMES = ("SAME", "SAME fault", "SAME fault registers", "SAME nan", "SAME fault nan", "SKIP nan-derived",
+OUTCOMES = ("SAME", "SAME fault", "SAME fault registers", "SAME fault divide", "SAME nan", "SAME fault nan",
+            "SKIP nan-derived",
             "SKIP memory", "SLOW",
             "STARVED", "FAIL")
 
@@ -426,7 +462,7 @@ def drive(harness, folder, cases, jobs, report=None):
     names = subprocess.run([str(harness), "names"], cwd=folder, capture_output=True, text=True,
                            check=True).stdout.split()
     per = {name: {k: 0 for k in OUTCOMES} for name in names}
-    tally, failures, settled = {k: 0 for k in OUTCOMES}, [], [0]
+    tally, failures, settled, timings = {k: 0 for k in OUTCOMES}, [], [0], []
 
     def run(jobs_list):
         with ThreadPoolExecutor(max_workers=jobs) as pool:
@@ -444,11 +480,15 @@ def drive(harness, folder, cases, jobs, report=None):
                 settled[0] += outcome not in ("FAIL", "STARVED")
             per[names[function]][outcome] += 1
             tally[outcome] += 1
+            timed = re.search(r"^BENCH (\d+) (\d+)$", output, re.M)
+            if timed and int(timed.group(1)) > 0:
+                timings.append((names[function], int(timed.group(1)), int(timed.group(2))))
             if outcome == "FAIL":
                 failures.append(output)
 
     def compared(name):
-        return sum(per[name][k] for k in ("SAME", "SAME fault", "SAME fault registers", "SAME nan", "SAME fault nan"))
+        return sum(per[name][k] for k in ("SAME", "SAME fault", "SAME fault registers", "SAME fault divide",
+                                          "SAME nan", "SAME fault nan"))
 
     run([(f, c, 0) for f in range(len(names)) for c in range(cases)])
     retry = [f for f, name in enumerate(names) if not compared(name)]
@@ -459,6 +499,23 @@ def drive(harness, folder, cases, jobs, report=None):
     print(f"{'FAIL' if failures else 'PASS'}: {len(names) - len(uncovered)} of {len(names)} functions compared; "
           + ", ".join(f"{tally[k]} {k}" for k in OUTCOMES) + f" ({len(retry)} retried with small inputs, "
           f"{settled[0]} failed or starved cases passed when run alone)")
+    if timings:
+        import math
+        total_a = sum(t[1] for t in timings)
+        total_b = sum(t[2] for t in timings)
+        mean = math.exp(sum(math.log(max(t[2], 1) / t[1]) for t in timings) / len(timings))
+        print(f"  timing over {len(timings)} cases: transformed/original total {total_b / total_a:.3f}, "
+              f"geometric mean {mean:.3f} (below 1 is faster)")
+        per_fn = {}
+        for name, a, b in timings:
+            s = per_fn.setdefault(name, [0, 0])
+            s[0] += a
+            s[1] += b
+        ranked = sorted(per_fn.items(), key=lambda kv: kv[1][1] - kv[1][0])
+        for name, (a, b) in ranked[:8] + ranked[-8:]:
+            print(f"    {name}: {a} -> {b} ticks ({b / a:.2f}x)")
+        if os.environ.get("GPR_TIMINGS"):
+            Path(os.environ["GPR_TIMINGS"]).write_text(json.dumps(per_fn))
     if tally["STARVED"]:
         print(f"  {tally['STARVED']} cases could not get memory: run the test again with less else running")
     if uncovered:
@@ -489,9 +546,15 @@ def main():
     parser.add_argument("--objects", help="a kept folder: reuse its compiled functions, rebuild only the harness")
     parser.add_argument("--jobs", type=int, default=4, help="cases run at once")
     parser.add_argument("--report", help="write each function's outcomes to this JSON file")
+    parser.add_argument("--gpr", action="store_true",
+                        help="test the register-locals transform (scripts/mm3_gen_gpr_locals.py) instead")
+    parser.add_argument("--bench", type=int, default=0,
+                        help="also time both versions: the fastest of N runs per identical case")
     args = parser.parse_args()
     if not shutil.which("cl"):
         raise SystemExit("Run scripts/enter-env.ps1 first.")
+    if args.bench:
+        os.environ["GPR_BENCH"] = str(args.bench)
     if args.objects:
         folder = Path(args.objects)
         (folder / "harness.c").write_text(HARNESS)
@@ -508,17 +571,26 @@ def main():
             continue
         head = f"void {name}(void)\n{{\n"
         rest = whole[len(head):]
-        local = x87.transform(head + "    RECOMP_GEN_PROLOGUE\n", rest)
-        if local:
-            eligible[name] = (head, rest, local)
+        prologue = head + "    RECOMP_GEN_PROLOGUE\n"
+        local = x87.transform(prologue, rest)
+        if args.gpr:
+            # As the build: the original is the x87 transform's output (or the
+            # plain function), the tested version adds the register locals.
+            split = gpr.split_x87(local, prologue) if local else None
+            changed = (gpr.transform(split[0], split[1], with_x87=True) if split else
+                       None if local else gpr.transform(prologue, rest))
+            if changed:
+                eligible[name] = (head, rest, changed, local or prologue + rest)
+        elif local:
+            eligible[name] = (head, rest, local, prologue + rest)
     names = sorted(eligible)
     chosen = [args.only] if args.only else names if args.all else sorted(set(random.Random(23).sample(names, min(args.count, len(names)))) |
                                            {n for n in HOT if n in eligible})
     out, callees = [], set()
     for name in chosen:
-        head, rest, local = eligible[name]
+        head, rest, local, original = eligible[name]
         callees |= set(re.findall(r"\bsub_[0-9A-F]{8}(?:_original)?\b", rest))
-        out.append(head.replace(name, "orig_" + name, 1) + "    RECOMP_GEN_PROLOGUE\n" + rest)
+        out.append(original.replace(f"void {name}(void)", f"void orig_{name}(void)", 1))
         out.append(local.replace(f"void {name}(void)", f"void x87_{name}(void)", 1))
     stubs = sorted(callees)
     with tempfile.TemporaryDirectory(prefix="mm3-x87-locals-") as temporary:

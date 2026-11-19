@@ -1231,8 +1231,9 @@ void sub_00344AB0(void)
     {   /* D3D's kick runs on the game's render thread: the one spike
          * reports sample (RECOMP_SPIKE_CAPTURE). */
         extern void recomp_sampler_watch_current_thread(void);
+        extern void xbox_PlaceThread(int role);   /* XBOX_PLACE_GAME = 0 */
         static int watched;
-        if (!watched) { watched = 1; recomp_sampler_watch_current_thread(); }
+        if (!watched) { watched = 1; recomp_sampler_watch_current_thread(); xbox_PlaceThread(0); }
     }
     mm3_producer_diagnostics_kick();
     uint32_t device = MEM32(0x351F48u);

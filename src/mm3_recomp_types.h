@@ -111,6 +111,11 @@ RECOMP_ALWAYS_INLINE double *recomp_addr_g_fp_stack(void) { return g_fp_stack; }
     x87_cw = *recomp_p_g_fp_control_word; x87_cmp = *recomp_p_g_fp_cmp; x87_cc = *recomp_p_g_fp_cc; \
 } while (0)
 
+/* Integer registers in locals (scripts/mm3_gen_gpr_locals.py,
+ * MM3_GEN_GPR_LOCALS): the script defines RECOMP_GPR_ENTER/FLUSH/RELOAD per
+ * function for the registers it uses and changes, through the recomp_p_g_*
+ * pointers above. */
+
 #include "mm3_gen_cache_on.h"
 #endif
 

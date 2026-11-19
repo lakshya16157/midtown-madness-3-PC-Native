@@ -36,6 +36,7 @@ static int64_t s_kick_wait_ticks,s_kick_wait_max;
 static unsigned s_kick_count,s_kick_waits,s_kick_wraps;
 static uint32_t ring_start,ring_end; /* 0: leave the ring fields unknown. */
 static void mm3_kick_report(int64_t now){assert(now>0);++reports;}
+void xbox_PlaceThread(int role) { (void)role; }
 static void xbox_Nv2aWbcWait(uint32_t address){
  assert(address==0x120410);
  assert(MEM32(address)==0xABCDEF00u); /* WBC was published before waiting. */

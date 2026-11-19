@@ -190,6 +190,24 @@ typedef struct { unsigned draws; } BfFrameActivity;
 static BfFrameActivity s_bf_frame;
 static void dstats_held(void) { event('H'); held_marks++; }
 
+/* The title-requested repeat/interpolated frames and the overlay hooks are not under test:
+ * no request is ever raised and no overlay hook is installed. */
+static volatile long s_repeat, s_interp_req, s_interp_need;
+static volatile float s_interp_t;
+static long s_interp_seen;
+static struct { int (*idle_present)(uint32_t, int, int); int (*hold_aspect)(void); void (*frame)(void); } s_overlay;
+static void request_complete(volatile long *flag) { *flag = 0; }
+static int present_kept(void) { return 0; }
+long nv2a_pb_frames_done(void) { return 0; }
+int nv2a_pb_replay(float t) { (void)t; return 0; }
+void nv2a_pb_interp_enable(int on) { (void)on; }
+static int s_ctx;
+static void keep_image(ID3D11Texture2D *bb) { (void)bb; }
+static void xbox_FramebufferRenderHostOverlay(int dev, int ctx, ID3D11RenderTargetView *rtv) { (void)dev; (void)ctx; (void)rtv; }
+static void unbind_targets(void) {}
+static void screenshot_serve(ID3D11Texture2D *bb) { (void)bb; }
+static UINT present_flags(void) { return 0; }
+static void spike_check(int64_t interval, int64_t pace) { (void)interval; (void)pace; }
 #define getenv test_getenv
 #include "production_pacing.inc"
 #undef getenv

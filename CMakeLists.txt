@@ -346,7 +346,8 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0022FDFD)
 # on their original torque and gearbox paths, including same-chunk calls.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0021ED64 sub_001D0E2D sub_001CB7E8 sub_001CB881 sub_001CB9A5 sub_001CF7B4)
 if(MM3_UNLOCK_ALL_CARS)
-    list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001DEA30)
+    # The all-car unlock, and the all-paint-job unlock's profile key lookup.
+    list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001DEA30 sub_001E50A9)
 endif()
 
 list(REMOVE_DUPLICATES MM3_DEFINITION_ONLY_FUNCTIONS)
@@ -491,13 +492,23 @@ option(MM3_GEN_REGISTER_CACHE "Generated functions keep register addresses and t
 option(MM3_GEN_X87_LOCALS "x87-heavy generated functions keep their x87 state in locals" ON)
 set(MM3_GEN_CACHE_ARGS "")
 if(MM3_GEN_X87_LOCALS)
-    set(MM3_GEN_CACHE_ARGS "--x87-locals")
+# Call-free functions of 20+ lines (about 12%) also keep eax..edi and esp in
+# locals, written back at every return, so the compiler holds them in host
+# registers across the volatile guest memory accesses (scripts/mm3_gen_gpr_locals.py).
+# Measured 0.81x the time on sampled functions; tests/mm3_gen_x87_locals_regression.py
+# --gpr --all: 2,751 of 2,772 functions identical, 0 failures (11-19).
+option(MM3_GEN_GPR_LOCALS "Call-free generated functions keep their integer registers in locals" ON)
+    list(APPEND MM3_GEN_CACHE_ARGS "--x87-locals")
+endif()
+if(MM3_GEN_GPR_LOCALS)
+    list(APPEND MM3_GEN_CACHE_ARGS "--gpr-locals")
 endif()
 if(MM3_GEN_REGISTER_CACHE)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_gen_register_cache.py"
-        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_gen_x87_locals.py")
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_gen_x87_locals.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mm3_gen_gpr_locals.py")
     foreach(gen_source IN LISTS RECOMP_GEN_SOURCES)
         get_filename_component(gen_dir "${gen_source}" DIRECTORY)
         # Not the dispatch table or the one-line unresolved-call stubs.

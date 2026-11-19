@@ -17,6 +17,7 @@
 #include <wchar.h>
 #include "mm3_display_config.h"
 #include "mm3_launcher_config.h"
+#include "mm3_performance_profile.h"
 #include "../tools/xboxrecomp/src/input/input_bindings.h"
 
 const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
@@ -59,7 +60,10 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"MM3_SOFT_CAR_REFLECTIONS", "Softer car paint reflections", 1},
     {"MM3_RENDERER_VULKAN", "Vulkan renderer (instead of DirectX 11)", 0},
     {"MM3_NO_GPU_WAIT", "Don't wait for the GPU (slow GPUs)", 0},
-    {"MM3_PRELOAD_SHADERS", "Load all shaders before playing (Vulkan)", 1}
+    {"MM3_PRELOAD_SHADERS", "Load all shaders before playing (Vulkan)", 1},
+    {"RECOMP_APU_HRTF", "3D headphone sound (HRTF)", 1},
+    {"MM3_UNLOCK_ALL_PAINTS", "Unlock all paint jobs", 0},
+    {"MM3_DIGITAL_SPEEDO", "Digital speed readout", 0}
 };
 
 typedef struct { int option; const char *value; } MM3ForcedOption;
@@ -70,7 +74,7 @@ static const MM3ForcedOption original_look[] = {
     {MM3_LAUNCH_DISTANCE, "0"}, {MM3_LAUNCH_CAR_LIGHT, "0"}, {MM3_LAUNCH_LAMP_LIGHT, "0"},
     {MM3_LAUNCH_WORLD_LIGHT, "0"}, {MM3_LAUNCH_LOADING, "0"},
     {MM3_LAUNCH_NORTH_MARKER, "1"}, {MM3_LAUNCH_GRAPHICS_MENU, "0"}, {MM3_LAUNCH_DLC_INFO, "0"},
-    {MM3_LAUNCH_EXHAUST, "0"}, {MM3_LAUNCH_QUIT, "0"}
+    {MM3_LAUNCH_EXHAUST, "0"}, {MM3_LAUNCH_QUIT, "0"}, {MM3_LAUNCH_DIGITAL, "0"}
 };
 /* Xbox gameplay (MM3_GAMEPLAY_MODS=0): driving, races, cars, progression and
  * navigation as on the Xbox. No driving assists, falling trees, circuits,
@@ -82,7 +86,7 @@ static const MM3ForcedOption xbox_gameplay[] = {
     {MM3_LAUNCH_UNLOCK, "0"}, {MM3_LAUNCH_ROUTE_NAVIGATION, "0"}, {MM3_LAUNCH_RACE_ARROW, "1"},
     {MM3_LAUNCH_DEV_TOOLS, "0"}, {MM3_LAUNCH_DEV_HUD, "0"}, {MM3_LAUNCH_DEBUG_MENU, "0"},
     {MM3_LAUNCH_CAMERAS, "0"}, {MM3_LAUNCH_E3, "0"}, {MM3_LAUNCH_SAME_CAR, "0"},
-    {MM3_LAUNCH_FREE_CAMERA, "0"}
+    {MM3_LAUNCH_FREE_CAMERA, "0"}, {MM3_LAUNCH_PAINTS, "0"}
 };
 
 /* The launcher saves every option, so a changed default would never reach a
@@ -282,10 +286,20 @@ void mm3_launcher_config_defaults(MM3LauncherConfig *config)
     memset(config, 0, sizeof *config);
     for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i)
         config->option[i] = mm3_launcher_options[i].default_value;
+    {
+        /* The sound switches follow the performance profile in force (Lowest on a
+         * 2-core PC turns both off); a saved launcher.ini still decides. */
+        const MM3PerformanceProfile *profile = mm3_performance_profile(getenv("MM3_PERFORMANCE_PROFILE"));
+        config->option[MM3_LAUNCH_DSP] = atoi(profile->apu_dsp) != 0;
+        config->option[MM3_LAUNCH_HRTF] = atoi(profile->apu_hrtf) != 0;
 #ifndef _WIN32
-    /* Linux (and the Steam Deck): on, as in 2.6.3, where waiting for the GPU every frame was the slowdown. */
-    config->option[MM3_LAUNCH_NO_GPU_WAIT] = 1;
+        /* Linux (and the Steam Deck): on, as in 2.6.3, where waiting for the GPU every frame was the slowdown. */
+        config->option[MM3_LAUNCH_NO_GPU_WAIT] = 1;
+#else
+        /* Windows: the Lowest profile (a slow integrated GPU) does not wait either. */
+        config->option[MM3_LAUNCH_NO_GPU_WAIT] = profile->no_gpu_wait;
 #endif
+    }
     for (int i = 0; i < MM3_LAUNCHER_KEYS; ++i) config->keys[i] = bindings.keys[i];
     for (int i = 0; i < MM3_LAUNCHER_DRIVE_KEYS; ++i) config->drive_keys[i] = bindings.drive[i];
     for (int i = 0; i < MM3_LAUNCHER_PAD_INPUTS; ++i) config->pad[i] = bindings.pad[i];

@@ -38,6 +38,14 @@ enum MM3LauncherOption {
     /* MM3_PRELOAD_SHADERS sets RECOMP_SDLGPU_PRELOAD=1: the Vulkan renderer builds every saved
      * pipeline before the first frame (no first-use stutter). Default on; no effect on DirectX 11. */
     MM3_LAUNCH_PRELOAD_SHADERS,
+    /* RECOMP_APU_HRTF: the voice processor's 3D headphone filter for positioned
+     * sounds. Off (the Lowest preset) pans them in plain stereo, for less CPU. */
+    MM3_LAUNCH_HRTF,
+    /* MM3_UNLOCK_ALL_PAINTS: every car offers all its paint jobs, as if each
+     * hideout had been found (a gameplay mod; off with Xbox gameplay). */
+    MM3_LAUNCH_PAINTS,
+    /* MM3_DIGITAL_SPEEDO: the HUD's built-in number readout also on added cars (retail cars already show it). */
+    MM3_LAUNCH_DIGITAL,
     MM3_LAUNCH_OPTION_COUNT
 };
 

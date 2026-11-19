@@ -157,7 +157,9 @@ LAUNCH_ESSENTIALS = {
 # "Improvements on" keeps the game's own Balanced defaults (2x resolution, 4x MSAA,
 # 16x filtering, extended draw distance, widescreen) and leaves the in-game graphics
 # menu in charge. "Off" pins the original Xbox look.
-IMPROVED_SETTINGS = {"MM3_PERFORMANCE_PROFILE": "Balanced"}
+# A PC with 4 or fewer logical processors (a 2-core laptop) starts on Lowest, as
+# the game itself picks when no profile is set (src/mm3_performance_profile.h).
+IMPROVED_SETTINGS = {"MM3_PERFORMANCE_PROFILE": "Lowest" if 0 < (os.cpu_count() or 0) <= 4 else "Balanced"}
 ORIGINAL_LOOK_SETTINGS = {
     "MM3_PERFORMANCE_PROFILE": "Balanced",
     "RECOMP_RENDER_SCALE": "1.0",
