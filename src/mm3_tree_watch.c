@@ -20,7 +20,8 @@
  * only trees near the middle of the view get a line, all are counted.
  * [TREE_WATCH] sums each second. MM3_TREE_WATCH=0 turns it all off. */
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "xbox_memory_layout.h"
+#include "platform/xbox_winnt.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
