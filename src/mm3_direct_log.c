@@ -172,6 +172,15 @@ void mm3_direct_launch_log(void)
     if (_dup2(fd, _fileno(stderr)) != 0) { _close(fd); return; }
     _close(fd);
     SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(_fileno(stderr)));
+    /* The game is a console program, so a Steam launch opens a Windows Terminal window that
+     * hosts its console. Steam then records and overlays that window instead of the game's.
+     * The log is in a file now: when this program is the console's only user (not started
+     * from a shell), let the console go, which closes that window. MM3_KEEP_CONSOLE=1 keeps it. */
+    {
+        DWORD users[2];
+        const char *keep = getenv("MM3_KEEP_CONSOLE");
+        if (!(keep && *keep && strcmp(keep, "0")) && GetConsoleProcessList(users, 2) == 1) FreeConsole();
+    }
 
     if (!GetFullPathNameW(csv_path, MAX_PATH, full, NULL) ||
         !WideCharToMultiByte(CP_UTF8, 0, full, -1, csv, (int)sizeof csv, NULL, NULL))
