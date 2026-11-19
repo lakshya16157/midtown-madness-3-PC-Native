@@ -7,6 +7,18 @@
 #include <string.h>
 #include "mm3_recomp_types.h"
 #include "mm3_building_diagnostics.h"
+#include "mm3_tree_watch.h"
+
+/* The tree watch (mm3_tree_watch.c) hears the street-prop culls too. Weak
+ * link: tests that #include this file without the watch get a no-op. */
+void building_tree_watch_cull_absent(uint32_t caller, uint32_t rejected) { (void)caller; (void)rejected; }
+#if defined(_MSC_VER)
+#pragma comment(linker, "/alternatename:mm3_tree_watch_cull=building_tree_watch_cull_absent")
+#define TREE_WATCH_CULL(caller, rejected) mm3_tree_watch_cull(caller, rejected)
+#else
+#pragma weak mm3_tree_watch_cull
+#define TREE_WATCH_CULL(caller, rejected) do { if (mm3_tree_watch_cull) mm3_tree_watch_cull(caller, rejected); } while (0)
+#endif
 
 extern void sub_00168A77_original(void);
 extern void sub_001C7B15_original(void);
@@ -525,7 +537,9 @@ void sub_001C7B15(void)
 {
     BuildingFrame *frame = s_active;
     uint32_t caller = frame ? read_word(g_esp) : 0;
+    uint32_t prop_caller = MEM32(g_esp);
     sub_001C7B15_original();
+    if (prop_caller == 0x0016AF9Au) TREE_WATCH_CULL(prop_caller, g_eax & 255u);
     if (caller == 0x00168A92u) frame->frustum_reject = (int)(g_eax & 255u);
     if (caller == 0x0016886Au) {
         ++frame->cell_frustum_calls;
@@ -537,7 +551,9 @@ void sub_001A67BA(void)
 {
     BuildingFrame *frame = s_active;
     uint32_t caller = frame ? read_word(g_esp) : 0;
+    uint32_t prop_caller = MEM32(g_esp);
     sub_001A67BA_original();
+    if (prop_caller == 0x0016AFD6u) TREE_WATCH_CULL(prop_caller, g_eax & 255u);
     if (caller == 0x00168AB6u) frame->auxiliary_reject = (int)(g_eax & 255u);
     if (caller == 0x00168889u) {
         ++frame->cell_auxiliary_calls;

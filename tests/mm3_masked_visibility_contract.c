@@ -25,6 +25,7 @@ typedef struct {
 } BuildingFrame;
 static BuildingFrame *s_active;
 static uint32_t read_word(uint32_t address) { return MEM32(address); }
+#define TREE_WATCH_CULL(caller, rejected) ((void)(caller), (void)(rejected))  /* mm3_tree_watch.c */
 #include "masked_visibility_wrapper.inc"
 
 #define BASE 0x10000u

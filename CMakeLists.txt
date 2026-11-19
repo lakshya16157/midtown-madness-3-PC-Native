@@ -285,6 +285,8 @@ set(MM3_BUILDING_FUNCTIONS sub_00168A77 sub_001C7B15 sub_001A67BA sub_00166E01
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS ${MM3_BUILDING_FUNCTIONS})
 # Detach struck trees into the native rigid-body street-prop controller.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0016AEDB sub_000E1F49 sub_001D137B)
+# Tree watch (src/mm3_tree_watch.c): billboard and model outcomes of a street-prop draw.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0016946B sub_00168BDD)
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00198592 sub_001986B1)
 # Preserve same-chunk near-camera calls to the chase-distance adjustment.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001EEC53)
@@ -490,14 +492,14 @@ option(MM3_GEN_REGISTER_CACHE "Generated functions keep register addresses and t
 # and compare state in locals, written back at every call and return
 # (scripts/mm3_gen_x87_locals.py; bit-identical, tests/mm3_gen_x87_locals_regression.py).
 option(MM3_GEN_X87_LOCALS "x87-heavy generated functions keep their x87 state in locals" ON)
-set(MM3_GEN_CACHE_ARGS "")
-if(MM3_GEN_X87_LOCALS)
 # Call-free functions of 20+ lines (about 12%) also keep eax..edi and esp in
 # locals, written back at every return, so the compiler holds them in host
 # registers across the volatile guest memory accesses (scripts/mm3_gen_gpr_locals.py).
 # Measured 0.81x the time on sampled functions; tests/mm3_gen_x87_locals_regression.py
 # --gpr --all: 2,751 of 2,772 functions identical, 0 failures (11-19).
 option(MM3_GEN_GPR_LOCALS "Call-free generated functions keep their integer registers in locals" ON)
+set(MM3_GEN_CACHE_ARGS "")
+if(MM3_GEN_X87_LOCALS)
     list(APPEND MM3_GEN_CACHE_ARGS "--x87-locals")
 endif()
 if(MM3_GEN_GPR_LOCALS)
@@ -765,6 +767,7 @@ add_executable(${PROJECT_NAME}
  src/mm3_direct_log.c
     src/mm3_collision_profile.c
  src/mm3_tree_diagnostics.c
+ src/mm3_tree_watch.c
  src/mm3_tree_body.c
  src/mm3_tree_audio.c
  src/mm3_visibility.c

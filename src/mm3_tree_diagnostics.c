@@ -11,6 +11,7 @@
 #include "mm3_recomp_types.h"
 #include "mm3_mod_flags.h"
 #include "mm3_tree_body.h"
+#include "mm3_tree_watch.h"
 #include "mm3_collision_profile.h"
 #ifdef MM3_TREE_TEST_HELPERS
 static int s_tree_test_collision_profile_on;
@@ -489,7 +490,58 @@ void sub_001D137B(void)
     }
 }
 
+/* Tree watch (mm3_tree_watch.c) through weak links: tests that #include this
+ * file without the watch get the no-op versions. */
+int tree_watch_wanted_absent(void) { return 0; }
+void tree_watch_begin_absent(MM3TreeVisit *visit, uint32_t object, uint32_t camera, int is_tree)
+{ (void)visit; (void)object; (void)camera; (void)is_tree; }
+void tree_watch_finish_absent(MM3TreeVisit *visit) { (void)visit; }
+#if defined(_MSC_VER)
+#pragma comment(linker, "/alternatename:mm3_tree_watch_wanted=tree_watch_wanted_absent")
+#pragma comment(linker, "/alternatename:mm3_tree_watch_begin=tree_watch_begin_absent")
+#pragma comment(linker, "/alternatename:mm3_tree_watch_finish=tree_watch_finish_absent")
+#define TREE_WATCH_LINKED() 1
+#else
+#pragma weak mm3_tree_watch_wanted
+#pragma weak mm3_tree_watch_begin
+#pragma weak mm3_tree_watch_finish
+#define TREE_WATCH_LINKED() (mm3_tree_watch_wanted != 0)
+#endif
+
+/* Whether a LocalObject descriptor is a tree, cached by descriptor and its
+ * sound pointer (a new city can reuse a descriptor address for another type). */
+static int tree_descriptor_is_tree(uint32_t metadata)
+{
+    static struct { uint32_t metadata, sound; int tree; } cache[1024];
+    unsigned char local[52];
+    char sound[TREE_NAME_SIZE];
+    uint32_t sound_pointer, slot = (metadata >> 2) & 1023u;
+    if (!tree_read(metadata, local, sizeof local)) return 0;
+    memcpy(&sound_pointer, local + 0x10, sizeof sound_pointer);
+    if (cache[slot].metadata != metadata || cache[slot].sound != sound_pointer) {
+        cache[slot].metadata = metadata;
+        cache[slot].sound = sound_pointer;
+        cache[slot].tree = local_object_tree(local, sound);
+    }
+    return cache[slot].tree;
+}
+
+static void tree_render_traced(void);
+
 void sub_0016AEDB(void)
+{
+    MM3TreeVisit visit;
+    uint32_t object, camera;
+    if (!TREE_WATCH_LINKED() || !mm3_tree_watch_wanted()) { tree_render_traced(); return; }
+    object = tree_word_at((uint64_t)g_esp + 4u);
+    camera = tree_word_at((uint64_t)g_esp + 0x18u);
+    mm3_tree_watch_begin(&visit, object, camera,
+                         object && tree_descriptor_is_tree(tree_word_at((uint64_t)object + 0xA0u)));
+    tree_render_traced();
+    mm3_tree_watch_finish(&visit);
+}
+
+static void tree_render_traced(void)
 {
     unsigned char instance[0xF0], local[52], owner_flags[3] = {0};
     uint32_t stack, caller, object, owner = 0, metadata = 0, flags = 0;
