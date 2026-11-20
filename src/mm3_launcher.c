@@ -514,6 +514,7 @@ static void help_show(Launcher *ui, int id)
             "The Xbox sound chip filters every positioned sound (cars, sirens, crashes) so it seems to come from its place around you on headphones. Untick it on a slow PC: those sounds are then panned left and right only, which costs less CPU. The Lowest preset turns it off.",
             "Changes the gameplay. Every car offers all its paint jobs in the car selection, as if you had found every paint-job hideout in Cruise. Your save is not changed: untick it and only the paint jobs you found remain.",
             "Use the digital speedometer, the speed number the game shows in split screen, in normal play too, for every car including cars added with the Car Workshop. Off keeps the round dial. Needs the Improved look.",
+            "Changes the gameplay. Every installed Checkpoint race (including circuits and downloaded races) and every Undercover job is open in the menus, without playing the earlier ones. Your save is not changed: no race is marked won, and untick it to see only what you earned.",
         };
         int option = id - ID_OPTION, on = checked(ui, id), master = mm3_launcher_option_master(option);
         title = option_caption(option);
@@ -1544,7 +1545,7 @@ static void gameplay_controls(Launcher *ui)
         {42, 240, "Driving", "Developer tools", {MM3_LAUNCH_DRAFTING, MM3_LAUNCH_ROLL_GUARD, MM3_LAUNCH_TREES, -1,
             MM3_LAUNCH_DEV_TOOLS, MM3_LAUNCH_DEV_HUD, MM3_LAUNCH_DEBUG_MENU, MM3_LAUNCH_CAMERAS, MM3_LAUNCH_E3, 0}},
         {300, 250, "Races and cars", NULL, {MM3_LAUNCH_CIRCUITS, MM3_LAUNCH_EXTRA_CARS, MM3_LAUNCH_AI_ALL_CARS,
-            MM3_LAUNCH_SAME_CAR, MM3_LAUNCH_UNLOCK, MM3_LAUNCH_PAINTS, 0}},
+            MM3_LAUNCH_SAME_CAR, MM3_LAUNCH_UNLOCK, MM3_LAUNCH_PAINTS, MM3_LAUNCH_RACES, 0}},
         {560, 260, "Navigation", NULL, {MM3_LAUNCH_ROUTE_NAVIGATION, MM3_LAUNCH_RACE_ARROW, 0}}
     };
     static const int damage[] = {0, 25, 50, 75, 100, 150, 200, 300};

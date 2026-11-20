@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include "recomp_types.h"
 #include "mm3_circuit_races.h"
+#include "mm3_race_unlocks.h"
 
 ptrdiff_t g_xbox_mem_offset;
 RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi, g_edi, g_ebp, g_seh_ebp;
@@ -26,6 +27,9 @@ void sub_001038D0_original(void)
 }
 void sub_00103BE1_original(void) { assert(!"strip walk not expected"); }
 void sub_001238B7_original(void) { assert(!"race setup not expected"); }
+/* Unlock all races (src/mm3_race_unlocks.c) brackets the race setup; off here, so it does nothing. */
+void mm3_race_unlock_menu_begin(MM3RaceUnlockMenu *saved, uint32_t menu) { (void)menu; saved->on = 0; }
+void mm3_race_unlock_menu_end(const MM3RaceUnlockMenu *saved, uint32_t menu) { (void)saved; (void)menu; }
 void sub_00120A9A_original(void) { assert(!"menu path not expected"); }
 void sub_001038D0(void);
 /* The menu mouse (src/mods/menu_mouse.c) brackets each box drawn; here it counts them. */

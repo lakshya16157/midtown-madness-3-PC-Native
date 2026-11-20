@@ -46,6 +46,9 @@ enum MM3LauncherOption {
     MM3_LAUNCH_PAINTS,
     /* MM3_DIGITAL_SPEEDO: the speed number layout the game uses in split screen, in normal play too (also on added cars). */
     MM3_LAUNCH_DIGITAL,
+    /* MM3_UNLOCK_ALL_RACES: every installed Checkpoint race and Undercover job is open in the
+     * menus (the save is not changed; a gameplay mod, off with Xbox gameplay). */
+    MM3_LAUNCH_RACES,
     MM3_LAUNCH_OPTION_COUNT
 };
 

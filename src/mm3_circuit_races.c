@@ -189,6 +189,7 @@ static uint32_t circuit_count(uint32_t city)
 #define FRONTEND_CITY_CHECKPOINT_RACE 0x110u
 #define RETAIL_UNLOCK_LIMIT 10u
 
+#include "mm3_race_unlocks.h"
 extern void sub_001238B7_original(void);
 
 static int guest_object(uint32_t address, uint32_t size)
@@ -205,7 +206,10 @@ void sub_001238B7(void)
         selected = MEM32(frontend + FRONTEND_CHECKPOINT_RACE);
         same_city = MEM32(state + GAME_STATE_CITY) == MEM32(FRONTEND_SHOWN_CITY);
     }
+    MM3RaceUnlockMenu unlock;
+    mm3_race_unlock_menu_begin(&unlock, frontend);
     sub_001238B7_original();
+    mm3_race_unlock_menu_end(&unlock, frontend);   /* EAX = the city, straight from the original */
     if (!guest_object(frontend, 0x200u)) return;
     state = MEM32(GAME_STATE_SINGLETON);
     if (!guest_object(state, 0x200u)) return;
