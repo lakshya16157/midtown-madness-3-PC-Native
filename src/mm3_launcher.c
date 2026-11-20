@@ -513,7 +513,7 @@ static void help_show(Launcher *ui, int id)
             "Vulkan only. Builds every graphics pipeline the game has seen before while it starts, so nothing is built mid-race and the game does not stutter the first time something is drawn. Start-up takes a few seconds longer. No effect with DirectX 11.",
             "The Xbox sound chip filters every positioned sound (cars, sirens, crashes) so it seems to come from its place around you on headphones. Untick it on a slow PC: those sounds are then panned left and right only, which costs less CPU. The Lowest preset turns it off.",
             "Changes the gameplay. Every car offers all its paint jobs in the car selection, as if you had found every paint-job hideout in Cruise. Your save is not changed: untick it and only the paint jobs you found remain.",
-            "Show the game's built-in digital speed number on the HUD for every car, including cars added with the Car Workshop, which hide it. The original cars already show it, next to or in place of the dial. Off leaves the HUD as it is. Needs the Improved look.",
+            "Use the digital speedometer, the speed number the game shows in split screen, in normal play too, for every car including cars added with the Car Workshop. Off keeps the round dial. Needs the Improved look.",
         };
         int option = id - ID_OPTION, on = checked(ui, id), master = mm3_launcher_option_master(option);
         title = option_caption(option);

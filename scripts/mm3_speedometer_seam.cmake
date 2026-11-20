@@ -12,8 +12,16 @@ function(mm3_add_speedometer_readout source_variable)
 {
     extern int mm3_speedometer_draw(uint32_t, uint32_t, double);
     extern int mm3_speedometer_hide_readout(void);
+    extern int mm3_speedometer_force_digital(void);
     uint32_t mm3_speedometer_node = 0;
     uint32_t ebp = 0;]=])
+    set(original_digital [=[loc_0023F0D0: ;
+    _fa = (uint32_t)(MEM32(ebp + -344)) & 0xFFFFFFFFu; _fb = (uint32_t)(1) & 0xFFFFFFFFu;]=])
+    set(replacement_digital [=[loc_0023F0D0: ;
+    /* MM3_DIGITAL_SPEEDO (Digital speedometer): the numeric-only layout split screen uses,
+     * in every view. The local copy of the race settings (ebp-352..) is only read here. */
+    if (mm3_speedometer_force_digital()) MEM32(ebp + -344) = 1;
+    _fa = (uint32_t)(MEM32(ebp + -344)) & 0xFFFFFFFFu; _fb = (uint32_t)(1) & 0xFFFFFFFFu;]=])
     set(original_base [=[loc_0023F148: ;
     MEM32(ebp + -48) = 0x43200000;
     MEM32(ebp + -44) = 0x43100000;]=])
@@ -51,7 +59,7 @@ function(mm3_add_speedometer_readout source_variable)
     g_fp_cmp = RECOMP_FCMP(fp_top(), MEMF(0x384EF4));]=])
     string(FIND "${content}" "\r\n" crlf_position)
     if(NOT crlf_position LESS 0)
-        foreach(block prologue base selector node needle)
+        foreach(block prologue digital base selector node needle)
             string(REPLACE "\n" "\r\n" original_${block} "${original_${block}}")
             string(REPLACE "\n" "\r\n" replacement_${block} "${replacement_${block}}")
         endforeach()
@@ -62,7 +70,7 @@ function(mm3_add_speedometer_readout source_variable)
     if(owner_position LESS 0 OR NOT label_count EQUAL 1)
         message(FATAL_ERROR "MM3 speedometer readout: original 0x0023F09B HUD draw is missing or duplicated")
     endif()
-    foreach(block prologue base selector node needle)
+    foreach(block prologue digital base selector node needle)
         string(FIND "${content}" "${original_${block}}" block_position)
         if(block_position LESS owner_position)
             message(FATAL_ERROR "MM3 speedometer readout: original ${block} block changed")

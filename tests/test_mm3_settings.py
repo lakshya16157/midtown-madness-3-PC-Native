@@ -36,7 +36,7 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(values["MM3_FOV_DEGREES"], "0")      # 30 is not a valid field of view
             self.assertEqual(values["RECOMP_NET"], "1")
             self.assertEqual(values["MM3_SKIP_LAUNCHER"], "1")
-            self.assertIn("MM3_SETTINGS_REVISION=3", path.read_text())
+            self.assertIn("MM3_SETTINGS_REVISION=2", path.read_text())
 
     def test_bad_values_fall_back_to_defaults(self):
         values = settings.normalise({"MM3_DAMAGE_PERCENT": "9999", "MM3_PLAYER1_INPUT": "77", "RECOMP_USB_PADS": "x"})

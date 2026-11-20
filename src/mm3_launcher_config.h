@@ -44,7 +44,7 @@ enum MM3LauncherOption {
     /* MM3_UNLOCK_ALL_PAINTS: every car offers all its paint jobs, as if each
      * hideout had been found (a gameplay mod; off with Xbox gameplay). */
     MM3_LAUNCH_PAINTS,
-    /* MM3_DIGITAL_SPEEDO: the HUD's built-in number readout also on added cars (retail cars already show it). */
+    /* MM3_DIGITAL_SPEEDO: the speed number layout the game uses in split screen, in normal play too (also on added cars). */
     MM3_LAUNCH_DIGITAL,
     MM3_LAUNCH_OPTION_COUNT
 };

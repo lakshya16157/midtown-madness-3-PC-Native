@@ -19,7 +19,7 @@ HERE = Path(__file__).resolve().parent
 INI = Path(os.environ.get("MM3_LAUNCHER_CONFIG") or HERE / "launcher.ini").absolute()
 EXTRA = HERE / "launcher-display.ini"          # this window's own graphics choices
 START = HERE / "play-midtown-madness-3.sh"
-REVISION = 3                                   # SETTINGS_REVISION in mm3_launcher_config.c
+REVISION = 2                                   # SETTINGS_REVISION in mm3_launcher_config.c
 SKIP_LAUNCHER = "MM3_SKIP_LAUNCHER"
 WHEEL_DEFAULTS = {
     "MM3_WHEEL_ENABLED": 0,
@@ -72,7 +72,7 @@ OPTIONS = [
     ("MM3_PRELOAD_SHADERS", "Load all shaders before playing (Vulkan)", 1),
     ("RECOMP_APU_HRTF", "3D headphone sound (HRTF)", 1),
     ("MM3_UNLOCK_ALL_PAINTS", "Unlock all paint jobs", 0),
-    ("MM3_DIGITAL_SPEEDO", "Digital speed readout", 1),
+    ("MM3_DIGITAL_SPEEDO", "Digital speedometer (as in split screen)", 0),
 ]
 DEFAULTS = {key: default for key, _label, default in OPTIONS}
 DEFAULTS[SKIP_LAUNCHER] = 0

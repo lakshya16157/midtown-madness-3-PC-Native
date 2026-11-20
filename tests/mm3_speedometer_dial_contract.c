@@ -451,8 +451,6 @@ static void contract_check_cached_geometry(void)
 
 int main(int argc, char **argv)
 {
-    /* The readout is on unless the launcher turns it off; these cases are the off path. */
-    _putenv("MM3_DIGITAL_SPEEDO=0");
     static const struct { const char *alias; float kmh, mph; } cars[] = {
         {"koenigsegg", 800, 500}, {"VIPER", 650, 404}, {"Lotus", 500, 311},
         {"AudiTT", 1200, 750}

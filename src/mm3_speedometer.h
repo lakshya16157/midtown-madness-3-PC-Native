@@ -11,4 +11,7 @@ int mm3_speedometer_draw(uint32_t node, uint32_t frame, double speed_kmh);
  * added car uses the existing hidden numeric readout. Guest state is untouched. */
 int mm3_speedometer_hide_readout(void);
 
+/* MM3_DIGITAL_SPEEDO: use the numeric-only layout (split screen's) in every view. */
+int mm3_speedometer_force_digital(void);
+
 #endif

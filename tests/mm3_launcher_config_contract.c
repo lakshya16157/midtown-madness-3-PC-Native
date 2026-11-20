@@ -321,7 +321,7 @@ int main(int argc, char **argv)
     assert(config.option[MM3_LAUNCH_DRAFTING] && !config.option[MM3_LAUNCH_ROLL_GUARD]);
     file = fopen(path, "rb"); assert(file);
     size = fread(saved, 1, sizeof saved - 1, file); saved[size] = 0; fclose(file);
-    assert(strstr(saved, "\nMM3_SETTINGS_REVISION=3\n") && !strstr(saved, "MM3_CHEAT_CODES") &&
+    assert(strstr(saved, "\nMM3_SETTINGS_REVISION=2\n") && !strstr(saved, "MM3_CHEAT_CODES") &&
            !strstr(saved, "MM3_TIME_PERCENT"));
     assert(!_putenv_s("MM3_ROLL_GUARD", "1"));   /* Explicit environment still wins. */
     assert(mm3_launcher_config_startup(&config, error, sizeof error));

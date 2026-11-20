@@ -138,16 +138,19 @@ static int player_alias(char alias[32])
     return valid_alias(alias);
 }
 
+int mm3_speedometer_force_digital(void)
+{
+    /* MM3_DIGITAL_SPEEDO (launcher: Digital speedometer): the numeric-only layout the game picks for
+     * split screen (race setting +8 at 0x407C18), used in every view. Off by default. */
+    static int digital = -1;
+    if (digital < 0) { const char *v = getenv("MM3_DIGITAL_SPEEDO"); digital = v && *v == '1'; }
+    return digital;
+}
+
 int mm3_speedometer_hide_readout(void)
 {
-    /* MM3_DIGITAL_SPEEDO (launcher: Digital speed readout): keep the built-in number on added cars too. */
-    static int digital = -1;
-    if (digital < 0) {
-        /* Unset (no launcher, e.g. a Steam shortcut with the launcher skipped): on, except in the Original look. */
-        const char *v = getenv("MM3_DIGITAL_SPEEDO"), *improved = getenv("MM3_IMPROVED");
-        digital = v && *v ? *v == '1' : !(improved && *improved == '0');
-    }
-    if (digital) return 0;
+    /* The digital speedometer also shows its number on added cars. */
+    if (mm3_speedometer_force_digital()) return 0;
     /* Pristine PAL Cars/Tweak aliases, including both hidden bonus cars.
      * Use the loaded vehicle identity, never its donor gauge type: added cars
      * can share the stock artwork while keeping their previous HUD behavior. */

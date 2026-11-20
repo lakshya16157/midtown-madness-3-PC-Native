@@ -27,6 +27,13 @@ static int use_override;
 static unsigned override_calls;
 static int added_car;
 
+static int force_digital_on;
+
+int mm3_speedometer_force_digital(void)
+{
+    return force_digital_on;
+}
+
 int mm3_speedometer_hide_readout(void)
 {
     return added_car;
@@ -179,7 +186,8 @@ static void check_base(void (*branch)(void), int modified, int numeric)
     g_xbox_mem_offset = (ptrdiff_t)memory;
     g_esp = stack; g_ebp = frame;
     g_fp_top = 0; g_fp_control_word = 0x37F;
-    MEM32(frame - 344) = numeric ? 1 : 0;
+    /* With the digital speedometer option the seam sets the numeric layout itself. */
+    MEM32(frame - 344) = numeric && !force_digital_on ? 1 : 0;
     MEM32(frame + 0x10) = bounds;
     MEMF(bounds) = 450.0f; MEMF(bounds + 4) = 300.0f;
     MEMF(bounds + 8) = 160.0f; MEMF(bounds + 12) = 144.0f;
@@ -208,6 +216,10 @@ int main(void)
         check_base(base_original, 0, split);
         check_base(base_modified, 1, split);
     }
+    /* MM3_DIGITAL_SPEEDO: a normal (analog) view gets split screen's numeric layout. */
+    force_digital_on = 1;
+    check_base(base_modified, 1, 1);
+    force_digital_on = 0;
     for (type = 0; type <= 4; ++type)
         for (split = 0; split <= 1; ++split)
             for (units = 0; units <= 1; ++units)
