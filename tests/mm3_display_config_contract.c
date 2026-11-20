@@ -67,7 +67,7 @@ static void persistence(void)
     char error[256], stale[128];
     FILE *file;
     HANDLE locked;
-    mm3_display_settings_defaults(&expected, "Balanced");
+    mm3_display_settings_defaults(&expected, NULL);
     assert(expected.minimap_improved == 1);
     loaded = expected;
     assert(mm3_display_settings_load(&loaded, error, sizeof error));
@@ -161,7 +161,7 @@ static void persistence(void)
         assert(fclose(file) == 0);
         assert(strstr(text, "\nmonitor=\\\\.\\DISPLAY2\n"));
     }
-    mm3_display_settings_defaults(&loaded, "Balanced");
+    mm3_display_settings_defaults(&loaded, NULL);
     assert(!strcmp(loaded.monitor, "primary"));
     assert(mm3_display_settings_load(&loaded, error, sizeof error));
     equal_settings(&loaded, &expected);
@@ -187,7 +187,7 @@ static void malformed_fields(void)
     char error[256];
     FILE *file;
     int i;
-    mm3_display_settings_defaults(&expected, "Balanced");
+    mm3_display_settings_defaults(&expected, NULL);
     loaded = expected;
     write_config("# partial config\n[display]\nwindow_width=1366\nwindow_height=768\n"
                  "fullscreen=2\nfps_limit=45 ; accepted comment\nvsync=-1\nshow_fps=0\n"
@@ -229,7 +229,7 @@ static void precedence(void)
     char error[256];
     clear_environment();
     environment("MM3_PERFORMANCE_PROFILE", "LowPower");
-    mm3_display_settings_defaults(&expected, "Balanced");
+    mm3_display_settings_defaults(&expected, NULL);
     expected.fps_limit = 45;
     expected.render_scale = 2.5f;
     assert(mm3_display_settings_save(&expected, error, sizeof error));
@@ -302,13 +302,13 @@ static void precedence(void)
     environment("MM3_MINIMAP_IMPROVED", "2");
     assert(mm3_display_settings_startup(&loaded, error, sizeof error));
     assert(*error);
-    mm3_display_settings_defaults(&expected, "Balanced");
+    mm3_display_settings_defaults(&expected, NULL);
     expected.fps_limit = 45;
     expected.render_scale = 2.5f;
     equal_settings(&loaded, &expected);
     assert(strcmp(getenv("RECOMP_FPS_LIMIT"), "45") == 0);
     assert(strcmp(getenv("RECOMP_ASPECT"), "auto") == 0);
-    assert(strcmp(getenv("RECOMP_MSAA"), "4") == 0);
+    assert(strcmp(getenv("RECOMP_MSAA"), "1") == 0);              /* the default profile (Xbox) */
     assert(strcmp(getenv("RECOMP_FULLSCREEN"), "0") == 0);
 
     environment("RECOMP_FPS_LIMIT", "25");
@@ -396,7 +396,7 @@ static void paths(const char *folder)
 
     assert(_wputenv_s(L"MM3_DISPLAY_CONFIG", L"display-\u00e9-\u4e2d.ini") == 0);
     assert(mm3_display_settings_save(&expected, error, sizeof error));
-    mm3_display_settings_defaults(&loaded, "Balanced");
+    mm3_display_settings_defaults(&loaded, NULL);
     assert(mm3_display_settings_load(&loaded, error, sizeof error));
     equal_settings(&loaded, &expected);
     assert(DeleteFileW(L"display-\u00e9-\u4e2d.ini"));
@@ -409,7 +409,7 @@ static void paths(const char *folder)
     assert(!mm3_display_settings_load(&loaded, error, sizeof error));
     assert(*error);
     assert(!mm3_display_settings_startup(&loaded, error, sizeof error));
-    mm3_display_settings_defaults(&expected, "Balanced");
+    mm3_display_settings_defaults(&expected, NULL);
     equal_settings(&loaded, &expected);
     assert(*error);
 }

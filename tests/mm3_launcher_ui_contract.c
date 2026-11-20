@@ -779,7 +779,7 @@ static void presets(HWND window)
     select_page(window, 0);
 
     SendMessageA(window, WM_COMMAND, ID_DEFAULTS, 0);
-    CHECK(level_is(window, "Medium", 2));                         /* the defaults are the Balanced profile */
+    CHECK(level_is(window, "Xbox", 1));                           /* the defaults are the Xbox profile */
     slide(window, 0);                                             /* Lowest */
     CHECK(combo_is(window, ID_SCALE, 1000) && combo_is(window, ID_MSAA, 1) && combo_is(window, ID_ANISO, 1));
     CHECK(combo_is(window, ID_DRAW, 1000) && combo_is(window, ID_VIEW, 1000));

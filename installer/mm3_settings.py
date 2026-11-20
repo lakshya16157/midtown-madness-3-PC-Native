@@ -223,7 +223,7 @@ def write_ini(values, others, path=INI):
 
 
 def read_display(path=EXTRA, *, use_defaults=True):
-    defaults = {"MM3_PERFORMANCE_PROFILE": "Balanced", "RECOMP_RENDER_SCALE": "", "RECOMP_FPS_LIMIT": "",
+    defaults = {"MM3_PERFORMANCE_PROFILE": "Xbox", "RECOMP_RENDER_SCALE": "", "RECOMP_FPS_LIMIT": "",
                 "RECOMP_FULLSCREEN": "0"}
     saved = {}
     try:

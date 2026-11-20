@@ -61,8 +61,8 @@ int main(void)
 #else
 #define BALANCED_SCALE "1.5"
 #endif
-    profile(NULL, BALANCED_SCALE, "4", "2", "60", "16");
-    profile("", BALANCED_SCALE, "4", "2", "60", "16");
+    profile(NULL, "1.0", "1", "1", "30", "1");      /* no profile chosen: the Xbox's */
+    profile("", "1.0", "1", "1", "30", "1");
     profile("unknown", BALANCED_SCALE, "4", "2", "60", "16");
     profile("Balanced", BALANCED_SCALE, "4", "2", "60", "16");
     profile("quality", "3.0", "8", "2", "120", "16");

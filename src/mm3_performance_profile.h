@@ -35,18 +35,11 @@ static inline int mm3_profile_name_equal(const char *value, const char *name)
     return *value == *name;
 }
 
-/* With no profile chosen (a direct or Steam launch before any is saved), a PC
- * with 4 or fewer logical processors starts on Lowest: a 2-core laptop has to
- * carry the game thread, the GPU executor and the sound chip's work. */
+/* With no profile chosen (a fresh install, before any settings are saved) the
+ * game starts as the Xbox ran it; the launcher then remembers what is chosen. */
 static inline const char *mm3_default_profile_name(void)
 {
-#ifdef _WIN32
-    const char *count = getenv("NUMBER_OF_PROCESSORS");
-    long n = count ? atol(count) : 0;
-#else
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
-#endif
-    return n > 0 && n <= 4 ? "Lowest" : "Balanced";
+    return "Xbox";
 }
 
 static inline const MM3PerformanceProfile *mm3_performance_profile(const char *name)
