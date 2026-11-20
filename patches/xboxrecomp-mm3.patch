@@ -15872,7 +15872,7 @@ index 00000000..ba782e5c
 +#endif /* NV2A_BLACK_FRAME_LOGIC_ONLY */
 +#endif /* NV2A_BLACK_FRAME_H */
 diff --git a/src/video/nv2a_d3d11.c b/src/video/nv2a_d3d11.c
-index f4432e75..a152bc8d 100644
+index f4432e75..df5ca9a6 100644
 --- a/src/video/nv2a_d3d11.c
 +++ b/src/video/nv2a_d3d11.c
 @@ -19,9 +19,10 @@
@@ -21216,7 +21216,7 @@ index f4432e75..a152bc8d 100644
          if (!s_cap_tex || s_cap_w != s->iw || s_cap_h != s->ih) {
              if (s_cap_rtv) ID3D11RenderTargetView_Release(s_cap_rtv);
              if (s_cap_tex) ID3D11Texture2D_Release(s_cap_tex);
-@@ -3965,45 +7543,108 @@ static void present_surface(Surface *s, FlipPacing *pacing)
+@@ -3965,45 +7543,110 @@ static void present_surface(Surface *s, FlipPacing *pacing)
              composite(s_cap_rtv, s->iw, s->ih, s, &pc, 0);
              capture_backbuffer(s_cap_tex);
          }
@@ -21323,6 +21323,8 @@ index f4432e75..a152bc8d 100644
 +            vblank = (int64_t)info.qpcVBlank;
 +        }
 +    }
++    /* VSync on and a limit above the panel's rate (120 on a 60 Hz screen): pace at the panel's rate. */
++    limit = nv_pacing_vsync_limit(frequency, limit, refresh, (present_options() >> 16) & 1);
 +    *period = nv_pacing_display_period(frequency, limit, refresh);
 +    /* The compositor re-measures its period (59.996-60.021 Hz on the same
 +     * panel); report only lock changes and moves beyond 0.05%. */
@@ -21347,7 +21349,7 @@ index f4432e75..a152bc8d 100644
  /* The flip completes at the display's next vertical blank, as it does on the
   * NV2A: FLIP_STALL holds the GPU until then, and the title, waiting on the
   * GPU, is paced by it. Completing it at once let menus run at hundreds of
-@@ -4015,23 +7656,42 @@ static void pace_vblank(void)
+@@ -4015,23 +7658,42 @@ static void pace_vblank(void)
      static LARGE_INTEGER freq;
      static int64_t next;
      static HANDLE timer;
@@ -21396,7 +21398,7 @@ index f4432e75..a152bc8d 100644
          return;
      {
          RECOMP_PROFILE_BEGIN("D3D11 pace");
-@@ -4046,30 +7706,46 @@ static void pace_vblank(void)
+@@ -4046,30 +7708,46 @@ static void pace_vblank(void)
   * the monitor's native resolution and shape). A resize applies once it has
   * settled for RESIZE_SETTLE_MS, by dropping every host surface; they are
   * rebuilt at the new size from guest memory, which the flip just updated.
@@ -21448,7 +21450,7 @@ index f4432e75..a152bc8d 100644
          scale = (float)atof(e);
      } else {
          /* RECOMP_SUPERSAMPLE=N (1..4) renders N x N host pixels per window
-@@ -4084,7 +7760,11 @@ static void display_config(int now)
+@@ -4084,7 +7762,11 @@ static void display_config(int now)
          if (scale < 1.0f) scale = 1.0f;
          if (scale > 8.0f) scale = 8.0f;
      }
@@ -21461,7 +21463,7 @@ index f4432e75..a152bc8d 100644
      if (!now && fabsf(scale - s_scale) < 1e-3f && fabsf(aspect - s_aspect) < 1e-4f)
          return;
      if (!now) {
-@@ -4098,6 +7778,11 @@ static void display_config(int now)
+@@ -4098,6 +7780,11 @@ static void display_config(int now)
      }
      s_scale = scale;
      s_aspect = aspect;
@@ -21473,7 +21475,7 @@ index f4432e75..a152bc8d 100644
      fprintf(stderr, "[D3D11] rendering %ux%u (window %ux%u, aspect %.3f)\n",
              (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
              w, h, aspect);
-@@ -4138,27 +7823,66 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
+@@ -4138,27 +7825,66 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
      return s;
  }
  
@@ -21542,7 +21544,7 @@ index f4432e75..a152bc8d 100644
          if (s_prof_on > 0) {
              s_prof[PROF_WRITEBACK] += t1 - t0;
              s_prof[PROF_PRESENT] += qpc() - t1 - pacing.ticks;
-@@ -4169,12 +7893,16 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
+@@ -4169,12 +7895,16 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
           * still completes exactly one paced guest flip. A failed Present has
           * already waited before the attempt and must not wait a second time. */
          pace_flip(&pacing);
@@ -21559,7 +21561,7 @@ index f4432e75..a152bc8d 100644
      s_frame++;
  }
  
-@@ -4195,6 +7923,17 @@ static volatile LONG s_repeat;
+@@ -4195,6 +7925,17 @@ static volatile LONG s_repeat;
   * by the title's thread before it raises its flag, so the presenter always finds it. */
  static HANDLE s_request_done;
  
@@ -21577,7 +21579,7 @@ index f4432e75..a152bc8d 100644
  static void request_raise(volatile LONG *flag)
  {
      if (!s_request_done)
-@@ -4202,6 +7941,7 @@ static void request_raise(volatile LONG *flag)
+@@ -4202,6 +7943,7 @@ static void request_raise(volatile LONG *flag)
      if (s_request_done)
          ResetEvent(s_request_done);
      InterlockedExchange(flag, 1);
@@ -21585,7 +21587,7 @@ index f4432e75..a152bc8d 100644
  }
  
  static void request_wait(volatile LONG *flag)
-@@ -4252,6 +7992,8 @@ void nv2a_d3d_tick(void)
+@@ -4252,6 +7994,8 @@ void nv2a_d3d_tick(void)
  {
      DWORD now;
      uint32_t va, pitch;
@@ -21594,7 +21596,7 @@ index f4432e75..a152bc8d 100644
      /* CPU scanout and PVIDEO can precede the first pushbuffer flip. */
      if (s_init_state <= 0 && !nv2a_d3d_init())
          return;
-@@ -4287,13 +8029,19 @@ void nv2a_d3d_tick(void)
+@@ -4287,13 +8031,19 @@ void nv2a_d3d_tick(void)
      now = GetTickCount();
      if (now - s_last_present < 16)
          return;
@@ -21617,7 +21619,7 @@ index f4432e75..a152bc8d 100644
          s_frame++;
          return;
      }
-@@ -4307,23 +8055,37 @@ void nv2a_d3d_tick(void)
+@@ -4307,23 +8057,37 @@ void nv2a_d3d_tick(void)
           * Force the check because the submission epoch stops with the flips. */
          if (!s_wb_pending)
              surface_sync(s_shown, 1);
@@ -21659,7 +21661,7 @@ index f4432e75..a152bc8d 100644
  int nv2a_d3d_prof_enabled(void) { return 0; }
  void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
  { (void)slot; (void)ticks; (void)verts; }
-@@ -4349,4 +8111,42 @@ void nv2a_d3d_zpass_clear(void) {}
+@@ -4349,4 +8113,42 @@ void nv2a_d3d_zpass_clear(void) {}
  uint32_t nv2a_d3d_zpass_read(void) { return 0; }
  float nv2a_d3d_display_aspect(void) { return 4.0f / 3.0f; }
  int nv2a_d3d_host_draw(const NvD3DState *st, int (*draw)(const NvHostTarget *, void *), void *user) { (void)st; (void)draw; (void)user; return 0; }
@@ -22891,10 +22893,10 @@ index 00000000..9c1099f2
 +
 +#endif
 diff --git a/src/video/nv2a_pacing.h b/src/video/nv2a_pacing.h
-index bc3eedd5..1d897c7b 100644
+index bc3eedd5..d47a6b80 100644
 --- a/src/video/nv2a_pacing.h
 +++ b/src/video/nv2a_pacing.h
-@@ -26,6 +26,69 @@ static int nv_pacing_deadline(int64_t *next, int64_t now, int64_t frequency, int
+@@ -26,6 +26,82 @@ static int nv_pacing_deadline(int64_t *next, int64_t now, int64_t frequency, int
      return 1;
  }
  
@@ -22922,6 +22924,19 @@ index bc3eedd5..1d897c7b 100644
 +    if (period * limit > frequency + frequency / 200 ||
 +        period * limit < frequency - frequency / 200) return 0;
 +    return period;
++}
++
++/* With VSync on, a frame the panel cannot show is wasted work: a limit above the
++ * panel's rate (120 on a 60 Hz screen) is lowered to that rate, so the frames can
++ * lock to the refresh. Left alone with VSync off (tearing shows them), with no
++ * usable refresh report, or when the limit is within 2% of the panel rate. */
++static inline int nv_pacing_vsync_limit(int64_t frequency, int limit, int64_t refresh, int vsync)
++{
++    int64_t hz;
++    if (!vsync || limit <= 0 || frequency <= 0 || refresh <= 0) return limit;
++    if (refresh > frequency / 20 || refresh < frequency / 500) return limit;
++    hz = (frequency + refresh / 2) / refresh;
++    return limit > hz + hz / 50 ? (int)hz : limit;
 +}
 +
 +static inline int64_t nv_pacing_floor_div(int64_t value, int64_t divisor)
@@ -22964,7 +22979,7 @@ index bc3eedd5..1d897c7b 100644
  #if defined(_WIN32)
  #include <windows.h>
  
-@@ -82,10 +145,13 @@ static int64_t nv_pacing_qpc(void)
+@@ -82,10 +158,13 @@ static int64_t nv_pacing_qpc(void)
      return now.QuadPart;
  }
  
@@ -39894,7 +39909,7 @@ index 00000000..3efe3430
 +- [QPC guidance](https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps): QPC measures intervals independently of wall-clock changes, with a frequency cached at initialization.
 +- [QueryThreadCycleTime](https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-querythreadcycletime): thread cycles include user/kernel execution and must not be converted directly to elapsed time.
 diff --git a/tests/nv2a_pacing/test_pacing.c b/tests/nv2a_pacing/test_pacing.c
-index bda546d6..733b5bec 100644
+index bda546d6..e14d0ad6 100644
 --- a/tests/nv2a_pacing/test_pacing.c
 +++ b/tests/nv2a_pacing/test_pacing.c
 @@ -128,6 +128,31 @@ static void test_cadence(void)
@@ -39929,7 +39944,7 @@ index bda546d6..733b5bec 100644
  #if defined(_WIN32)
  static void check_fallback(HANDLE timer)
  {
-@@ -190,6 +215,75 @@ static void test_conversion(void)
+@@ -190,6 +215,83 @@ static void test_conversion(void)
      CHECK(nv_pacing_timer_units(1,INT64_MAX)==1);
      puts("PASS: 60000 exact relative-unit conversions, sub-100ns clamp and overflowing products/division/saturation");
  }
@@ -39949,6 +39964,14 @@ index bda546d6..733b5bec 100644
 +    CHECK(!nv_pacing_display_period(f,60,69444));               /* 144 Hz */
 +    CHECK(!nv_pacing_display_period(f,60,60606));               /* 165 Hz */
 +    CHECK(!nv_pacing_display_period(f,45,refresh));
++    /* VSync on: a limit above the panel's rate is lowered to it, so it can lock (120 on a 60 Hz screen). */
++    CHECK(nv_pacing_vsync_limit(f,120,refresh,1)==60 && nv_pacing_display_period(f,nv_pacing_vsync_limit(f,120,refresh,1),refresh)==refresh);
++    CHECK(nv_pacing_vsync_limit(f,120,refresh,0)==120);                 /* VSync off: tearing shows them */
++    CHECK(nv_pacing_vsync_limit(f,60,166833,1)==60);                    /* 59.94 Hz, limit 60: unchanged */
++    CHECK(nv_pacing_vsync_limit(f,120,69444,1)==120);                   /* 144 Hz, limit 120: below the rate */
++    CHECK(nv_pacing_vsync_limit(f,144,69444,1)==144);
++    CHECK(nv_pacing_vsync_limit(f,240,69444,1)==144);
++    CHECK(nv_pacing_vsync_limit(f,120,0,1)==120 && nv_pacing_vsync_limit(f,0,refresh,1)==0);
 +    CHECK(!nv_pacing_display_period(f,60,0) && !nv_pacing_display_period(f,0,refresh));
 +    CHECK(!nv_pacing_display_period(f,60,f) && !nv_pacing_display_period(f,60,f/1000));
 +    CHECK(!nv_pacing_display_period(f,60,171000));              /* 58.5 Hz: >0.5% off */
@@ -40005,7 +40028,7 @@ index bda546d6..733b5bec 100644
  #if defined(_WIN32)
  static void old_wait(HANDLE timer,int64_t frequency,int64_t deadline,int64_t now)
  {
-@@ -225,7 +319,9 @@ int main(int argc,char **argv)
+@@ -225,7 +327,9 @@ int main(int argc,char **argv)
  {
      CHECK(argc==2);
      if(!strcmp(argv[1],"cadence"))test_cadence();
