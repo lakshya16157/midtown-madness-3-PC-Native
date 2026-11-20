@@ -88,7 +88,7 @@ static void mm3_kick_report(int64_t now)
 void mm3_configure_diagnostics(void)
 {
     mm3_configure_kick_bound();
-    mm3_producer_diagnostics_init();
+    /* mm3_producer_diagnostics_init runs at the first kick (the launcher's settings are applied after this). */
     const char *trap = getenv("RECOMP_UNIMPL_TRAP");
     g_mm3_unimpl_trap = trap && *trap && *trap != '0';
     g_mm3_frontend_icall_trace = getenv("MM3_FRONTEND_ICALL_TRACE") != NULL;

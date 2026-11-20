@@ -224,6 +224,57 @@ static void tab_bar_clear(HWND window)
     select_page(window, 0);
 }
 
+/* Every control of a tab sits inside the tab area and no two of them overlap. The Gameplay tab's
+ * "Unlock all races and jobs" (the seventh Races and cars row) sat under the "Camera and photos"
+ * heading, so nobody could see it, and nothing noticed (user, 11-20). */
+static void page_controls_apart(HWND window)
+{
+    RECT area = child_bounds(window, ID_TABS);
+    HWND bar = GetDlgItem(window, ID_TAB_BAR), tabs = GetDlgItem(window, ID_TABS);
+    int clashes = 0;
+    for (int page = 0; page < 4; ++page) {
+        HWND found[400];
+        RECT rects[400];
+        int count = 0;
+        select_page(window, page);
+        for (HWND child = GetWindow(window, GW_CHILD); child && count < 400; child = GetWindow(child, GW_HWNDNEXT)) {
+            RECT bounds, meet;
+            if (child == bar || child == tabs || !IsWindowVisible(child)) continue;
+            CHECK(GetWindowRect(child, &bounds));
+            MapWindowPoints(NULL, window, (POINT *)&bounds, 2);
+            if (!IntersectRect(&meet, &bounds, &area)) continue;   /* the header, the help panel, the footer */
+            found[count] = child; rects[count++] = bounds;
+        }
+        for (int i = 0; i < count; ++i) {
+            char first[64], kind[16];
+            GetWindowTextA(found[i], first, sizeof first);
+            GetClassNameA(found[i], kind, sizeof kind);
+            /* A label's box is often wider or taller than its text, so labels may share space and may
+             * stick out; the controls people press and read must not. */
+            if (_stricmp(kind, "Static") &&
+                (rects[i].left < area.left || rects[i].right > area.right || rects[i].bottom > area.bottom)) {
+                fprintf(stderr, "tab %d: \"%s\" (%ld-%ld, %ld-%ld) leaves the tab area\n", page, first,
+                        rects[i].left, rects[i].right, rects[i].top, rects[i].bottom);
+                ++clashes;
+            }
+            for (int j = i + 1; j < count; ++j) {
+                RECT meet;
+                char second[64], other_kind[16];
+                if (!IntersectRect(&meet, &rects[i], &rects[j])) continue;
+                GetClassNameA(found[j], other_kind, sizeof other_kind);
+                if (!_stricmp(kind, "Static") && !_stricmp(other_kind, "Static")) continue;
+                GetWindowTextA(found[j], second, sizeof second);
+                fprintf(stderr, "tab %d: \"%s\" (%ld-%ld, %ld-%ld) overlaps \"%s\" (%ld-%ld, %ld-%ld)\n", page, first,
+                        rects[i].left, rects[i].right, rects[i].top, rects[i].bottom, second,
+                        rects[j].left, rects[j].right, rects[j].top, rects[j].bottom);
+                ++clashes;
+            }
+        }
+    }
+    CHECK(clashes == 0);
+    select_page(window, 0);
+}
+
 static void text_fits(HWND window, int id)
 {
     HWND child = GetDlgItem(window, id);
@@ -756,13 +807,97 @@ static int level_is(HWND window, const char *name, int stop)
 static void click(HWND window, int id)
 { SendMessageA(window, WM_COMMAND, MAKEWPARAM(id, BN_CLICKED), (LPARAM)GetDlgItem(window, id)); }
 
+/* Internal resolution: Automatic first, then smallest to largest with the common names, and a value
+ * from the settings file lands where its size puts it. */
+static void internal_resolution_list(HWND window)
+{
+    HWND scale = GetDlgItem(window, ID_SCALE);
+    int count = (int)SendMessageA(scale, CB_GETCOUNT, 0, 0), previous = -1, i, named_1080 = 0, named_4k = 0, at;
+    char label[64];
+    CHECK(count == 9 && SendMessageA(scale, CB_GETITEMDATA, 0, 0) == 0);   /* Automatic, then 240p to 2160p */
+    for (i = 0; i < count; ++i) {
+        int value = (int)SendMessageA(scale, CB_GETITEMDATA, (WPARAM)i, 0);
+        CHECK(value > previous);
+        previous = value;
+        CHECK(SendMessageA(scale, CB_GETLBTEXT, (WPARAM)i, (LPARAM)label) > 0);
+        if (value == 2250) named_1080 = !strncmp(label, "1080p (Full HD)", 15);
+        if (value == 4500) named_4k = !strncmp(label, "2160p (4K)", 10);
+    }
+    CHECK(named_1080 && named_4k);
+    combo_item_sorted(scale, "1296p (custom)", 2700);
+    for (at = 0; at < count + 1 && (int)SendMessageA(scale, CB_GETITEMDATA, (WPARAM)at, 0) != 2700; ++at) {}
+    CHECK(at > 0 && at <= count);
+    CHECK((int)SendMessageA(scale, CB_GETITEMDATA, (WPARAM)(at - 1), 0) == 2250 &&
+          (int)SendMessageA(scale, CB_GETITEMDATA, (WPARAM)(at + 1), 0) == 3000);
+    SendMessageA(scale, CB_DELETESTRING, (WPARAM)at, 0);
+    CHECK((int)SendMessageA(scale, CB_GETCOUNT, 0, 0) == count);
+}
+
+/* Each entry names the size it makes at the shape the game will use: the Aspect ratio box, else the window's own. */
+static int scale_label_is(HWND window, int value, const char *expected)
+{
+    HWND scale = GetDlgItem(window, ID_SCALE);
+    int count = (int)SendMessageA(scale, CB_GETCOUNT, 0, 0);
+    char label[96];
+    for (int i = 0; i < count; ++i)
+        if ((int)SendMessageA(scale, CB_GETITEMDATA, (WPARAM)i, 0) == value) {
+            SendMessageA(scale, CB_GETLBTEXT, (WPARAM)i, (LPARAM)label);
+            return !strcmp(label, expected);
+        }
+    return 0;
+}
+static void pick_aspect(HWND window, int index)
+{
+    HWND aspect = GetDlgItem(window, ID_ASPECT);
+    SendMessageA(aspect, CB_SETCURSEL, (WPARAM)index, 0);
+    SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_ASPECT, CBN_SELCHANGE), (LPARAM)aspect);
+}
+static void internal_resolution_sizes(HWND window)
+{
+    HWND scale = GetDlgItem(window, ID_SCALE);
+    int before = combo_value(scale);
+    pick_aspect(window, 2);                                                     /* 16:9 */
+    CHECK(scale_label_is(window, 2250, "1080p (Full HD) - 1920 x 1080"));
+    CHECK(scale_label_is(window, 4500, "2160p (4K) - 3840 x 2160"));
+    CHECK(scale_label_is(window, 1000, "480p (Xbox) - 853 x 480"));
+    CHECK(scale_label_is(window, 0, "Automatic + supersampling"));
+    pick_aspect(window, 1);                                                     /* 4:3 */
+    CHECK(scale_label_is(window, 1000, "480p (Xbox) - 640 x 480"));
+    CHECK(scale_label_is(window, 2250, "1080p (Full HD) - 1440 x 1080"));
+    pick_aspect(window, 4);                                                     /* 21:9 */
+    CHECK(scale_label_is(window, 3000, "1440p (QHD) - 3360 x 1440"));
+    pick_aspect(window, 0);                                                     /* auto: the window's own shape */
+    choose(window, ID_RESOLUTION, 1920 * 10000 + 1080);
+    CHECK(scale_label_is(window, 3000, "1440p (QHD) - 2560 x 1440"));
+    choose(window, ID_RESOLUTION, 1024 * 10000 + 768);
+    CHECK(scale_label_is(window, 3000, "1440p (QHD) - 1920 x 1440"));
+    CHECK(combo_value(scale) == before);                                        /* the choice itself stays */
+    /* Without the widescreen mod the game is held to 4:3, whatever the Aspect box says. */
+    pick_aspect(window, 2);
+    CHECK(SendMessageA(GetDlgItem(window, ID_OPTION + MM3_LAUNCH_WIDESCREEN), BM_GETCHECK, 0, 0) == BST_CHECKED);
+    click(window, ID_OPTION + MM3_LAUNCH_WIDESCREEN);
+    CHECK(scale_label_is(window, 2250, "1080p (Full HD) - 1440 x 1080"));
+    click(window, ID_OPTION + MM3_LAUNCH_WIDESCREEN);
+    CHECK(scale_label_is(window, 2250, "1080p (Full HD) - 1920 x 1080"));
+    pick_aspect(window, 0);
+    {   /* The Vulkan window opens on the main display whatever Screen says: the box is greyed with it. */
+        HWND screen = GetDlgItem(window, ID_SCREEN);
+        int vulkan = SendMessageA(GetDlgItem(window, ID_OPTION + MM3_LAUNCH_VULKAN), BM_GETCHECK, 0, 0) == BST_CHECKED;
+        CHECK((IsWindowEnabled(screen) != 0) == !vulkan);
+        click(window, ID_OPTION + MM3_LAUNCH_VULKAN);
+        CHECK((IsWindowEnabled(screen) != 0) == vulkan);
+        click(window, ID_OPTION + MM3_LAUNCH_VULKAN);
+        CHECK((IsWindowEnabled(screen) != 0) == !vulkan);
+    }
+}
+
 static void presets(HWND window)
 {
     char status[512];
     HWND slider = GetDlgItem(window, ID_PRESET);
     int open;
     select_page(window, 0);
-    CHECK(IsWindowVisible(slider) && SendMessageA(slider, TBM_GETRANGEMAX, 0, 0) == 3);
+    CHECK(IsWindowVisible(slider) && SendMessageA(slider, TBM_GETRANGEMAX, 0, 0) == 4);   /* four levels, then Custom */
     CHECK(IsWindowVisible(GetDlgItem(window, ID_ADVANCED)));
     /* Advanced swaps the detail choices and the summary line; the slider stays. */
     open = IsWindowVisible(GetDlgItem(window, ID_SCALE)) != 0;
@@ -799,18 +934,54 @@ static void presets(HWND window)
     edit_is(window, ID_FPS, "120");
     CHECK(level_is(window, "Max", 3) && help_contains(window, "8x MSAA"));
     /* Any other choice for one of its values makes the caption say Custom, and the old one back puts it right. */
+    /* The thumb goes to the last stop, Custom, so it never stays on the level picked before. */
     choose(window, ID_MSAA, 4);
-    CHECK(level_is(window, "Custom", -1));
+    CHECK(level_is(window, "Custom", 4));
     choose(window, ID_MSAA, 8);
     CHECK(level_is(window, "Max", 3));
     edit_value(window, ID_FPS, "45");
-    CHECK(level_is(window, "Custom", -1));
+    CHECK(level_is(window, "Custom", 4));
     edit_value(window, ID_FPS, "120");
     CHECK(level_is(window, "Max", 3));
     click(window, ID_OPTION + MM3_LAUNCH_DSP);
-    CHECK(level_is(window, "Custom", -1));
+    CHECK(level_is(window, "Custom", 4));
     click(window, ID_OPTION + MM3_LAUNCH_DSP);
     CHECK(level_is(window, "Max", 3));
+    edit_value(window, ID_FPS, "120 ");                                  /* blanks around the number do not matter */
+    CHECK(level_is(window, "Max", 3));
+    edit_value(window, ID_FPS, "120");
+    {   /* A pick from the FPS list: the box shows the pick at once (the edit text lags behind CBN_SELCHANGE). */
+        HWND fps = GetDlgItem(window, ID_FPS);
+        int at = (int)SendMessageA(fps, CB_FINDSTRINGEXACT, (WPARAM)-1, (LPARAM)"60");
+        CHECK(at >= 0);
+        SendMessageA(fps, CB_SETCURSEL, (WPARAM)at, 0);
+        SetWindowTextA(fps, "120");                                      /* what the edit part still shows */
+        SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_FPS, CBN_SELCHANGE), (LPARAM)fps);
+        edit_is(window, ID_FPS, "60");
+        CHECK(level_is(window, "Custom", 4));
+        edit_value(window, ID_FPS, "120");
+        CHECK(level_is(window, "Max", 3));
+    }
+    {   /* The second click of a quick double click on a check box counts, as on any check box. */
+        HWND vsync = GetDlgItem(window, ID_VSYNC);
+        int state = (int)SendMessageA(vsync, BM_GETCHECK, 0, 0);
+        SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_VSYNC, BN_DOUBLECLICKED), (LPARAM)vsync);
+        CHECK((int)SendMessageA(vsync, BM_GETCHECK, 0, 0) != state);
+        SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_VSYNC, BN_DOUBLECLICKED), (LPARAM)vsync);
+        CHECK((int)SendMessageA(vsync, BM_GETCHECK, 0, 0) == state);
+    }
+    /* Custom is not a level: dragging onto it fills in nothing and the thumb returns to the truth;
+     * a level replaces an own mix. */
+    slide(window, 4);
+    CHECK(level_is(window, "Max", 3) && combo_is(window, ID_MSAA, 8));
+    choose(window, ID_MSAA, 4);
+    CHECK(level_is(window, "Custom", 4));
+    slide(window, 4);
+    CHECK(level_is(window, "Custom", 4) && combo_is(window, ID_MSAA, 4));
+    slide(window, 3);
+    CHECK(level_is(window, "Max", 3) && combo_is(window, ID_MSAA, 8));
+    internal_resolution_list(window);
+    internal_resolution_sizes(window);
     /* Other settings the levels do not touch stay as they were. */
     choose(window, ID_RESOLUTION, 1920 * 10000 + 1080);
     slide(window, 2);
@@ -900,6 +1071,7 @@ static DWORD WINAPI exercise(void *unused)
     CHECK(footer.bottom <= bounds.bottom && footer.top >= bounds.top && IsWindowVisible(play));
     CHECK(IsWindowVisible(skip) && SendMessageA(skip, BM_GETCHECK, 0, 0) == BST_UNCHECKED);
     tab_bar_clear(window);
+    page_controls_apart(window);
     controller_detection(window, "controls-detected");
     contextual_help(window);
     if (!s_play) { presets(window); tools_and_files(window, s_folder_argument); }
@@ -1158,6 +1330,26 @@ static void smaller_layout(void)
     help_layout(window);
     focus_control(window, ID_MSAA);
     capture_page(window, "settings-720p");
+    {   /* The controller moves the graphics-quality slider and the FPS box (its typing part has the focus). */
+        HWND slider = GetDlgItem(window, ID_PRESET), fps = GetDlgItem(window, ID_FPS);
+        COMBOBOXINFO fps_info = {sizeof fps_info};
+        char typed[32];
+        int advanced_was_open = ui.advanced;
+        if (!advanced_was_open) click(window, ID_ADVANCED);              /* the FPS box lives under Advanced */
+        slide(window, 1);                                                /* Xbox */
+        SetFocus(slider); CHECK(GetFocus() == slider);
+        pad_navigation(&ui, XINPUT_GAMEPAD_DPAD_RIGHT);
+        CHECK(level_is(window, "Medium", 2));
+        pad_navigation(&ui, XINPUT_GAMEPAD_DPAD_LEFT);
+        CHECK(level_is(window, "Xbox", 1));
+        CHECK(GetComboBoxInfo(fps, &fps_info) && fps_info.hwndItem);
+        SetFocus(fps_info.hwndItem); CHECK(GetFocus() == fps_info.hwndItem);
+        pad_navigation(&ui, XINPUT_GAMEPAD_DPAD_RIGHT);
+        GetWindowTextA(fps, typed, sizeof typed);
+        CHECK(strcmp(typed, "30") != 0 && level_is(window, "Custom", 4));
+        slide(window, 1);
+        if (!advanced_was_open) click(window, ID_ADVANCED);
+    }
     page_show(&ui, 1); controllers_layout(window); help_layout(window);
     CHECK(combo_value(GetDlgItem(window, ID_PAD_COUNT)) == 0);
     choose(window, ID_GROUP, 2);

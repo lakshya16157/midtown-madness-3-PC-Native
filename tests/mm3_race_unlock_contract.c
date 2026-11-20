@@ -108,7 +108,30 @@ int main(int argc, char **argv)
         g_eax = 7; mm3_race_unlock_menu_end(&saved, MENU);                          /* not a city: untouched */
         assert(MEM32(MENU + 0x148) == 0u);
     }
-    printf("PASS: unlock all races %s: profile counts, open menu, real counts for the profile callback, selection kept or reset\n",
+    /* The Checkpoint pick (user, 11-20: "it won't let me move right, it keeps coming back"). Moving right sets
+     * the pick (+0x14C); each frame the original copies it into the city's remembered race (+0x110 + 4 * city)
+     * and clamps that to the races the profile has unlocked (ten before retail race 09 is won) before our end
+     * raises the count, so the pick went back every frame. The mock original does the same clamp. */
+    memset(memory + MENU, 0, 0x200);
+    MEM32(0x003B8578u) = 1; MEM32(MENU + 0x110) = 3;
+    MEM32(MENU + 0x14C) = 12;                                 /* the player moved right to race 12 of city 1 */
+    mm3_race_unlock_menu_begin(&saved, MENU);
+    MEM32(MENU + 0x114) = 9; MEM32(MENU + 0x14C) = 9; MEM32(MENU + 0x150) = 10;   /* the original: ten unlocked */
+    g_eax = 1; mm3_race_unlock_menu_end(&saved, MENU);
+    assert(MEM32(MENU + 0x114) == (on ? 12u : 9u) && MEM32(MENU + 0x14C) == (on ? 12u : 9u));
+    assert(MEM32(MENU + 0x150) == (on ? 25u : 10u) && MEM32(MENU + 0x110) == 3u);   /* the other city's is untouched */
+    MEM32(MENU + 0x14C) = 40;                                 /* held past the end of the list: the last race */
+    mm3_race_unlock_menu_begin(&saved, MENU);
+    MEM32(MENU + 0x114) = 9; MEM32(MENU + 0x14C) = 9; MEM32(MENU + 0x150) = 10;
+    g_eax = 1; mm3_race_unlock_menu_end(&saved, MENU);
+    assert(MEM32(MENU + 0x114) == (on ? 24u : 9u) && MEM32(MENU + 0x14C) == (on ? 24u : 9u));
+    MEM32(MENU + 0x14C) = 5;                                  /* city 0 is shown now, city 1 was last frame */
+    mm3_race_unlock_menu_begin(&saved, MENU);
+    MEM32(MENU + 0x110) = 2; MEM32(MENU + 0x14C) = 2; MEM32(MENU + 0x150) = 10;   /* the original picked race 2 */
+    g_eax = 0; mm3_race_unlock_menu_end(&saved, MENU);        /* the city changed since the last frame (1 -> 0) */
+    assert(MEM32(MENU + 0x110) == 2u && MEM32(MENU + 0x14C) == 2u);   /* a new city's pick is the original's */
+
+    printf("PASS: unlock all races %s: profile counts, open menu, real counts for the profile callback, selection kept or reset, Checkpoint cursor kept past the unlocked count\n",
            on ? "on" : "off");
     return 0;
 }

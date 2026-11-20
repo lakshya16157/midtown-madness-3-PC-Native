@@ -113,6 +113,67 @@ class SettingsTests(unittest.TestCase):
             display.write_bytes(b"RECOMP_FPS_LIMIT=45\nMM3_PERFORMANCE_PROFILE=\xff\n")
             self.assertEqual(settings.read_display(display, use_defaults=False), {"RECOMP_FPS_LIMIT": "45"})
 
+    def test_system_link_peers_stay_comma_separated_as_the_game_and_the_loader_read_them(self):
+        spaced = "127.0.0.1:3076, example.local:3077   other:1"
+        self.assertEqual(settings.normalise({"RECOMP_NET_PEERS": spaced})["RECOMP_NET_PEERS"],
+                         "127.0.0.1:3076,example.local:3077,other:1")
+        self.assertEqual(settings.normalise({"RECOMP_NET_PEERS": "  "})["RECOMP_NET_PEERS"], "")
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "launcher.ini"
+            settings.write_ini(settings.normalise({"RECOMP_NET_PEERS": spaced}), [], path)
+            self.assertIn("RECOMP_NET_PEERS=127.0.0.1:3076,example.local:3077,other:1\n", path.read_text(encoding="utf-8"))
+
+    def test_the_resolution_and_frame_rate_lists_are_the_windows_launchers(self):
+        names = [name for name, _value in settings.SCALES]
+        self.assertEqual(names, ["Profile's own", "240p", "360p", "480p (Xbox)", "720p (HD)", "960p", "1080p (Full HD)",
+                                 "1440p (QHD)", "2160p (4K)"])
+        self.assertEqual(dict(settings.SCALES)["1080p (Full HD)"], "2.25")
+        self.assertEqual(settings.FPS_LIMITS[:3], ["Profile's own", "15", "30"])
+        self.assertIn("40", settings.FPS_LIMITS)                       # the Steam Deck's 40 Hz
+        source = (ROOT / "src/mm3_display_choices.h").read_text(encoding="utf-8")
+        scales = re.search(r"mm3_scale_choices\[\] = \{([^}]*)\}", source).group(1)
+        self.assertEqual([float(v.strip().rstrip("f")) for v in scales.split(",")][1:],
+                         [float(v) for v in settings.SCALE_VALUES])
+        rates = re.search(r"mm3_fps_choices\[\] = \{([^}]*)\}", source).group(1)
+        self.assertEqual([v.strip() for v in rates.split(",")], settings.FPS_LIMITS[1:])
+
+    def test_a_saved_value_the_lists_lack_stays_chosen_in_order(self):
+        custom = settings.scale_choices("2.7")
+        self.assertEqual([n for n, _v in custom][-4:-1], ["1080p (Full HD)", "1296p (custom)", "1440p (QHD)"])
+        self.assertEqual(settings.scale_choices("1.5"), settings.SCALES)
+        self.assertEqual(settings.scale_choices("9"), settings.SCALES)              # the loader refuses it anyway
+        self.assertEqual(settings.scale_choices("garbage"), settings.SCALES)
+        self.assertEqual(settings.fps_choices("50")[4:7], ["45", "50", "60"])
+        self.assertEqual(settings.fps_choices("60"), settings.FPS_LIMITS)
+        self.assertEqual(settings.fps_choices("abc"), settings.FPS_LIMITS)
+
+    def test_saving_works_on_python_3_9_where_path_write_text_has_no_newline_argument(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(Path, "write_text", side_effect=TypeError("no newline argument")):
+            ini, extra = Path(folder) / "launcher.ini", Path(folder) / "launcher-display.ini"
+            settings.write_ini(settings.normalise({}), [], ini)
+            settings.write_display({"RECOMP_FPS_LIMIT": "", "RECOMP_FULLSCREEN": "0"}, extra)
+            self.assertTrue(ini.read_text(encoding="utf-8").startswith("# Midtown Madness 3 launcher preferences\n"))
+            self.assertEqual(extra.read_text(encoding="utf-8"), "RECOMP_FPS_LIMIT=\nRECOMP_FULLSCREEN=0\n")
+            self.assertNotIn(b"\r", ini.read_bytes())
+
+    def test_untouched_launcher_choices_do_not_override_the_in_game_settings(self):
+        display = {"MM3_PERFORMANCE_PROFILE": "Xbox", "RECOMP_RENDER_SCALE": "", "RECOMP_FPS_LIMIT": "",
+                   "RECOMP_FULLSCREEN": "0"}
+        with patch.dict(settings.os.environ, {}, clear=True), patch.object(settings.os, "execvpe") as execute:
+            settings.play(display)
+        env = execute.call_args.args[2]
+        self.assertEqual(env["MM3_PERFORMANCE_PROFILE"], "Xbox")
+        for key in ("RECOMP_RENDER_SCALE", "RECOMP_FPS_LIMIT", "RECOMP_FULLSCREEN"):
+            self.assertNotIn(key, env)                       # display.ini (F10, the Graphics menu) keeps deciding
+        with patch.dict(settings.os.environ, {}, clear=True), patch.object(settings.os, "execvpe") as execute:
+            settings.play(display | {"RECOMP_FULLSCREEN": "1", "RECOMP_FPS_LIMIT": "40"})
+        self.assertEqual((execute.call_args.args[2]["RECOMP_FULLSCREEN"], execute.call_args.args[2]["RECOMP_FPS_LIMIT"]),
+                         ("1", "40"))                         # a choice the player made is passed on
+        with patch.dict(settings.os.environ, {}, clear=True), patch.object(settings.os, "execvpe") as execute:
+            settings.play({"RECOMP_FULLSCREEN": "0"}, override=True)
+        self.assertEqual(execute.call_args.args[2]["RECOMP_FULLSCREEN"], "0")      # --windowed still wins
+
     def test_direct_launch_keeps_explicit_environment_and_execs_guarded_shell(self):
         with patch.dict(settings.os.environ, {"RECOMP_FULLSCREEN": "0"}, clear=True), \
                 patch.object(settings.os, "execvpe") as execute:

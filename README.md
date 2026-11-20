@@ -37,6 +37,20 @@ and the launch script. On native Linux, pass them to `play-midtown-madness-3.sh`
 Launchers can also use `--fullscreen`, `--windowed`, `--window-size 1920x1080` and
 `--set NAME=VALUE` for any `MM3_` or `RECOMP_` setting; `mm3_recomp.exe --help` lists them.
 
+**Steam:** *Add a Non-Steam Game*, **Browse** and pick `mm3_recomp.exe` in the install folder. It does what the
+`.cmd` does (settings, log, controller), and Steam's FPS counter, game recording and play time follow it
+directly. If Steam starts `Play Midtown Madness 3.cmd` instead, the game loads Steam's overlay itself, because
+Steam may hook only the script (a `[MM3_STEAM]` line in `logs\last-run.log` says what happened;
+`MM3_STEAM_OVERLAY=0` switches it off). Steam's own FPS counter
+is a Steam setting: *Settings > In Game > In-game FPS counter*.
+
+**Steam pictures:** a game added by hand shows a grey tile. Setup draws library pictures (portrait and wide
+capsule, hero, logo, icon) from the game's logo into `steam-artwork` in the install folder and copies them into
+Steam for a shortcut that already starts this install; the first time Steam starts the game from a shortcut made
+later, the game copies them itself. Restart Steam to see them. A picture you chose yourself is never replaced,
+and `MM3_STEAM_ART=0` turns the copying off. The title stays what Steam named the shortcut (`mm3_recomp`):
+rename it in Steam under *Properties*.
+
 **Everything stays in the install folder:** the game files and saves (`game_files`), your
 settings (`display.ini`, `launcher.ini`, `language.ini`), the cache (`cache`) and the logs (`logs`).
 Earlier versions kept the cache in `%LocalAppData%\xboxrecomp` and the settings in
@@ -292,6 +306,12 @@ on Windows (`logs` in the install folder). Proton 7 and older are not supported.
   Cars\washingtonpolice_lod1\body.cmp is NOT in this game folder`. Run Setup again with your
   disc image: it puts back only the files that are missing (or empty) and leaves everything
   else, saves and DLC included, as it is.
+- **Stutter, a black screen while loading, or a picture glitch:** in the launcher, tick
+  **Detailed stutter log** (Visual + audio mods) and play. Every moment the game stops
+  drawing for over a tenth of a second is logged with the game functions it was busy in.
+  When the problem is on screen, press **F9**: the game saves the last seconds of frames
+  (a picture sheet and a table) next to the log in `logs`. Attach the newest log and F9
+  files to your issue, then untick the box (it costs a little speed).
 - **Something else:** the game writes `logs\last-run.log` in the install folder.
   [Open an issue](https://github.com/lakshya16157/midtown-madness-3-PC-Native/issues) and
   attach it.

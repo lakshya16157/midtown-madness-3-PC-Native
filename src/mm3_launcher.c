@@ -220,7 +220,7 @@ static HWND add(Launcher *ui, int page, const char *kind, const char *text,
                 if (GetComboBoxInfo(child, &info) && info.hwndItem != child)
                     SetWindowSubclass(info.hwndItem, help_proc, 2, (DWORD_PTR)ui);
             }
-        } else if (id == ID_REQUIRED || (id >= ID_OPTION && id < ID_OPTION + MM3_LAUNCH_OPTION_COUNT))
+        } else if (id == ID_REQUIRED || id == ID_ADVANCED || (id >= ID_OPTION && id < ID_OPTION + MM3_LAUNCH_OPTION_COUNT))
             SetWindowSubclass(child, help_proc, 2, (DWORD_PTR)ui);
         if (ui->control_count < (int)(sizeof ui->controls / sizeof ui->controls[0])) {
             ui->controls[ui->control_count].window = child;
@@ -236,6 +236,17 @@ static void combo_item(HWND combo, const char *text, int value)
 {
     LRESULT at = SendMessageA(combo, CB_ADDSTRING, 0, (LPARAM)text);
     if (at >= 0) SendMessageA(combo, CB_SETITEMDATA, (WPARAM)at, value);
+}
+/* A value the list does not offer (from the settings file) goes where its size puts it, in a list
+ * that is sorted smallest first; an Automatic entry (value 0) stays at the top. */
+static void combo_item_sorted(HWND combo, const char *text, int value)
+{
+    int count = (int)SendMessageA(combo, CB_GETCOUNT, 0, 0), at = count;
+    LRESULT item;
+    for (int i = 0; i < count; ++i)
+        if ((int)SendMessageA(combo, CB_GETITEMDATA, (WPARAM)i, 0) > value) { at = i; break; }
+    item = SendMessageA(combo, CB_INSERTSTRING, (WPARAM)at, (LPARAM)text);
+    if (item >= 0) SendMessageA(combo, CB_SETITEMDATA, (WPARAM)item, value);
 }
 static void combo_select(HWND combo, int value)
 {
@@ -378,6 +389,18 @@ static int preset_scale(const MM3PerformanceProfile *profile)
 static int preset_distance(const MM3PerformanceProfile *profile)
 { return (int)lroundf((float)atof(profile->draw_distance) * 1000.f); }
 
+/* A whole number typed in a box, blanks around it allowed; -1 when it is anything else. */
+static int whole_number(const char *text)
+{
+    char *end;
+    long number;
+    text += strspn(text, " \t");
+    number = strtol(text, &end, 10);
+    if (end == text || number < 0 || number > 1000000) return -1;
+    while (*end == ' ' || *end == '\t') ++end;
+    return *end ? -1 : (int)number;
+}
+
 static int preset_current(Launcher *ui)
 {
     char fps[32];
@@ -387,7 +410,7 @@ static int preset_current(Launcher *ui)
         if (combo_value(control(ui, ID_SCALE)) == preset_scale(p) && combo_value(control(ui, ID_MSAA)) == atoi(p->msaa) &&
             combo_value(control(ui, ID_ANISO)) == atoi(p->aniso) &&
             combo_value(control(ui, ID_DRAW)) == preset_distance(p) &&
-            combo_value(control(ui, ID_VIEW)) == preset_distance(p) && atoi(fps) == atoi(p->fps_limit) &&
+            combo_value(control(ui, ID_VIEW)) == preset_distance(p) && whole_number(fps) == atoi(p->fps_limit) &&
             checked(ui, ID_OPTION + MM3_LAUNCH_DSP) == atoi(p->apu_dsp) &&    /* Lowest and Xbox differ only here */
             checked(ui, ID_OPTION + MM3_LAUNCH_HRTF) == atoi(p->apu_hrtf))
             return i;
@@ -402,7 +425,9 @@ static void preset_show(Launcher *ui)
     int pick = preset_current(ui);
     char caption[64], summary[320], text[400];
     if (!control(ui, ID_PRESET)) return;
-    if (pick) SendMessageA(control(ui, ID_PRESET), TBM_SETPOS, TRUE, pick - 1);
+    /* The thumb always shows the truth: a level's stop, or the last stop (Custom) when the controls
+     * spell out none, so it never stays on the level that was picked before they were changed. */
+    SendMessageA(control(ui, ID_PRESET), TBM_SETPOS, TRUE, pick ? pick - 1 : PRESET_COUNT - 1);
     snprintf(caption, sizeof caption, "Graphics quality: %s", preset_labels[pick]);
     SetWindowTextA(control(ui, ID_PRESET_NAME), caption);
     if (pick) {
@@ -431,8 +456,8 @@ static void preset_summary(const MM3PerformanceProfile *p, char *text, size_t ca
     snprintf(filtering, sizeof filtering, "%sx", p->aniso);
     if (atoi(p->msaa) > 1) snprintf(antialiasing, sizeof antialiasing, "%sx MSAA", p->msaa);
     else snprintf(antialiasing, sizeof antialiasing, "no anti-aliasing");
-    snprintf(text, capacity, "%.1fx internal resolution, %s, %s texture filtering, %sx distances, %s FPS%s",
-             atof(p->render_scale), antialiasing, filtering, p->draw_distance, p->fps_limit,
+    snprintf(text, capacity, "%dp internal resolution, %s, %s texture filtering, %sx distances, %s FPS%s",
+             mm3_scale_lines((float)atof(p->render_scale)), antialiasing, filtering, p->draw_distance, p->fps_limit,
              atoi(p->apu_dsp) ? "" : ", accurate sound processor and 3D headphone sound off, no wait for the GPU");
 }
 
@@ -515,6 +540,7 @@ static void help_show(Launcher *ui, int id)
             "Changes the gameplay. Every car offers all its paint jobs in the car selection, as if you had found every paint-job hideout in Cruise. Your save is not changed: untick it and only the paint jobs you found remain.",
             "Use the digital speedometer, the speed number the game shows in split screen, in normal play too, for every car including cars added with the Car Workshop. Off keeps the round dial. Needs the Improved look.",
             "Changes the gameplay. Every installed Checkpoint race (including circuits and downloaded races) and every Undercover job is open in the menus, without playing the earlier ones. Your save is not changed: no race is marked won, and untick it to see only what you earned.",
+            "A detailed performance log for bug reports: moments when the game stops drawing for over a tenth of a second are logged with the game functions it was busy in, and its file reads are timed. It costs a little speed, so leave it off otherwise.",
         };
         int option = id - ID_OPTION, on = checked(ui, id), master = mm3_launcher_option_master(option);
         title = option_caption(option);
@@ -556,6 +582,10 @@ static void help_show(Launcher *ui, int id)
             const LauncherScreen *screen = NULL;
             title = "Screen";
             body = "The display the game opens on. Fullscreen fills that screen at its native size; a window opens centred on it. Windows main display follows whichever display Windows uses as its main one.";
+            if (checked(ui, ID_OPTION + MM3_LAUNCH_VULKAN)) {
+                effect = "The Vulkan renderer opens on the Windows main display, so this choice is not used. Untick Vulkan to choose a screen.";
+                break;
+            }
             if (at >= 1 && at <= ui->screen_count) screen = &ui->screens[at - 1];
             for (int i = 0; !screen && at == SCREEN_MAIN && i < ui->screen_count; ++i)
                 if (ui->screens[i].primary) screen = &ui->screens[i];
@@ -581,7 +611,7 @@ static void help_show(Launcher *ui, int id)
             char *end;
             long fps = strtol(value, &end, 10);
             title = "Maximum FPS";
-            body = "1-120 frames per second. 120 is the game engine's hard limit: the cars' physics runs 120 steps a second, so more frames would only repeat positions. 60 is the tested default. VSync off shows frames at once (may tear).";
+            body = "1-120 frames per second. 120 is the game engine's hard limit: the cars' physics runs 120 steps a second, so more frames would only repeat positions. 30 is the Xbox's own rate and 60 is smoother. VSync off shows frames at once (may tear).";
             if (end == value || *end || fps < 1 || fps > MM3_FPS_LIMIT_MAX)
                 effect = "Enter a whole number from 1 to 120 before pressing Play.";
             else {
@@ -614,7 +644,8 @@ static void help_show(Launcher *ui, int id)
             title = "Anti-aliasing";
             body = "Smooth polygon edges such as car outlines and building silhouettes. This is separate from internal resolution and texture filtering.";
             selected = combo_value(control(ui, id));
-            if (selected == 1) effect = "Off uses less GPU memory and work, with more visible jagged edges.";
+            if (checked(ui, ID_OPTION + MM3_LAUNCH_VULKAN)) effect = "The Vulkan renderer has no anti-aliasing: its internal resolution supersamples instead.";
+            else if (selected == 1) effect = "Off uses less GPU memory and work, with more visible jagged edges.";
             else { snprintf(consequence, sizeof consequence, "%dx MSAA uses more edge samples. Higher values smooth edges further and increase GPU memory and rendering cost.", selected); effect = consequence; }
             break;
         case ID_ANISO:
@@ -821,7 +852,7 @@ static void help_show(Launcher *ui, int id)
             int pick = preset_current(ui);
             title = "Graphics quality";
             snprintf(value, sizeof value, "%s", preset_labels[pick]);
-            body = "Slide to set resolution, anti-aliasing, filtering, distances, the FPS limit and the sound processor at once. Lowest: slow PCs such as 2-core laptops. Xbox: as on the console. Medium: the default. Max: a strong graphics card. Advanced settings shows every value.";
+            body = "Slide to set resolution, anti-aliasing, filtering, distances, the FPS limit and the sound processor at once. Lowest: slow PCs such as 2-core laptops. Xbox: as on the console. Medium: balanced. Max: a strong graphics card. Advanced settings shows every value.";
             if (!pick) {
                 effect = "These graphics choices are your own mix. Move the slider to replace them; nothing is saved until you press Play.";
             } else {
@@ -1167,6 +1198,56 @@ static void support_text(wchar_t *text, size_t count)
     hide_profile(text, count);
 }
 
+/* The shape the game will render at, from the controls: the Aspect ratio box; on auto, the chosen
+ * screen's in fullscreen and the window's otherwise, as the game itself picks it. */
+static float launcher_aspect(Launcher *ui)
+{
+    char text[32];
+    float aspect;
+    int size;
+    if (!checked(ui, ID_OPTION + MM3_LAUNCH_WIDESCREEN)) return 4.f / 3.f;   /* the game is forced to 4:3 */
+    GetWindowTextA(control(ui, ID_ASPECT), text, sizeof text);
+    aspect = mm3_aspect_value(text);
+    if (aspect > 0.f) return aspect;
+    if (combo_value(control(ui, ID_MODE)) == 1) {
+        int at = checked(ui, ID_OPTION + MM3_LAUNCH_VULKAN) ? SCREEN_MAIN : combo_value(control(ui, ID_SCREEN));
+        const LauncherScreen *screen = at >= 1 && at <= ui->screen_count ? &ui->screens[at - 1] : NULL;
+        for (int i = 0; !screen && i < ui->screen_count; ++i)
+            if (ui->screens[i].primary) screen = &ui->screens[i];
+        if (screen && screen->width > 0 && screen->height > 0)
+            return mm3_aspect_clamp((float)screen->width / (float)screen->height);
+    }
+    size = combo_value(control(ui, ID_RESOLUTION));
+    if (size > 0 && size % 10000 > 0) return mm3_aspect_clamp((float)(size / 10000) / (float)(size % 10000));
+    return 16.f / 9.f;
+}
+
+/* Every Internal resolution entry names the size it makes at that shape ("1440p (QHD) - 2560 x 1440");
+ * called when the shape can have changed. The choice itself stays. */
+static void scale_labels_refresh(Launcher *ui)
+{
+    HWND scale = control(ui, ID_SCALE);
+    float aspect;
+    int count, selected;
+    char label[96];
+    if (!scale) return;
+    aspect = launcher_aspect(ui);
+    count = (int)SendMessageA(scale, CB_GETCOUNT, 0, 0);
+    selected = (int)SendMessageA(scale, CB_GETCURSEL, 0, 0);
+    SendMessageA(scale, WM_SETREDRAW, FALSE, 0);
+    for (int i = 0; i < count; ++i) {
+        int value = (int)SendMessageA(scale, CB_GETITEMDATA, (WPARAM)i, 0);
+        if (value <= 0) continue;               /* Automatic keeps its name */
+        mm3_scale_label_aspect((float)value / 1000.f, aspect, mm3_scale_is_listed((float)value / 1000.f), label, sizeof label);
+        SendMessageA(scale, CB_DELETESTRING, (WPARAM)i, 0);
+        SendMessageA(scale, CB_INSERTSTRING, (WPARAM)i, (LPARAM)label);
+        SendMessageA(scale, CB_SETITEMDATA, (WPARAM)i, (LPARAM)value);
+    }
+    SendMessageA(scale, CB_SETCURSEL, (WPARAM)selected, 0);
+    SendMessageA(scale, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(scale, NULL, TRUE);
+}
+
 static void populate(Launcher *ui)
 {
     char text[64];
@@ -1175,7 +1256,7 @@ static void populate(Launcher *ui)
     combo_select(control(ui, ID_RESOLUTION), resolution);
     if (combo_value(control(ui, ID_RESOLUTION)) < 0) {
         snprintf(text, sizeof text, "%d x %d", s->window_width, s->window_height);
-        combo_item(control(ui, ID_RESOLUTION), text, resolution);
+        combo_item_sorted(control(ui, ID_RESOLUTION), text, resolution);
         combo_select(control(ui, ID_RESOLUTION), resolution);
     }
     combo_select(control(ui, ID_MODE), s->fullscreen);
@@ -1198,8 +1279,8 @@ static void populate(Launcher *ui)
     set_checked(ui, ID_SKIP_LAUNCHER, ui->config.skip_launcher);
     combo_select(control(ui, ID_SCALE), (int)lroundf(s->render_scale * 1000.f));
     if (combo_value(control(ui, ID_SCALE)) < 0) {
-        mm3_custom_label(s->render_scale, text, sizeof text);
-        combo_item(control(ui, ID_SCALE), text, (int)lroundf(s->render_scale * 1000.f));
+        mm3_custom_scale_label(s->render_scale, text, sizeof text);
+        combo_item_sorted(control(ui, ID_SCALE), text, (int)lroundf(s->render_scale * 1000.f));
         combo_select(control(ui, ID_SCALE), (int)lroundf(s->render_scale * 1000.f));
     }
     { HWND aspect = control(ui, ID_ASPECT);
@@ -1209,19 +1290,19 @@ static void populate(Launcher *ui)
     combo_select(control(ui, ID_MSAA), s->msaa); combo_select(control(ui, ID_ANISO), s->aniso);
     if (combo_value(control(ui, ID_ANISO)) < 0) {
         mm3_aniso_label(s->aniso, text, sizeof text);
-        combo_item(control(ui, ID_ANISO), text, s->aniso);
+        combo_item_sorted(control(ui, ID_ANISO), text, s->aniso);
         combo_select(control(ui, ID_ANISO), s->aniso);
     }
     combo_select(control(ui, ID_DRAW), (int)lroundf(s->draw_distance * 1000.f));
     combo_select(control(ui, ID_VIEW), (int)lroundf(s->view_distance * 1000.f));
     if (combo_value(control(ui, ID_DRAW)) < 0) {
         mm3_custom_label(s->draw_distance, text, sizeof text);
-        combo_item(control(ui, ID_DRAW), text, (int)lroundf(s->draw_distance * 1000.f));
+        combo_item_sorted(control(ui, ID_DRAW), text, (int)lroundf(s->draw_distance * 1000.f));
         combo_select(control(ui, ID_DRAW), (int)lroundf(s->draw_distance * 1000.f));
     }
     if (combo_value(control(ui, ID_VIEW)) < 0) {
         mm3_custom_label(s->view_distance, text, sizeof text);
-        combo_item(control(ui, ID_VIEW), text, (int)lroundf(s->view_distance * 1000.f));
+        combo_item_sorted(control(ui, ID_VIEW), text, (int)lroundf(s->view_distance * 1000.f));
         combo_select(control(ui, ID_VIEW), (int)lroundf(s->view_distance * 1000.f));
     }
     combo_select(control(ui, ID_MINIMAP), s->minimap_improved);
@@ -1267,12 +1348,12 @@ static void populate(Launcher *ui)
 
 static int read_integer(Launcher *ui, int id, int low, int high, int *value)
 {
-    char text[64], *end;
-    long number;
+    char text[64];
+    int number;
     GetWindowTextA(control(ui, id), text, sizeof text);
-    number = strtol(text, &end, 10);
-    if (end == text || *end || number < low || number > high) return 0;
-    *value = (int)number;
+    number = whole_number(text);        /* the same reading as the slider's, blanks allowed */
+    if (number < low || number > high) return 0;
+    *value = number;
     return 1;
 }
 static int read_controls(Launcher *ui, char *error, size_t capacity)
@@ -1280,6 +1361,8 @@ static int read_controls(Launcher *ui, char *error, size_t capacity)
     int resolution = combo_value(control(ui, ID_RESOLUTION));
     MM3DisplaySettings *s = &ui->display;
     if (!read_integer(ui, ID_FPS, 1, MM3_FPS_LIMIT_MAX, &s->fps_limit)) {
+        if (ui->page != 0) page_show(ui, 0);
+        if (!ui->advanced) { ui->advanced = 1; advanced_show(ui); }   /* show the box that is wrong */
         snprintf(error, capacity, "Enter a maximum FPS between 1 and 120."); return 0;
     }
     if (!read_integer(ui, ID_FOV, 0, 110, &ui->config.fov_degrees) ||
@@ -1372,6 +1455,16 @@ static void settings_controls(Launcher *ui)
     c = combo(ui, 0, ID_SCREEN, "Screen", 382, 98, 264);
     combo_item(c, "Windows main display", SCREEN_MAIN);
     screens_find(ui);
+    for (int i = 0; i < ui->screen_count; ++i) {      /* a laptop's own 1366 x 768 must be there to pick */
+        HWND sizes = control(ui, ID_RESOLUTION);
+        int key = ui->screens[i].width * 10000 + ui->screens[i].height, listed = 0, items = (int)SendMessageA(sizes, CB_GETCOUNT, 0, 0);
+        for (int j = 0; j < items; ++j)
+            if ((int)SendMessageA(sizes, CB_GETITEMDATA, (WPARAM)j, 0) == key) listed = 1;
+        if (!listed && ui->screens[i].width >= 640 && ui->screens[i].height >= 480) {
+            snprintf(name, sizeof name, "%d x %d", ui->screens[i].width, ui->screens[i].height);
+            combo_item_sorted(sizes, name, key);
+        }
+    }
     for (int i = 0; i < ui->screen_count; ++i) {
         snprintf(name, sizeof name, "Screen %d: %d x %d%s", ui->screens[i].number,
                  ui->screens[i].width, ui->screens[i].height, ui->screens[i].primary ? " (main)" : "");
@@ -1383,11 +1476,12 @@ static void settings_controls(Launcher *ui)
     /* Graphics quality: one slider of four levels; Advanced shows the values it sets. */
     add(ui, 0, "STATIC", "", 0, ID_PRESET_NAME, 42, 166, 506, 24);
     c = add(ui, 0, TRACKBAR_CLASSA, "", TBS_HORZ | TBS_AUTOTICKS | TBS_BOTTOM | WS_TABSTOP, ID_PRESET, 42, 190, 506, 32);
-    SendMessageA(c, TBM_SETRANGE, TRUE, MAKELPARAM(0, PRESET_COUNT - 2));
+    SendMessageA(c, TBM_SETRANGE, TRUE, MAKELPARAM(0, PRESET_COUNT - 1));   /* four levels, then Custom */
     SendMessageA(c, TBM_SETPAGESIZE, 0, 1);
-    for (int i = 1; i < PRESET_COUNT; ++i)   /* under the stops: ends flush, the middle two centred */
-        add(ui, 0, "STATIC", preset_labels[i], i == 1 ? SS_LEFT : i == PRESET_COUNT - 1 ? SS_RIGHT : SS_CENTER, -1,
-            i == 1 ? 42 : i == PRESET_COUNT - 1 ? 448 : 54 + (i - 1) * 482 / (PRESET_COUNT - 2) - 50, 222, 100, 22);
+    for (int stop = 0; stop < PRESET_COUNT; ++stop)   /* under the stops: ends flush, the middle ones centred */
+        add(ui, 0, "STATIC", preset_labels[(stop + 1) % PRESET_COUNT],
+            stop == 0 ? SS_LEFT : stop == PRESET_COUNT - 1 ? SS_RIGHT : SS_CENTER, -1,
+            stop == 0 ? 42 : stop == PRESET_COUNT - 1 ? 448 : 54 + stop * 482 / (PRESET_COUNT - 1) - 50, 222, 100, 22);
     push_button(ui, 0, "Advanced settings", ID_ADVANCED, 578, 190, 238, 32);
     ui->adding_advanced = 2;
     add(ui, 0, "STATIC", "", SS_NOPREFIX, ID_PRESET_SUMMARY, 42, 256, 774, 100);
@@ -1512,7 +1606,7 @@ static void look_controls(Launcher *ui)
 {
     static const OptionColumn columns[] = {
         {42, 240, "Graphics and audio", NULL, {MM3_LAUNCH_WIDESCREEN, MM3_LAUNCH_SKY, MM3_LAUNCH_NATIVE_FOG, MM3_LAUNCH_PAINT_SOFT,
-            MM3_LAUNCH_VULKAN, MM3_LAUNCH_NO_GPU_WAIT, MM3_LAUNCH_PRELOAD_SHADERS, 0}},
+            MM3_LAUNCH_VULKAN, MM3_LAUNCH_NO_GPU_WAIT, MM3_LAUNCH_PRELOAD_SHADERS, MM3_LAUNCH_STUTTER_LOG, 0}},
         {300, 250, "Improved visuals", NULL, {MM3_LAUNCH_DISTANCE, MM3_LAUNCH_CAR_LIGHT, MM3_LAUNCH_LAMP_LIGHT,
             MM3_LAUNCH_WORLD_LIGHT, MM3_LAUNCH_EXHAUST, 0}},
         {560, 260, "Menus and HUD", NULL, {MM3_LAUNCH_LOADING, MM3_LAUNCH_GRAPHICS_MENU, MM3_LAUNCH_QUIT,
@@ -1554,18 +1648,20 @@ static void gameplay_controls(Launcher *ui)
     check(ui, 3, ID_OPTION + MM3_LAUNCH_GAMEPLAY, mm3_launcher_options[MM3_LAUNCH_GAMEPLAY].label, 300, 92, 250);
     label(ui, 3, "Xbox gameplay plays as the Xbox game did. Modded gameplay uses the mods ticked below.", 42, 122, 774);
     option_columns(ui, 3, columns, (int)(sizeof columns / sizeof columns[0]));
-    fixed = add(ui, 3, "STATIC", "Camera and photos", 0, -1, 300, 398, 250, 26);
+    fixed = add(ui, 3, "STATIC", "Camera", 0, -1, 300, 432, 250, 26);
     SendMessageA(fixed, WM_SETFONT, (WPARAM)ui->section, TRUE);
-    check(ui, 3, ID_OPTION + MM3_LAUNCH_FREE_CAMERA, option_caption(MM3_LAUNCH_FREE_CAMERA), 300, 426, 250);
-    c = combo(ui, 3, ID_CAMERA_KEY, "Free camera key", 300, 456, 250);
+    check(ui, 3, ID_OPTION + MM3_LAUNCH_FREE_CAMERA, option_caption(MM3_LAUNCH_FREE_CAMERA), 300, 460, 250);
+    /* Camera sits below the seven Races and cars rows; Photo mode has its own group under Difficulty. */
+    c = combo(ui, 3, ID_CAMERA_KEY, "Free camera key", 300, 490, 250);
     for (int i = 0; i < MM3_LAUNCHER_CAMERA_KEYS; ++i) {
         char name[32];
         snprintf(name, sizeof name, "%s%s", mm3_launcher_camera_key_names[i],
                  mm3_launcher_camera_keys[i] == 0x77 ? " (default)" : "");
         combo_item(c, name, mm3_launcher_camera_keys[i]);
     }
-    check(ui, 3, ID_OPTION + MM3_LAUNCH_PHOTO_MODE, option_caption(MM3_LAUNCH_PHOTO_MODE), 300, 514, 250);
-    label(ui, 3, "F2 pause and fly, F3 photo, F4 hide HUD", 300, 542, 250);
+    fixed = add(ui, 3, "STATIC", "Photos", 0, -1, 560, 474, 260, 26); SendMessageA(fixed, WM_SETFONT, (WPARAM)ui->section, TRUE);
+    check(ui, 3, ID_OPTION + MM3_LAUNCH_PHOTO_MODE, option_caption(MM3_LAUNCH_PHOTO_MODE), 560, 502, 260);
+    label(ui, 3, "F2 pause/fly, F3 photo, F4 hide HUD", 560, 530, 260);
     fixed = add(ui, 3, "STATIC", "Difficulty", 0, -1, 560, 270, 260, 26);
     SendMessageA(fixed, WM_SETFONT, (WPARAM)ui->section, TRUE);
     c = combo(ui, 3, ID_DAMAGE, "Damage Dealt", 560, 300, 260);
@@ -1588,7 +1684,7 @@ static void gameplay_controls(Launcher *ui)
         snprintf(name, sizeof name, "%d%s", i, i == 0 ? " (easiest)" : i == 5 ? " (Xbox)" : i == 9 ? " (hardest)" : "");
         combo_item(c, name, i);
     }
-    fixed = check(ui, 3, ID_REQUIRED, "Collision repair (always on)", 560, 532, 260);
+    fixed = check(ui, 3, ID_REQUIRED, "Collision repair (always on)", 42, 532, 240);
     SendMessageA(fixed, BM_SETCHECK, BST_CHECKED, 0); EnableWindow(fixed, FALSE);
     label(ui, 3, "The port's fixes that restore Xbox behaviour, such as car damage at 60 fps, are always on.", 42, 573, 774);
 }
@@ -1607,6 +1703,9 @@ static void mods_enable(Launcher *ui)
     }
     EnableWindow(control(ui, ID_DRAW), improved);
     EnableWindow(control(ui, ID_VIEW), improved);
+    /* The Vulkan window opens on the main display whatever Screen says (RECOMP_MONITOR is read by the Win32
+     * window only), so the box is greyed with it. */
+    EnableWindow(control(ui, ID_SCREEN), !checked(ui, ID_OPTION + MM3_LAUNCH_VULKAN));
     EnableWindow(control(ui, ID_MINIMAP), improved && modded);
     EnableWindow(control(ui, ID_NIGHT), improved && checked(ui, ID_OPTION + MM3_LAUNCH_WORLD_LIGHT));
     EnableWindow(control(ui, ID_DAMAGE), modded);
@@ -1630,8 +1729,13 @@ static int pad_source(const XINPUT_GAMEPAD *pad)
 static void pad_navigation(Launcher *ui, WORD pressed)
 {
     HWND focus = GetFocus();
-    char kind[32];
+    char kind[32] = "";
     GetClassNameA(focus, kind, sizeof kind);
+    if (!_stricmp(kind, "EDIT") && GetParent(focus)) {       /* the typing part of the FPS box: the box is meant */
+        char parent_kind[32] = "";
+        GetClassNameA(GetParent(focus), parent_kind, sizeof parent_kind);
+        if (!_stricmp(parent_kind, "COMBOBOX")) { focus = GetParent(focus); strcpy(kind, "COMBOBOX"); }
+    }
     if (pressed & XINPUT_GAMEPAD_START) { SendMessageA(ui->window, WM_COMMAND, IDOK, 0); return; }
     if (pressed & XINPUT_GAMEPAD_B) { SendMessageA(ui->window, WM_COMMAND, IDCANCEL, 0); return; }
     if (pressed & (XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER)) {
@@ -1645,6 +1749,12 @@ static void pad_navigation(Launcher *ui, WORD pressed)
             at += pressed & XINPUT_GAMEPAD_DPAD_RIGHT ? 1 : -1;
             if (count > 0) SendMessageA(focus, CB_SETCURSEL, (at + count) % count, 0);
             SendMessageA(ui->window, WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(focus), CBN_SELCHANGE), (LPARAM)focus);
+        } else if (!_stricmp(kind, "msctls_trackbar32")) {       /* the graphics-quality slider */
+            int at = (int)SendMessageA(focus, TBM_GETPOS, 0, 0) + (pressed & XINPUT_GAMEPAD_DPAD_RIGHT ? 1 : -1);
+            if (at >= (int)SendMessageA(focus, TBM_GETRANGEMIN, 0, 0) && at <= (int)SendMessageA(focus, TBM_GETRANGEMAX, 0, 0)) {
+                SendMessageA(focus, TBM_SETPOS, TRUE, at);
+                SendMessageA(ui->window, WM_HSCROLL, MAKEWPARAM(TB_THUMBPOSITION, at), (LPARAM)focus);
+            }
         }
     }
     if (pressed & (XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN)) {
@@ -2181,7 +2291,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         check(ui, -1, ID_SKIP_LAUNCHER, "Skip the settings window next time", 597, 704, 315);
         push_button(ui, -1, "Play", IDOK, 933, 699, 122, 34);
         push_button(ui, -1, "Cancel", IDCANCEL, 1068, 699, 122, 34);
-        populate(ui); page_show(ui, 0);
+        populate(ui); scale_labels_refresh(ui); page_show(ui, 0);
         {   /* Say it before Play is pressed, not after a start that cannot work. */
             wchar_t folder[2 * MAX_PATH], text[2 * MAX_PATH + 100];
             const wchar_t *missing = NULL;
@@ -2212,7 +2322,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             help_show(ui, LOWORD(wparam));
             return 0;
         }
-        if (HIWORD(wparam) == BN_CLICKED && (LOWORD(wparam) == ID_KEYBOARD ||
+        if ((HIWORD(wparam) == BN_CLICKED || HIWORD(wparam) == BN_DOUBLECLICKED) && (LOWORD(wparam) == ID_KEYBOARD ||
             LOWORD(wparam) == ID_VSYNC || LOWORD(wparam) == ID_SHOW_FPS || LOWORD(wparam) == ID_SKIP_LAUNCHER ||
             LOWORD(wparam) == ID_WHEEL_ENABLED ||
             (LOWORD(wparam) >= ID_OPTION && LOWORD(wparam) < ID_OPTION + MM3_LAUNCH_OPTION_COUNT))) {
@@ -2220,8 +2330,11 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             set_checked(ui, id, !checked(ui, id));
             if (id == ID_KEYBOARD) { if (checked(ui, id)) keyboard_layout_follow(ui); else players_keyboard_off(ui); }
             if (id == ID_WHEEL_ENABLED) wheel_fields_enable(ui);
-            if (id == ID_OPTION + MM3_LAUNCH_WORLD_LIGHT || id == ID_OPTION + MM3_LAUNCH_FREE_CAMERA)
-                mods_enable(ui);   /* Night brightness, the free camera key */
+            if (id == ID_OPTION + MM3_LAUNCH_WORLD_LIGHT || id == ID_OPTION + MM3_LAUNCH_FREE_CAMERA ||
+                id == ID_OPTION + MM3_LAUNCH_VULKAN)
+                mods_enable(ui);   /* Night brightness, the free camera key, the Screen box */
+            if (id == ID_OPTION + MM3_LAUNCH_WIDESCREEN || id == ID_OPTION + MM3_LAUNCH_VULKAN)
+                scale_labels_refresh(ui);   /* the shape (4:3 without widescreen, the main display with Vulkan) */
             if (id == ID_OPTION + MM3_LAUNCH_DSP || id == ID_OPTION + MM3_LAUNCH_HRTF)
                 preset_show(ui);   /* the graphics levels set these too */
             help_show(ui, id);
@@ -2236,8 +2349,18 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         if (HIWORD(wparam) == CBN_SELCHANGE || HIWORD(wparam) == CBN_EDITCHANGE ||
             HIWORD(wparam) == EN_CHANGE || HIWORD(wparam) == LBN_SELCHANGE) {
             int id = LOWORD(wparam);
+            if (id == ID_FPS && HIWORD(wparam) == CBN_SELCHANGE) {
+                char pick[32];      /* a pick from the list: the edit box still shows the old text */
+                int at = (int)SendMessageA(control(ui, ID_FPS), CB_GETCURSEL, 0, 0);
+                if (at >= 0 && SendMessageA(control(ui, ID_FPS), CB_GETLBTEXTLEN, (WPARAM)at, 0) < (LRESULT)sizeof pick) {
+                    SendMessageA(control(ui, ID_FPS), CB_GETLBTEXT, (WPARAM)at, (LPARAM)pick);
+                    SetWindowTextA(control(ui, ID_FPS), pick);
+                }
+            }
             if (id == ID_SCALE || id == ID_MSAA || id == ID_ANISO || id == ID_DRAW || id == ID_VIEW || id == ID_FPS)
                 preset_show(ui);    /* the box follows what the controls now spell out */
+            if (id == ID_ASPECT || id == ID_RESOLUTION || id == ID_MODE || id == ID_SCREEN)
+                scale_labels_refresh(ui);   /* the sizes the resolutions make follow the shape */
             help_show(ui, id);
         }
         switch (LOWORD(wparam)) {
@@ -2269,7 +2392,8 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         case ID_DEFAULTS:
             mm3_launcher_config_defaults(&ui->config);
             mm3_display_settings_defaults(&ui->display, getenv("MM3_PERFORMANCE_PROFILE"));
-            populate(ui); SetWindowTextA(control(ui, ID_STATUS), "Defaults restored in this window. Play saves them; Cancel discards them.");
+            populate(ui); scale_labels_refresh(ui);
+            SetWindowTextA(control(ui, ID_STATUS), "Defaults restored in this window. Play saves them; Cancel discards them.");
             help_show(ui, ID_DEFAULTS);
             return 0;
         case ID_PLAYER1: case ID_PLAYER2:
@@ -2328,9 +2452,11 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
     }
     case WM_HSCROLL:
         if ((HWND)lparam == control(ui, ID_PRESET)) {
-            int pick = (int)SendMessageA((HWND)lparam, TBM_GETPOS, 0, 0) + 1;
-            if (pick != preset_current(ui)) preset_apply(ui, pick);
-            preset_show(ui);
+            int stop = (int)SendMessageA((HWND)lparam, TBM_GETPOS, 0, 0);
+            int pick = stop >= PRESET_COUNT - 1 ? 0 : stop + 1;   /* the last stop is Custom: no level */
+            if (!pick && LOWORD(wparam) == TB_THUMBTRACK) return 0;   /* dragging over it: nothing to fill in */
+            if (pick && pick != preset_current(ui)) preset_apply(ui, pick);
+            preset_show(ui);   /* released on Custom: the thumb goes back to what the controls spell out */
             help_show(ui, ID_PRESET);
             return 0;
         }

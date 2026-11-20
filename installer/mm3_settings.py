@@ -74,6 +74,7 @@ OPTIONS = [
     ("MM3_UNLOCK_ALL_PAINTS", "Unlock all paint jobs", 0),
     ("MM3_DIGITAL_SPEEDO", "Digital speedometer (as in split screen)", 0),
     ("MM3_UNLOCK_ALL_RACES", "Unlock all races and jobs", 0),
+    ("MM3_STUTTER_LOG", "Detailed stutter log", 0),
 ]
 DEFAULTS = {key: default for key, _label, default in OPTIONS}
 DEFAULTS[SKIP_LAUNCHER] = 0
@@ -106,8 +107,47 @@ CAMERA_KEYS = [("F1", 0x70), ("F2", 0x71), ("F3", 0x72), ("F4", 0x73), ("F5", 0x
 PLAYER1 = ["Controller 1 + keyboard", "Controller 1", "Keyboard (arrows)", "Keyboard 2 (WASD)", "Controller 2"]
 PLAYER2 = ["Controller 2", "Controller 1", "Keyboard (arrows)", "Keyboard 2 (WASD)"]
 PROFILES = ["Balanced", "Quality", "LowPower", "Xbox", "Lowest"]
-SCALES = [("Profile's own", ""), ("1x", "1"), ("1.5x", "1.5"), ("2x", "2"), ("3x", "3")]
-FPS_LIMITS = ["30", "45", "60", "90", "120"]
+OWN = "Profile's own"                    # no override: the performance profile (and display.ini) decide
+# The Windows launcher's Internal resolution list (src/mm3_display_choices.h): the vertical lines, smallest first.
+SCALE_NAMES = {480: " (Xbox)", 720: " (HD)", 1080: " (Full HD)", 1440: " (QHD)", 2160: " (4K)"}
+SCALE_VALUES = ["0.5", "0.75", "1", "1.5", "2", "2.25", "3", "4.5"]
+
+
+def scale_label(value, custom=False):
+    lines = round(480 * float(value))
+    return f"{lines}p{' (custom)' if custom else SCALE_NAMES.get(lines, '')}"
+
+
+SCALES = [(OWN, "")] + [(scale_label(value), value) for value in SCALE_VALUES]
+FPS_LIMITS = [OWN, "15", "30", "40", "45", "60", "90", "120"]        # mm3_fps_choices, and the profile's own
+
+
+def scale_choices(saved):
+    """SCALES, plus a saved value that no entry offers (a hand-edited or older file), in order, as custom."""
+    if not saved or saved in dict(SCALES).values():
+        return SCALES
+    try:
+        value = float(saved)
+    except ValueError:
+        return SCALES
+    if not 0.5 <= value <= 8.0:
+        return SCALES
+    at = next((i for i, (_name, v) in enumerate(SCALES) if v and float(v) > value), len(SCALES))
+    return SCALES[:at] + [(scale_label(saved, custom=True), saved)] + SCALES[at:]
+
+
+def fps_choices(saved):
+    """FPS_LIMITS, plus a saved limit that is not in it."""
+    if not saved or saved in FPS_LIMITS or not saved.isdigit():
+        return FPS_LIMITS
+    at = next((i for i, v in enumerate(FPS_LIMITS) if v.isdigit() and int(v) > int(saved)), len(FPS_LIMITS))
+    return FPS_LIMITS[:at] + [saved] + FPS_LIMITS[at:]
+
+
+def write_text(path, text):
+    """UTF-8 with Unix line ends (Path.write_text takes newline= only from Python 3.10; the README says 3.9)."""
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
 
 HELP = {
     "MM3_IMPROVED": "Off gives the Xbox's own visuals, menus and HUD at the PC's resolution.",
@@ -200,7 +240,8 @@ def normalise(values):
     out["MM3_FREE_CAMERA_KEY"] = camera if camera in [vk for _n, vk in CAMERA_KEYS] else 0x77
     pads = str(values.get("RECOMP_USB_PADS", "auto")).strip().lower()
     out["RECOMP_USB_PADS"] = "auto" if pads.startswith("auto") or pads == "0" else str(clamp(pads, 1, 4, 1))
-    out["RECOMP_NET_PEERS"] = " ".join(str(values.get("RECOMP_NET_PEERS", "")).replace(",", " ").split())
+    # Comma separated, as the game's network code and launcher.ini's loader read them (a space makes the key invalid).
+    out["RECOMP_NET_PEERS"] = ",".join(part for part in re.split(r"[,\s]+", str(values.get("RECOMP_NET_PEERS", ""))) if part)
     out["MM3_PLAYER1_INPUT"] = clamp(values.get("MM3_PLAYER1_INPUT", 0), 0, len(PLAYER1) - 1, 0)
     out["MM3_PLAYER2_INPUT"] = clamp(values.get("MM3_PLAYER2_INPUT", 0), 0, len(PLAYER2) - 1, 0)
     out.update(wheel_values(values))
@@ -219,7 +260,7 @@ def write_ini(values, others, path=INI):
     lines += others
     path = Path(path)
     temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    write_text(temporary, "\n".join(lines) + "\n")
     os.replace(temporary, path)
 
 
@@ -240,14 +281,15 @@ def read_display(path=EXTRA, *, use_defaults=True):
 
 
 def write_display(values, path=EXTRA):
-    Path(path).write_text("".join(f"{key}={value}\n" for key, value in values.items()),
-                          encoding="utf-8", newline="\n")
+    write_text(path, "".join(f"{key}={value}\n" for key, value in values.items()))
 
 
 def play(display, *, override=False):
     """Pass display choices to the start script and keep the launch process attached to the game."""
     env = dict(os.environ, MM3_NO_SETTINGS="1", MM3_SETTINGS_APPLIED="1", MM3_LAUNCHER_CONFIG=str(INI))
     for key, value in display.items():
+        if key == "RECOMP_FULLSCREEN" and value == "0" and not override:
+            continue                  # windowed is the default: display.ini (the in-game menus' choice) decides
         if value and override:
             env[key] = value
         elif value:
@@ -282,8 +324,10 @@ def window():
     wheel_ffb = tk.StringVar(value=str(values["MM3_WHEEL_FFB"]))
     peers = tk.StringVar(value=values["RECOMP_NET_PEERS"])
     profile = tk.StringVar(value=display["MM3_PERFORMANCE_PROFILE"])
-    scale = tk.StringVar(value=next((n for n, v in SCALES if v == display["RECOMP_RENDER_SCALE"]), SCALES[0][0]))
-    fps = tk.StringVar(value=display["RECOMP_FPS_LIMIT"] or "60")
+    scales = scale_choices(display["RECOMP_RENDER_SCALE"])
+    fps_list = fps_choices(display["RECOMP_FPS_LIMIT"])
+    scale = tk.StringVar(value=next((n for n, v in scales if v == display["RECOMP_RENDER_SCALE"]), OWN))
+    fps = tk.StringVar(value=display["RECOMP_FPS_LIMIT"] if display["RECOMP_FPS_LIMIT"] in fps_list else OWN)
     fullscreen = tk.IntVar(value=1 if display["RECOMP_FULLSCREEN"] == "1" else 0)
     guide = tk.StringVar(value="Point at a setting for its guide.")
     dependent = {key: [] for key in ("MM3_IMPROVED", "MM3_GAMEPLAY_MODS")}
@@ -322,8 +366,8 @@ def window():
     top.grid(row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=6)
     for index, (text, variable, choices) in enumerate((
             ("Performance profile", profile, PROFILES),
-            ("Render scale", scale, [name for name, _v in SCALES]),
-            ("Frame-rate limit", fps, FPS_LIMITS))):
+            ("Internal resolution", scale, [name for name, _v in scales]),
+            ("Frame-rate limit", fps, fps_list))):
         ttk.Label(top, text=text).grid(row=0, column=index * 2, sticky="w", padx=(0, 6))
         ttk.Combobox(top, textvariable=variable, values=choices, state="readonly", width=12).grid(
             row=0, column=index * 2 + 1, padx=(0, 18))
@@ -397,7 +441,7 @@ def window():
     check(network, "RECOMP_NET", 0)
     ttk.Label(network, text=NUMBERS["RECOMP_NET_PORT"][0]).grid(row=1, column=0, sticky="w")
     ttk.Spinbox(network, from_=1, to=65535, textvariable=numbers["RECOMP_NET_PORT"], width=8).grid(row=1, column=1, sticky="w")
-    ttk.Label(network, text="Other players (address:port, space separated)").grid(row=2, column=0, sticky="w", pady=(10, 0))
+    ttk.Label(network, text="Other players (address:port, separated by commas)").grid(row=2, column=0, sticky="w", pady=(10, 0))
     ttk.Entry(network, textvariable=peers, width=60).grid(row=3, column=0, columnspan=3, sticky="w")
 
     bar = ttk.Frame(root, padding=10)
@@ -424,8 +468,9 @@ def window():
         return merged
 
     def shown():
-        return {"MM3_PERFORMANCE_PROFILE": profile.get(), "RECOMP_RENDER_SCALE": dict(SCALES)[scale.get()],
-                "RECOMP_FPS_LIMIT": fps.get(), "RECOMP_FULLSCREEN": "1" if fullscreen.get() else "0"}
+        return {"MM3_PERFORMANCE_PROFILE": profile.get(), "RECOMP_RENDER_SCALE": dict(scales)[scale.get()],
+                "RECOMP_FPS_LIMIT": "" if fps.get() == OWN else fps.get(),
+                "RECOMP_FULLSCREEN": "1" if fullscreen.get() else "0"}
 
     def save():
         try:

@@ -91,6 +91,12 @@ static float display_aspect(const char *value)
     return strtof(value, NULL);
 }
 
+#ifdef _WIN32
+/* The framebuffer window of either renderer (fb_present.h declares it for DirectX 11 only; the SDL3 build
+ * defines it too, and without a declaration the handle went through an implicit int). */
+HWND xbox_FramebufferWindowHandle(void);
+#endif
+
 void mm3_display_settings_get(MM3DisplaySettings *settings)
 {
 #ifdef _WIN32
@@ -102,13 +108,19 @@ void mm3_display_settings_get(MM3DisplaySettings *settings)
     ReleaseSRWLockShared(&s_settings_lock);
 #ifdef _WIN32
     if (window) {
-        settings->fullscreen = !(GetWindowLongA(window, GWL_STYLE) & WS_OVERLAPPEDWINDOW);
+        /* The window thread is per-monitor DPI aware and this one (the title thread, for the in-game Graphics
+         * menu) may not be: read the size in the window's context, or at 250% a 3840-pixel window reads 1536.
+         * A borderless popup is fullscreen, the Win32 window's and SDL's alike (SDL's is WS_POPUP |
+         * WS_MINIMIZEBOX, which WS_OVERLAPPEDWINDOW also contains): it has no caption. */
+        DPI_AWARENESS_CONTEXT dpi = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        settings->fullscreen = !(GetWindowLongA(window, GWL_STYLE) & WS_CAPTION);
         if (!settings->fullscreen && GetClientRect(window, &client) &&
             client.right >= 640 && client.right <= 7680 &&
             client.bottom >= 480 && client.bottom <= 4320) {
             settings->window_width = client.right;
             settings->window_height = client.bottom;
         }
+        if (dpi) SetThreadDpiAwarenessContext(dpi);
     }
 #endif
 }
@@ -116,10 +128,11 @@ void mm3_display_settings_get(MM3DisplaySettings *settings)
 int mm3_display_settings_commit(const MM3DisplaySettings *requested,
                                char *status, size_t capacity)
 {
-    int mode_applied;
+    int mode_applied, window_changed;
     char changes[256] = "";
-    MM3DisplaySettings live, stored;
+    MM3DisplaySettings live, stored, window_now;
     const MM3DisplaySettings *settings = &live;
+    mm3_display_settings_get(&window_now);       /* the window as it is now; it takes the lock, so before it */
     AcquireSRWLockExclusive(&s_settings_lock);
     live = *requested;
     mm3_display_settings_keep_fixed(&live, &s_current);
@@ -136,12 +149,19 @@ int mm3_display_settings_commit(const MM3DisplaySettings *requested,
     nv2a_d3d_set_render_scale(settings->render_scale);
     nv2a_d3d_set_display_aspect(display_aspect(settings->aspect));
     xbox_FramebufferSetShowFPS(settings->show_fps);
-    mode_applied = xbox_FramebufferSetDisplayMode(settings->window_width,
-                                                 settings->window_height,
-                                                 settings->fullscreen);
+    /* The window is only touched when its mode or size is what changed: any other Apply must not un-maximize
+     * it, and on the SDL3 (Vulkan) window, which cannot change mode live, must not claim a restart is needed. */
+    window_changed = settings->fullscreen != window_now.fullscreen ||
+                     (!settings->fullscreen && (settings->window_width != window_now.window_width ||
+                                                settings->window_height != window_now.window_height));
+    mode_applied = !window_changed || xbox_FramebufferSetDisplayMode(settings->window_width,
+                                                                     settings->window_height,
+                                                                     settings->fullscreen);
 #define CHANGED(test, label) if (test) { if (*changes) strcat(changes, ", "); strcat(changes, label); }
     CHANGED(!mode_applied, "window mode/resolution");
+#ifndef XBOXRECOMP_SDL3                      /* the Vulkan renderer draws single-sample: nothing to restart for */
     CHANGED(settings->msaa != s_boot.msaa, "anti-aliasing");
+#endif
     CHANGED(settings->aniso != s_boot.aniso, "texture filtering");
     CHANGED(fabsf(settings->draw_distance - s_boot.draw_distance) > 0.0001f, "object detail distance");
     CHANGED(fabsf(settings->view_distance - s_boot.view_distance) > 0.0001f, "building view distance");
@@ -251,15 +271,81 @@ static void float_choice(HWND dialog, int id, float value, const char *label)
     combo_add(dialog, id, label, float_value(value));
 }
 
-static void select_float(HWND dialog, int id, float value)
+/* A value the list does not offer goes where its size puts it (the lists are smallest first;
+ * an Automatic entry, 0, stays at the top). */
+static void float_choice_sorted(HWND dialog, int id, float value, const char *label)
+{
+    HWND control = GetDlgItem(dialog, id);
+    int count = (int)SendMessageA(control, CB_GETCOUNT, 0, 0), at = count, i;
+    LRESULT index;
+    for (i = 0; i < count; ++i) {
+        unsigned long bits = (unsigned long)SendMessageA(control, CB_GETITEMDATA, (WPARAM)i, 0);
+        float other;
+        memcpy(&other, &bits, sizeof other);
+        if (other > value) { at = i; break; }
+    }
+    index = SendMessageA(control, CB_INSERTSTRING, (WPARAM)at, (LPARAM)label);
+    if (index >= 0) SendMessageA(control, CB_SETITEMDATA, (WPARAM)index, float_value(value));
+}
+
+static void select_float(HWND dialog, int id, float value, int is_scale)
 {
     char text[80];
     combo_select(dialog, id, float_value(value));
     if (combo_value(dialog, id) != float_value(value)) {
-        mm3_custom_label(value, text, sizeof text);
-        float_choice(dialog, id, value, text);
+        if (is_scale) mm3_custom_scale_label(value, text, sizeof text);
+        else mm3_custom_label(value, text, sizeof text);
+        float_choice_sorted(dialog, id, value, text);
         combo_select(dialog, id, float_value(value));
     }
+}
+
+/* The shape the game renders at, from the dialog: the Aspect ratio box; on auto, the monitor's in
+ * fullscreen and the window's otherwise. */
+static float dialog_aspect(HWND dialog)
+{
+    char text[40] = "";
+    float aspect;
+    LPARAM size;
+    if (mm3_display_setting_fixed(MM3_FIXED_ASPECT)) return 4.f / 3.f;   /* the launcher's widescreen switch is off */
+    GetDlgItemTextA(dialog, IDC_DISPLAY_ASPECT, text, sizeof text);
+    aspect = mm3_aspect_value(text);
+    if (aspect > 0.f) return aspect;
+    if (combo_value(dialog, IDC_DISPLAY_MODE) == 1) {
+        MONITORINFO monitor = { sizeof monitor };
+        HWND owner = GetParent(dialog);               /* the game window: its monitor is the one fullscreen uses */
+        if (GetMonitorInfoA(MonitorFromWindow(owner ? owner : dialog, MONITOR_DEFAULTTONEAREST), &monitor) &&
+            monitor.rcMonitor.bottom > monitor.rcMonitor.top)
+            return mm3_aspect_clamp((float)(monitor.rcMonitor.right - monitor.rcMonitor.left) /
+                                    (float)(monitor.rcMonitor.bottom - monitor.rcMonitor.top));
+    }
+    size = combo_value(dialog, IDC_DISPLAY_RESOLUTION);
+    if (size != CB_ERR && HIWORD(size) > 0) return mm3_aspect_clamp((float)LOWORD(size) / (float)HIWORD(size));
+    return 16.f / 9.f;
+}
+
+/* Every Internal resolution entry names the size it makes at that shape; the choice itself stays. */
+static void scale_labels_refresh(HWND dialog)
+{
+    HWND control = GetDlgItem(dialog, IDC_DISPLAY_SCALE);
+    float aspect = dialog_aspect(dialog);
+    int count = (int)SendMessageA(control, CB_GETCOUNT, 0, 0), i;
+    int selected = (int)SendMessageA(control, CB_GETCURSEL, 0, 0);
+    char label[96];
+    SendMessageA(control, WM_SETREDRAW, FALSE, 0);
+    for (i = 0; i < count; ++i) {
+        unsigned long bits = (unsigned long)SendMessageA(control, CB_GETITEMDATA, (WPARAM)i, 0);
+        float value;
+        memcpy(&value, &bits, sizeof value);
+        if (value <= 0.f) continue;             /* Automatic keeps its name */
+        mm3_scale_label_aspect(value, aspect, mm3_scale_is_listed(value), label, sizeof label);
+        SendMessageA(control, CB_DELETESTRING, (WPARAM)i, 0);
+        SendMessageA(control, CB_INSERTSTRING, (WPARAM)i, (LPARAM)label);
+        SendMessageA(control, CB_SETITEMDATA, (WPARAM)i, (LPARAM)bits);
+    }
+    SendMessageA(control, CB_SETCURSEL, (WPARAM)selected, 0);
+    SendMessageA(control, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(control, NULL, TRUE);
 }
 
 static void resolution_add(HWND dialog, int width, int height)
@@ -309,7 +395,7 @@ static void populate(HWND dialog, const MM3DisplaySettings *settings)
         mm3_scale_label(mm3_scale_choices[i], label, sizeof label);
         float_choice(dialog, IDC_DISPLAY_SCALE, mm3_scale_choices[i], label);
     }
-    select_float(dialog, IDC_DISPLAY_SCALE, settings->render_scale);
+    select_float(dialog, IDC_DISPLAY_SCALE, settings->render_scale, 1);
     for (i = 0; i < sizeof mm3_aspect_choices / sizeof mm3_aspect_choices[0]; ++i) {
         combo_add(dialog, IDC_DISPLAY_ASPECT, mm3_aspect_choices[i], i);
         if (strcmp(settings->aspect, mm3_aspect_choices[i]) == 0)
@@ -339,8 +425,8 @@ static void populate(HWND dialog, const MM3DisplaySettings *settings)
         float_choice(dialog, IDC_DISPLAY_DISTANCE, mm3_distance_choices[i], label);
         float_choice(dialog, IDC_DISPLAY_VIEW_DISTANCE, mm3_distance_choices[i], label);
     }
-    select_float(dialog, IDC_DISPLAY_DISTANCE, settings->draw_distance);
-    select_float(dialog, IDC_DISPLAY_VIEW_DISTANCE, settings->view_distance);
+    select_float(dialog, IDC_DISPLAY_DISTANCE, settings->draw_distance, 0);
+    select_float(dialog, IDC_DISPLAY_VIEW_DISTANCE, settings->view_distance, 0);
     CheckDlgButton(dialog, IDC_DISPLAY_VSYNC, settings->vsync ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dialog, IDC_DISPLAY_SHOW_FPS, settings->show_fps ? BST_CHECKED : BST_UNCHECKED);
     for (i = 0; i < 2; ++i) combo_add(dialog, IDC_DISPLAY_MINIMAP, mm3_minimap_names[i], i);
@@ -364,6 +450,10 @@ static void populate(HWND dialog, const MM3DisplaySettings *settings)
     EnableWindow(GetDlgItem(dialog, IDC_DISPLAY_VIEW_DISTANCE), !mm3_display_setting_fixed(MM3_FIXED_DISTANCE));
     EnableWindow(GetDlgItem(dialog, IDC_DISPLAY_MINIMAP), !mm3_display_setting_fixed(MM3_FIXED_MINIMAP));
     EnableWindow(GetDlgItem(dialog, IDC_DISPLAY_NIGHT_LIGHT), !mm3_display_setting_fixed(MM3_FIXED_NIGHT_LIGHT));
+#ifdef XBOXRECOMP_SDL3
+    EnableWindow(GetDlgItem(dialog, IDC_DISPLAY_MSAA), FALSE);   /* single-sample targets: see the status line */
+#endif
+    scale_labels_refresh(dialog);
 }
 
 static int read_controls(HWND dialog, MM3DisplaySettings *settings)
@@ -406,6 +496,9 @@ static void update_status(HWND dialog, int saved)
         SetDlgItemTextA(dialog, IDC_DISPLAY_STATUS, "Enter a maximum FPS from 1 to 120.");
         return;
     }
+#ifdef XBOXRECOMP_SDL3
+    strcpy(why, "The Vulkan renderer has no anti-aliasing: the internal resolution supersamples instead.");
+#endif
     for (i = 0; i < sizeof fixed / sizeof fixed[0]; ++i) {
         const char *reason = mm3_display_setting_fixed(fixed[i]);
         if (reason && strlen(why) + strlen(reason) + 2 < sizeof why) {
@@ -414,7 +507,9 @@ static void update_status(HWND dialog, int saved)
         }
     }
 #define CHANGED(test, label) if (test) { if (*changes) strcat(changes, ", "); strcat(changes, label); }
+#ifndef XBOXRECOMP_SDL3
     CHANGED(pending.msaa != s_boot.msaa, "anti-aliasing");
+#endif
     CHANGED(pending.aniso != s_boot.aniso, "texture filtering");
     CHANGED(fabsf(pending.draw_distance - s_boot.draw_distance) > 0.0001f, "object detail distance");
     CHANGED(fabsf(pending.view_distance - s_boot.view_distance) > 0.0001f, "building view distance");
@@ -620,6 +715,17 @@ static INT_PTR CALLBACK display_dialog(HWND dialog, UINT message, WPARAM wparam,
                          combo_value(dialog, IDC_DISPLAY_MODE) == 0);
             break;
         }
+        if (HIWORD(wparam) == CBN_SELCHANGE && LOWORD(wparam) == IDC_DISPLAY_FPS) {
+            char pick[16];                            /* a pick from the list: the edit box still shows the old text */
+            LRESULT at = SendDlgItemMessageA(dialog, IDC_DISPLAY_FPS, CB_GETCURSEL, 0, 0);
+            if (at != CB_ERR && SendDlgItemMessageA(dialog, IDC_DISPLAY_FPS, CB_GETLBTEXTLEN, (WPARAM)at, 0) < (LRESULT)sizeof pick) {
+                SendDlgItemMessageA(dialog, IDC_DISPLAY_FPS, CB_GETLBTEXT, (WPARAM)at, (LPARAM)pick);
+                SetDlgItemTextA(dialog, IDC_DISPLAY_FPS, pick);
+            }
+        }
+        if (HIWORD(wparam) == CBN_SELCHANGE && (LOWORD(wparam) == IDC_DISPLAY_MODE ||
+            LOWORD(wparam) == IDC_DISPLAY_ASPECT || LOWORD(wparam) == IDC_DISPLAY_RESOLUTION))
+            scale_labels_refresh(dialog);   /* the sizes the resolutions make follow the shape */
         if (HIWORD(wparam) == CBN_SELCHANGE || HIWORD(wparam) == CBN_EDITCHANGE ||
             HIWORD(wparam) == BN_CLICKED) update_status(dialog, 0);
         break;
@@ -672,7 +778,7 @@ static void open_settings(HWND window)
     }
     /* Reflect changes made with F11/Alt+Enter or dragging the game window. */
     AcquireSRWLockExclusive(&s_settings_lock);
-    s_current.fullscreen = !(GetWindowLongA(window, GWL_STYLE) & WS_OVERLAPPEDWINDOW);
+    s_current.fullscreen = !(GetWindowLongA(window, GWL_STYLE) & WS_CAPTION);   /* SDL's fullscreen is a popup too */
     if (!s_current.fullscreen && GetClientRect(window, &client) &&
         client.right >= 640 && client.right <= 7680 && client.bottom >= 480 && client.bottom <= 4320) {
         s_current.window_width = client.right;

@@ -54,6 +54,9 @@ void mm3_producer_diagnostics_kick(void)
     double milliseconds;
     fenv_t saved_fp;
     int saved_fp_valid = 0;
+    /* Read the switch at the first kick, not at start-up: the launcher applies its settings (the
+     * detailed stutter log sets RECOMP_PRODUCER_TRACE) after the diagnostics are configured. */
+    if (!s_producer_initialized) mm3_producer_diagnostics_init();
     if (!s_producer_enabled) return;
     saved_errno = errno;
     saved_error = GetLastError();

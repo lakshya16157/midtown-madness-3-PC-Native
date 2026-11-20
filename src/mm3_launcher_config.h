@@ -49,6 +49,10 @@ enum MM3LauncherOption {
     /* MM3_UNLOCK_ALL_RACES: every installed Checkpoint race and Undercover job is open in the
      * menus (the save is not changed; a gameplay mod, off with Xbox gameplay). */
     MM3_LAUNCH_RACES,
+    /* MM3_STUTTER_LOG: a detailed performance log for bug reports: the renderer's spike reports with the
+     * game thread sampled (RECOMP_SPIKE_CAPTURE, report only) and the game's gaps with the file reads in
+     * them (RECOMP_PRODUCER_TRACE). Off by default; the sampling costs a little speed while on. */
+    MM3_LAUNCH_STUTTER_LOG,
     MM3_LAUNCH_OPTION_COUNT
 };
 

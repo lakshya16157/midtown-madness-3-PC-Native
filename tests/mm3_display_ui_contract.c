@@ -108,6 +108,22 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
         CHECK(combo_value(dialog, IDC_DISPLAY_ANISO) == 3);
         CHECK(combo_value(dialog, IDC_DISPLAY_ASPECT) == 5);
         CHECK(combo_float(dialog, IDC_DISPLAY_SCALE) == 5.f);
+        {   /* Smallest first with Automatic on top; the saved 5x, which no list offers, sits in order, last. */
+            HWND scale = GetDlgItem(dialog, IDC_DISPLAY_SCALE);
+            int count = (int)SendMessageA(scale, CB_GETCOUNT, 0, 0), i;
+            float previous = -1.f;
+            char label[96];
+            for (i = 0; i < count; ++i) {
+                unsigned long bits = (unsigned long)SendMessageA(scale, CB_GETITEMDATA, (WPARAM)i, 0);
+                float value;
+                memcpy(&value, &bits, sizeof value);
+                CHECK(value > previous);
+                previous = value;
+            }
+            CHECK(previous == 5.f && count == 10);
+            SendMessageA(scale, CB_GETLBTEXT, (WPARAM)(count - 1), (LPARAM)label);
+            CHECK(strstr(label, "2400p (custom) - "));
+        }
         CHECK(combo_float(dialog, IDC_DISPLAY_DISTANCE) == 1.25f);
         CHECK(combo_float(dialog, IDC_DISPLAY_VIEW_DISTANCE) == 3.25f);
         CHECK(combo_value(dialog, IDC_DISPLAY_NIGHT_LIGHT) == MM3_NIGHT_LIGHT_DEFAULT);
@@ -116,7 +132,7 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
         SetDlgItemTextA(dialog, IDC_DISPLAY_FPS, "45");
         combo_select(dialog, IDC_DISPLAY_ASPECT, 1); /* Live 4:3 selection. */
         combo_select(dialog, IDC_DISPLAY_MSAA, 2);
-        combo_select(dialog, IDC_DISPLAY_SCALE, float_value(2.5f));
+        combo_select(dialog, IDC_DISPLAY_SCALE, float_value(2.25f));
         combo_select(dialog, IDC_DISPLAY_MINIMAP, 0);
         combo_select(dialog, IDC_DISPLAY_DISTANCE, float_value(1.5f));
         combo_select(dialog, IDC_DISPLAY_VIEW_DISTANCE, float_value(4.f));
@@ -128,7 +144,7 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
         notify(dialog, IDC_DISPLAY_MODE, CBN_SELCHANGE);
         CHECK(IsWindowEnabled(GetDlgItem(dialog, IDC_DISPLAY_RESOLUTION)));
         notify(dialog, IDC_DISPLAY_APPLY, BN_CLICKED);
-        CHECK(published_fps == 45 && published_vsync == 1 && published_scale == 2.5f);
+        CHECK(published_fps == 45 && published_vsync == 1 && published_scale == 2.25f);
         CHECK(fabsf(published_aspect - 4.f / 3.f) < 0.0001f);
         CHECK(published_width == 1280);
         CHECK(mm3_minimap_improved() == 0);
@@ -156,11 +172,12 @@ static DWORD WINAPI drive_dialog(LPVOID argument)
         SetDlgItemTextA(dialog, IDC_DISPLAY_FPS, "60");
     } else {
         notify(dialog, IDC_DISPLAY_DEFAULTS, BN_CLICKED);
-        CHECK(combo_value(dialog, IDC_DISPLAY_MSAA) == 4);
-        CHECK(combo_float(dialog, IDC_DISPLAY_SCALE) == 2.f);
+        /* The defaults are the Xbox profile: its own picture, no anti-aliasing, the console's distances. */
+        CHECK(combo_value(dialog, IDC_DISPLAY_MSAA) == 1);
+        CHECK(combo_float(dialog, IDC_DISPLAY_SCALE) == 1.f);
         CHECK(combo_value(dialog, IDC_DISPLAY_MINIMAP) == 1);
-        CHECK(combo_float(dialog, IDC_DISPLAY_DISTANCE) == 2.f);
-        CHECK(combo_float(dialog, IDC_DISPLAY_VIEW_DISTANCE) == 2.f);
+        CHECK(combo_float(dialog, IDC_DISPLAY_DISTANCE) == 1.f);
+        CHECK(combo_float(dialog, IDC_DISPLAY_VIEW_DISTANCE) == 1.f);
         CHECK(mm3_minimap_improved() == 0); /* Restore stays pending until Apply. */
     }
     PostMessageA(dialog, WM_COMMAND, IDCANCEL, 0);
@@ -325,7 +342,7 @@ int main(int argc, char **argv)
     mm3_display_settings_defaults(&loaded, NULL);
     CHECK(mm3_display_settings_load(&loaded, error, sizeof error));
     CHECK(loaded.fps_limit == 45 && loaded.msaa == 2 && loaded.vsync == 1);
-    CHECK(loaded.render_scale == 2.5f && loaded.aniso == 3);
+    CHECK(loaded.render_scale == 2.25f && loaded.aniso == 3);
     CHECK(loaded.draw_distance == 1.5f && loaded.view_distance == 4.f);
     CHECK(loaded.minimap_improved == 0 && loaded.night_light == 50);
     CHECK(strcmp(loaded.aspect, "4:3") == 0);

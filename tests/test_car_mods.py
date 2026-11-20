@@ -465,6 +465,20 @@ class CarModsTest(unittest.TestCase):
             for car in self.config["cars"]:
                 self.assertEqual(dvd.read(f"LoadingScreens/Default_{car['alias']}.tga"), dvd.read(f"LoadingScreens/Default_{car['donor']}.tga"))
 
+    def test_dlc_cars_get_the_generic_loading_picture(self):
+        # Without LoadingScreens/Default_car<id>.tga a DLC car's loading screen was black.
+        with zipfile.ZipFile(io.BytesIO(self.originals[MOD.ARCHIVES[1]])) as dvd:
+            files = {i.filename: dvd.read(i) for i in dvd.infolist()}
+        files["LoadingScreens/Default.TGA"] = b"generic loading image"
+        files["LoadingScreens/Default_car203.tga"] = b"a picture already there"
+        self.originals[MOD.ARCHIVES[1]] = zip_bytes(files)
+        output = self.plan()
+        with zipfile.ZipFile(io.BytesIO(output[MOD.ARCHIVES[1]])) as dvd:
+            for car_id in MOD.DLC_CAR_IDS:
+                expected = b"a picture already there" if car_id == 203 else b"generic loading image"
+                self.assertEqual(dvd.read(f"LoadingScreens/Default_car{car_id}.tga"), expected)
+            self.assertNotIn("LoadingScreens/Default_car209.tga", dvd.namelist())
+
     def test_requested_cars_are_independent_variants_of_shared_donors(self):
         expected = ["Panoz GTR-1", "McLaren F1", "Formula 1", "Ford GT"]
         self.assertEqual([car["display_name"] for car in self.config["cars"][:4]], expected)

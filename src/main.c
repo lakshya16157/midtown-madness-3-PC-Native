@@ -22,6 +22,7 @@
 #include "mm3_world_lighting.h"
 #include "mm3_collision_profile.h"
 #include "mm3_direct_log.h"
+#include "mm3_steam_overlay.h"
 #include "mm3_cheat_keys.h"
 #include "mm3_heap_list_watch.h"
 #include "mods/mods.h"
@@ -627,6 +628,10 @@ int main(int argc, char **argv)
         int handed_off_exit = 0;
         if (mm3_renderer_handoff(&handed_off_exit)) return handed_off_exit;
     }
+    /* Issue #47: a Steam shortcut to the .cmd starts the game below cmd.exe without Steam's overlay
+     * (no FPS counter, game recorder finds no game). Before any graphics device exists. */
+    mm3_steam_overlay_attach();
+    mm3_steam_art_place();           /* the library pictures of the Steam shortcut that started the game */
 #else
     (void)argc;
     (void)argv;

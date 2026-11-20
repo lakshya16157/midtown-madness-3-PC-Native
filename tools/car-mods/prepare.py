@@ -61,6 +61,8 @@ def default_config_path(directory: Path | None = None) -> Path:
 
 
 ARCHIVES = ("Data/Data_hd.zip", "Data/Data_dvd.zip")
+# The 14 cars of the official downloadable packs (TDATA 4d53002a00000001/4/5/6).
+DLC_CAR_IDS = (201, 202, 203, 204, 205, 206, 207, 208, 210, 211, 212, 213, 214, 215)
 STATE_DIR = ".mm3-car-mods"
 RATINGS = {"TOPSPEED", "ACCELERATION", "MASS", "HANDLING", "DURABILITY"}
 CATALOG_RATINGS = ("TOPSPEED", "ACCELERATION", "HANDLING", "DURABILITY")
@@ -831,6 +833,18 @@ def build_plan(game_dir: Path, originals: dict[str, bytes], config: dict,
                 # Loading screens, deflated as all 655 retail ones are (0.9 MB -> 0.4 MB).
                 info.compress_type = zipfile.ZIP_DEFLATED
             updates[name] = (data, info)
+        if Path(relative).name == "Data_dvd.zip" and "loadingscreens/default.tga" in existing:
+            # The official DLC cars brought no loading picture (LoadingScreens/Default_<car>.tga),
+            # so a race with one, and the way back to the menu, showed a black loading screen
+            # with only the LOADING animation. They get the game's generic one.
+            generic = archive.read(find_info(archive, "LoadingScreens/Default.TGA"))
+            for car_id in DLC_CAR_IDS:
+                name = f"LoadingScreens/Default_car{car_id}.tga"
+                if name.lower() in existing or any(key.casefold() == name.casefold() for key in updates):
+                    continue
+                info = zipfile.ZipInfo(name, (2026, 11, 20, 0, 0, 0))
+                info.compress_type = zipfile.ZIP_DEFLATED
+                updates[name] = (generic, info)
         result = append_zip(baseline, updates)
         with zipfile.ZipFile(io.BytesIO(result)) as check:
             if len(check.namelist()) != len(set(n.lower() for n in check.namelist())) or check.testzip():

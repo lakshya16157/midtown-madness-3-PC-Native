@@ -64,7 +64,8 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"RECOMP_APU_HRTF", "3D headphone sound (HRTF)", 1},
     {"MM3_UNLOCK_ALL_PAINTS", "Unlock all paint jobs", 0},
     {"MM3_DIGITAL_SPEEDO", "Digital speedometer (as in split screen)", 0},
-    {"MM3_UNLOCK_ALL_RACES", "Unlock all races and jobs", 0}
+    {"MM3_UNLOCK_ALL_RACES", "Unlock all races and jobs", 0},
+    {"MM3_STUTTER_LOG", "Detailed stutter log", 0}
 };
 
 typedef struct { int option; const char *value; } MM3ForcedOption;
@@ -716,6 +717,15 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
      * An explicit value (tests, benchmarks) is kept unless the box is ticked. */
     if (config->option[MM3_LAUNCH_PRELOAD_SHADERS] || !getenv("RECOMP_SDLGPU_PRELOAD"))
         SET("RECOMP_SDLGPU_PRELOAD", config->option[MM3_LAUNCH_PRELOAD_SHADERS] ? "1" : "0");
+    /* The detailed stutter log: the renderer reports every frame gap over 50 ms with the game thread's
+     * functions sampled (report only: no 4K pictures; F9 saves the frames), and the game's own gaps with the
+     * file reads in them. 50 ms: a hitch you feel at 30-60 FPS (3+ refreshes on a 60 Hz panel), above a
+     * normal 30 FPS frame. Explicit values (tests, benchmarks) are kept; unticked leaves them all unset. */
+    if (config->option[MM3_LAUNCH_STUTTER_LOG]) {
+        if (!getenv("RECOMP_SPIKE_CAPTURE")) SET("RECOMP_SPIKE_CAPTURE", "logs\\spike,50");
+        if (!getenv("RECOMP_SPIKE_BMP")) SET("RECOMP_SPIKE_BMP", "0");
+        if (!getenv("RECOMP_PRODUCER_TRACE")) SET("RECOMP_PRODUCER_TRACE", "1");
+    }
     /* OHCI automatically exposes at least this many root-hub ports. Keep an
      * explicitly supplied RECOMP_USB_NDP (and the default two-port hub). */
     if (config->controller_count) snprintf(number, sizeof number, "%d", config->controller_count);

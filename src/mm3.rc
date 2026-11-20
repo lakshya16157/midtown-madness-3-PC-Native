@@ -24,7 +24,7 @@ BEGIN
     LTEXT "Render quality", -1, 22, 154, 103, 12
     COMBOBOX IDC_DISPLAY_SCALE, 138, 151, 204, 140, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     AUTOCHECKBOX "Show FPS in window title", IDC_DISPLAY_SHOW_FPS, 22, 179, 230, 14, WS_TABSTOP
-    GROUPBOX "Graphics (restart required when changed)", -1, 10, 212, 348, 107
+    GROUPBOX "Graphics (most changes need a restart)", -1, 10, 212, 348, 107
     LTEXT "Aspect ratio", -1, 22, 231, 76, 12
     COMBOBOX IDC_DISPLAY_ASPECT, 101, 228, 70, 95, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT "Anti-aliasing", -1, 185, 231, 76, 12

@@ -8019,18 +8019,75 @@ index 29b490b6..c724f742 100644
  
  /* ============================================================================
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
-index bfc1af3b..719b9772 100644
+index bfc1af3b..4b462baf 100644
 --- a/src/kernel/kernel_bridge.c
 +++ b/src/kernel/kernel_bridge.c
-@@ -30,6 +30,7 @@
+@@ -30,6 +30,8 @@
  #include "guest_vmem.h"
  #include "kernel_missing.h"
  #include "guest_state.h"
 +#include "guest_write_watch.h"
++#include "bridge_span_cache.h"
  #include "xbox_memory_layout.h"
  #include "platform/host_time.h"
  #include "recomp_icall_feedback.h"
-@@ -124,6 +125,13 @@ static int bridge_native_span_accessible(uint32_t va, uint32_t bytes,
+@@ -110,20 +112,70 @@ recomp_func_t recomp_lookup_manual(uint32_t xbox_va);
+  * layer can catch it, because xbox_NtReadFile receives a host pointer and a
+  * count and cannot know where the mapping ends.
+  */
++/* Regions verified a moment ago (bridge_span_cache.h): each check below costs a VirtualQuery
++ * that walks the page table of the 128 MB guest mapping, and a load makes thousands of them. */
++static RECOMP_TLS BSpanCache s_span_cache;
++
++static int bridge_span_cache_enabled(void)
++{
++    static int enabled = -1;
++    if (enabled < 0) {
++        const char *setting = getenv("RECOMP_SPAN_CACHE");
++        enabled = !(setting && !strcmp(setting, "0"));
++    }
++    return enabled;
++}
++
++static int64_t bridge_span_clock(void)
++{
++    LARGE_INTEGER now;
++    QueryPerformanceCounter(&now);
++    return now.QuadPart;
++}
++
++static int64_t bridge_span_window(void)
++{
++    static int64_t window;
++    if (!window) {
++        LARGE_INTEGER frequency;
++        window = QueryPerformanceFrequency(&frequency) && frequency.QuadPart > 0
++            ? frequency.QuadPart * BSPAN_WINDOW_MS / 1000 : 1;
++        if (window < 1) window = 1;
++    }
++    return window;
++}
++
+ static int bridge_native_span_accessible(uint32_t va, uint32_t bytes,
+                                          int write_access)
+ {
+     uintptr_t cursor = (uintptr_t)XBOX_TO_NATIVE(va);
+     uintptr_t end = cursor + bytes;
++    int cached = bridge_span_cache_enabled();
++    long epoch = g_xbox_vm_epoch;
++    int64_t now = cached ? bridge_span_clock() : 0, window = cached ? bridge_span_window() : 0;
+     if (end < cursor) return 0;
+     while (cursor < end) {
+         MEMORY_BASIC_INFORMATION mbi;
+-        uintptr_t region_end;
++        uintptr_t region_end, hit;
+         DWORD protection;
++        int upgraded = 0;
++        if (cached && (hit = bspan_lookup(&s_span_cache, epoch, now, window, cursor, write_access)) != 0) {
++            cursor = hit;
++            continue;
++        }
+         if (!VirtualQuery((void *)cursor, &mbi, sizeof(mbi)) ||
              mbi.State != MEM_COMMIT ||
              (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS))) return 0;
          protection = mbi.Protect & 0xFFu;
@@ -8039,21 +8096,27 @@ index bfc1af3b..719b9772 100644
 +        /* Write-watched pages are read-only only until the first write. */
 +        if (write_access && protection == PAGE_READONLY &&
 +            gww_range_armed((const void *)cursor,
-+                            (region_end < end ? region_end : end) - cursor))
++                            (region_end < end ? region_end : end) - cursor)) {
 +            protection = PAGE_READWRITE;
++            upgraded = 1;
++        }
          if (write_access) {
              if (protection != PAGE_READWRITE && protection != PAGE_WRITECOPY &&
                  protection != PAGE_EXECUTE_READWRITE &&
-@@ -132,8 +140,6 @@ static int bridge_native_span_accessible(uint32_t va, uint32_t bytes,
+@@ -132,8 +184,10 @@ static int bridge_native_span_accessible(uint32_t va, uint32_t bytes,
                     protection != PAGE_WRITECOPY && protection != PAGE_EXECUTE_READ &&
                     protection != PAGE_EXECUTE_READWRITE &&
                     protection != PAGE_EXECUTE_WRITECOPY) return 0;
 -        region_end = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
 -        if (region_end <= cursor) return 0;
++        if (cached)
++            bspan_store(&s_span_cache, epoch, now, (uintptr_t)mbi.BaseAddress, region_end,
++                        !upgraded && (protection == PAGE_READWRITE || protection == PAGE_WRITECOPY ||
++                                      protection == PAGE_EXECUTE_READWRITE || protection == PAGE_EXECUTE_WRITECOPY));
          cursor = region_end;
      }
      return 1;
-@@ -426,13 +432,30 @@ static void bridge_unbridged_report(void)
+@@ -426,13 +480,30 @@ static void bridge_unbridged_report(void)
   * play, stop counting once the boot trace budget is exhausted: clock polling
   * alone can dispatch tens of millions of calls, and neither shared counters
   * nor a GetTickCount per call should be on that path. */
@@ -8085,7 +8148,7 @@ index bfc1af3b..719b9772 100644
  
  /* How many kernel calls get logged before the log goes quiet.
   *
-@@ -453,11 +476,24 @@ static void kernel_log_init(void)
+@@ -453,11 +524,24 @@ static void kernel_log_init(void)
          g_kernel_log_budget = 0;
      g_kernel_call_count = 0;
      t_kernel_call_count = 0;
@@ -8112,7 +8175,7 @@ index bfc1af3b..719b9772 100644
      }
  }
  
-@@ -465,38 +501,89 @@ static void kernel_log_init(void)
+@@ -465,38 +549,89 @@ static void kernel_log_init(void)
  /* Some sites logged at a tighter cap than the rest; keep them proportional. */
  #define KERNEL_LOG_ON_HALF() (t_kernel_call_count > 0 && t_kernel_call_count <= g_kernel_log_budget / 2)
  
@@ -8219,7 +8282,7 @@ index bfc1af3b..719b9772 100644
          /* Reserve a unique trace number only while any boot calls remain.
           * Cache the exhausted state per thread so the gameplay path does not
           * even read the shared counter, much less contend on its cache line. */
-@@ -1244,7 +1331,7 @@ static uint32_t bridge_check_above_map(uint32_t base, uint32_t size,
+@@ -1244,7 +1379,7 @@ static uint32_t bridge_check_above_map(uint32_t base, uint32_t size,
  
      if (alloc_type & 0x2000)
          return 0;
@@ -8228,7 +8291,7 @@ index bfc1af3b..719b9772 100644
          fprintf(stderr, "  [KERNEL] NtAllocateVirtualMemory: commit at 0x%08X (size %u, "
                          "type 0x%X) is above the %u MB mapping and no reservation backs "
                          "it; refusing (STATUS_CONFLICTING_ADDRESSES)\n",
-@@ -2062,6 +2149,67 @@ static void bridge_MmQueryStatistics(void)
+@@ -2062,6 +2197,67 @@ static void bridge_MmQueryStatistics(void)
      g_eax = (uint32_t)xbox_MmQueryStatistics(XBOX_TO_NATIVE(stats_ptr));
  }
  
@@ -8296,7 +8359,7 @@ index bfc1af3b..719b9772 100644
  /* ── NtCreateEvent (ordinal 189) ─────────────────────────── */
  static void bridge_NtCreateEvent(void)
  {
-@@ -2081,6 +2229,8 @@ static void bridge_NtCreateEvent(void)
+@@ -2081,6 +2277,8 @@ static void bridge_NtCreateEvent(void)
      if (handle_ptr) {
          bridge_write_handle(handle_ptr, local_handle);
      }
@@ -8305,7 +8368,7 @@ index bfc1af3b..719b9772 100644
  
      if (!NT_SUCCESS(status) || KERNEL_LOG_ON()) {
          fprintf(stderr, "  [BRIDGE] NtCreateEvent: handle_ptr=0x%08X type=%u init=%u → status=0x%08X handle=0x%08X\n",
-@@ -2095,6 +2245,7 @@ static HANDLE ke_shadow_lookup(uint32_t guest_va);
+@@ -2095,6 +2293,7 @@ static HANDLE ke_shadow_lookup(uint32_t guest_va);
  static HANDLE ke_shadow_lookup_initialized(uint32_t guest_va);
  static void ke_shadow_insert(uint32_t guest_va, HANDLE host);
  static HANDLE bridge_resolve_handle(uint32_t token);
@@ -8313,7 +8376,7 @@ index bfc1af3b..719b9772 100644
  static HANDLE ke_guest_event(uint32_t guest_va, int *type);
  
  /* Bring a header-owned host event in line with guest SignalState before a
-@@ -2137,9 +2288,9 @@ static void bridge_KeSetEvent(void)
+@@ -2137,9 +2336,9 @@ static void bridge_KeSetEvent(void)
      }
      h = ke_shadow_lookup_initialized(guest_va);
      if (!h)
@@ -8326,7 +8389,7 @@ index bfc1af3b..719b9772 100644
      if (h)
          g_eax = (uint32_t)SetEvent(h);
      else
-@@ -2154,7 +2305,9 @@ static int bridge_async_wait_trace_enabled(void)
+@@ -2154,7 +2353,9 @@ static int bridge_async_wait_trace_enabled(void)
      static int enabled = -1;
      if (enabled < 0) {
          const char *async = getenv("RECOMP_ASYNC_WAIT_TRACE");
@@ -8337,7 +8400,7 @@ index bfc1af3b..719b9772 100644
      }
      return enabled;
  }
-@@ -2256,7 +2409,7 @@ static void bridge_KeWaitForSingleObject(void)
+@@ -2256,7 +2457,7 @@ static void bridge_KeWaitForSingleObject(void)
  
      h = ke_shadow_lookup_initialized(object);
      if (!h) {
@@ -8346,7 +8409,7 @@ index bfc1af3b..719b9772 100644
          resolution = h ? "resolved_handle" : "unknown_object";
      }
  
-@@ -2347,7 +2500,7 @@ static void bridge_NtWaitForSingleObjectEx(void)
+@@ -2347,7 +2548,7 @@ static void bridge_NtWaitForSingleObjectEx(void)
      uint64_t started = bridge_async_wait_trace_enabled() ? GetTickCount64() : 0;
  
      static int logged = 0;
@@ -8355,7 +8418,7 @@ index bfc1af3b..719b9772 100644
          fprintf(stderr, "  [KERNEL] NtWaitForSingleObjectEx: token=0x%08X "
                  "handle=%p timeout=%s\n",
                  STACK_ARG(0), handle, timeout_ptr ? "finite" : "INFINITE");
-@@ -2418,7 +2571,7 @@ static void bridge_NtWaitForMultipleObjectsEx(void)
+@@ -2418,7 +2619,7 @@ static void bridge_NtWaitForMultipleObjectsEx(void)
  
      {
          static int logged;
@@ -8364,7 +8427,7 @@ index bfc1af3b..719b9772 100644
              fprintf(stderr, "  [KERNEL] NtWaitForMultipleObjectsEx: count=%u type=%u timeout=%s\n",
                      count, wait_type, timeout_ptr ? "finite" : "INFINITE");
              for (i = 0; i < count; i++)
-@@ -2894,11 +3047,15 @@ static volatile LONG g_dpc_head, g_dpc_tail;
+@@ -2894,11 +3095,15 @@ static volatile LONG g_dpc_head, g_dpc_tail;
   * has already consumed. */
  static CRITICAL_SECTION g_dpc_lock;
  static INIT_ONCE g_dpc_lock_once = INIT_ONCE_STATIC_INIT;
@@ -8380,7 +8443,7 @@ index bfc1af3b..719b9772 100644
      return TRUE;
  }
  
-@@ -2938,6 +3095,10 @@ int xbox_DpcQueue(uint32_t dpc, uint32_t arg1, uint32_t arg2)
+@@ -2938,6 +3143,10 @@ int xbox_DpcQueue(uint32_t dpc, uint32_t arg1, uint32_t arg2)
       * a DPC that no guest thread picks up at a raise would wait it out. */
      if (xbox_DpcOnRaise())
          xbox_HostTimerWake();
@@ -8391,7 +8454,7 @@ index bfc1af3b..719b9772 100644
      return 1;
  }
  
-@@ -3494,6 +3655,7 @@ static int kernel_vblank_tick_ns(uint64_t now_ns, uint64_t *next_due_ns)
+@@ -3494,6 +3703,7 @@ static int kernel_vblank_tick_ns(uint64_t now_ns, uint64_t *next_due_ns)
      *next_due_ns = vblank_due(t0_ns, count);
      kernel_vblank_count(kernel_clock_ms());
      kernel_vblank_raise();
@@ -8399,7 +8462,7 @@ index bfc1af3b..719b9772 100644
      return 1;
  }
  
-@@ -3511,6 +3673,7 @@ static void kernel_vblank_tick(void)
+@@ -3511,6 +3721,7 @@ static void kernel_vblank_tick(void)
      if (now < next_ms)
          return;
      next_ms = now + 16;                       /* ~60 Hz */
@@ -8407,7 +8470,7 @@ index bfc1af3b..719b9772 100644
      /* The rate it really runs at (the 10 ms Sleep makes it nearer 50 Hz),
       * in the same words as the 60 Hz schedule's line. Only a log line. */
      if (!last_ms)
-@@ -3711,7 +3874,7 @@ int xbox_DpcDrainHere(void)
+@@ -3711,7 +3922,7 @@ int xbox_DpcDrainHere(void)
   * VOID KeInitializeDpc(PKDPC Dpc, PKDEFERRED_ROUTINE DeferredRoutine,
   *                       PVOID DeferredContext)
   *
@@ -8416,7 +8479,7 @@ index bfc1af3b..719b9772 100644
   * We zero it and set the routine and context pointers.
   */
  static void bridge_KeInitializeDpc(void)
-@@ -4123,14 +4286,42 @@ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
+@@ -4123,14 +4334,42 @@ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
      if (!kernel_timer_paced()) {
          /* Neither the 60 Hz vblank nor the gate: the 10 ms tick, the
           * vblank tick when RECOMP_VBLANK asks for it, DPCs before due
@@ -8463,7 +8526,7 @@ index bfc1af3b..719b9772 100644
              kernel_fire_timers(kernel_timer_clock_ms(), &timer_due);
          }
      }
-@@ -4261,8 +4452,13 @@ static void bridge_RtlNtStatusToDosError(void)
+@@ -4261,8 +4500,13 @@ static void bridge_RtlNtStatusToDosError(void)
  {
      uint32_t status = STACK_ARG(0);
  
@@ -8477,7 +8540,7 @@ index bfc1af3b..719b9772 100644
      case 0x00000000: g_eax = 0; break;          /* STATUS_SUCCESS → ERROR_SUCCESS */
      case 0xC0000034: g_eax = 2; break;          /* STATUS_OBJECT_NAME_NOT_FOUND → ERROR_FILE_NOT_FOUND */
      case 0xC000003A: g_eax = 3; break;          /* STATUS_OBJECT_PATH_NOT_FOUND → ERROR_PATH_NOT_FOUND */
-@@ -4299,8 +4495,6 @@ static void bridge_RtlNtStatusToDosError(void)
+@@ -4299,8 +4543,6 @@ static void bridge_RtlNtStatusToDosError(void)
       * ERROR_INVALID_ADDRESS; any other answer makes it give up. */
      case 0xC0000018: g_eax = 487; break;        /* STATUS_CONFLICTING_ADDRESSES → ERROR_INVALID_ADDRESS */
  
@@ -8486,7 +8549,7 @@ index bfc1af3b..719b9772 100644
      default:
          /* HRESULT_FROM_WIN32 codes (facility 7) carry the Win32 error in
           * their low word, and the kernel hands it back. XNet's sockets keep
-@@ -4524,9 +4718,10 @@ static int bridge_is_sentinel(uint32_t token)
+@@ -4524,9 +4766,10 @@ static int bridge_is_sentinel(uint32_t token)
  static HANDLE bridge_reject_handle(uint32_t token)
  {
      static unsigned rejected;
@@ -8499,7 +8562,7 @@ index bfc1af3b..719b9772 100644
      fflush(stderr);
      return NULL;
  }
-@@ -4548,6 +4743,24 @@ static HANDLE bridge_resolve_handle(uint32_t token)
+@@ -4548,6 +4791,24 @@ static HANDLE bridge_resolve_handle(uint32_t token)
      return bridge_reject_handle(token);
  }
  
@@ -8524,7 +8587,7 @@ index bfc1af3b..719b9772 100644
  static HANDLE bridge_take_handle(uint32_t token)
  {
      if ((token & 0xFF000000u) == BRIDGE_HANDLE_TAG) {
-@@ -4607,6 +4820,27 @@ static int bridge_is_cdrom_device(const char *path)
+@@ -4607,6 +4868,27 @@ static int bridge_is_cdrom_device(const char *path)
      return _stricmp(path, "\\Device\\CdRom0") == 0;
  }
  
@@ -8552,7 +8615,7 @@ index bfc1af3b..719b9772 100644
  /* Open a file by delegating to the ported xbox_NtCreateFile kernel HLE.
   * bridge_create_file_impl, below, wraps this with the per-attempt log. */
  static NTSTATUS bridge_create_file_open(
-@@ -4627,6 +4861,7 @@ static NTSTATUS bridge_create_file_open(
+@@ -4627,6 +4909,7 @@ static NTSTATUS bridge_create_file_open(
      *name_out = name;
      if (!name.Buffer) {
          bridge_write_iostatus(iostatus_va, STATUS_OBJECT_PATH_NOT_FOUND, 0);
@@ -8560,7 +8623,7 @@ index bfc1af3b..719b9772 100644
          return STATUS_OBJECT_PATH_NOT_FOUND;
      }
  
-@@ -4650,6 +4885,11 @@ static NTSTATUS bridge_create_file_open(
+@@ -4650,6 +4933,11 @@ static NTSTATUS bridge_create_file_open(
          bridge_write_iostatus(iostatus_va, ios.Status, (uint32_t)ios.Information);
      } else {
          bridge_write_iostatus(iostatus_va, st, 0);
@@ -8572,7 +8635,7 @@ index bfc1af3b..719b9772 100644
      }
      return st;
  }
-@@ -4697,17 +4937,26 @@ static NTSTATUS bridge_create_file_impl(
+@@ -4697,17 +4985,26 @@ static NTSTATUS bridge_create_file_impl(
              /* Once a path has its "[FILE] missing" line, its later attempts
               * are counted rather than printed: a looping stream re-opens a
               * missing file every loop (97 lines in 100 s on one title). The
@@ -8601,7 +8664,7 @@ index bfc1af3b..719b9772 100644
              fprintf(stderr, "  [FILE] %s (disp %u opts 0x%X from 0x%08X) -> 0x%08X\n",
                      gpath, (unsigned)disposition, (unsigned)options,
                      g_xbox_kernel_caller, status);
-@@ -5588,7 +5837,7 @@ static void bridge_NtQuerySymbolicLinkObject(void)
+@@ -5588,7 +5885,7 @@ static void bridge_NtQuerySymbolicLinkObject(void)
  
          if (!buf_va || len >= max_len) {
              static unsigned warned;
@@ -8610,7 +8673,7 @@ index bfc1af3b..719b9772 100644
                  fprintf(stderr,
                          "  [KERNEL] NtQuerySymbolicLinkObject: buffer 0x%08X "
                          "max=%u cannot hold %u bytes; returning "
-@@ -5690,6 +5939,59 @@ static void bridge_NtDeviceIoControlFile(void)
+@@ -5690,6 +5987,59 @@ static void bridge_NtDeviceIoControlFile(void)
              }
          }
  
@@ -8670,7 +8733,7 @@ index bfc1af3b..719b9772 100644
          if (KERNEL_LOG_ON())
              fprintf(stderr, "  [FILE] DVD device IOCTL 0x%X (in=%u out=%u) "
                              "-> STATUS_SUCCESS\n", ioctl, in_len, out_len);
-@@ -6429,7 +6731,7 @@ static void bridge_KeWaitForMultipleObjects(void)
+@@ -6429,7 +6779,7 @@ static void bridge_KeWaitForMultipleObjects(void)
          } else {
              handles[i] = ke_shadow_lookup(object);
              if (!handles[i])
@@ -8679,7 +8742,7 @@ index bfc1af3b..719b9772 100644
          }
      }
  
-@@ -6610,6 +6912,9 @@ static void bridge_XcHMAC(void)
+@@ -6610,6 +6960,9 @@ static void bridge_XcHMAC(void)
  /* ── XcDESKeyParity (ordinal 346, 2 args) */
  static void bridge_XcDESKeyParity(void)
  {
@@ -8689,7 +8752,7 @@ index bfc1af3b..719b9772 100644
      xbox_XcDESKeyParity((PUCHAR)XBOX_TO_NATIVE(STACK_ARG(0)), STACK_ARG(1));
      g_eax = 0;
  }
-@@ -7563,15 +7868,9 @@ static void bridge_MmDeleteKernelStack(void)
+@@ -7563,15 +7916,9 @@ static void bridge_MmDeleteKernelStack(void)
      g_eax = 0;
  }
  
@@ -8708,7 +8771,7 @@ index bfc1af3b..719b9772 100644
  static void bridge_XcPKGetKeyLen(void)
  {
      g_eax = (uint32_t)xbox_XcPKGetKeyLen(XBOX_TO_NATIVE(STACK_ARG(0)));
-@@ -7598,6 +7897,13 @@ static void bridge_XcVerifyPKCS1Signature(void)
+@@ -7598,6 +7945,13 @@ static void bridge_XcVerifyPKCS1Signature(void)
  
  static void bridge_XcModExp(void)
  {
@@ -8722,7 +8785,7 @@ index bfc1af3b..719b9772 100644
      g_eax = (uint32_t)xbox_XcModExp((PULONG)XBOX_TO_NATIVE(STACK_ARG(0)),
          (PULONG)XBOX_TO_NATIVE(STACK_ARG(1)),
          (PULONG)XBOX_TO_NATIVE(STACK_ARG(2)),
-@@ -7606,6 +7912,11 @@ static void bridge_XcModExp(void)
+@@ -7606,6 +7960,11 @@ static void bridge_XcModExp(void)
  
  static void bridge_XcKeyTable(void)
  {
@@ -8734,7 +8797,7 @@ index bfc1af3b..719b9772 100644
      xbox_XcKeyTable(STACK_ARG(0), XBOX_TO_NATIVE(STACK_ARG(1)),
          (const UCHAR*)XBOX_TO_NATIVE(STACK_ARG(2)));
      g_eax = 0;
-@@ -7613,6 +7924,12 @@ static void bridge_XcKeyTable(void)
+@@ -7613,6 +7972,12 @@ static void bridge_XcKeyTable(void)
  
  static void bridge_XcBlockCrypt(void)
  {
@@ -8747,7 +8810,7 @@ index bfc1af3b..719b9772 100644
      xbox_XcBlockCrypt(STACK_ARG(0), XBOX_TO_NATIVE(STACK_ARG(1)),
          XBOX_TO_NATIVE(STACK_ARG(2)), XBOX_TO_NATIVE(STACK_ARG(3)),
          STACK_ARG(4));
-@@ -7621,6 +7938,13 @@ static void bridge_XcBlockCrypt(void)
+@@ -7621,6 +7986,13 @@ static void bridge_XcBlockCrypt(void)
  
  static void bridge_XcBlockCryptCBC(void)
  {
@@ -8761,7 +8824,7 @@ index bfc1af3b..719b9772 100644
      xbox_XcBlockCryptCBC(STACK_ARG(0), STACK_ARG(1),
          XBOX_TO_NATIVE(STACK_ARG(2)), XBOX_TO_NATIVE(STACK_ARG(3)),
          XBOX_TO_NATIVE(STACK_ARG(4)), STACK_ARG(5),
-@@ -7802,7 +8126,7 @@ static void bridge_NtDuplicateObject(void)
+@@ -7802,7 +8174,7 @@ static void bridge_NtDuplicateObject(void)
      if (!DuplicateHandle(GetCurrentProcess(), src, GetCurrentProcess(),
                           &dup, 0, FALSE, opts)) {
          static int logged = 0;
@@ -8770,7 +8833,7 @@ index bfc1af3b..719b9772 100644
              fprintf(stderr, "  [KERNEL] NtDuplicateObject: token=0x%08X "
                      "handle=%p failed (error %lu)\n",
                      STACK_ARG(0), src, (unsigned long)GetLastError());
-@@ -10236,9 +10560,11 @@ static void bridge_NtProtectVirtualMemory(void)
+@@ -10236,15 +10608,19 @@ static void bridge_NtProtectVirtualMemory(void)
      uint32_t old_ptr  = STACK_ARG(3);
      uint32_t base_va = base_ptr ? BRIDGE_MEM32(base_ptr) : 0;
      uint32_t size    = size_ptr ? BRIDGE_MEM32(size_ptr) : 0;
@@ -8778,13 +8841,21 @@ index bfc1af3b..719b9772 100644
 +    unsigned long old = 0;
  
 -    if (VirtualProtect(XBOX_TO_NATIVE(base_va), size, (DWORD)new_prot, &old)) {
++    xbox_vm_epoch_bump();       /* regions checked so far are no longer to be trusted (bridge_span_cache.h) */
 +    /* Through the write watch, so an armed page is neither left read-only
 +     * behind the guest's back nor reported to it as read-only. */
 +    if (gww_virtual_protect(XBOX_TO_NATIVE(base_va), size, new_prot, &old)) {
          if (old_ptr)
              BRIDGE_MEM32(old_ptr) = (uint32_t)old;
          g_eax = 0;  /* STATUS_SUCCESS */
-@@ -10437,14 +10763,26 @@ static void bridge_ObMakeTemporaryObject(void)
+     } else {
+         g_eax = 0xC0000005u;  /* STATUS_ACCESS_VIOLATION */
+     }
++    xbox_vm_epoch_bump();       /* and again once it has changed */
+ }
+ 
+ /* --- NtQueueApcThread (ordinal 206, 5 args = 20 bytes) --- */
+@@ -10437,14 +10813,26 @@ static void bridge_ObMakeTemporaryObject(void)
      g_eax = 0;
  }
  
@@ -9951,18 +10022,27 @@ index 3a33443b..8191a3af 100644
  
  /* ============================================================================
 diff --git a/src/kernel/kernel_memory.c b/src/kernel/kernel_memory.c
-index d5f0ef5f..89aadc80 100644
+index d5f0ef5f..a106fe95 100644
 --- a/src/kernel/kernel_memory.c
 +++ b/src/kernel/kernel_memory.c
-@@ -8,6 +8,7 @@
+@@ -8,6 +8,8 @@
  
  #include "kernel.h"
  #include "xbox_memory_layout.h"   /* xbox_PhysNoteRamName */
 +#include "guest_write_watch.h"
++#include "bridge_span_cache.h"
  #if defined(_WIN32)
  /* _aligned_malloc/_aligned_free; POSIX gets them from win32_compat.h */
  #include <malloc.h>
-@@ -195,8 +196,9 @@ ULONG __stdcall xbox_MmQueryAddressProtect(PVOID VirtualAddress)
+@@ -78,6 +80,7 @@ VOID __stdcall xbox_MmFreeContiguousMemory(PVOID BaseAddress)
+     XBOX_TRACE(XBOX_LOG_MEM, "MmFreeContiguousMemory(%p)", BaseAddress);
+     if (!BaseAddress)
+         return;
++    xbox_vm_epoch_bump();       /* the kernel bridges' checked regions are stale (bridge_span_cache.h) */
+ 
+     /*
+      * Determine if this was allocated with _aligned_malloc or VirtualAlloc.
+@@ -195,8 +198,9 @@ ULONG __stdcall xbox_MmQueryAddressProtect(PVOID VirtualAddress)
          return protect;
      MEMORY_BASIC_INFORMATION mbi;
      if (VirtualQuery(VirtualAddress, &mbi, sizeof(mbi))) {
@@ -9974,7 +10054,7 @@ index d5f0ef5f..89aadc80 100644
      }
      return PAGE_NOACCESS;
  }
-@@ -204,13 +206,13 @@ ULONG __stdcall xbox_MmQueryAddressProtect(PVOID VirtualAddress)
+@@ -204,13 +208,13 @@ ULONG __stdcall xbox_MmQueryAddressProtect(PVOID VirtualAddress)
  VOID __stdcall xbox_MmSetAddressProtect(PVOID BaseAddress, ULONG NumberOfBytes, ULONG NewProtect)
  {
      int mapped = xbox_IoMappingSetProtect(BaseAddress, NumberOfBytes, NewProtect);
@@ -9990,8 +10070,24 @@ index d5f0ef5f..89aadc80 100644
      XBOX_TRACE(XBOX_LOG_MEM, "MmSetAddressProtect(%p, %u, 0x%X)", BaseAddress, NumberOfBytes, NewProtect);
  }
  
+@@ -283,6 +287,7 @@ NTSTATUS __stdcall xbox_NtAllocateVirtualMemory(
+     if (!BaseAddress || !RegionSize)
+         return STATUS_INVALID_PARAMETER;
+ 
++    xbox_vm_epoch_bump();       /* the kernel bridges' checked regions are stale (bridge_span_cache.h) */
+     PVOID result = VirtualAlloc(*BaseAddress, *RegionSize,
+                                 AllocationType, xbox_protect_to_win32(Protect));
+     if (!result) {
+@@ -308,6 +313,7 @@ NTSTATUS __stdcall xbox_NtFreeVirtualMemory(
+ 
+     SIZE_T size = (FreeType & MEM_RELEASE) ? 0 : (RegionSize ? *RegionSize : 0);
+ 
++    xbox_vm_epoch_bump();       /* the kernel bridges' checked regions are stale (bridge_span_cache.h) */
+     if (!VirtualFree(*BaseAddress, size, FreeType)) {
+         xbox_log(XBOX_LOG_WARN, XBOX_LOG_MEM,
+             "NtFreeVirtualMemory failed: base=%p type=0x%X err=%u",
 diff --git a/src/kernel/kernel_path.c b/src/kernel/kernel_path.c
-index 6c74c415..00643fc9 100644
+index 6c74c415..27df0a4d 100644
 --- a/src/kernel/kernel_path.c
 +++ b/src/kernel/kernel_path.c
 @@ -7,6 +7,9 @@
@@ -10012,7 +10108,20 @@ index 6c74c415..00643fc9 100644
  
  /*
   * Helper: check if an ANSI string starts with a prefix (case-insensitive).
-@@ -124,15 +128,21 @@ static const path_rule s_rules[] = {
+@@ -117,6 +121,12 @@ static const path_rule s_rules[] = {
+ };
+ #define PATH_RULE_COUNT ((int)(sizeof(s_rules) / sizeof(s_rules[0])))
+ 
++/* When each rule's folders were last made sure to exist (Windows translation below). */
++#ifdef _WIN32
++#define XBOX_DIR_ENSURE_MS 1000u
++static ULONGLONG s_dirs_ensured_at[sizeof(s_rules) / sizeof(s_rules[0])];
++#endif
++
+ /* Match a rule. The UDATA, TDATA and CACHE rules carry no trailing
+  * separator, since a title opens the bare directories too, so they stop at
+  * one: otherwise Partition1\UDATAx would be taken for Partition1\UDATA\x,
+@@ -124,15 +134,21 @@ static const path_rule s_rules[] = {
  static int rule_match(const char* path, const path_rule* r)
  {
      int skip = match_prefix(path, r->prefix);
@@ -10039,7 +10148,7 @@ index 6c74c415..00643fc9 100644
   * Indexed 0 for UDATA, 1 for TDATA. CACHE never stays: a cache left in the
   * game dir is scratch the title rebuilds, and keeping it there is the write
   * into the game files that its rule exists to stop. */
-@@ -418,6 +428,7 @@ static BOOL xbox_partition_device_path(const char *xbox_path, WCHAR *out, DWORD
+@@ -418,6 +434,7 @@ static BOOL xbox_partition_device_path(const char *xbox_path, WCHAR *out, DWORD
  void xbox_path_init(const char* game_dir, const char* save_dir)
  {
      WCHAR save_base[MAX_PATH];
@@ -10047,7 +10156,7 @@ index 6c74c415..00643fc9 100644
  
      /* The fallbacks used to name Burnout 3 specifically, so any other title
       * that passed NULL silently pointed its game dir and its saves at another
-@@ -431,10 +442,16 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
+@@ -431,10 +448,16 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
          GetCurrentDirectoryW(MAX_PATH, s_game_dir);
      }
  
@@ -10066,7 +10175,7 @@ index 6c74c415..00643fc9 100644
              swprintf_s(s_save_dir, MAX_PATH, L"%s\\xboxrecomp", save_base);
          } else {
              GetCurrentDirectoryW(MAX_PATH, s_save_dir);
-@@ -474,11 +491,12 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
+@@ -474,11 +497,12 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
       * happy if they already exist. */
      {
          static const WCHAR *subs[] = { L"TitleData", L"UserData", L"Cache",
@@ -10080,7 +10189,7 @@ index 6c74c415..00643fc9 100644
              swprintf_s(dir, MAX_PATH, L"%s\\%s", s_save_dir, subs[i]);
              SHCreateDirectoryExW(NULL, dir, NULL);
          }
-@@ -536,24 +554,15 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
+@@ -536,24 +560,15 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
              wcscpy_s(s_user_dir, MAX_PATH, s_save_dir);
          }
  
@@ -10114,7 +10223,15 @@ index 6c74c415..00643fc9 100644
      }
  
      s_initialized = TRUE;
-@@ -590,6 +599,11 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+@@ -583,6 +598,7 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+     const WCHAR* base_dir  = NULL;
+     const char*  sub_dir   = NULL;
+     int          skip;
++    int          matched = -1;
+ 
+     if (!xbox_path || !host_path_buf || buf_size == 0)
+         return FALSE;
+@@ -590,6 +606,11 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
      if (!s_initialized)
          xbox_path_init(NULL, NULL);
  
@@ -10126,7 +10243,7 @@ index 6c74c415..00643fc9 100644
      {
          char linked[512];
          if (resolve_symlink(xbox_path, linked, sizeof(linked)))
-@@ -597,8 +611,7 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+@@ -597,8 +618,7 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
      }
  
      if (xbox_partition_device_path(xbox_path, host_path_buf, buf_size)) {
@@ -10136,7 +10253,15 @@ index 6c74c415..00643fc9 100644
          return TRUE;
      }
  
-@@ -620,8 +633,6 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+@@ -609,6 +629,7 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+             base_dir  = s_rules[i].to_save == 2 ? USER_RULE_DIR(&s_rules[i])
+                       : s_rules[i].to_save     ? s_save_dir : s_game_dir;
+             sub_dir   = s_rules[i].sub_win;
++            matched   = i;
+             goto translate;
+         }
+     }
+@@ -620,8 +641,6 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
  translate:
      if (g_xbox_path_hook)
          g_xbox_path_hook(xbox_path);
@@ -10145,7 +10270,7 @@ index 6c74c415..00643fc9 100644
      {
          WCHAR remainder_wide[MAX_PATH];
          MultiByteToWideChar(CP_ACP, 0, remainder, -1, remainder_wide, MAX_PATH);
-@@ -629,18 +640,24 @@ translate:
+@@ -629,18 +648,32 @@ translate:
          for (WCHAR* p = remainder_wide; *p; p++) {
              if (*p == L'/') *p = L'\\';
          }
@@ -10160,19 +10285,32 @@ index 6c74c415..00643fc9 100644
              WCHAR sub_wide[MAX_PATH];
              MultiByteToWideChar(CP_ACP, 0, sub_dir, -1, sub_wide, MAX_PATH);
 -            swprintf_s(host_path_buf, buf_size, L"%s%s\\%s", base_dir, sub_wide, remainder_wide);
+-
+-            WCHAR dir_path[MAX_PATH];
+-            swprintf_s(dir_path, MAX_PATH, L"%s%s", base_dir, sub_wide);
+-            CreateDirectoryW(base_dir, NULL);
+-            CreateDirectoryW(dir_path, NULL);
 +            swprintf_s(host_path_buf, buf_size, L"%s%s\\%s", base_dir, sub_wide, rest);
- 
-             WCHAR dir_path[MAX_PATH];
-             swprintf_s(dir_path, MAX_PATH, L"%s%s", base_dir, sub_wide);
-             CreateDirectoryW(base_dir, NULL);
-             CreateDirectoryW(dir_path, NULL);
++
++            /* Make the rule's folders, but not on every path: nearly every asset the game opens goes
++             * through the Z: rule, and two CreateDirectoryW calls (file-system round trips that fail
++             * with "already exists") per open were about a fifth of a menu load in a stall profile.
++             * At most once a second per rule, so a folder that is removed comes back. */
++            ULONGLONG now = GetTickCount64();
++            if (matched < 0 || !s_dirs_ensured_at[matched] || now - s_dirs_ensured_at[matched] >= XBOX_DIR_ENSURE_MS) {
++                WCHAR dir_path[MAX_PATH];
++                swprintf_s(dir_path, MAX_PATH, L"%s%s", base_dir, sub_wide);
++                CreateDirectoryW(base_dir, NULL);
++                CreateDirectoryW(dir_path, NULL);
++                if (matched >= 0) s_dirs_ensured_at[matched] = now ? now : 1;
++            }
          } else {
 -            swprintf_s(host_path_buf, buf_size, L"%s\\%s", base_dir, remainder_wide);
 +            swprintf_s(host_path_buf, buf_size, L"%s\\%s", base_dir, rest);
          }
  
          /* An empty remainder means the title opened the device itself, so
-@@ -685,6 +702,96 @@ static void strip_trailing_slash(char* s)
+@@ -685,6 +718,96 @@ static void strip_trailing_slash(char* s)
  }
  
  /* Recursively create a directory and all missing parents. */
@@ -10269,7 +10407,7 @@ index 6c74c415..00643fc9 100644
  static void mkdir_p(const char* path)
  {
      char tmp[MAX_PATH];
-@@ -707,6 +814,7 @@ static void mkdir_p(const char* path)
+@@ -707,6 +830,7 @@ static void mkdir_p(const char* path)
  
  void xbox_path_init(const char* game_dir, const char* save_dir)
  {
@@ -10277,7 +10415,7 @@ index 6c74c415..00643fc9 100644
      if (game_dir) {
          snprintf(s_game_dir, sizeof(s_game_dir), "%s", game_dir);
      } else {
-@@ -717,12 +825,16 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
+@@ -717,12 +841,16 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
          snprintf(s_game_dir, sizeof(s_game_dir), "%s/game", cwd);
      }
  
@@ -10297,7 +10435,7 @@ index 6c74c415..00643fc9 100644
              snprintf(s_save_dir, sizeof(s_save_dir), "%s/xboxrecomp", xdg);
          } else {
              const char* home = getenv("HOME");
-@@ -733,6 +845,13 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
+@@ -733,6 +861,13 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
  
      strip_trailing_slash(s_game_dir);
      strip_trailing_slash(s_save_dir);
@@ -10311,7 +10449,7 @@ index 6c74c415..00643fc9 100644
  
      /* The save-side directories and the partition device images, as the
       * Win32 backend makes them. Without Partition0.img a title's
-@@ -794,21 +913,15 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
+@@ -794,21 +929,15 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
              snprintf(s_user_dir, sizeof(s_user_dir), "%s", s_save_dir);
          }
  
@@ -10342,7 +10480,7 @@ index 6c74c415..00643fc9 100644
      }
  
      s_initialized = TRUE;
-@@ -829,6 +942,11 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+@@ -829,6 +958,11 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
      if (!s_initialized)
          xbox_path_init(NULL, NULL);
  
@@ -10354,7 +10492,7 @@ index 6c74c415..00643fc9 100644
      {
          char linked[512];
          if (resolve_symlink(xbox_path, linked, sizeof(linked)))
-@@ -840,8 +958,7 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+@@ -840,8 +974,7 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
          if (digit) {
              snprintf(host_path_buf, buf_size, "%s/Partition%c.img",
                       s_save_dir, digit);
@@ -10364,7 +10502,7 @@ index 6c74c415..00643fc9 100644
              return TRUE;
          }
      }
-@@ -872,17 +989,20 @@ translate:
+@@ -872,17 +1005,20 @@ translate:
          /* Xbox paths use backslashes -> POSIX slashes. */
          for (char* p = remainder_posix; *p; p++)
              if (*p == '\\') *p = '/';
@@ -10387,7 +10525,7 @@ index 6c74c415..00643fc9 100644
          }
  
          {
-@@ -890,6 +1010,7 @@ translate:
+@@ -890,6 +1026,7 @@ translate:
              while (n > 1 && host_path_buf[n - 1] == '/')
                  host_path_buf[--n] = '\0';
          }
@@ -14700,10 +14838,10 @@ index f5b517f0..2acc4685 100644
          MSG msg;
 diff --git a/src/video/nv2a_black_frame.h b/src/video/nv2a_black_frame.h
 new file mode 100644
-index 00000000..ba782e5c
+index 00000000..1cff3bfc
 --- /dev/null
 +++ b/src/video/nv2a_black_frame.h
-@@ -0,0 +1,1167 @@
+@@ -0,0 +1,1190 @@
 +/* Black- and odd-frame detector. Players see a couple of black, tunnel-dark
 + * or otherwise wrong frames now and then while driving, and nothing in the
 + * frame timings shows them. Every guest flip is also composited into a 64x40
@@ -15822,15 +15960,38 @@ index 00000000..ba782e5c
 +
 +/* F9 pressed on the game window since the last flip. Polled here, once per
 + * flip, so the window module needs no hook for it; F9 still reaches the
-+ * title like any other key. */
++ * title like any other key. The key's state at the poll is not enough: while
++ * the title loads (the black screen with only the loading animation, seconds
++ * between flips) a tap has come and gone before the next poll, which is when
++ * the player presses it. */
++static volatile LONG s_bf_f9_pending;
++
++/* The lowest bit of GetAsyncKeyState is documented as unreliable (any other
++ * caller in the process, or another process, takes the "pressed" news), and it
++ * was lost in the first fix. A thread watching the key every 10 ms latches each
++ * press until the next flip looks. */
++static DWORD WINAPI bf_f9_watch(LPVOID unused)
++{
++    int was = 0;
++    (void)unused;
++    for (;;) {
++        HWND window = xbox_FramebufferWindowHandle();
++        int down = window && GetForegroundWindow() == window && (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
++        if (down && !was) InterlockedExchange(&s_bf_f9_pending, 1);
++        was = down;
++        Sleep(10);
++    }
++    return 0;
++}
++
 +static int bf_capture_pressed(void)
 +{
-+    static int was;
-+    HWND window = xbox_FramebufferWindowHandle();
-+    int down = window && GetForegroundWindow() == window && (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
-+    int pressed = down && !was;
-+    was = down;
-+    return pressed;
++    static volatile LONG started;
++    if (!started && InterlockedExchange(&started, 1) == 0) {
++        HANDLE watch = CreateThread(NULL, 0, bf_f9_watch, NULL, 0, NULL);
++        if (watch) CloseHandle(watch);
++    }
++    return InterlockedExchange(&s_bf_f9_pending, 0) != 0;
 +}
 +
 +/* One guest flip, composited the way the window shows it (without the
@@ -15872,7 +16033,7 @@ index 00000000..ba782e5c
 +#endif /* NV2A_BLACK_FRAME_LOGIC_ONLY */
 +#endif /* NV2A_BLACK_FRAME_H */
 diff --git a/src/video/nv2a_d3d11.c b/src/video/nv2a_d3d11.c
-index f4432e75..df5ca9a6 100644
+index f4432e75..36aebc0c 100644
 --- a/src/video/nv2a_d3d11.c
 +++ b/src/video/nv2a_d3d11.c
 @@ -19,9 +19,10 @@
@@ -19926,9 +20087,9 @@ index f4432e75..df5ca9a6 100644
 -    if (!(p = ring_map(s_raw, &s_raw_pos, VB_BYTES, total + (use_dx ? count * 4 : 0), &m))) {
 +    if (suppress_map_base || hide_hud) {
 +        slow_frame_end(SF_DRAW_SCOPE, slow_draw);
-         RECOMP_PROFILE_END();
-         return;
-     }
++        RECOMP_PROFILE_END();
++        return;
++    }
 +    if (map_clip_top > 0.0f && s_bound_scissors_valid && s_bound_scissor_count == 1) {
 +        D3D11_RECT r = s_bound_scissors[0];
 +        LONG top = (LONG)(map_clip_top * s_aa_y * s_cur_sy + 0.5f);
@@ -19939,9 +20100,9 @@ index f4432e75..df5ca9a6 100644
 +     * batches keep tagged routes/names independent of ordinary HUD text. */
 +    if (total + (use_dx ? count * 4 : 0) + (use_dy ? count * 4 : 0) > VB_BYTES) {
 +        slow_frame_end(SF_DRAW_SCOPE, slow_draw);
-+        RECOMP_PROFILE_END();
-+        return;
-+    }
+         RECOMP_PROFILE_END();
+         return;
+     }
 +    if (!s_raw_nooverwrite) s_raw_pos = 0;
 +    direct = indices_are_sequential(idx, ni, lo, hi, st->flat_shade);
 +    /* Indices go in the vertex ring's map when it is also the index buffer. */
@@ -21133,7 +21294,23 @@ index f4432e75..df5ca9a6 100644
  /* RECOMP_CAPTURE_SURFACE: the composited guest image at internal resolution
   * (no window scaling or letterbox), for pixel comparisons. */
  static ID3D11Texture2D *s_cap_tex;
-@@ -3882,31 +7457,19 @@ static void keep_image(ID3D11Texture2D *bb)
+@@ -3879,34 +7454,36 @@ static void keep_image(ID3D11Texture2D *bb)
+         ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)s_kept, (ID3D11Resource *)bb);
+ }
+ 
++/* After Present. An overlay hooked into it (Steam's, and others such as Discord or RivaTuner)
++ * draws with this context and can leave its own state behind (scissor, rasterizer, blend,
++ * shaders), while the bind caches above would skip setting ours again. Start the next draw from
++ * a known state, as after the host draw client in nv2a_d3d_host_draw. With the Steam overlay,
++ * MM3's loading screen after quitting a race came out black, or cut to a corner and stretched:
++ * the title draws it right after a present. */
++static void present_state_reset(void)
++{
++    ID3D11DeviceContext_ClearState(s_ctx);
++    bind_fixed_resources();
++    unbind_targets();
++}
++
  /* The kept image presented again; 0 if there is none to show. */
  static int present_kept(void)
  {
@@ -21171,10 +21348,11 @@ index f4432e75..df5ca9a6 100644
 +    capture_backbuffer(s_swap_buffer);
 +    screenshot_serve(s_swap_buffer);
 +    IDXGISwapChain1_Present(s_swap, (UINT)((present_options() >> 16) & 1), present_flags());
++    present_state_reset();
      s_last_present = GetTickCount();
      return 1;
  }
-@@ -3931,25 +7494,40 @@ static int pace_after_present(void)
+@@ -3931,25 +7508,40 @@ static int pace_after_present(void)
  
  static void pace_flip(FlipPacing *pacing)
  {
@@ -21216,7 +21394,7 @@ index f4432e75..df5ca9a6 100644
          if (!s_cap_tex || s_cap_w != s->iw || s_cap_h != s->ih) {
              if (s_cap_rtv) ID3D11RenderTargetView_Release(s_cap_rtv);
              if (s_cap_tex) ID3D11Texture2D_Release(s_cap_tex);
-@@ -3965,45 +7543,110 @@ static void present_surface(Surface *s, FlipPacing *pacing)
+@@ -3965,45 +7557,111 @@ static void present_surface(Surface *s, FlipPacing *pacing)
              composite(s_cap_rtv, s->iw, s->ih, s, &pc, 0);
              capture_backbuffer(s_cap_tex);
          }
@@ -21270,6 +21448,7 @@ index f4432e75..df5ca9a6 100644
 -            if (present_hr == S_OK)
 +            slow_present = slow_frame_begin();
 +            present_hr = IDXGISwapChain1_Present(s_swap, (UINT)((present_options() >> 16) & 1), present_flags());
++            present_state_reset();
 +            slow_frame_end(SF_PRESENT_API, slow_present);
 +            if (present_hr == S_OK) {
                  s->cpu_present_pending = 0;
@@ -21349,7 +21528,7 @@ index f4432e75..df5ca9a6 100644
  /* The flip completes at the display's next vertical blank, as it does on the
   * NV2A: FLIP_STALL holds the GPU until then, and the title, waiting on the
   * GPU, is paced by it. Completing it at once let menus run at hundreds of
-@@ -4015,23 +7658,42 @@ static void pace_vblank(void)
+@@ -4015,23 +7673,42 @@ static void pace_vblank(void)
      static LARGE_INTEGER freq;
      static int64_t next;
      static HANDLE timer;
@@ -21398,7 +21577,7 @@ index f4432e75..df5ca9a6 100644
          return;
      {
          RECOMP_PROFILE_BEGIN("D3D11 pace");
-@@ -4046,30 +7708,46 @@ static void pace_vblank(void)
+@@ -4046,30 +7723,46 @@ static void pace_vblank(void)
   * the monitor's native resolution and shape). A resize applies once it has
   * settled for RESIZE_SETTLE_MS, by dropping every host surface; they are
   * rebuilt at the new size from guest memory, which the flip just updated.
@@ -21420,8 +21599,9 @@ index f4432e75..df5ca9a6 100644
 +    int scale_changed = scale_bits != done_scale_bits;
 +    int aspect_changed = aspect_bits != done_aspect_bits;
      const char *e = getenv("RECOMP_RENDER_SCALE");
+-    float scale, aspect = env_aspect();
 +    float requested_scale = 0.0f;
-     float scale, aspect = env_aspect();
++    float scale, aspect = live_env_aspect();     /* the F10 / Graphics menu choice, else RECOMP_ASPECT */
      UINT w, h;
      int i, deferred;
 +    if (scale_bits != -1) memcpy(&requested_scale, &scale_bits, sizeof requested_scale);
@@ -21450,7 +21630,7 @@ index f4432e75..df5ca9a6 100644
          scale = (float)atof(e);
      } else {
          /* RECOMP_SUPERSAMPLE=N (1..4) renders N x N host pixels per window
-@@ -4084,7 +7762,11 @@ static void display_config(int now)
+@@ -4084,7 +7777,11 @@ static void display_config(int now)
          if (scale < 1.0f) scale = 1.0f;
          if (scale > 8.0f) scale = 8.0f;
      }
@@ -21463,7 +21643,7 @@ index f4432e75..df5ca9a6 100644
      if (!now && fabsf(scale - s_scale) < 1e-3f && fabsf(aspect - s_aspect) < 1e-4f)
          return;
      if (!now) {
-@@ -4098,6 +7780,11 @@ static void display_config(int now)
+@@ -4098,6 +7795,11 @@ static void display_config(int now)
      }
      s_scale = scale;
      s_aspect = aspect;
@@ -21475,7 +21655,7 @@ index f4432e75..df5ca9a6 100644
      fprintf(stderr, "[D3D11] rendering %ux%u (window %ux%u, aspect %.3f)\n",
              (uint32_t)(GUEST_W * s_scale * widen() + 0.5f), (uint32_t)(GUEST_H * s_scale + 0.5f),
              w, h, aspect);
-@@ -4138,27 +7825,66 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
+@@ -4138,27 +7840,66 @@ static Surface *scan_surface(uint32_t va, uint32_t pitch)
      return s;
  }
  
@@ -21544,7 +21724,7 @@ index f4432e75..df5ca9a6 100644
          if (s_prof_on > 0) {
              s_prof[PROF_WRITEBACK] += t1 - t0;
              s_prof[PROF_PRESENT] += qpc() - t1 - pacing.ticks;
-@@ -4169,12 +7895,16 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
+@@ -4169,12 +7910,16 @@ void nv2a_d3d_flip_present(uint32_t surface_addr, uint32_t pitch, int show)
           * still completes exactly one paced guest flip. A failed Present has
           * already waited before the attempt and must not wait a second time. */
          pace_flip(&pacing);
@@ -21561,7 +21741,7 @@ index f4432e75..df5ca9a6 100644
      s_frame++;
  }
  
-@@ -4195,6 +7925,17 @@ static volatile LONG s_repeat;
+@@ -4195,6 +7940,17 @@ static volatile LONG s_repeat;
   * by the title's thread before it raises its flag, so the presenter always finds it. */
  static HANDLE s_request_done;
  
@@ -21579,7 +21759,7 @@ index f4432e75..df5ca9a6 100644
  static void request_raise(volatile LONG *flag)
  {
      if (!s_request_done)
-@@ -4202,6 +7943,7 @@ static void request_raise(volatile LONG *flag)
+@@ -4202,6 +7958,7 @@ static void request_raise(volatile LONG *flag)
      if (s_request_done)
          ResetEvent(s_request_done);
      InterlockedExchange(flag, 1);
@@ -21587,7 +21767,7 @@ index f4432e75..df5ca9a6 100644
  }
  
  static void request_wait(volatile LONG *flag)
-@@ -4252,6 +7994,8 @@ void nv2a_d3d_tick(void)
+@@ -4252,6 +8009,8 @@ void nv2a_d3d_tick(void)
  {
      DWORD now;
      uint32_t va, pitch;
@@ -21596,7 +21776,7 @@ index f4432e75..df5ca9a6 100644
      /* CPU scanout and PVIDEO can precede the first pushbuffer flip. */
      if (s_init_state <= 0 && !nv2a_d3d_init())
          return;
-@@ -4287,13 +8031,19 @@ void nv2a_d3d_tick(void)
+@@ -4287,13 +8046,19 @@ void nv2a_d3d_tick(void)
      now = GetTickCount();
      if (now - s_last_present < 16)
          return;
@@ -21619,7 +21799,7 @@ index f4432e75..df5ca9a6 100644
          s_frame++;
          return;
      }
-@@ -4307,23 +8057,37 @@ void nv2a_d3d_tick(void)
+@@ -4307,23 +8072,37 @@ void nv2a_d3d_tick(void)
           * Force the check because the submission epoch stops with the flips. */
          if (!s_wb_pending)
              surface_sync(s_shown, 1);
@@ -21661,7 +21841,7 @@ index f4432e75..df5ca9a6 100644
  int nv2a_d3d_prof_enabled(void) { return 0; }
  void nv2a_d3d_prof_add(int slot, int64_t ticks, uint32_t verts)
  { (void)slot; (void)ticks; (void)verts; }
-@@ -4349,4 +8113,42 @@ void nv2a_d3d_zpass_clear(void) {}
+@@ -4349,4 +8128,42 @@ void nv2a_d3d_zpass_clear(void) {}
  uint32_t nv2a_d3d_zpass_read(void) { return 0; }
  float nv2a_d3d_display_aspect(void) { return 4.0f / 3.0f; }
  int nv2a_d3d_host_draw(const NvD3DState *st, int (*draw)(const NvHostTarget *, void *), void *user) { (void)st; (void)draw; (void)user; return 0; }
@@ -49770,3 +49950,339 @@ index 00000000..862ee24f
 +
 +if __name__ == "__main__":
 +    sys.exit(main())
+diff --git a/src/video/spike_sampler.c b/src/video/spike_sampler.c
+index c7a0fb53..e7117943 100644
+--- a/src/video/spike_sampler.c
++++ b/src/video/spike_sampler.c
+@@ -88,7 +88,7 @@ void recomp_sampler_watch_current_thread(void)
+         s_img_lo = (DWORD64)m;
+         s_img_hi = s_img_lo + nt->OptionalHeader.SizeOfImage;
+     }
+-    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
++    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+     s_sym_ok = SymInitialize(GetCurrentProcess(), NULL, TRUE);
+     t = CreateThread(NULL, 0, sampler, NULL, 0, NULL);
+     if (t) { SetThreadPriority(t, THREAD_PRIORITY_HIGHEST); CloseHandle(t); }
+@@ -99,7 +99,8 @@ void recomp_sampler_watch_current_thread(void)
+ void recomp_sampler_report(double ms)
+ {
+     static struct { char name[400]; int n; } top[64], chains[64];
+-    int nc = 0;
++    static struct { char name[96]; int n; } hot[96];
++    int nc = 0, nh = 0;
+     LARGE_INTEGER now, f;
+     LONG h = s_head, i;
+     int nt = 0, total = 0, k, best;
+@@ -121,8 +122,8 @@ void recomp_sampler_report(double ms)
+             name = si->Name;
+         if (s_ring[i % RING].caller[0] &&
+             (s_ring[i % RING].ip < s_img_lo || s_ring[i % RING].ip >= s_img_hi)) {  /* outside the exe: say from where */
+-            static char both[160];
+-            char leafbuf[64], from[96] = "";
++            static char both[200];
++            char leafbuf[64], from[96] = "", host[64] = "";
+             int c;
+             snprintf(leafbuf, sizeof leafbuf, "%s", name);
+             for (c = 0; c < 8 && s_ring[i % RING].caller[c]; c++) {
+@@ -131,13 +132,20 @@ void recomp_sampler_report(double ms)
+                 si->MaxNameLen = 127;
+                 if (!SymFromAddr(GetCurrentProcess(), s_ring[i % RING].caller[c], &disp, si))
+                     continue;
++                /* The first function of the executable above the leaf is the host code that made the
++                 * call (a kernel bridge, the path translation); keep its name between the two. */
++                if (!host[0] && strncmp(si->Name, "sub_", 4))
++                    snprintf(host, sizeof host, "%s", si->Name);
+                 if (!from[0] || !strncmp(si->Name, "sub_", 4))
+                     snprintf(from, sizeof from, "%s", si->Name);
+                 if (!strncmp(si->Name, "sub_", 4))
+                     break;                         /* the guest function */
+             }
+             if (from[0]) {
+-                snprintf(both, sizeof both, "%s<-%s", leafbuf, from);
++                if (host[0] && strcmp(host, from))
++                    snprintf(both, sizeof both, "%s<-%s<-%s", leafbuf, host, from);
++                else
++                    snprintf(both, sizeof both, "%s<-%s", leafbuf, from);
+                 name = both;
+             }
+         }
+@@ -160,6 +168,25 @@ void recomp_sampler_report(double ms)
+                 chains[nc++].n = 1;
+             }
+         }
++        {   /* the source line of a sample inside the executable (the generated code is one line per
++             * guest instruction, so a hot loop shows as a few lines of one file) */
++            IMAGEHLP_LINE64 where;
++            DWORD line_disp = 0;
++            memset(&where, 0, sizeof where);
++            where.SizeOfStruct = sizeof where;
++            if (s_ring[i % RING].ip >= s_img_lo && s_ring[i % RING].ip < s_img_hi &&
++                SymGetLineFromAddr64(GetCurrentProcess(), s_ring[i % RING].ip, &line_disp, &where) && where.FileName) {
++                const char *base = strrchr(where.FileName, '\\');
++                char key[96];
++                snprintf(key, sizeof key, "%s(%lu)", base ? base + 1 : where.FileName, (unsigned long)where.LineNumber);
++                for (k = 0; k < nh; k++)
++                    if (!strcmp(hot[k].name, key)) { hot[k].n++; break; }
++                if (k == nh && nh < 96) {
++                    snprintf(hot[nh].name, sizeof hot[nh].name, "%s", key);
++                    hot[nh++].n = 1;
++                }
++            }
++        }
+         total++;
+         for (k = 0; k < nt; k++)
+             if (!strcmp(top[k].name, name)) { top[k].n++; break; }
+@@ -171,7 +198,7 @@ void recomp_sampler_report(double ms)
+     if (!total)
+         return;
+     fprintf(stderr, "[SPIKE]   game thread (%d samples):", total);
+-    for (k = 0; k < 6; k++) {
++    for (k = 0; k < 12; k++) {
+         int j;
+         best = -1;
+         for (j = 0; j < nt; j++)
+@@ -181,7 +208,20 @@ void recomp_sampler_report(double ms)
+         top[best].n = 0;
+     }
+     fprintf(stderr, "\n");
+-    for (k = 0; k < 2; k++) {
++    if (nh) {
++        fprintf(stderr, "[SPIKE]   hot lines:");
++        for (k = 0; k < 10; k++) {
++            int j;
++            best = -1;
++            for (j = 0; j < nh; j++)
++                if (hot[j].n && (best < 0 || hot[j].n > hot[best].n)) best = j;
++            if (best < 0) break;
++            fprintf(stderr, " %s %d%%", hot[best].name, hot[best].n * 100 / total);
++            hot[best].n = 0;
++        }
++        fprintf(stderr, "\n");
++    }
++    for (k = 0; k < 4; k++) {
+         int j;
+         best = -1;
+         for (j = 0; j < nc; j++)
+diff --git a/src/kernel/guest_vmem.c b/src/kernel/guest_vmem.c
+index 413f7e84..2cd70a7b 100644
+--- a/src/kernel/guest_vmem.c
++++ b/src/kernel/guest_vmem.c
+@@ -1,4 +1,5 @@
+ #include "guest_vmem.h"
++#include "bridge_span_cache.h"
+ #include "xbox_memory_layout.h"
+ #include <stddef.h>
+ #include <stdio.h>
+@@ -278,6 +279,7 @@ int guest_vmem_allocate(uint32_t *base, uint32_t *size, uint32_t alloc_type,
+     AcquireSRWLockExclusive(&s_lock);
+     handled = allocate_locked(base, size, alloc_type, protect, status);
+     ReleaseSRWLockExclusive(&s_lock);
++    xbox_vm_epoch_bump();       /* the kernel bridges' checked regions are stale (bridge_span_cache.h) */
+     return handled;
+ }
+ 
+@@ -347,6 +349,7 @@ int guest_vmem_free(uint32_t *base, uint32_t *size, uint32_t free_type,
+     AcquireSRWLockExclusive(&s_lock);
+     handled = free_locked(base, size, free_type, status);
+     ReleaseSRWLockExclusive(&s_lock);
++    xbox_vm_epoch_bump();       /* the kernel bridges' checked regions are stale (bridge_span_cache.h) */
+     return handled;
+ }
+ 
+diff --git a/src/kernel/bridge_span_cache.h b/src/kernel/bridge_span_cache.h
+new file mode 100644
+index 00000000..5824c73a
+--- /dev/null
++++ b/src/kernel/bridge_span_cache.h
+@@ -0,0 +1,93 @@
++/* A short memory of the guest regions the kernel bridges have already checked.
++ *
++ * Every bridge that hands a guest buffer to the host (NtCreateFile's path and
++ * attributes, NtReadFile's buffer and status block, ...) first asks Windows
++ * with VirtualQuery whether the span is committed and accessible. On a loading
++ * screen that is thousands of calls on the same few regions, and VirtualQuery
++ * on the 128 MB guest mapping is not cheap (it finds where the protection
++ * changes): a stall sampler put about a third of every menu or race load
++ * (0.8 s of 2.6 s) in those queries.
++ *
++ * The answer for a region only changes when guest memory is allocated, freed
++ * or re-protected, so a region verified a moment ago is trusted again:
++ *   - per thread (no locks);
++ *   - only for BSPAN_WINDOW_MS (a mutation the epoch below misses is noticed
++ *     within that time);
++ *   - only for the epoch it was verified in: xbox_vm_epoch_bump() is called by
++ *     the allocation, free and protect paths of the guest;
++ *   - "writable" is remembered separately: only a region that is plain
++ *     read-write qualifies, never one that was upgraded because the write
++ *     watch armed it.
++ * RECOMP_SPAN_CACHE=0 turns it off (every span is queried, as before). */
++#ifndef XBOXRECOMP_BRIDGE_SPAN_CACHE_H
++#define XBOXRECOMP_BRIDGE_SPAN_CACHE_H
++
++#include <stdint.h>
++#include <string.h>
++#if defined(_MSC_VER)
++#include <intrin.h>
++#define BSPAN_WEAK __declspec(selectany)
++#else
++#define BSPAN_WEAK __attribute__((weak))
++#endif
++
++#define BSPAN_ENTRIES 4
++#define BSPAN_WINDOW_MS 4
++
++typedef struct BSpanEntry {
++    uintptr_t base, end;       /* [base, end): one region of equal state */
++    int64_t stamp;             /* when it was verified (clock ticks) */
++    long epoch;                /* the guest memory generation it was verified in */
++    int write_ok;              /* plain read-write: a host write is fine */
++} BSpanEntry;
++
++typedef struct BSpanCache {
++    BSpanEntry e[BSPAN_ENTRIES];
++    unsigned next;
++} BSpanCache;
++
++/* Bumped whenever guest memory may stop being accessible. */
++BSPAN_WEAK volatile long g_xbox_vm_epoch = 0;
++
++static inline void xbox_vm_epoch_bump(void)
++{
++#if defined(_MSC_VER)
++    _InterlockedIncrement((volatile long *)&g_xbox_vm_epoch);
++#else
++    __atomic_fetch_add(&g_xbox_vm_epoch, 1, __ATOMIC_SEQ_CST);
++#endif
++}
++
++/* The end of the verified region holding `cursor` (verified for writing when
++ * `write` is set, no longer ago than `window` ticks, in `epoch`), or 0. */
++static inline uintptr_t bspan_lookup(const BSpanCache *cache, long epoch, int64_t now, int64_t window,
++                                     uintptr_t cursor, int write)
++{
++    unsigned i;
++    for (i = 0; i < BSPAN_ENTRIES; ++i) {
++        const BSpanEntry *e = &cache->e[i];
++        if (e->end > e->base && cursor >= e->base && cursor < e->end && e->epoch == epoch &&
++            now - e->stamp <= window && (!write || e->write_ok))
++            return e->end;
++    }
++    return 0;
++}
++
++/* Remembers [base, end) as verified now. The same region is refreshed in place. */
++static inline void bspan_store(BSpanCache *cache, long epoch, int64_t now, uintptr_t base, uintptr_t end,
++                               int write_ok)
++{
++    unsigned i;
++    BSpanEntry *slot = NULL;
++    if (end <= base) return;
++    for (i = 0; i < BSPAN_ENTRIES; ++i)
++        if (cache->e[i].base == base && cache->e[i].end == end) { slot = &cache->e[i]; break; }
++    if (!slot) slot = &cache->e[cache->next++ % BSPAN_ENTRIES];
++    slot->base = base;
++    slot->end = end;
++    slot->stamp = now;
++    slot->epoch = epoch;
++    slot->write_ok = write_ok;
++}
++
++#endif /* XBOXRECOMP_BRIDGE_SPAN_CACHE_H */
+diff --git a/tests/bridge_span_cache/test_main.c b/tests/bridge_span_cache/test_main.c
+new file mode 100644
+index 00000000..4bc3d2ea
+--- /dev/null
++++ b/tests/bridge_span_cache/test_main.c
+@@ -0,0 +1,79 @@
++/* The kernel bridges' memory of regions they have already checked (src/kernel/bridge_span_cache.h).
++ * What must hold: a region is trusted only in the epoch and within the time window it was verified in, a
++ * write needs a plain read-write region, a span is covered by exact region bounds (no hit one byte
++ * outside), and storing the same region refreshes it instead of using up another slot. */
++#include <assert.h>
++#include <stdio.h>
++#include "bridge_span_cache.h"
++
++#define WINDOW 40            /* ticks */
++
++int main(void)
++{
++    BSpanCache c;
++    long epoch = 7;
++    memset(&c, 0, sizeof c);
++
++    /* nothing is known at the start (a zeroed entry is empty) */
++    assert(bspan_lookup(&c, epoch, 0, WINDOW, 0x1000, 0) == 0);
++
++    /* a verified read-only region: reads hit, writes do not, the bounds are exact */
++    bspan_store(&c, epoch, 100, 0x10000, 0x20000, 0);
++    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x10000, 0) == 0x20000);
++    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x1FFFF, 0) == 0x20000);
++    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x20000, 0) == 0);          /* one past the end */
++    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x0FFFF, 0) == 0);          /* one before the start */
++    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x10000, 1) == 0);          /* not writable */
++
++    /* a plain read-write region serves both */
++    bspan_store(&c, epoch, 100, 0x40000, 0x80000, 1);
++    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x50000, 1) == 0x80000);
++    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x50000, 0) == 0x80000);
++
++    /* the time window: still trusted at the limit, not after it */
++    assert(bspan_lookup(&c, epoch, 100 + WINDOW, WINDOW, 0x50000, 1) == 0x80000);
++    assert(bspan_lookup(&c, epoch, 100 + WINDOW + 1, WINDOW, 0x50000, 1) == 0);
++
++    /* a bumped epoch drops everything at once (allocate, free, protect) */
++    {
++        long before = g_xbox_vm_epoch;
++        xbox_vm_epoch_bump();
++        assert(g_xbox_vm_epoch == before + 1);
++        assert(bspan_lookup(&c, g_xbox_vm_epoch, 100, WINDOW, 0x50000, 0) == 0);
++        assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x50000, 0) == 0x80000);   /* the old epoch still matches itself */
++    }
++
++    /* the same region stored again refreshes in place and may lose its write right */
++    bspan_store(&c, epoch, 200, 0x40000, 0x80000, 0);
++    assert(bspan_lookup(&c, epoch, 200, WINDOW, 0x50000, 0) == 0x80000);
++    assert(bspan_lookup(&c, epoch, 200, WINDOW, 0x50000, 1) == 0);
++    {
++        unsigned used = 0, i;
++        for (i = 0; i < BSPAN_ENTRIES; ++i) used += c.e[i].end > c.e[i].base;
++        assert(used == 2);                                                   /* two regions, no duplicate */
++    }
++
++    /* more regions than slots: the oldest slots are reused, the newest stay */
++    {
++        unsigned i;
++        BSpanCache d;
++        memset(&d, 0, sizeof d);
++        for (i = 0; i < BSPAN_ENTRIES + 2; ++i)
++            bspan_store(&d, epoch, 300, 0x100000u * (i + 1), 0x100000u * (i + 1) + 0x1000, 1);
++        assert(bspan_lookup(&d, epoch, 300, WINDOW, 0x100000u * (BSPAN_ENTRIES + 2), 1) != 0);
++        assert(bspan_lookup(&d, epoch, 300, WINDOW, 0x100000u * (BSPAN_ENTRIES + 1), 1) != 0);
++        assert(bspan_lookup(&d, epoch, 300, WINDOW, 0x100000u * 1, 1) == 0);   /* the first was replaced */
++    }
++
++    /* an empty or inverted region is never stored */
++    {
++        BSpanCache e;
++        memset(&e, 0, sizeof e);
++        bspan_store(&e, epoch, 1, 0x5000, 0x5000, 1);
++        bspan_store(&e, epoch, 1, 0x6000, 0x5000, 1);
++        assert(bspan_lookup(&e, epoch, 1, WINDOW, 0x5000, 0) == 0 && bspan_lookup(&e, epoch, 1, WINDOW, 0x5800, 0) == 0);
++    }
++
++    printf("PASS bridge span cache: exact bounds, write class, time window, epoch, in-place refresh, slot reuse\n");
++    return 0;
++}
+diff --git a/tests/bridge_span_cache/CMakeLists.txt b/tests/bridge_span_cache/CMakeLists.txt
+new file mode 100644
+index 00000000..6633d871
+--- /dev/null
++++ b/tests/bridge_span_cache/CMakeLists.txt
+@@ -0,0 +1,7 @@
++cmake_minimum_required(VERSION 3.20)
++project(bridge_span_cache_test C)
++set(CMAKE_C_STANDARD 11)
++add_executable(bridge_span_cache_test test_main.c)
++target_include_directories(bridge_span_cache_test PRIVATE ../../src/kernel)
++enable_testing()
++add_test(NAME bridge_span_cache COMMAND bridge_span_cache_test)

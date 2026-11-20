@@ -769,6 +769,7 @@ add_executable(${PROJECT_NAME}
  src/mm3_zone_diagnostics.c
  src/mm3_apu_mmio.c
  src/mm3_direct_log.c
+ src/mm3_steam_overlay.c
     src/mm3_collision_profile.c
  src/mm3_tree_diagnostics.c
  src/mm3_tree_watch.c
@@ -892,7 +893,7 @@ set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_L
 set_property(SOURCE src/mm3_launcher.c APPEND PROPERTY COMPILE_DEFINITIONS MM3_LAUNCHER_NETWORK=1)
 # The release this build belongs to: the launcher's title and the first log
 # line show it, so a report says which version it came from.
-set(MM3_VERSION "2.8.2 beta 3")
+set(MM3_VERSION "2.8.2")
 set_property(SOURCE src/mm3_launcher.c src/main.c APPEND PROPERTY COMPILE_DEFINITIONS
     "MM3_VERSION=\"${MM3_VERSION}\"")
 if(WIN32)

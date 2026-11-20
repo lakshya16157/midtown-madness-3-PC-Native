@@ -160,6 +160,7 @@ MM3DisplaySettings settings_now;
 MM3NextLaunchSettings next_launch;
 char settings_status[200];
 bool settings_loaded;
+bool settings_popup_was_open;   /* a drop-down was open in the last frame: Esc closes that, not the window */
 const int kNightLights[] = {10, 15, 20, MM3_NIGHT_LIGHT_DEFAULT, 35, 50, 75, 100};
 const int kWheelStrengths[] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
@@ -228,14 +229,25 @@ void draw_settings()
         bool show_fps = next.show_fps != 0;
         if (ImGui::Checkbox("Show FPS in the window title", &show_fps)) { next.show_fps = show_fps; changed = true; }
         {
-            char preview[32];
-            mm3_scale_label(next.render_scale, preview, sizeof preview);
+            /* Each entry names the size it makes at the shape the game renders at: the Aspect ratio setting,
+             * else the window's own. A saved value that no list offers stays selectable, in order, as custom. */
+            float aspect = mm3_aspect_value(next.aspect);
+            if (aspect <= 0.f && next.window_height > 0)
+                aspect = mm3_aspect_clamp((float)next.window_width / (float)next.window_height);
+            if (aspect <= 0.f) aspect = 16.f / 9.f;
+            char preview[64];
+            mm3_scale_label_aspect(next.render_scale, aspect, mm3_scale_is_listed(next.render_scale), preview, sizeof preview);
             if (ImGui::BeginCombo("Internal resolution", preview)) {
-                for (int i = 0; i < MM3_CHOICE_COUNT(mm3_scale_choices); ++i) {
-                    char text[32];
-                    mm3_scale_label(mm3_scale_choices[i], text, sizeof text);
-                    if (ImGui::Selectable(text, mm3_scale_choices[i] == next.render_scale)) {
-                        next.render_scale = mm3_scale_choices[i]; changed = true;
+                std::vector<float> scales(mm3_scale_choices, mm3_scale_choices + MM3_CHOICE_COUNT(mm3_scale_choices));
+                if (!mm3_scale_is_listed(next.render_scale)) {
+                    scales.push_back(next.render_scale);
+                    std::sort(scales.begin(), scales.end());
+                }
+                for (float scale : scales) {
+                    char text[64];
+                    mm3_scale_label_aspect(scale, aspect, mm3_scale_is_listed(scale), text, sizeof text);
+                    if (ImGui::Selectable(text, scale == next.render_scale)) {
+                        next.render_scale = scale; changed = true;
                     }
                 }
                 ImGui::EndCombo();
@@ -252,7 +264,7 @@ void draw_settings()
         if (changed) settings_commit(next);
         ImGui::Separator();
         ImGui::TextWrapped("Window size, anti-aliasing, texture filtering and view distance change in the "
-                           "launcher Settings and need a restart.");
+                           "launcher Settings or the in-game Graphics menu (Pause > Options) and need a restart.");
         ImGui::SeparatorText("Next launch");
         bool show_launcher = next_launch.show_launcher != 0, wheel = next_launch.wheel_enabled != 0;
         bool startup_changed = ImGui::Checkbox("Show the settings window", &show_launcher);
@@ -271,10 +283,16 @@ void draw_settings()
         if (settings_status[0]) ImGui::TextWrapped("%s", settings_status);
         ImGui::TextDisabled("F10 or Esc closes this window. Controller: Back + right stick click opens it; "
                             "D-pad and A move and change.");
-        if (ImGui::Button("Close") || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) open = false;
+        /* Esc closes an open drop-down first (Dear ImGui does that while the frame starts), then the window. */
+        bool escape = ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !settings_popup_was_open;
+        settings_popup_was_open = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+        if (ImGui::Button("Close") || escape) open = false;
     }
     ImGui::End();
-    if (!open) { settings_visible.exchange(0); settings_loaded = false; fprintf(stderr, "[MM3_SETTINGS] closed from the window\n"); }
+    if (!open) {
+        settings_visible.exchange(0); settings_loaded = false; settings_popup_was_open = false;
+        fprintf(stderr, "[MM3_SETTINGS] closed from the window\n");
+    }
 }
 #endif
 
@@ -519,7 +537,10 @@ void render(void *h, void *device, void *context, void *target)
     static bool failed;
     if (!h || !device || !context || !target) return;
     if (!debug_enabled && !settings_enabled) return;
-    if (failed) return;
+    if (failed) {                      /* no overlay: a toggle key or chord must not leave input captured */
+        visible.exchange(0); settings_visible.exchange(0);
+        return;
+    }
     bool focused = window_focused(h);
     if (debug_enabled) {
         bool down = focused && toggle_pad && (pad_buttons() & toggle_pad) == toggle_pad;
@@ -547,6 +568,11 @@ void render(void *h, void *device, void *context, void *target)
         bool down = focused && (pad_buttons() & kSettingsPad) == kSettingsPad;
         settings_pad_edge(focused || settings_force, down);
     }
+#endif
+#if defined(XBOXRECOMP_SDL3)
+    /* However the window was closed (its own button, F10, the pad chord, lost focus), the next opening reads the
+     * current settings again: the in-game Graphics menu may have changed them meanwhile. */
+    if (!settings_visible) { settings_loaded = false; settings_popup_was_open = false; }
 #endif
     /* Nothing shown: no ImGui frame and no extra swapchain pass. */
     if (!visible && !settings_visible) return;

@@ -263,7 +263,8 @@ int main(int argc, char **argv)
     /* Which switch each option belongs to. */
     static const int always[] = {MM3_LAUNCH_KEYBOARD, MM3_LAUNCH_WIDESCREEN, MM3_LAUNCH_SKY, MM3_LAUNCH_NATIVE_FOG,
         MM3_LAUNCH_DSP, MM3_LAUNCH_NETWORK, MM3_LAUNCH_IMPROVED, MM3_LAUNCH_GAMEPLAY, MM3_LAUNCH_PHOTO_MODE, MM3_LAUNCH_SKIP_INTRO,
-        MM3_LAUNCH_PAINT_SOFT, MM3_LAUNCH_VULKAN, MM3_LAUNCH_NO_GPU_WAIT, MM3_LAUNCH_PRELOAD_SHADERS, MM3_LAUNCH_HRTF};
+        MM3_LAUNCH_PAINT_SOFT, MM3_LAUNCH_VULKAN, MM3_LAUNCH_NO_GPU_WAIT, MM3_LAUNCH_PRELOAD_SHADERS, MM3_LAUNCH_HRTF,
+        MM3_LAUNCH_STUTTER_LOG};
     static const int look[] = {MM3_LAUNCH_DISTANCE, MM3_LAUNCH_CAR_LIGHT, MM3_LAUNCH_LAMP_LIGHT, MM3_LAUNCH_WORLD_LIGHT,
         MM3_LAUNCH_LOADING, MM3_LAUNCH_NORTH_MARKER, MM3_LAUNCH_GRAPHICS_MENU,
         MM3_LAUNCH_DLC_INFO, MM3_LAUNCH_EXHAUST, MM3_LAUNCH_QUIT, MM3_LAUNCH_DIGITAL};
@@ -275,6 +276,22 @@ int main(int argc, char **argv)
     for (int i = 0; i < MM3_LAUNCH_OPTION_COUNT; ++i)
         counted += mm3_launcher_option_master(i) == MM3_LAUNCH_GAMEPLAY;
     assert(counted == MM3_LAUNCH_OPTION_COUNT);   /* everything else is a gameplay mod */
+    /* The detailed stutter log sets the renderer's spike report (report only, no pictures) and the producer
+     * trace only when ticked, and keeps an explicit value. */
+    assert(!mm3_launcher_options[MM3_LAUNCH_STUTTER_LOG].default_value);
+    assert(!getenv("RECOMP_SPIKE_CAPTURE") && !getenv("RECOMP_SPIKE_BMP") && !getenv("RECOMP_PRODUCER_TRACE"));
+    loaded.option[MM3_LAUNCH_STUTTER_LOG] = 1;
+    assert(mm3_launcher_config_apply(&loaded, error, sizeof error));
+    assert(!strcmp(getenv("RECOMP_SPIKE_CAPTURE"), "logs\\spike,50") && !strcmp(getenv("RECOMP_SPIKE_BMP"), "0"));
+    assert(!strcmp(getenv("RECOMP_PRODUCER_TRACE"), "1") && !strcmp(getenv("MM3_STUTTER_LOG"), "1"));
+    assert(!_putenv_s("RECOMP_SPIKE_CAPTURE", "mine,30"));
+    assert(mm3_launcher_config_apply(&loaded, error, sizeof error));
+    assert(!strcmp(getenv("RECOMP_SPIKE_CAPTURE"), "mine,30"));
+    loaded.option[MM3_LAUNCH_STUTTER_LOG] = 0;
+    assert(mm3_launcher_config_apply(&loaded, error, sizeof error));
+    assert(!strcmp(getenv("MM3_STUTTER_LOG"), "0"));
+    assert(!_putenv_s("RECOMP_SPIKE_CAPTURE", "") && !_putenv_s("RECOMP_SPIKE_BMP", "") &&
+           !_putenv_s("RECOMP_PRODUCER_TRACE", ""));
     assert(mm3_launcher_option_master(MM3_LAUNCH_TREES) == MM3_LAUNCH_GAMEPLAY &&
            mm3_launcher_option_master(MM3_LAUNCH_UNLOCK) == MM3_LAUNCH_GAMEPLAY &&
            mm3_launcher_option_master(MM3_LAUNCH_ROUTE_NAVIGATION) == MM3_LAUNCH_GAMEPLAY);

@@ -7,6 +7,7 @@
 typedef struct MM3RaceUnlockMenu {
     int on;
     uint32_t job, mission, city;
+    uint32_t cursor;    /* the Checkpoint race the player had picked (varCheckpointRace) before the original ran */
 } MM3RaceUnlockMenu;
 
 int mm3_race_unlock_enabled(void);

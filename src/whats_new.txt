@@ -1,0 +1,30 @@
+## 2.8.2
+- Fixed: the loading screen was black with only the LOADING animation when you drove one of the 14 downloadable (DLC) cars. They now show a loading picture.
+- Fixed: with the Steam overlay, the loading screen after quitting a race could be black with only the LOADING animation, or cut off and stretched in a corner.
+- Faster loading: going back to the menu after a race and loading the menus take about a second less.
+- Fixed: trees and street props vanishing while driving, mostly at night.
+- New option: Unlock all races and jobs (Gameplay mods). Every installed Checkpoint race and Undercover job is open; your save is not changed.
+- New option: Digital speedometer, the speed number from split screen, in normal play too.
+- Steam: a shortcut to "Play Midtown Madness 3.cmd" now gets the Steam overlay, FPS counter and game recording. Setup also gives the Steam shortcut its cover, banner, logo and icon.
+- Steam: the empty console window that opened next to the game is gone.
+- Smoother pacing with VSync on when the frame limit is above your screen's refresh rate.
+- Graphics: the slider shows "Custom" when your settings match no level, the Max level runs at 120 FPS, and a fresh install starts on the Xbox level.
+- Graphics: the internal resolution list is in order and named by height (720p, 1080p, 1440p, 4K) for your aspect ratio, in the launcher and in F10.
+- Many fixes in the F10 Display Settings window and the launcher, for DirectX 11 and Vulkan.
+- Launcher: new "Detailed stutter log" option for bug reports. Press F9 in game to save the last seconds of frames next to the log.
+- This window: after each update it lists what is new.
+
+## 2.8.2 beta 2
+- Tree logging uses the real camera and tree positions (for the disappearing-trees reports).
+
+## 2.8.2 beta 1
+- Fixed: with Vulkan ticked, Steam play time and game recording stopped right after the launcher.
+- Slower PCs: graphics slider with Lowest, Xbox, Medium and Max levels; PCs with 4 or fewer CPUs start on Lowest.
+- New launcher options: 3D headphone sound (HRTF) and Unlock all paint jobs.
+- Small speed-ups: threads placed on separate cores on small CPUs, a cheaper DirectX 11 draw path.
+
+## 2.8.1
+- Fixed: broken menu and in-game text from the HD HUD (#42). The HD HUD now covers only the HUD artwork.
+
+## 2.8
+- Skip-the-launcher option, racing wheel support, a portable install folder and the HD HUD.

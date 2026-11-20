@@ -51,10 +51,34 @@ def newest_game_exe(repo: Path) -> Path:
     return max(found, key=lambda p: p.stat().st_mtime)
 
 
+def logo_three(logo):
+    """The red 3 of the game's logo, with its dark outline, cut out of the logo (None if it is not found).
+    The whole logo is a wide strip that turns to a smudge at 16-32 px; the 3 alone stays readable."""
+    from PIL import Image, ImageChops, ImageFilter
+    width, height = logo.size
+    pixels = logo.load()
+    red = Image.new("L", logo.size, 0)
+    marks = red.load()
+    for y in range(height):
+        for x in range(width):
+            r, g, b, a = pixels[x, y]
+            if a > 128 and r > 170 and g < 100 and b < 100:
+                marks[x, y] = 255
+    box = red.getbbox()
+    if box is None or box[2] - box[0] < 8 or box[3] - box[1] < 8:
+        return None
+    margin = 8
+    area = (max(0, box[0] - margin), max(0, box[1] - margin), min(width, box[2] + margin), min(height, box[3] + margin))
+    piece = logo.crop(area)
+    near = red.filter(ImageFilter.MaxFilter(15)).crop(area)          # the 3 and its outline, not the letter beside it
+    piece.putalpha(ImageChops.multiply(piece.getchannel("A"), near))
+    return piece
+
+
 def make_icons(logo, branding: Path) -> None:
-    """Setup's icon (the .exe, its window, the shortcuts, the Linux menu entry): the game's logo on the
-    header's dark-blue tile with the gold edge.  Drawn at build time from the game's own artwork, so
-    nothing of it is committed; branding/mm3.ico (all sizes) and branding/mm3.png (256 px)."""
+    """Setup's icon (the .exe, its window, the shortcuts, Steam's list icon, the Linux menu entry): the red 3
+    of the game's logo on the header's dark-blue tile with the gold edge.  Drawn at build time from the
+    game's own artwork, so nothing of it is committed; branding/mm3.ico (all sizes) and branding/mm3.png (256 px)."""
     from PIL import Image, ImageDraw, ImageFilter
     size, radius = 256, 56
     top, bottom = (9, 16, 30), (31, 55, 102)
@@ -64,9 +88,14 @@ def make_icons(logo, branding: Path) -> None:
         t = y / (size - 1)
         draw.line([(0, y), (size, y)], fill=tuple(round(a + (b - a) * t) for a, b in zip(top, bottom)) + (255,))
     draw.rectangle([0, size - 12, size, size], fill=(242, 183, 5, 255))        # the gold edge
-    width = round(size * 0.88)
-    mark = logo.resize((width, round(logo.height * width / logo.width)), Image.LANCZOS)
-    left, upper = (size - width) // 2, (size - mark.height) // 2 - 6
+    three = logo_three(logo)
+    if three is not None:
+        height = round(size * 0.68)
+        mark = three.resize((round(three.width * height / three.height), height), Image.LANCZOS)
+    else:                                   # the logo's 3 was not found: the whole logo, as before
+        mark = logo.resize((round(size * 0.88), round(logo.height * size * 0.88 / logo.width)), Image.LANCZOS)
+    width = mark.width
+    left, upper = (size - width) // 2, (size - 12 - mark.height) // 2
     shadow = Image.new("RGBA", tile.size, (0, 0, 0, 0))
     shadow.paste((0, 0, 0, 170), (left + 2, upper + 4), mark.getchannel("A"))
     tile = Image.alpha_composite(tile, shadow.filter(ImageFilter.GaussianBlur(4)))

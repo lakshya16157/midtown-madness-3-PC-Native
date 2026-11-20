@@ -49,7 +49,7 @@ from pathlib import Path
 # PyInstaller see and include them (it only analyses this file's own imports).
 _PAYLOAD_STDLIB = (argparse, collections, copy, hashlib, math, re, struct, tempfile, zipfile, zlib)
 
-VERSION = "2.8.2 beta 3"
+VERSION = "2.8.2"
 TITLE = "Midtown Madness 3 - Setup"
 # "Check for updates" asks GitHub for the newest release and downloads the MM3-Setup.exe attached to it.
 RELEASES_API = "https://api.github.com/repos/lakshya16157/midtown-madness-3-PC-Native/releases/latest"
@@ -1135,6 +1135,7 @@ def install(iso_path, dest, extra_cars: bool, improvements: bool, log, progress,
         (dest / "Extra cars - credits.txt").unlink(missing_ok=True)
     progress(0.94, "Making the HD HUD...")
     make_hd_hud(game_dir, dest, log)
+    make_steam_art(dest, log)
     progress(0.98, "Writing the launcher...")
     write_launcher(dest, improvements)
     remove_legacy_data(log)
@@ -1142,6 +1143,7 @@ def install(iso_path, dest, extra_cars: bool, improvements: bool, log, progress,
     # list below always names exactly the ones that exist.
     remove_shortcuts(saved_options(dest).get("shortcuts"))
     made = create_shortcuts(dest, log) if shortcuts else []
+    place_steam_art(dest, log)       # the pictures of a Steam shortcut that already starts this install
     (dest / "setup-options.json").write_text(json.dumps(
         {"setup_version": VERSION, "extra_cars": extra_cars, "game_improvements": improvements,
          "dlc_packs": dlc_packs, "shortcuts": [str(path) for path in made], "exe_sha256": exe_hash}, indent=2),
@@ -1289,6 +1291,315 @@ def make_hd_hud(game_dir: Path, dest: Path, log) -> None:
         log(f"HD HUD skipped ({error}). The game uses the original HUD.")
 
 
+# ----------------------------------------------------------------------------- Steam pictures
+
+# A game added to Steam by hand ("Add a Non-Steam Game") has no pictures: the library shows a grey
+# tile named after the file. Steam takes custom pictures from
+#   <Steam>\userdata\<user>\config\grid\<id>p.png      portrait capsule (the library grid)
+#   <id>.png (wide capsule), <id>_hero.png, <id>_logo.png and <id>_icon.png
+# where <id> is the shortcut's own number: the "appid" of its entry in config\shortcuts.vdf.
+# Setup draws the pictures from the game's logo into <install>\steam-artwork and copies them for every
+# shortcut that starts this install; the game copies them itself the first time Steam starts it
+# (src/mm3_steam_overlay.c), for a shortcut made after Setup ran. Pictures the user chose are never replaced.
+STEAM_ART_DIR = "steam-artwork"
+STEAM_ART_RECORD = "placed.json"       # what Setup copied into Steam's grid folders, and its checksum
+# grid file suffix -> (file in steam-artwork, size; None: as drawn)
+STEAM_ART = {"p": ("capsule-portrait.png", (600, 900)), "": ("capsule-wide.png", (920, 430)),
+             "_hero": ("hero.png", (3840, 1240)), "_logo": ("logo.png", None), "_icon": ("icon.png", (256, 256))}
+STEAM_ART_EXTENSIONS = ("png", "jpg", "jpeg", "webp")
+STEAM_FONTS = ("segoeuib.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf")
+
+
+def _art_canvas(size):
+    """The Setup header's look at any size: dark blue gradient, faint speed stripes, gold edge."""
+    from PIL import Image, ImageDraw
+    width, height = size
+    top, bottom = (9, 16, 30), (31, 55, 102)
+    image = Image.new("RGBA", size)
+    draw = ImageDraw.Draw(image)
+    for y in range(height):
+        t = y / max(1, height - 1)
+        draw.line([(0, y), (width, y)], fill=tuple(round(a + (b - a) * t) for a, b in zip(top, bottom)) + (255,))
+    stripes = Image.new("RGBA", size, (0, 0, 0, 0))
+    stripe_draw = ImageDraw.Draw(stripes)
+    stripe_width, skew = round(width * 0.035), round(height * 0.12)
+    for i in range(5):
+        x = round(width * (0.50 + i * 0.11))
+        stripe_draw.polygon([(x + skew, 0), (x + skew + stripe_width, 0), (x + stripe_width, height), (x, height)],
+                            fill=(255, 255, 255, 12 + i * 3))
+    return Image.alpha_composite(image, stripes)
+
+
+def _art_edge(image):
+    from PIL import ImageDraw
+    width, height = image.size
+    ImageDraw.Draw(image).rectangle([0, height - max(4, round(height * 0.012)), width, height], fill=(242, 183, 5, 255))
+
+
+def _art_logo(image, logo, max_width: float, max_height: float, centre_y: float, shadow: bool = True):
+    """Put the logo, as large as fits max_width x max_height of the picture, centred across and at centre_y."""
+    from PIL import Image, ImageFilter
+    width, height = image.size
+    ratio = min(width * max_width / logo.width, height * max_height / logo.height)
+    big = logo.resize((max(1, round(logo.width * ratio)), max(1, round(logo.height * ratio))), Image.LANCZOS)
+    left, upper = (width - big.width) // 2, round(height * centre_y - big.height / 2)
+    if shadow:
+        dark = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        offset = max(2, round(big.height * 0.03))
+        dark.paste((0, 0, 0, 150), (left + offset, upper + offset * 2), big.getchannel("A"))
+        image.alpha_composite(dark.filter(ImageFilter.GaussianBlur(max(2, round(big.height * 0.06)))))
+    image.alpha_composite(big, (left, upper))
+    return big.height
+
+
+def _art_caption(image, text: str, centre_y: float, height_fraction: float):
+    """A gold caption in a bold font when the PC has one; without a font the picture simply has none."""
+    from PIL import ImageDraw, ImageFont
+    width, height = image.size
+    size = max(8, round(height * height_fraction))
+    font = None
+    for name in STEAM_FONTS:
+        try:
+            font = ImageFont.truetype(name, size)
+            break
+        except OSError:
+            continue
+    if font is None:
+        return
+    spaced = " ".join(text)
+    draw = ImageDraw.Draw(image)
+    box = draw.textbbox((0, 0), spaced, font=font)
+    draw.text(((width - (box[2] - box[0])) // 2 - box[0], round(height * centre_y) - (box[3] - box[1]) // 2 - box[1]),
+              spaced, font=font, fill=(242, 183, 5, 255))
+
+
+def steam_scene(dest: Path):
+    """The game's own title picture (Menu/Gfx/BG/start.cdds: a car in the street with the logo) as a
+    picture, read from the player's disc data in <dest>\\game_files with the texture tool the HD HUD uses.
+    It stays on this PC. None when the data or the tool is missing."""
+    archive = Path(dest) / "game_files" / "Data" / "Data_dvd.zip"
+    script = PAYLOAD / "tools" / "car-models" / "mm3_textures.py"
+    if not archive.is_file() or not script.is_file():
+        return None
+    try:
+        from PIL import Image
+        textures = load_module("mm3_textures_steam", script)
+        with zipfile.ZipFile(archive) as zipped:
+            data = zipped.read("Menu/Gfx/BG/start.cdds")
+        return Image.open(io.BytesIO(textures.cdds_to_dds(data))).convert("RGBA")
+    except Exception:
+        return None
+
+
+def _art_backdrop(size, scene, blur: float, shade: float):
+    """The title picture covering the whole picture, blurred and darkened."""
+    from PIL import Image, ImageEnhance, ImageFilter
+    width, height = size
+    ratio = max(width / scene.width, height / scene.height)
+    big = scene.resize((max(width, round(scene.width * ratio)), max(height, round(scene.height * ratio))), Image.LANCZOS)
+    left, upper = (big.width - width) // 2, (big.height - height) // 2
+    cover = big.crop((left, upper, left + width, upper + height)).convert("RGB")
+    cover = ImageEnhance.Brightness(cover.filter(ImageFilter.GaussianBlur(blur))).enhance(shade)
+    return cover.convert("RGBA")
+
+
+def _art_scene(image, scene, box_width: int, box_height: int, centre_y: float):
+    """The title picture itself, as large as fits the box, its edges fading into what is behind it."""
+    from PIL import Image, ImageDraw, ImageFilter
+    ratio = min(box_width / scene.width, box_height / scene.height)
+    size = (max(1, round(scene.width * ratio)), max(1, round(scene.height * ratio)))
+    picture = scene.resize(size, Image.LANCZOS)
+    feather = max(4, round(min(size) * 0.07))
+    mask = Image.new("L", size, 0)
+    ImageDraw.Draw(mask).rectangle([feather, feather, size[0] - feather, size[1] - feather], fill=255)
+    mask = mask.filter(ImageFilter.GaussianBlur(feather / 1.6))
+    image.paste(picture, ((image.width - size[0]) // 2, round(image.height * centre_y - size[1] / 2)), mask)
+
+
+def make_steam_art(dest: Path, log) -> list[Path]:
+    """Draw the Steam pictures into <dest>\\steam-artwork: the game's own title picture from the player's
+    disc (capsules sharp over a blurred copy of it, the hero blurred) with the logo and icon from Setup's
+    branding; a gradient with the logo when the picture is not there. Never fails the install: without
+    Pillow or the logo (a Setup built without game_files) there are no pictures and Steam keeps its grey tile."""
+    logo_path = branding("mm3_logo.png")
+    if logo_path is None:
+        return []
+    try:
+        from PIL import Image
+        logo = Image.open(logo_path).convert("RGBA")
+        scene = steam_scene(dest)
+        # What is blurred behind the sharp picture is its street below the logo, so no ghost of the logo shows.
+        below = scene.crop((0, round(scene.height * 0.42), scene.width, scene.height)) if scene is not None else None
+        icon_path = branding("mm3.png")
+        folder = Path(dest) / STEAM_ART_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        written = []
+        for suffix, (name, size) in STEAM_ART.items():
+            if suffix == "_logo":                     # transparent: Steam lays it over the hero picture
+                image = Image.new("RGBA", (960, round(960 * logo.height / logo.width)), (0, 0, 0, 0))
+                _art_logo(image, logo, 1.0, 1.0, 0.5, shadow=False)
+            elif suffix == "_icon" and icon_path is not None:      # the same 3 as the shortcuts
+                image = Image.open(icon_path).convert("RGBA").resize(size, Image.LANCZOS)
+            elif scene is not None and suffix in ("p", "", "_hero"):
+                image = _art_backdrop(size, below, size[1] * 0.02, 0.75 if suffix == "_hero" else 0.55)
+                if suffix == "p":
+                    _art_scene(image, scene, 600, 450, 0.42)
+                    _art_caption(image, "PC NATIVE", 0.74, 0.04)
+                elif suffix == "":
+                    _art_scene(image, scene, 920, 430, 0.5)
+                if suffix != "_hero":
+                    _art_edge(image)
+            else:
+                image = _art_canvas(size)
+                if suffix == "p":
+                    _art_logo(image, logo, 0.86, 0.3, 0.40)
+                    _art_caption(image, "PC NATIVE", 0.52, 0.04)
+                elif suffix == "":
+                    _art_logo(image, logo, 0.7, 0.5, 0.45)
+                    _art_caption(image, "PC NATIVE", 0.78, 0.09)
+                elif suffix == "_icon":
+                    _art_logo(image, logo, 0.9, 0.5, 0.5)
+                if suffix != "_hero":
+                    _art_edge(image)
+            image.save(folder / name, "PNG")
+            written.append(folder / name)
+        log(f"Steam pictures drawn in {folder}{'' if scene is not None else ' (without the game picture)'}.")
+        return written
+    except Exception as error:         # Pillow missing or too old, a full disk: the game still runs
+        log(f"Steam pictures skipped ({error}).")
+        return []
+
+
+def parse_binary_vdf(data: bytes) -> dict:
+    """Steam's binary key-value format (shortcuts.vdf): maps, strings and 32-bit numbers."""
+    def read(position: int) -> tuple[dict, int]:
+        result: dict = {}
+        while position < len(data):
+            kind = data[position]
+            position += 1
+            if kind == 8:
+                return result, position
+            end = data.index(b"\x00", position)
+            key = data[position:end].decode("utf-8", "replace")
+            position = end + 1
+            if kind == 0:
+                value, position = read(position)
+            elif kind == 1:
+                end = data.index(b"\x00", position)
+                value = data[position:end].decode("utf-8", "replace")
+                position = end + 1
+            elif kind == 2:
+                value = struct.unpack_from("<I", data, position)[0]
+                position += 4
+            else:
+                raise ValueError(f"unknown value type {kind}")
+            result[key] = value
+        return result, position
+    return read(0)[0]
+
+
+def steam_folder() -> Path | None:
+    """Where Steam is installed (the folder with userdata), or None."""
+    candidates: list[Path] = []
+    if os.name == "nt":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Software\\Valve\\Steam") as key:
+                candidates.append(Path(winreg.QueryValueEx(key, "SteamPath")[0]))
+        except OSError:
+            pass
+        candidates += [Path(os.environ[name]) / "Steam" for name in ("ProgramFiles(x86)", "ProgramFiles") if os.environ.get(name)]
+    else:
+        candidates += [Path.home() / ".local" / "share" / "Steam", Path.home() / ".steam" / "steam"]
+    return next((path for path in candidates if (path / "userdata").is_dir()), None)
+
+
+def _same_file(left: str, right: Path) -> bool:
+    return os.path.normcase(os.path.normpath(left.strip().strip('"'))) == os.path.normcase(os.path.normpath(str(right)))
+
+
+def steam_shortcuts_for(dest: Path, steam: Path | None = None) -> list[tuple[Path, int]]:
+    """(that Steam user's config folder, the shortcut's number) for each non-Steam shortcut that
+    starts this install: the game program or the start script. Nothing when Steam is not installed."""
+    steam = steam or steam_folder()
+    found: list[tuple[Path, int]] = []
+    if steam is None:
+        return found
+    targets = [Path(dest) / GAME_EXE, Path(dest) / LAUNCHER]
+    for config in sorted((steam / "userdata").glob("*/config")):
+        try:
+            tree = parse_binary_vdf((config / "shortcuts.vdf").read_bytes())
+        except (OSError, ValueError, IndexError, struct.error):
+            continue
+        for entry in (tree.get("shortcuts") or {}).values():
+            if isinstance(entry, dict) and isinstance(entry.get("appid"), int) and any(
+                    _same_file(str(entry.get("Exe", "")), target) for target in targets):
+                found.append((config, entry["appid"]))
+    return found
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def place_steam_art(dest: Path, log, steam: Path | None = None) -> list[Path]:
+    """Copy the pictures from <dest>\\steam-artwork into Steam's grid folder of every shortcut that
+    starts this install. A picture the user chose is left alone; one Setup copied earlier is refreshed.
+    Steam shows new pictures after it restarts. Never fails the install."""
+    art = Path(dest) / STEAM_ART_DIR
+    copied: list[Path] = []
+    try:
+        if not art.is_dir():
+            return copied
+        record_path = art / STEAM_ART_RECORD
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            record = {}
+        if not isinstance(record, dict):
+            record = {}
+        for config, number in steam_shortcuts_for(dest, steam):
+            grid = config / "grid"
+            grid.mkdir(exist_ok=True)
+            for suffix, (name, _size) in STEAM_ART.items():
+                source, target = art / name, grid / f"{number}{suffix}.png"
+                if not source.is_file():
+                    continue
+                digest = _sha256(source)
+                taken = [grid / f"{number}{suffix}.{extension}" for extension in STEAM_ART_EXTENSIONS]
+                taken = [path for path in taken if path.exists()]
+                if taken and not (taken == [target] and record.get(str(target)) == _sha256(target)):
+                    continue                       # the user's own picture
+                if target.exists() and _sha256(target) == digest:
+                    continue
+                shutil.copyfile(source, target)
+                record[str(target)] = digest
+                copied.append(target)
+        if copied:
+            record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+            log(f"Steam pictures added for {len({path.parent for path in copied})} shortcut(s). Restart Steam to see them.")
+    except Exception as error:
+        log(f"Steam pictures not added ({error}).")
+    return copied
+
+
+def remove_steam_art(dest: Path) -> None:
+    """Uninstall: take back the pictures Setup copied into Steam (only those still unchanged), and the folder."""
+    art = Path(dest) / STEAM_ART_DIR
+    try:
+        record = json.loads((art / STEAM_ART_RECORD).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        record = {}
+    for name, digest in (record.items() if isinstance(record, dict) else ()):
+        try:
+            if _sha256(Path(name)) == digest:
+                Path(name).unlink()
+        except OSError:
+            pass
+    if art.is_dir() and not art.is_symlink():
+        shutil.rmtree(art, ignore_errors=True)
+
+
 SETTINGS_FILES = ("display.ini", "launcher.ini", "language.ini")
 # What versions up to 2.7.4 kept in the per-user data folder (now <install>\cache): all disposable.
 LEGACY_DATA_NAMES = {"NonVolatileSettings.bin", "NonVolatileSettings.bin.lock", "Cache", "ShaderCache",
@@ -1367,6 +1678,9 @@ def uninstall(dest, log, delete_game_files: bool = False) -> list[str]:
         if (dest / folder).is_dir() and not (dest / folder).is_symlink():
             shutil.rmtree(dest / folder, ignore_errors=True)
             removed.append(folder)
+    if (dest / STEAM_ART_DIR).exists():
+        remove_steam_art(dest)
+        removed.append(STEAM_ART_DIR)
     remove_legacy_data(log)
     if delete_game_files and game_dir.exists():
         shutil.rmtree(game_dir.with_name("game_files.partial"), ignore_errors=True)
