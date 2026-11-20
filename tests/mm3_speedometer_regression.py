@@ -82,6 +82,7 @@ def main():
         raise SystemExit("Run `python scripts/devenv.py --shell` first so CMake is available.")
     original = generated_function("sub_0023F09B")
     conversion = generated_function("sub_001F0399")
+    node = generated_function("sub_0023EEC8")   # the node's picture selector precedes the draw in the file
     with tempfile.TemporaryDirectory(prefix="mm3-speedometer-") as folder:
         folder = Path(folder)
         source, output = folder / "original.c", folder / "modified.c"
@@ -93,7 +94,7 @@ def main():
             'file(WRITE "${OUTPUT}" "${content}")\n')
 
         def transform(text, reject=False):
-            source.write_bytes(text.encode())
+            source.write_bytes((node + "\n" + text).encode())
             result = subprocess.run([cc.cmake_program(), f"-DINPUT={source.as_posix()}", f"-DOUTPUT={output.as_posix()}",
                                      "-P", cmake_script.as_posix()], capture_output=True, text=True)
             if reject:
@@ -101,7 +102,10 @@ def main():
                 return None
             if result.returncode:
                 raise RuntimeError(result.stderr)
-            return output.read_text()
+            produced = output.read_text()
+            head, draw = produced[:produced.index("void sub_0023F09B(void)")], produced[produced.index("void sub_0023F09B(void)"):]
+            assert "mm3_speedometer_force_digital()) MEM32(ebp + -80) = 1;" in head   # split screen's picture for the digital layout
+            return draw
 
         modified = transform(original)
         assert transform(original.replace("\n", "\r\n")) == modified

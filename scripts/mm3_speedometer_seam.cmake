@@ -22,6 +22,18 @@ function(mm3_add_speedometer_readout source_variable)
      * in every view. The local copy of the race settings (ebp-352..) is only read here. */
     if (mm3_speedometer_force_digital()) MEM32(ebp + -344) = 1;
     _fa = (uint32_t)(MEM32(ebp + -344)) & 0xFFFFFFFFu; _fb = (uint32_t)(1) & 0xFFFFFFFFu;]=])
+    # The speedometer node's picture (sub_0023EEC8, before the draw in the file): split screen
+    # loads Speedometer_Split, everything else the car's analog dial atlas. The digital layout
+    # needs the split picture, or it shows a corner of the analog dial behind the number.
+    set(original_split [=[    _fa = (uint32_t)(MEM32(ebp + -80)) & 0xFFFFFFFFu; _fb = (uint32_t)(1) & 0xFFFFFFFFu;
+    _fas = (int32_t)(int32_t)(_fa); _fbs = (int32_t)(int32_t)(_fb); /* cmp MEM32(ebp + -80), 1 (32-bit) */
+    POP32(esp, edi);]=])
+    set(replacement_split [=[    { extern int mm3_speedometer_force_digital(void);
+      /* MM3_DIGITAL_SPEEDO: the picture split screen uses (the local race settings copy). */
+      if (mm3_speedometer_force_digital()) MEM32(ebp + -80) = 1; }
+    _fa = (uint32_t)(MEM32(ebp + -80)) & 0xFFFFFFFFu; _fb = (uint32_t)(1) & 0xFFFFFFFFu;
+    _fas = (int32_t)(int32_t)(_fa); _fbs = (int32_t)(int32_t)(_fb); /* cmp MEM32(ebp + -80), 1 (32-bit) */
+    POP32(esp, edi);]=])
     set(original_base [=[loc_0023F148: ;
     MEM32(ebp + -48) = 0x43200000;
     MEM32(ebp + -44) = 0x43100000;]=])
@@ -59,11 +71,24 @@ function(mm3_add_speedometer_readout source_variable)
     g_fp_cmp = RECOMP_FCMP(fp_top(), MEMF(0x384EF4));]=])
     string(FIND "${content}" "\r\n" crlf_position)
     if(NOT crlf_position LESS 0)
-        foreach(block prologue digital base selector node needle)
+        foreach(block prologue digital split base selector node needle)
             string(REPLACE "\n" "\r\n" original_${block} "${original_${block}}")
             string(REPLACE "\n" "\r\n" replacement_${block} "${replacement_${block}}")
         endforeach()
     endif()
+    string(FIND "${content}" "void sub_0023EEC8(void)" node_owner_position)
+    string(FIND "${content}" "${original_split}" split_position)
+    if(node_owner_position LESS 0 OR split_position LESS node_owner_position)
+        message(FATAL_ERROR "MM3 speedometer readout: original 0x0023EEC8 picture selector is missing or changed")
+    endif()
+    string(LENGTH "${original_split}" split_length)
+    math(EXPR split_tail "${split_position} + ${split_length}")
+    string(SUBSTRING "${content}" ${split_tail} -1 split_rest)
+    string(FIND "${split_rest}" "${original_split}" split_duplicate)
+    if(NOT split_duplicate LESS 0)
+        message(FATAL_ERROR "MM3 speedometer readout: original picture selector duplicated")
+    endif()
+    string(REPLACE "${original_split}" "${replacement_split}" content "${content}")
     string(FIND "${content}" "void sub_0023F09B(void)" owner_position)
     string(REGEX MATCHALL "loc_0023F82D:" labels "${content}")
     list(LENGTH labels label_count)

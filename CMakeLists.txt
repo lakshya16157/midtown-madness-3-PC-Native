@@ -287,6 +287,8 @@ list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS ${MM3_BUILDING_FUNCTIONS})
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0016AEDB sub_000E1F49 sub_001D137B)
 # Tree watch (src/mm3_tree_watch.c): billboard and model outcomes of a street-prop draw.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0016946B sub_00168BDD)
+# Street-prop model queue budget (src/mm3_prop_budget.c): the props draw, once per frame.
+list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_0016A476)
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_00198592 sub_001986B1)
 # Preserve same-chunk near-camera calls to the chase-distance adjustment.
 list(APPEND MM3_DEFINITION_ONLY_FUNCTIONS sub_001EEC53)
@@ -768,6 +770,7 @@ add_executable(${PROJECT_NAME}
     src/mm3_collision_profile.c
  src/mm3_tree_diagnostics.c
  src/mm3_tree_watch.c
+ src/mm3_prop_budget.c
  src/mm3_tree_body.c
  src/mm3_tree_audio.c
  src/mm3_visibility.c

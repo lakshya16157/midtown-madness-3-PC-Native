@@ -28,6 +28,7 @@
 #include <string.h>
 #include "mm3_recomp_types.h"
 #include "mm3_tree_watch.h"
+#include "mm3_prop_budget.h"
 
 extern void sub_0016946B_original(void);
 extern void sub_00168BDD_original(void);
@@ -198,6 +199,7 @@ void sub_00168BDD(void)
     MM3TreeVisit *visit = s_current;
     uint32_t caller = visit ? MEM32(g_esp) : 0;
     sub_00168BDD_original();
+    if (!g_eax) mm3_prop_budget_refused();     /* the 512-entry model queue was full */
     if (caller == 0x0016B116u) {
         visit->model_tested = 1;
         visit->model_found = g_eax != 0;
