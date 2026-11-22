@@ -1,3 +1,8 @@
+## 2.8.3
+- Fixed: menus skipped entries with a controller in the DirectX 11 renderer. A controller on a later XInput slot (Steam Input, a re-plugged pad) was also read as player 1, so every press counted twice.
+- New in the launcher: "Install an older version" lists the earlier releases, downloads the one you pick and opens its Setup.
+- The launcher option "Detailed stutter log" is now "Detailed log (for bug reports)". It also logs every missing game file, controller input and camera cuts.
+
 ## 2.8.2
 - Fixed: the loading screen was black with only the LOADING animation when you drove one of the 14 downloadable (DLC) cars. They now show a loading picture.
 - Fixed: with the Steam overlay, the loading screen after quitting a race could be black with only the LOADING animation, or cut off and stretched in a corner.
