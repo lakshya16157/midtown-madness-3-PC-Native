@@ -18,6 +18,7 @@ typedef struct MM3Update {
     char version[32];       /* "2.1", the release tag without its v */
     char setup_url[512];
     char sha256_url[512];
+    int prerelease;         /* only filled by mm3_update_list */
 } MM3Update;
 
 /* Version names order as 2.0 < 2.0.1 < 2.1, and a beta before its final
@@ -37,6 +38,17 @@ int mm3_update_parse_release(const char *json, const char *current, const char *
  * few seconds; call it from a worker thread. */
 int mm3_update_check(const char *api_url, const char *current, const char *trusted_prefix,
                      MM3Update *update, char *message, size_t message_size);
+
+/* "Install an older version": the releases GitHub lists (newest first) that are
+ * older than `current` and carry both Setup files from trusted_prefix. Fills up
+ * to `max` entries of `list`; pre-releases are included and marked. Returns the
+ * count (0 when there is none), or -1 with a message when the list cannot be used.
+ * The file for a chosen entry goes through mm3_update_download as usual. */
+#define MM3_UPDATE_LIST_API "https://api.github.com/repos/lakshya16157/midtown-madness-3-PC-Native/releases?per_page=30"
+int mm3_update_parse_list(const char *json, const char *current, const char *trusted_prefix,
+                          MM3Update *list, int max, char *message, size_t message_size);
+int mm3_update_list(const char *api_url, const char *current, const char *trusted_prefix,
+                    MM3Update *list, int max, char *message, size_t message_size);
 
 /* progress(context, done, total) runs for each piece of the download (total is
  * 0 when unknown); returning 0 stops it. The file is written as target.part,

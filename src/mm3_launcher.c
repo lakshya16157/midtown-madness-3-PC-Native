@@ -29,12 +29,19 @@
 #ifndef MM3_UPDATE_API_URL
 #define MM3_UPDATE_API_URL MM3_UPDATE_API
 #endif
+#ifndef MM3_UPDATE_LIST_API_URL
+#define MM3_UPDATE_LIST_API_URL MM3_UPDATE_LIST_API
+#endif
 #ifndef MM3_UPDATE_TRUSTED
 #define MM3_UPDATE_TRUSTED MM3_UPDATE_TRUSTED_PREFIX
 #endif
 #ifndef MM3_UPDATE_ASK
 #define MM3_UPDATE_ASK(window, text) \
     (MessageBoxA(window, text, "Midtown Madness 3", MB_YESNO | MB_ICONQUESTION) == IDYES)
+#endif
+/* The older-version menu: the index of the chosen entry, or -1. Replaceable by the UI contract test. */
+#ifndef MM3_UPDATE_PICK
+#define MM3_UPDATE_PICK(ui, versions, count) update_pick(ui, versions, count)
 #endif
 #ifndef MM3_UPDATE_OPEN
 #define MM3_UPDATE_OPEN(setup, folder) update_open_setup(setup, folder)
@@ -76,7 +83,7 @@ enum {
     ID_CAPTURE, ID_UNBIND, ID_SOURCE, ID_BIND_LABEL, ID_PAD_STATUS, ID_PAD_PORT, ID_PAD_COUNT,
     ID_RESOLUTION, ID_MODE, ID_FPS, ID_VSYNC, ID_SCALE, ID_ASPECT, ID_MSAA,
     ID_ANISO, ID_DRAW, ID_VIEW, ID_SHOW_FPS, ID_MINIMAP, ID_FOV, ID_PORT, ID_PEERS,
-    ID_SCREEN, ID_ORIGINAL, ID_XBOX_GAMEPLAY, ID_DAMAGE, ID_NIGHT, ID_UPDATE,
+    ID_SCREEN, ID_ORIGINAL, ID_XBOX_GAMEPLAY, ID_DAMAGE, ID_NIGHT, ID_UPDATE, ID_OLDER,
     ID_PRESET, ID_TOOLS, ID_SKIP_LAUNCHER,
     ID_WHEEL_ENABLED, ID_WHEEL_FFB, ID_WHEEL_AXES, ID_WHEEL_DEVICE,
     ID_HELP_TITLE, ID_HELP_VALUE, ID_HELP_BODY, ID_HELP_EFFECT, ID_REQUIRED,
@@ -86,6 +93,7 @@ enum {
     ID_OPTION = 300,
     /* The "Folders and logs" menu's items. */
     ID_TOOL_GAME = 700, ID_TOOL_LOGS, ID_TOOL_SETTINGS, ID_TOOL_COPY,
+    LAUNCHER_OLDER_MAX = 16,
     LAUNCHER_WIDTH = 1215, LAUNCHER_HEIGHT = 754,
     /* Settings, Controls, Visual + audio mods, Gameplay mods. */
     LAUNCHER_PAGES = 4
@@ -99,8 +107,10 @@ typedef struct UpdateJob {
     HWND window;
     volatile LONG cancel;
     int download, result;       /* result: what mm3_update_check/download returned */
+    int list;                   /* list the older versions instead (result: how many) */
     unsigned long long reported;
     MM3Update update;
+    MM3Update versions[LAUNCHER_OLDER_MAX];
     wchar_t target[2 * MAX_PATH];
     char message[512];
 } UpdateJob;
@@ -540,7 +550,7 @@ static void help_show(Launcher *ui, int id)
             "Changes the gameplay. Every car offers all its paint jobs in the car selection, as if you had found every paint-job hideout in Cruise. Your save is not changed: untick it and only the paint jobs you found remain.",
             "Use the digital speedometer, the speed number the game shows in split screen, in normal play too, for every car including cars added with the Car Workshop. Off keeps the round dial. Needs the Improved look.",
             "Changes the gameplay. Every installed Checkpoint race (including circuits and downloaded races) and every Undercover job is open in the menus, without playing the earlier ones. Your save is not changed: no race is marked won, and untick it to see only what you earned.",
-            "A detailed performance log for bug reports: moments when the game stops drawing for over a tenth of a second are logged with the game functions it was busy in, and its file reads are timed. It costs a little speed, so leave it off otherwise.",
+            "A detailed log for bug reports: game stalls with the functions it was busy in, timed file reads, every missing game file and the controller input. Tick it, reproduce the problem, then attach the newest file in the logs folder to your issue. It costs a little speed.",
         };
         int option = id - ID_OPTION, on = checked(ui, id), master = mm3_launcher_option_master(option);
         title = option_caption(option);
@@ -876,6 +886,11 @@ static void help_show(Launcher *ui, int id)
             title = "Check for updates"; value[0] = 0;
             body = "Ask GitHub whether a newer version of Midtown Madness 3 PC has been published. If there is one, the launcher offers to download its Setup, checks the download against the release's checksum, closes and opens Setup so you can install it.";
             effect = "Nothing is changed until you choose to download and then install in Setup. Your saved games, DLC and settings stay. It needs an internet connection.";
+            break;
+        case ID_OLDER:
+            title = "Install an older version"; value[0] = 0;
+            body = "Ask GitHub for the earlier versions of Midtown Madness 3 PC and pick one. The launcher downloads its Setup, checks it against the release's checksum, closes and opens Setup to install it over this one.";
+            effect = "Nothing changes until you pick a version, confirm and install in Setup. Saves, DLC and settings stay. Needs internet.";
             break;
         case IDCANCEL:
             title = "Cancel"; value[0] = 0;
@@ -1965,7 +1980,7 @@ static void banner_make(Launcher *ui)
 
 static int is_push_button(int id)
 {
-    return id == ID_DEFAULTS || id == ID_UPDATE || id == ID_TOOLS || id == IDOK || id == IDCANCEL ||
+    return id == ID_DEFAULTS || id == ID_UPDATE || id == ID_OLDER || id == ID_TOOLS || id == IDOK || id == IDCANCEL ||
            id == ID_CAPTURE || id == ID_UNBIND || id == ID_ADVANCED;
 }
 
@@ -2081,7 +2096,10 @@ static DWORD WINAPI update_thread(LPVOID parameter)
 {
     UpdateJob *job = (UpdateJob *)parameter;
     job->message[0] = 0;
-    if (job->download)
+    if (job->list)
+        job->result = mm3_update_list(MM3_UPDATE_LIST_API_URL, MM3_VERSION, MM3_UPDATE_TRUSTED, job->versions,
+                                      LAUNCHER_OLDER_MAX, job->message, sizeof job->message);
+    else if (job->download)
         job->result = mm3_update_download(&job->update, job->target, update_progress, job,
                                           job->message, sizeof job->message);
     else
@@ -2127,13 +2145,40 @@ static int update_open_setup(const wchar_t *setup, const wchar_t *folder)
 static void update_status(Launcher *ui, const char *text)
 { SetWindowTextA(control(ui, ID_STATUS), text); }
 
-static void update_start(Launcher *ui, int download)
+static void update_buttons(Launcher *ui, BOOL enabled)
+{
+    EnableWindow(control(ui, ID_UPDATE), enabled);
+    EnableWindow(control(ui, ID_OLDER), enabled);
+}
+
+/* The menu of older versions under the button: the chosen entry's index, or -1. */
+static int update_pick(Launcher *ui, const MM3Update *versions, int count)
+{
+    HMENU menu = CreatePopupMenu();
+    RECT box;
+    int i, choice;
+    if (!menu) return -1;
+    for (i = 0; i < count; ++i) {
+        char label[64];
+        snprintf(label, sizeof label, "Version %s%s", versions[i].version, versions[i].prerelease ? " (beta)" : "");
+        AppendMenuA(menu, MF_STRING, (UINT_PTR)(1000 + i), label);
+    }
+    GetWindowRect(control(ui, ID_OLDER), &box);
+    choice = (int)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_BOTTOMALIGN, box.left, box.top, 0, ui->window, NULL);
+    DestroyMenu(menu);
+    return choice >= 1000 ? choice - 1000 : -1;
+}
+
+/* mode: 0 check for a newer version, 1 download ui->update_found's Setup, 2 list the older versions. */
+static void update_start(Launcher *ui, int mode)
 {
     UpdateJob *job = (UpdateJob *)calloc(1, sizeof *job);
     wchar_t folder[2 * MAX_PATH];
+    int download = mode == 1;
     if (!job) { update_status(ui, "Not enough memory to check for updates."); return; }
     job->window = ui->window;
     job->download = download;
+    job->list = mode == 2;
     if (download) {
         job->update = ui->update_found;
         if (!update_paths(job->target, sizeof job->target / sizeof job->target[0], folder, sizeof folder / sizeof folder[0])) {
@@ -2143,13 +2188,13 @@ static void update_start(Launcher *ui, int download)
         }
     }
     ui->update_job = job;
-    EnableWindow(control(ui, ID_UPDATE), FALSE);
-    update_status(ui, download ? "Downloading the new Setup..." : "Checking for updates...");
+    update_buttons(ui, FALSE);
+    update_status(ui, download ? "Downloading Setup..." : mode == 2 ? "Looking for older versions..." : "Checking for updates...");
     {
         HANDLE thread = CreateThread(NULL, 0, update_thread, job, 0, NULL);
         if (!thread) {
             ui->update_job = NULL; free(job);
-            EnableWindow(control(ui, ID_UPDATE), TRUE);
+            update_buttons(ui, TRUE);
             update_status(ui, "Could not start the update check.");
             return;
         }
@@ -2163,9 +2208,29 @@ static void update_done(Launcher *ui, UpdateJob *job)
     char text[640];
     wchar_t setup[2 * MAX_PATH], folder[2 * MAX_PATH];
     if (ui->update_job == job) ui->update_job = NULL;
-    EnableWindow(control(ui, ID_UPDATE), TRUE);
+    update_buttons(ui, TRUE);
     if (ui->close_after_update) { free(job); DestroyWindow(ui->window); return; }
-    if (job->download) {
+    if (job->list) {
+        if (job->result < 0) update_status(ui, job->message);
+        else if (job->result == 0)
+            update_status(ui, "No older version with a Setup is published on GitHub.");
+        else {
+            int pick = MM3_UPDATE_PICK(ui, job->versions, job->result);
+            if (pick < 0 || pick >= job->result) {
+                update_status(ui, "No version chosen. Press Install an older version to pick one.");
+            } else {
+                snprintf(text, sizeof text,
+                         "Install version %s over this one (%s)?\n\nIts Setup is downloaded now. When it is ready, "
+                         "this window closes and Setup opens: press Update this install there. Your saved games "
+                         "and DLC stay. To go forward again, use Check for updates.",
+                         job->versions[pick].version, MM3_VERSION);
+                if (MM3_UPDATE_ASK(ui->window, text)) {
+                    ui->update_found = job->versions[pick];
+                    update_start(ui, 1);
+                } else update_status(ui, "Nothing was changed.");
+            }
+        }
+    } else if (job->download) {
         if (job->result != 1) update_status(ui, job->message);
         else if (!update_paths(setup, sizeof setup / sizeof setup[0], folder, sizeof folder / sizeof folder[0]) ||
                  !MM3_UPDATE_OPEN(setup, folder))
@@ -2285,10 +2350,11 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         add(ui, -1, "STATIC", "", SS_NOPREFIX, ID_HELP_EFFECT, 880, 521, 295, 100);
         add(ui, -1, "STATIC", "In game, press F10 to open Settings: graphics, night brightness and Freeze opponents. Launcher: Tab moves, Enter activates; controller: D-pad moves, A selects, LB/RB changes tab, Start plays.",
             0, ID_STATUS, 25, 644, 1165, 45);
-        push_button(ui, -1, "Restore defaults", ID_DEFAULTS, 25, 699, 155, 34);
-        push_button(ui, -1, "Check for updates", ID_UPDATE, 195, 699, 175, 34);
-        push_button(ui, -1, "Folders and logs", ID_TOOLS, 385, 699, 175, 34);
-        check(ui, -1, ID_SKIP_LAUNCHER, "Skip the settings window next time", 597, 704, 315);
+        push_button(ui, -1, "Restore defaults", ID_DEFAULTS, 25, 699, 135, 34);
+        push_button(ui, -1, "Check for updates", ID_UPDATE, 170, 699, 150, 34);
+        push_button(ui, -1, "Install an older version", ID_OLDER, 330, 699, 185, 34);
+        push_button(ui, -1, "Folders and logs", ID_TOOLS, 525, 699, 140, 34);
+        check(ui, -1, ID_SKIP_LAUNCHER, "Skip the settings window next time", 677, 704, 240);
         push_button(ui, -1, "Play", IDOK, 933, 699, 122, 34);
         push_button(ui, -1, "Cancel", IDCANCEL, 1068, 699, 122, 34);
         populate(ui); scale_labels_refresh(ui); page_show(ui, 0);
@@ -2388,6 +2454,13 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             return 0;
         case ID_UPDATE:
             if (!ui->update_job) update_start(ui, 0);
+            return 0;
+        case ID_OLDER:
+            if (ui->update_job) return 0;
+            if (!update_installed())
+                update_status(ui, "Older versions are installed with Setup. This is a developer build, not an "
+                                  "install made by Setup, so it is not changed from here.");
+            else update_start(ui, 2);
             return 0;
         case ID_DEFAULTS:
             mm3_launcher_config_defaults(&ui->config);

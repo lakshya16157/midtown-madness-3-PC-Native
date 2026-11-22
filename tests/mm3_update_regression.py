@@ -51,6 +51,8 @@ def serve():
 
     server.RequestHandlerClass = Handler
     add("same", "v2.1")
+    add("oldlist", "v2.0")
+    files["/oldlist/releases"] = b"[" + files["/oldlist/latest"] + b"]"   # the older-version list
     add("newer", "v99.0")
     add("slow", "v99.0")
     add("nosum", "v99.0", with_sum=False)

@@ -284,6 +284,9 @@ int main(int argc, char **argv)
     assert(mm3_launcher_config_apply(&loaded, error, sizeof error));
     assert(!strcmp(getenv("RECOMP_SPIKE_CAPTURE"), "logs\\spike,50") && !strcmp(getenv("RECOMP_SPIKE_BMP"), "0"));
     assert(!strcmp(getenv("RECOMP_PRODUCER_TRACE"), "1") && !strcmp(getenv("MM3_STUTTER_LOG"), "1"));
+    /* The same box also lists every missing file and logs the pad's input and camera cuts. */
+    assert(!strcmp(getenv("RECOMP_MISSING_FILES"), "all") && !strcmp(getenv("RECOMP_INPUT_DIAG"), "1") &&
+           !strcmp(getenv("MM3_CAMERA_CUT_LOG"), "1"));
     assert(!_putenv_s("RECOMP_SPIKE_CAPTURE", "mine,30"));
     assert(mm3_launcher_config_apply(&loaded, error, sizeof error));
     assert(!strcmp(getenv("RECOMP_SPIKE_CAPTURE"), "mine,30"));
@@ -291,7 +294,9 @@ int main(int argc, char **argv)
     assert(mm3_launcher_config_apply(&loaded, error, sizeof error));
     assert(!strcmp(getenv("MM3_STUTTER_LOG"), "0"));
     assert(!_putenv_s("RECOMP_SPIKE_CAPTURE", "") && !_putenv_s("RECOMP_SPIKE_BMP", "") &&
-           !_putenv_s("RECOMP_PRODUCER_TRACE", ""));
+           !_putenv_s("RECOMP_PRODUCER_TRACE", "") && !_putenv_s("RECOMP_MISSING_FILES", "") &&
+           !_putenv_s("RECOMP_FILE_DIAGNOSTICS", "") && !_putenv_s("RECOMP_INPUT_DIAG", "") &&
+           !_putenv_s("MM3_CAMERA_CUT_LOG", "") && !_putenv_s("RECOMP_KERNEL_SUMMARY", ""));
     assert(mm3_launcher_option_master(MM3_LAUNCH_TREES) == MM3_LAUNCH_GAMEPLAY &&
            mm3_launcher_option_master(MM3_LAUNCH_UNLOCK) == MM3_LAUNCH_GAMEPLAY &&
            mm3_launcher_option_master(MM3_LAUNCH_ROUTE_NAVIGATION) == MM3_LAUNCH_GAMEPLAY);

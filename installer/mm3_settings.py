@@ -74,7 +74,7 @@ OPTIONS = [
     ("MM3_UNLOCK_ALL_PAINTS", "Unlock all paint jobs", 0),
     ("MM3_DIGITAL_SPEEDO", "Digital speedometer (as in split screen)", 0),
     ("MM3_UNLOCK_ALL_RACES", "Unlock all races and jobs", 0),
-    ("MM3_STUTTER_LOG", "Detailed stutter log", 0),
+    ("MM3_STUTTER_LOG", "Detailed log (for bug reports)", 0),
 ]
 DEFAULTS = {key: default for key, _label, default in OPTIONS}
 DEFAULTS[SKIP_LAUNCHER] = 0

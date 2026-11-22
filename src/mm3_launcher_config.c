@@ -65,7 +65,7 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"MM3_UNLOCK_ALL_PAINTS", "Unlock all paint jobs", 0},
     {"MM3_DIGITAL_SPEEDO", "Digital speedometer (as in split screen)", 0},
     {"MM3_UNLOCK_ALL_RACES", "Unlock all races and jobs", 0},
-    {"MM3_STUTTER_LOG", "Detailed stutter log", 0}
+    {"MM3_STUTTER_LOG", "Detailed log (for bug reports)", 0}
 };
 
 typedef struct { int option; const char *value; } MM3ForcedOption;
@@ -725,6 +725,14 @@ int mm3_launcher_config_apply(const MM3LauncherConfig *config, char *error, size
         if (!getenv("RECOMP_SPIKE_CAPTURE")) SET("RECOMP_SPIKE_CAPTURE", "logs\\spike,50");
         if (!getenv("RECOMP_SPIKE_BMP")) SET("RECOMP_SPIKE_BMP", "0");
         if (!getenv("RECOMP_PRODUCER_TRACE")) SET("RECOMP_PRODUCER_TRACE", "1");
+        /* The common reports besides stutter: a missing file (every one listed, not a summary), input that
+         * does not arrive or arrives twice (pad and key state once a second), camera cuts that hide a
+         * frame, and the kernel's call summary. Low volume. */
+        if (!getenv("RECOMP_MISSING_FILES")) SET("RECOMP_MISSING_FILES", "all");
+        if (!getenv("RECOMP_FILE_DIAGNOSTICS")) SET("RECOMP_FILE_DIAGNOSTICS", "1");
+        if (!getenv("RECOMP_INPUT_DIAG")) SET("RECOMP_INPUT_DIAG", "1");
+        if (!getenv("MM3_CAMERA_CUT_LOG")) SET("MM3_CAMERA_CUT_LOG", "1");
+        if (!getenv("RECOMP_KERNEL_SUMMARY")) SET("RECOMP_KERNEL_SUMMARY", "1");
     }
     /* OHCI automatically exposes at least this many root-hub ports. Keep an
      * explicitly supplied RECOMP_USB_NDP (and the default two-port hub). */

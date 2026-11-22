@@ -46,6 +46,36 @@ static int versions(void)
     return 0;
 }
 
+/* "Install an older version": only releases older than this build, with both Setup files from the
+ * trusted prefix; pre-releases are marked. */
+static int listing(void)
+{
+    static const char *const json =
+        "[{\"tag_name\":\"v3.0\",\"prerelease\":false,\"assets\":[{\"browser_download_url\":\"https://x/d/MM3-Setup.exe\"},"
+        "{\"browser_download_url\":\"https://x/d/MM3-Setup.exe.sha256\"}]},"
+        "{\"tag_name\":\"v2.0\",\"prerelease\":false,\"assets\":[{\"browser_download_url\":\"https://x/d/a/MM3-Setup.exe\"},"
+        "{\"browser_download_url\":\"https://x/d/a/MM3-Setup.exe.sha256\"}]},"
+        "{\"tag_name\":\"v2.0-beta.1\",\"prerelease\":true,\"assets\":[{\"browser_download_url\":\"https://x/d/b/MM3-Setup.exe\"},"
+        "{\"browser_download_url\":\"https://x/d/b/MM3-Setup.exe.sha256\"}]},"
+        "{\"tag_name\":\"v1.9\",\"prerelease\":false,\"assets\":[{\"browser_download_url\":\"https://x/d/c/MM3-Setup.exe\"}]},"
+        "{\"tag_name\":\"v1.8\",\"prerelease\":false,\"assets\":[{\"browser_download_url\":\"https://evil/MM3-Setup.exe\"},"
+        "{\"browser_download_url\":\"https://evil/MM3-Setup.exe.sha256\"}]},"
+        "{\"tag_name\":\"v1.7\",\"assets\":[{\"browser_download_url\":\"https://x/d/e/MM3-Setup.exe\"},"
+        "{\"browser_download_url\":\"https://x/d/e/MM3-Setup.exe.sha256\"}]}]";
+    MM3Update list[8];
+    char message[256] = "";
+    CHECK(mm3_update_parse_list(json, "2.1", "https://x/d/", list, 8, message, sizeof message) == 3);
+    CHECK(!strcmp(list[0].version, "2.0") && !list[0].prerelease && !strcmp(list[0].setup_url, "https://x/d/a/MM3-Setup.exe") &&
+          !strcmp(list[0].sha256_url, "https://x/d/a/MM3-Setup.exe.sha256"));
+    CHECK(!strcmp(list[1].version, "2.0-beta.1") && list[1].prerelease);
+    CHECK(!strcmp(list[2].version, "1.7") && !list[2].prerelease);
+    CHECK(mm3_update_parse_list(json, "2.1", "https://x/d/", list, 2, message, sizeof message) == 2);   /* the cap */
+    CHECK(mm3_update_parse_list(json, "1.0", "https://x/d/", list, 8, message, sizeof message) == 0);    /* nothing older */
+    CHECK(mm3_update_parse_list("{not json", "2.1", "https://x/d/", list, 8, message, sizeof message) == -1 && *message);
+    CHECK(mm3_update_parse_list(json, "development build", "https://x/d/", list, 8, message, sizeof message) == -1);
+    return 0;
+}
+
 static int parsing(void)
 {
     static const char *const good =
@@ -143,7 +173,7 @@ static int network(const char *port, const char *folder)
 int main(int argc, char **argv)
 {
     if (argc != 3) { fprintf(stderr, "usage: update_contract <port> <folder>\n"); return 2; }
-    if (versions() || parsing() || network(argv[1], argv[2])) return 1;
+    if (versions() || listing() || parsing() || network(argv[1], argv[2])) return 1;
     puts("PASS update: version order, release parsing and trusted links, WinHTTP check and checked download "
          "(good, wrong checksum, not a program, bad checksum file, short, cancelled, offline)");
     return 0;

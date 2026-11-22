@@ -35,6 +35,11 @@ static wchar_t s_update_setup[600];
 #define MM3_VERSION "2.1"
 #define MM3_UPDATE_API_URL s_update_api
 #define MM3_UPDATE_TRUSTED ""
+/* The older-version list aimed at the same stand-in; the menu's pick is the test's. */
+static char s_list_api[256];
+static int s_older_pick, s_older_count;
+#define MM3_UPDATE_LIST_API_URL s_list_api
+#define MM3_UPDATE_PICK(ui, versions, count) (s_older_count = (count), s_older_pick)
 #define MM3_UPDATE_ASK(window, text) (++s_update_asked, s_update_answer)
 #define MM3_UPDATE_OPEN(setup, folder) (++s_update_opened, wcsncpy(s_update_setup, (setup), 599), 1)
 /* Folders and logs, the game-files check: recorded, never opened; the game's files are "installed" or not. */
@@ -562,7 +567,7 @@ static void contextual_help(HWND window)
         ID_MSAA, ID_ANISO, ID_DRAW, ID_VIEW, ID_MINIMAP};
     static const int controls[] = {ID_KEYBOARD, ID_PAD_COUNT, ID_GROUP, ID_BINDINGS,
         ID_SOURCE, ID_PAD_PORT, ID_CAPTURE, ID_UNBIND};
-    static const int buttons[] = {ID_DEFAULTS, ID_UPDATE, ID_TOOLS, IDOK, IDCANCEL};
+    static const int buttons[] = {ID_DEFAULTS, ID_UPDATE, ID_OLDER, ID_TOOLS, IDOK, IDCANCEL};
     HelpText text, previous;
     char page_titles[LAUNCHER_PAGES][256];
     for (int page = 0; page < LAUNCHER_PAGES; ++page) {
@@ -1193,6 +1198,12 @@ static void update_click(HWND window)
     SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_UPDATE, BN_CLICKED), (LPARAM)GetDlgItem(window, ID_UPDATE));
 }
 
+static void older_click(HWND window)
+{
+    CHECK(IsWindowEnabled(GetDlgItem(window, ID_OLDER)));
+    SendMessageA(window, WM_COMMAND, MAKEWPARAM(ID_OLDER, BN_CLICKED), (LPARAM)GetDlgItem(window, ID_OLDER));
+}
+
 static DWORD WINAPI update_exercise(void *unused)
 {
     (void)unused;
@@ -1241,6 +1252,31 @@ static DWORD WINAPI update_exercise(void *unused)
         /* The button's explanation. */
         focus_control(window, ID_UPDATE);
         CHECK(help_contains(window, "Check for updates") && help_contains(window, "GitHub"));
+        /* Install an older version: no list, a list with no pick, a pick that is declined. */
+        {
+            HWND older = GetDlgItem(window, ID_OLDER);
+            int asked;
+            CHECK(IsWindowVisible(older));
+            snprintf(s_list_api, sizeof s_list_api, "http://127.0.0.1:%s/newer/releases", s_update_port);
+            older_click(window);
+            update_wait_status(window, "No Setup release was found");
+            snprintf(s_list_api, sizeof s_list_api, "http://127.0.0.1:%s/oldlist/releases", s_update_port);
+            s_older_pick = -1;
+            older_click(window);
+            update_wait_status(window, "No version chosen");
+            CHECK(s_older_count == 1 && s_update_opened == 0);
+            s_older_pick = 0; s_update_answer = 0; asked = s_update_asked;
+            older_click(window);
+            update_wait_status(window, "Nothing was changed");
+            CHECK(s_update_asked == asked + 1 && s_update_opened == 0 && IsWindowEnabled(older));
+            update_marker(0);   /* the developer's build: reported, never listed */
+            older_click(window);
+            update_wait_status(window, "developer build");
+            CHECK(s_update_asked == asked + 1 && IsWindowEnabled(older));
+            update_marker(1);
+            focus_control(window, ID_OLDER);
+            CHECK(help_contains(window, "earlier versions") && help_contains(window, "GitHub"));
+        }
         SendMessageA(window, WM_COMMAND, IDCANCEL, 0);
     } else if (s_update_run == 1) {
         char status[512];
@@ -1255,10 +1291,14 @@ static DWORD WINAPI update_exercise(void *unused)
         GetDlgItemTextA(window, ID_STATUS, status, sizeof status);
         CHECK(strstr(status, "Stopping"));
         CHECK(IsWindow(window));
-    } else {
+    } else if (s_update_run == 2) {
         s_update_answer = 1;
         update_api_for("newer");
         update_click(window);   /* asks, downloads, opens Setup and closes: nothing more to do here */
+    } else {
+        s_update_answer = 1; s_older_pick = 0;
+        snprintf(s_list_api, sizeof s_list_api, "http://127.0.0.1:%s/oldlist/releases", s_update_port);
+        older_click(window);    /* lists, picks, asks, downloads that Setup, opens it and closes */
     }
     return 0;
 }
@@ -1272,12 +1312,13 @@ static void update_runs(const char *port, const char *folder)
     snprintf(s_update_marker, sizeof s_update_marker, "%s\\setup-options.json", folder);
     update_marker(1);   /* run as an install made by Setup */
     CHECK(!_putenv_s("MM3_LAUNCHER", "1")); CHECK(!_putenv_s("MM3_LAUNCHER_SMOKE", ""));
-    for (s_update_run = 0; s_update_run < 3; ++s_update_run) {
+    for (s_update_run = 0; s_update_run < 4; ++s_update_run) {
         s_update_opened = 0; s_update_setup[0] = 0;
         thread = CreateThread(NULL, 0, update_exercise, NULL, 0, NULL); CHECK(thread);
         CHECK(!mm3_launcher_run(0, NULL));
         CHECK(WaitForSingleObject(thread, 10000) == WAIT_OBJECT_0); CloseHandle(thread);
         if (s_update_run < 2) CHECK(s_update_opened == 0);
+        else CHECK(s_update_opened == 1);
     }
     /* The last run: Setup was downloaded to updates\ beside this program and then opened. */
     swprintf(expected, sizeof expected / sizeof expected[0], L"%hs\\updates\\MM3-Setup.exe", folder);

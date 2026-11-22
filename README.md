@@ -307,7 +307,8 @@ on Windows (`logs` in the install folder). Proton 7 and older are not supported.
   disc image: it puts back only the files that are missing (or empty) and leaves everything
   else, saves and DLC included, as it is.
 - **Stutter, a black screen while loading, or a picture glitch:** in the launcher, tick
-  **Detailed stutter log** (Visual + audio mods) and play. Every moment the game stops
+  **Detailed log (for bug reports)** (Visual + audio mods) and play. It also logs every missing
+  game file and the controller input, so use it for any problem you want to report. Every moment the game stops
   drawing for over a tenth of a second is logged with the game functions it was busy in.
   When the problem is on screen, press **F9**: the game saves the last seconds of frames
   (a picture sheet and a table) next to the log in `logs`. Attach the newest log and F9

@@ -170,6 +170,51 @@ int mm3_update_parse_release(const char *json, const char *current, const char *
     return 1;
 }
 
+/* GitHub writes a release's "tag_name" before its assets, so each release is the
+ * text from one tag_name to the next. */
+int mm3_update_parse_list(const char *json, const char *current, const char *trusted_prefix,
+                          MM3Update *list, int max, char *message, size_t message_size)
+{
+    char tag[64], url[512];
+    const char *p, *end, *flag;
+    size_t prefix;
+    int count = 0;
+    if (!trusted_prefix) trusted_prefix = MM3_UPDATE_TRUSTED_PREFIX;
+    prefix = strlen(trusted_prefix);
+    if (!json || !json_string(json, "tag_name", tag, sizeof tag)) {
+        say(message, message_size, "GitHub's answer could not be understood.");
+        return -1;
+    }
+    if (!mm3_update_version_valid(current)) {
+        snprintf(message, message_size, "Cannot compare versions with \"%s\".", current ? current : "");
+        return -1;
+    }
+    for (p = json; count < max && (p = json_string(p, "tag_name", tag, sizeof tag)) != NULL;) {
+        MM3Update *entry = &list[count];
+        int have_setup = 0, have_sum = 0;
+        const char *q;
+        end = strstr(p, "\"tag_name\"");
+        if (!end) end = p + strlen(p);
+        if (!mm3_update_version_valid(tag) || mm3_update_compare(tag, current) >= 0) continue;
+        memset(entry, 0, sizeof *entry);
+        snprintf(entry->version, sizeof entry->version, "%s", tag[0] == 'v' || tag[0] == 'V' ? tag + 1 : tag);
+        flag = strstr(p, "\"prerelease\"");
+        if (flag && flag < end) {
+            flag += 12;
+            while (*flag == ' ' || *flag == ':' || *flag == '\t') ++flag;
+            entry->prerelease = !strncmp(flag, "true", 4);
+        }
+        for (q = p; (q = json_string(q, "browser_download_url", url, sizeof url)) != NULL && q <= end;) {
+            int setup = ends_with(url, "/" SETUP_NAME), sum = ends_with(url, "/" SETUP_NAME ".sha256");
+            if ((!setup && !sum) || strncmp(url, trusted_prefix, prefix)) continue;
+            if (setup && !have_setup) { snprintf(entry->setup_url, sizeof entry->setup_url, "%s", url); have_setup = 1; }
+            if (sum && !have_sum) { snprintf(entry->sha256_url, sizeof entry->sha256_url, "%s", url); have_sum = 1; }
+        }
+        if (have_setup && have_sum) ++count;
+    }
+    return count;
+}
+
 /* ---------------------------------------------------------------------- HTTP */
 
 /* Receives each piece of an answer; returns 0 to stop. `total` is the length
@@ -284,6 +329,25 @@ int mm3_update_check(const char *api_url, const char *current, const char *trust
         return -1;
     }
     result = mm3_update_parse_release(buffer.data, current, trusted_prefix, update, message, message_size);
+    free(buffer.data);
+    return result;
+}
+
+int mm3_update_list(const char *api_url, const char *current, const char *trusted_prefix,
+                    MM3Update *list, int max, char *message, size_t message_size)
+{
+    Buffer buffer = {0};
+    int stopped, result;
+    buffer.limit = RELEASE_LIMIT;
+    buffer.data = (char *)malloc(buffer.limit + 1);
+    if (!buffer.data) { say(message, message_size, "Not enough memory to list the versions."); return -1; }
+    buffer.data[0] = 0;
+    if (!http_get(api_url, "application/vnd.github+json", buffer_sink, &buffer, message, message_size, &stopped)) {
+        if (stopped && buffer.overflow) say(message, message_size, "GitHub's answer could not be understood.");
+        free(buffer.data);
+        return -1;
+    }
+    result = mm3_update_parse_list(buffer.data, current, trusted_prefix, list, max, message, message_size);
     free(buffer.data);
     return result;
 }
