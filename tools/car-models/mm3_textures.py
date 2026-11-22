@@ -1,4 +1,4 @@
-"""Encode ordinary DDS textures in MM3's CDDS container.
+"""Encode ordinary DDS textures in MM3's CDDS container, and unpack the game's own.
 
 The Huffman codebooks follow Daniel Stien's decdds research (see the bundled
 codebook provenance). CDDS is a bit stream over little-endian 32-bit words;
@@ -257,14 +257,26 @@ def image_to_menu_cdds(path: Path) -> bytes:
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('input', type=Path)
-    parser.add_argument('output', type=Path)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog='Unpack a game texture: mm3_textures.py name.cdds name.dds (or name.png). '
+               'Pack one back: mm3_textures.py name.dds (or .png) name.cdds.')
+    parser.add_argument('input', type=Path, help='a .cdds to unpack, or a .dds or picture to pack')
+    parser.add_argument('output', type=Path, help='.dds or a picture (.png) when unpacking, .cdds when packing')
     parser.add_argument('--max-size', type=int, default=1024)
     args = parser.parse_args()
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    if args.input.suffix.lower() == '.cdds':
+        dds = cdds_to_dds(args.input.read_bytes())
+        if args.output.suffix.lower() == '.dds':
+            args.output.write_bytes(dds)
+        else:
+            with Image.open(io.BytesIO(dds)) as image:
+                image.save(args.output)
+        print(f'{args.input} -> {args.output}')
+        return
     result = (dds_to_cdds(args.input.read_bytes()) if args.input.suffix.lower() == '.dds'
               else image_to_cdds(args.input, max_size=args.max_size))
-    args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(result)
     print(f'{len(result)} bytes -> {args.output}')
 

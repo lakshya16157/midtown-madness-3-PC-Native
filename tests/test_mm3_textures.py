@@ -138,6 +138,26 @@ class TexturesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Not a CDDS'):
             textures.cdds_to_dds(b'DDS ' + bytes(124))
 
+    def test_command_line_unpacks_and_packs(self):
+        # Issue #44: a game texture to an ordinary DDS or PNG and back, from the command prompt.
+        import subprocess
+        import sys
+        script = ROOT / 'tools/car-models/mm3_textures.py'
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            Image.new('RGBA', (32, 16), (200, 30, 90, 255)).save(folder / 'source.png')
+            for args in (('source.png', 'game.cdds'), ('game.cdds', 'game.dds'), ('game.cdds', 'game.png'),
+                         ('game.dds', 'again.cdds')):
+                subprocess.run([sys.executable, str(script), *args], cwd=folder, check=True, capture_output=True)
+            dds = (folder / 'game.dds').read_bytes()
+            self.assertEqual(dds, textures.image_to_dds(folder / 'source.png'))
+            self.assertEqual((folder / 'again.cdds').read_bytes(), (folder / 'game.cdds').read_bytes())
+            with Image.open(folder / 'game.png') as picture:
+                self.assertEqual(picture.size, (32, 16))
+                pixel = picture.convert('RGBA').getpixel((5, 5))
+            # DXT1 keeps 5-6-5 bit colour.
+            self.assertTrue(all(abs(a - b) <= 8 for a, b in zip(pixel, (200, 30, 90, 255))), pixel)
+
     def test_decode_leaves_final_literal_unwritten(self):
         # Retail's decoder reads no code for a block's last byte: a stream
         # ending in a lone literal leaves it out (zero here).
