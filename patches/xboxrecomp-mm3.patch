@@ -6495,10 +6495,10 @@ index 00000000..da8cc508
 +
 +#endif
 diff --git a/src/input/xinput_device.c b/src/input/xinput_device.c
-index 4bffbb4b..d7d057a9 100644
+index 4bffbb4b..f75b6caa 100644
 --- a/src/input/xinput_device.c
 +++ b/src/input/xinput_device.c
-@@ -26,16 +26,90 @@
+@@ -26,16 +26,111 @@
  #include <string.h>
  
  static XBOX_KEYBOARD_HOOK s_keyboard_hook;
@@ -6545,8 +6545,8 @@ index 4bffbb4b..d7d057a9 100644
 +    atomic_store(&s_modal_packet[port], original);
 +    return original;
 +}
-+#endif
-+
+ #endif
+ 
 +static XBOX_KEYBOARD_DRIVING_PROBE s_keyboard_driving_probe;
 +
 +void xbox_InputSetKeyboardDrivingProbe(XBOX_KEYBOARD_DRIVING_PROBE probe)
@@ -6578,8 +6578,29 @@ index 4bffbb4b..d7d057a9 100644
 +        retry_at[port] = result == ERROR_SUCCESS ? 0 : (now + 1000) | 1;
 +    return result;
 +}
- #endif
- 
++
++/* Pad n is the n-th connected XInput slot, not slot n. A pad on slot 1 or above
++ * (Steam Input, a re-plugged wireless pad) left pad 0 empty, so pad 0 fell back
++ * to SDL's first gamepad -- the same pad -- and the menus saw every press from two
++ * ports. The slot, or -1; `state` holds that slot's state. */
++static int xinput_slot(DWORD pad, XINPUT_STATE *state)
++{
++    DWORD slot, seen = 0;
++    for (slot = 0; slot < XUSER_MAX_COUNT; ++slot)
++        if (xinput_state(slot, state) == ERROR_SUCCESS && seen++ == pad)
++            return (int)slot;
++    return -1;
++}
++
++/* The SDL fallback serves a pad only while no XInput pad exists: SDL also lists
++ * the XInput pads, under indexes of its own. */
++static int xinput_any(void)
++{
++    XINPUT_STATE state;
++    return xinput_slot(0, &state) >= 0;
++}
++#endif
++
 +typedef struct HostWheelInput {
 +    SHORT steer;
 +    BYTE throttle, brake;
@@ -6590,7 +6611,7 @@ index 4bffbb4b..d7d057a9 100644
  /* A contract test defines XBOX_INPUT_HOST_PAD and supplies host_pad_state itself;
   * everything else is the production SDL3 code. */
  #ifndef XBOX_INPUT_HOST_PAD
-@@ -68,9 +142,10 @@ static void pad_unlock(void)
+@@ -68,9 +163,10 @@ static void pad_unlock(void)
      SDL_UnlockMutex(s_pad_lock);
  }
  
@@ -6603,7 +6624,7 @@ index 4bffbb4b..d7d057a9 100644
  #if defined(_WIN32) && !defined(XBOXRECOMP_SDL3)
      /* The Direct3D 11 window is a Win32 one, so nothing pumps SDL events:
       * refresh the pad state here, at most once a millisecond. */
-@@ -83,6 +158,12 @@ static SDL_Gamepad *sdl_pad(DWORD port)
+@@ -83,6 +179,12 @@ static SDL_Gamepad *sdl_pad(DWORD port)
          }
      }
  #endif
@@ -6616,7 +6637,7 @@ index 4bffbb4b..d7d057a9 100644
      SDL_Gamepad *pad = g_sdl_pads[port];
      if (pad && SDL_GamepadConnected(pad))
          return pad;
-@@ -92,6 +173,11 @@ static SDL_Gamepad *sdl_pad(DWORD port)
+@@ -92,6 +194,11 @@ static SDL_Gamepad *sdl_pad(DWORD port)
      }
      if (SDL_GetTicks() < next_scan[port])
          return NULL;
@@ -6628,7 +6649,7 @@ index 4bffbb4b..d7d057a9 100644
      next_scan[port] = SDL_GetTicks() + 1000; /* hot-plug check, not every poll */
      {
          int count = 0;
-@@ -120,10 +206,15 @@ static DWORD host_pad_state_locked(DWORD port, XINPUT_STATE *state)
+@@ -120,10 +227,17 @@ static DWORD host_pad_state_locked(DWORD port, XINPUT_STATE *state)
          { SDL_GAMEPAD_BUTTON_EAST, XINPUT_GAMEPAD_B },
          { SDL_GAMEPAD_BUTTON_WEST, XINPUT_GAMEPAD_X },
          { SDL_GAMEPAD_BUTTON_NORTH, XINPUT_GAMEPAD_Y } };
@@ -6638,41 +6659,48 @@ index 4bffbb4b..d7d057a9 100644
      size_t i;
  
 +#ifdef XBOX_INPUT_XINPUT_FIRST
-+    if (xinput_state(port, state) == ERROR_SUCCESS)
++    if (xinput_slot(port, state) >= 0)
 +        return ERROR_SUCCESS;
++    if (xinput_any())
++        return ERROR_DEVICE_NOT_CONNECTED;
 +#endif
 +    pad = sdl_pad(port);
      if (!pad)
          return ERROR_DEVICE_NOT_CONNECTED;
      memset(state, 0, sizeof *state);
-@@ -159,6 +250,11 @@ static DWORD host_pad_state(DWORD port, XINPUT_STATE *state)
+@@ -159,6 +273,13 @@ static DWORD host_pad_state(DWORD port, XINPUT_STATE *state)
  static int host_pad_present(DWORD port)
  {
      int present;
 +#ifdef XBOX_INPUT_XINPUT_FIRST
 +    XINPUT_STATE xstate;
-+    if (xinput_state(port, &xstate) == ERROR_SUCCESS)
++    if (xinput_slot(port, &xstate) >= 0)
 +        return 1;
++    if (xinput_any())
++        return 0;
 +#endif
      pad_lock();
      present = sdl_pad(port) != NULL;
      pad_unlock();
-@@ -168,6 +264,14 @@ static int host_pad_present(DWORD port)
+@@ -168,6 +289,17 @@ static int host_pad_present(DWORD port)
  static void host_pad_rumble(DWORD port, WORD left, WORD right)
  {
      SDL_Gamepad *pad;
 +#ifdef XBOX_INPUT_XINPUT_FIRST
 +    XINPUT_STATE xstate;
-+    if (xinput_state(port, &xstate) == ERROR_SUCCESS) {
++    int slot = xinput_slot(port, &xstate);
++    if (slot >= 0) {
 +        XINPUT_VIBRATION vibration = { left, right };
-+        XInputSetState(port, &vibration);
++        XInputSetState((DWORD)slot, &vibration);
 +        return;
 +    }
++    if (xinput_any())
++        return;
 +#endif
      pad_lock();
      pad = sdl_pad(port);
      /* SDL rumble runs for a duration; titles resend it continuously. */
-@@ -175,6 +279,49 @@ static void host_pad_rumble(DWORD port, WORD left, WORD right)
+@@ -175,6 +307,49 @@ static void host_pad_rumble(DWORD port, WORD left, WORD right)
          SDL_RumbleGamepad(pad, left, right, 1000);
      pad_unlock();
  }
@@ -6722,7 +6750,7 @@ index 4bffbb4b..d7d057a9 100644
  #else
  static int host_pad_present(DWORD port)
  {
-@@ -186,8 +333,28 @@ static void host_pad_rumble(DWORD port, WORD left, WORD right)
+@@ -186,8 +361,28 @@ static void host_pad_rumble(DWORD port, WORD left, WORD right)
  {
      (void)port; (void)left; (void)right;
  }
@@ -6751,7 +6779,7 @@ index 4bffbb4b..d7d057a9 100644
  static BOOL  g_controller_connected[XBOX_MAX_CONTROLLERS] = { FALSE };
  static DWORD g_last_packet[XBOX_MAX_CONTROLLERS] = { 0 };
  static DWORD g_packet_bias[XBOX_MAX_CONTROLLERS];
-@@ -205,7 +372,88 @@ static DWORD finish_state(DWORD port, XBOX_INPUT_STATE *state)
+@@ -205,7 +400,88 @@ static DWORD finish_state(DWORD port, XBOX_INPUT_STATE *state)
      return ERROR_SUCCESS;
  }
  
@@ -6841,7 +6869,7 @@ index 4bffbb4b..d7d057a9 100644
   *
   * The keys come from keyboard.c (RECOMP_KEYBOARD=1, the map, RECOMP_KEYMAP
   * and RECOMP_MENU_KEYS); the windows record them. Here, beside the pad: a
-@@ -213,7 +461,6 @@ static DWORD finish_state(DWORD port, XBOX_INPUT_STATE *state)
+@@ -213,7 +489,6 @@ static DWORD finish_state(DWORD port, XBOX_INPUT_STATE *state)
   *
   * Declared rather than included so src/input does not depend on the video
   * module's include path. */
@@ -6849,7 +6877,7 @@ index 4bffbb4b..d7d057a9 100644
  extern int xbox_FramebufferMouse(float *x, float *y);
  extern void xbox_FramebufferSetMousePressHandler(int (*handler)(float, float));
  
-@@ -230,6 +477,141 @@ static BOOL keyboard_enabled(void)
+@@ -230,6 +505,141 @@ static BOOL keyboard_enabled(void)
      return on ? TRUE : FALSE;
  }
  
@@ -6991,7 +7019,7 @@ index 4bffbb4b..d7d057a9 100644
  static int menu_press(float x, float y)
  {
      return keyboard_enabled() && xbox_InputKeyboardMenu() &&
-@@ -257,16 +639,33 @@ static BOOL menu_click(void)
+@@ -257,16 +667,33 @@ static BOOL menu_click(void)
      return now < a_until;
  }
  
@@ -7032,7 +7060,7 @@ index 4bffbb4b..d7d057a9 100644
          s_keyboard_hook(s, menu ? TRUE : FALSE);
      return 1;
  }
-@@ -283,12 +682,12 @@ static int keyboard_pad(XBOX_INPUT_STATE *s)
+@@ -283,12 +710,12 @@ static int keyboard_pad(XBOX_INPUT_STATE *s)
   * Merging is also the better rule. A real pad keeps working -- its
   * buttons are already in pState and the keyboard only adds to them --
   * and there is no special case left to get wrong. */
@@ -7047,7 +7075,7 @@ index 4bffbb4b..d7d057a9 100644
          return;
      pState->Gamepad.wButtons |= kb.Gamepad.wButtons;
      for (i = 0; i < 8; i++)
-@@ -308,95 +707,88 @@ static void keyboard_merge(XBOX_INPUT_STATE *pState)
+@@ -308,95 +735,88 @@ static void keyboard_merge(XBOX_INPUT_STATE *pState)
   * names, except that the pad's shoulders are LB/RB and the Xbox's are
   * BLACK/WHITE; unnamed inputs keep their own button. A trigger used as a
   * button counts past a third of its travel. */
@@ -7201,7 +7229,7 @@ index 4bffbb4b..d7d057a9 100644
              return connected;
          memset(pState, 0, sizeof *pState);
          /* Neutralization must be a new packet, even when the physical pad
-@@ -407,25 +799,35 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+@@ -407,25 +827,35 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
          return ERROR_SUCCESS;
      }
  
@@ -7247,7 +7275,7 @@ index 4bffbb4b..d7d057a9 100644
      memset(pState, 0, sizeof(XBOX_INPUT_STATE));
      pState->dwPacketNumber = xi_state.dwPacketNumber;
      pad_buttons(&xi_state.Gamepad, &pState->Gamepad);
-@@ -435,14 +837,45 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+@@ -435,14 +865,45 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
      pState->Gamepad.sThumbRX = xi_state.Gamepad.sThumbRX;
      pState->Gamepad.sThumbRY = xi_state.Gamepad.sThumbRY;
  
@@ -7297,7 +7325,7 @@ index 4bffbb4b..d7d057a9 100644
  }
  
  uint32_t xbox_InputHostPad(uint32_t port, uint16_t *buttons,
-@@ -451,8 +884,10 @@ uint32_t xbox_InputHostPad(uint32_t port, uint16_t *buttons,
+@@ -451,8 +912,10 @@ uint32_t xbox_InputHostPad(uint32_t port, uint16_t *buttons,
  {
      XINPUT_STATE state;
  #ifndef XBOX_INPUT_HOST_PAD
@@ -7309,7 +7337,7 @@ index 4bffbb4b..d7d057a9 100644
  #endif
      if (port >= XBOX_MAX_CONTROLLERS || host_pad_state(port, &state) != ERROR_SUCCESS)
          return ERROR_DEVICE_NOT_CONNECTED;
-@@ -470,9 +905,10 @@ DWORD xbox_InputSetState(DWORD dwPort, const XBOX_VIBRATION *pVibration)
+@@ -470,9 +933,10 @@ DWORD xbox_InputSetState(DWORD dwPort, const XBOX_VIBRATION *pVibration)
  {
      if (dwPort >= XBOX_MAX_CONTROLLERS || !pVibration)
          return ERROR_DEVICE_NOT_CONNECTED;
@@ -7323,7 +7351,7 @@ index 4bffbb4b..d7d057a9 100644
      return ERROR_SUCCESS;
  }
  
-@@ -487,7 +923,8 @@ DWORD xbox_InputGetCapabilities(DWORD dwPort, DWORD dwFlags, XBOX_INPUT_CAPABILI
+@@ -487,7 +951,8 @@ DWORD xbox_InputGetCapabilities(DWORD dwPort, DWORD dwFlags, XBOX_INPUT_CAPABILI
      if (dwPort >= XBOX_MAX_CONTROLLERS || !pCaps)
          return ERROR_DEVICE_NOT_CONNECTED;
      (void)dwFlags;
@@ -7383,6 +7411,131 @@ index 1f0dc4c4..8ab0027d 100644
      icall_feedback.c
      recomp_trace.c
      nv2a_pb_scan.c
+diff --git a/src/kernel/bridge_span_cache.h b/src/kernel/bridge_span_cache.h
+new file mode 100644
+index 00000000..5824c73a
+--- /dev/null
++++ b/src/kernel/bridge_span_cache.h
+@@ -0,0 +1,93 @@
++/* A short memory of the guest regions the kernel bridges have already checked.
++ *
++ * Every bridge that hands a guest buffer to the host (NtCreateFile's path and
++ * attributes, NtReadFile's buffer and status block, ...) first asks Windows
++ * with VirtualQuery whether the span is committed and accessible. On a loading
++ * screen that is thousands of calls on the same few regions, and VirtualQuery
++ * on the 128 MB guest mapping is not cheap (it finds where the protection
++ * changes): a stall sampler put about a third of every menu or race load
++ * (0.8 s of 2.6 s) in those queries.
++ *
++ * The answer for a region only changes when guest memory is allocated, freed
++ * or re-protected, so a region verified a moment ago is trusted again:
++ *   - per thread (no locks);
++ *   - only for BSPAN_WINDOW_MS (a mutation the epoch below misses is noticed
++ *     within that time);
++ *   - only for the epoch it was verified in: xbox_vm_epoch_bump() is called by
++ *     the allocation, free and protect paths of the guest;
++ *   - "writable" is remembered separately: only a region that is plain
++ *     read-write qualifies, never one that was upgraded because the write
++ *     watch armed it.
++ * RECOMP_SPAN_CACHE=0 turns it off (every span is queried, as before). */
++#ifndef XBOXRECOMP_BRIDGE_SPAN_CACHE_H
++#define XBOXRECOMP_BRIDGE_SPAN_CACHE_H
++
++#include <stdint.h>
++#include <string.h>
++#if defined(_MSC_VER)
++#include <intrin.h>
++#define BSPAN_WEAK __declspec(selectany)
++#else
++#define BSPAN_WEAK __attribute__((weak))
++#endif
++
++#define BSPAN_ENTRIES 4
++#define BSPAN_WINDOW_MS 4
++
++typedef struct BSpanEntry {
++    uintptr_t base, end;       /* [base, end): one region of equal state */
++    int64_t stamp;             /* when it was verified (clock ticks) */
++    long epoch;                /* the guest memory generation it was verified in */
++    int write_ok;              /* plain read-write: a host write is fine */
++} BSpanEntry;
++
++typedef struct BSpanCache {
++    BSpanEntry e[BSPAN_ENTRIES];
++    unsigned next;
++} BSpanCache;
++
++/* Bumped whenever guest memory may stop being accessible. */
++BSPAN_WEAK volatile long g_xbox_vm_epoch = 0;
++
++static inline void xbox_vm_epoch_bump(void)
++{
++#if defined(_MSC_VER)
++    _InterlockedIncrement((volatile long *)&g_xbox_vm_epoch);
++#else
++    __atomic_fetch_add(&g_xbox_vm_epoch, 1, __ATOMIC_SEQ_CST);
++#endif
++}
++
++/* The end of the verified region holding `cursor` (verified for writing when
++ * `write` is set, no longer ago than `window` ticks, in `epoch`), or 0. */
++static inline uintptr_t bspan_lookup(const BSpanCache *cache, long epoch, int64_t now, int64_t window,
++                                     uintptr_t cursor, int write)
++{
++    unsigned i;
++    for (i = 0; i < BSPAN_ENTRIES; ++i) {
++        const BSpanEntry *e = &cache->e[i];
++        if (e->end > e->base && cursor >= e->base && cursor < e->end && e->epoch == epoch &&
++            now - e->stamp <= window && (!write || e->write_ok))
++            return e->end;
++    }
++    return 0;
++}
++
++/* Remembers [base, end) as verified now. The same region is refreshed in place. */
++static inline void bspan_store(BSpanCache *cache, long epoch, int64_t now, uintptr_t base, uintptr_t end,
++                               int write_ok)
++{
++    unsigned i;
++    BSpanEntry *slot = NULL;
++    if (end <= base) return;
++    for (i = 0; i < BSPAN_ENTRIES; ++i)
++        if (cache->e[i].base == base && cache->e[i].end == end) { slot = &cache->e[i]; break; }
++    if (!slot) slot = &cache->e[cache->next++ % BSPAN_ENTRIES];
++    slot->base = base;
++    slot->end = end;
++    slot->stamp = now;
++    slot->epoch = epoch;
++    slot->write_ok = write_ok;
++}
++
++#endif /* XBOXRECOMP_BRIDGE_SPAN_CACHE_H */
+diff --git a/src/kernel/guest_vmem.c b/src/kernel/guest_vmem.c
+index 413f7e84..2cd70a7b 100644
+--- a/src/kernel/guest_vmem.c
++++ b/src/kernel/guest_vmem.c
+@@ -1,4 +1,5 @@
+ #include "guest_vmem.h"
++#include "bridge_span_cache.h"
+ #include "xbox_memory_layout.h"
+ #include <stddef.h>
+ #include <stdio.h>
+@@ -278,6 +279,7 @@ int guest_vmem_allocate(uint32_t *base, uint32_t *size, uint32_t alloc_type,
+     AcquireSRWLockExclusive(&s_lock);
+     handled = allocate_locked(base, size, alloc_type, protect, status);
+     ReleaseSRWLockExclusive(&s_lock);
++    xbox_vm_epoch_bump();       /* the kernel bridges' checked regions are stale (bridge_span_cache.h) */
+     return handled;
+ }
+ 
+@@ -347,6 +349,7 @@ int guest_vmem_free(uint32_t *base, uint32_t *size, uint32_t free_type,
+     AcquireSRWLockExclusive(&s_lock);
+     handled = free_locked(base, size, free_type, status);
+     ReleaseSRWLockExclusive(&s_lock);
++    xbox_vm_epoch_bump();       /* the kernel bridges' checked regions are stale (bridge_span_cache.h) */
+     return handled;
+ }
+ 
 diff --git a/src/kernel/guest_write_watch.c b/src/kernel/guest_write_watch.c
 new file mode 100644
 index 00000000..80aac2c5
@@ -27356,6 +27509,119 @@ index 4ed60c1f..a038a8d6 100644
 +  return float4(y, y, y, 1);
 +}
 +#endif
+diff --git a/src/video/spike_sampler.c b/src/video/spike_sampler.c
+index c7a0fb53..e7117943 100644
+--- a/src/video/spike_sampler.c
++++ b/src/video/spike_sampler.c
+@@ -88,7 +88,7 @@ void recomp_sampler_watch_current_thread(void)
+         s_img_lo = (DWORD64)m;
+         s_img_hi = s_img_lo + nt->OptionalHeader.SizeOfImage;
+     }
+-    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
++    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+     s_sym_ok = SymInitialize(GetCurrentProcess(), NULL, TRUE);
+     t = CreateThread(NULL, 0, sampler, NULL, 0, NULL);
+     if (t) { SetThreadPriority(t, THREAD_PRIORITY_HIGHEST); CloseHandle(t); }
+@@ -99,7 +99,8 @@ void recomp_sampler_watch_current_thread(void)
+ void recomp_sampler_report(double ms)
+ {
+     static struct { char name[400]; int n; } top[64], chains[64];
+-    int nc = 0;
++    static struct { char name[96]; int n; } hot[96];
++    int nc = 0, nh = 0;
+     LARGE_INTEGER now, f;
+     LONG h = s_head, i;
+     int nt = 0, total = 0, k, best;
+@@ -121,8 +122,8 @@ void recomp_sampler_report(double ms)
+             name = si->Name;
+         if (s_ring[i % RING].caller[0] &&
+             (s_ring[i % RING].ip < s_img_lo || s_ring[i % RING].ip >= s_img_hi)) {  /* outside the exe: say from where */
+-            static char both[160];
+-            char leafbuf[64], from[96] = "";
++            static char both[200];
++            char leafbuf[64], from[96] = "", host[64] = "";
+             int c;
+             snprintf(leafbuf, sizeof leafbuf, "%s", name);
+             for (c = 0; c < 8 && s_ring[i % RING].caller[c]; c++) {
+@@ -131,13 +132,20 @@ void recomp_sampler_report(double ms)
+                 si->MaxNameLen = 127;
+                 if (!SymFromAddr(GetCurrentProcess(), s_ring[i % RING].caller[c], &disp, si))
+                     continue;
++                /* The first function of the executable above the leaf is the host code that made the
++                 * call (a kernel bridge, the path translation); keep its name between the two. */
++                if (!host[0] && strncmp(si->Name, "sub_", 4))
++                    snprintf(host, sizeof host, "%s", si->Name);
+                 if (!from[0] || !strncmp(si->Name, "sub_", 4))
+                     snprintf(from, sizeof from, "%s", si->Name);
+                 if (!strncmp(si->Name, "sub_", 4))
+                     break;                         /* the guest function */
+             }
+             if (from[0]) {
+-                snprintf(both, sizeof both, "%s<-%s", leafbuf, from);
++                if (host[0] && strcmp(host, from))
++                    snprintf(both, sizeof both, "%s<-%s<-%s", leafbuf, host, from);
++                else
++                    snprintf(both, sizeof both, "%s<-%s", leafbuf, from);
+                 name = both;
+             }
+         }
+@@ -160,6 +168,25 @@ void recomp_sampler_report(double ms)
+                 chains[nc++].n = 1;
+             }
+         }
++        {   /* the source line of a sample inside the executable (the generated code is one line per
++             * guest instruction, so a hot loop shows as a few lines of one file) */
++            IMAGEHLP_LINE64 where;
++            DWORD line_disp = 0;
++            memset(&where, 0, sizeof where);
++            where.SizeOfStruct = sizeof where;
++            if (s_ring[i % RING].ip >= s_img_lo && s_ring[i % RING].ip < s_img_hi &&
++                SymGetLineFromAddr64(GetCurrentProcess(), s_ring[i % RING].ip, &line_disp, &where) && where.FileName) {
++                const char *base = strrchr(where.FileName, '\\');
++                char key[96];
++                snprintf(key, sizeof key, "%s(%lu)", base ? base + 1 : where.FileName, (unsigned long)where.LineNumber);
++                for (k = 0; k < nh; k++)
++                    if (!strcmp(hot[k].name, key)) { hot[k].n++; break; }
++                if (k == nh && nh < 96) {
++                    snprintf(hot[nh].name, sizeof hot[nh].name, "%s", key);
++                    hot[nh++].n = 1;
++                }
++            }
++        }
+         total++;
+         for (k = 0; k < nt; k++)
+             if (!strcmp(top[k].name, name)) { top[k].n++; break; }
+@@ -171,7 +198,7 @@ void recomp_sampler_report(double ms)
+     if (!total)
+         return;
+     fprintf(stderr, "[SPIKE]   game thread (%d samples):", total);
+-    for (k = 0; k < 6; k++) {
++    for (k = 0; k < 12; k++) {
+         int j;
+         best = -1;
+         for (j = 0; j < nt; j++)
+@@ -181,7 +208,20 @@ void recomp_sampler_report(double ms)
+         top[best].n = 0;
+     }
+     fprintf(stderr, "\n");
+-    for (k = 0; k < 2; k++) {
++    if (nh) {
++        fprintf(stderr, "[SPIKE]   hot lines:");
++        for (k = 0; k < 10; k++) {
++            int j;
++            best = -1;
++            for (j = 0; j < nh; j++)
++                if (hot[j].n && (best < 0 || hot[j].n > hot[best].n)) best = j;
++            if (best < 0) break;
++            fprintf(stderr, " %s %d%%", hot[best].name, hot[best].n * 100 / total);
++            hot[best].n = 0;
++        }
++        fprintf(stderr, "\n");
++    }
++    for (k = 0; k < 4; k++) {
+         int j;
+         best = -1;
+         for (j = 0; j < nc; j++)
 diff --git a/templates/runtime/recomp_types.h b/templates/runtime/recomp_types.h
 index 1193bf21..20856ebf 100644
 --- a/templates/runtime/recomp_types.h
@@ -28306,6 +28572,104 @@ index 22d01fdd..0255c05f 100644
      starve_case();
      switch_case();
      voice_trace_case();                      /* last: they redirect stderr */
+diff --git a/tests/bridge_span_cache/CMakeLists.txt b/tests/bridge_span_cache/CMakeLists.txt
+new file mode 100644
+index 00000000..6633d871
+--- /dev/null
++++ b/tests/bridge_span_cache/CMakeLists.txt
+@@ -0,0 +1,7 @@
++cmake_minimum_required(VERSION 3.20)
++project(bridge_span_cache_test C)
++set(CMAKE_C_STANDARD 11)
++add_executable(bridge_span_cache_test test_main.c)
++target_include_directories(bridge_span_cache_test PRIVATE ../../src/kernel)
++enable_testing()
++add_test(NAME bridge_span_cache COMMAND bridge_span_cache_test)
+diff --git a/tests/bridge_span_cache/test_main.c b/tests/bridge_span_cache/test_main.c
+new file mode 100644
+index 00000000..4bc3d2ea
+--- /dev/null
++++ b/tests/bridge_span_cache/test_main.c
+@@ -0,0 +1,79 @@
++/* The kernel bridges' memory of regions they have already checked (src/kernel/bridge_span_cache.h).
++ * What must hold: a region is trusted only in the epoch and within the time window it was verified in, a
++ * write needs a plain read-write region, a span is covered by exact region bounds (no hit one byte
++ * outside), and storing the same region refreshes it instead of using up another slot. */
++#include <assert.h>
++#include <stdio.h>
++#include "bridge_span_cache.h"
++
++#define WINDOW 40            /* ticks */
++
++int main(void)
++{
++    BSpanCache c;
++    long epoch = 7;
++    memset(&c, 0, sizeof c);
++
++    /* nothing is known at the start (a zeroed entry is empty) */
++    assert(bspan_lookup(&c, epoch, 0, WINDOW, 0x1000, 0) == 0);
++
++    /* a verified read-only region: reads hit, writes do not, the bounds are exact */
++    bspan_store(&c, epoch, 100, 0x10000, 0x20000, 0);
++    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x10000, 0) == 0x20000);
++    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x1FFFF, 0) == 0x20000);
++    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x20000, 0) == 0);          /* one past the end */
++    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x0FFFF, 0) == 0);          /* one before the start */
++    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x10000, 1) == 0);          /* not writable */
++
++    /* a plain read-write region serves both */
++    bspan_store(&c, epoch, 100, 0x40000, 0x80000, 1);
++    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x50000, 1) == 0x80000);
++    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x50000, 0) == 0x80000);
++
++    /* the time window: still trusted at the limit, not after it */
++    assert(bspan_lookup(&c, epoch, 100 + WINDOW, WINDOW, 0x50000, 1) == 0x80000);
++    assert(bspan_lookup(&c, epoch, 100 + WINDOW + 1, WINDOW, 0x50000, 1) == 0);
++
++    /* a bumped epoch drops everything at once (allocate, free, protect) */
++    {
++        long before = g_xbox_vm_epoch;
++        xbox_vm_epoch_bump();
++        assert(g_xbox_vm_epoch == before + 1);
++        assert(bspan_lookup(&c, g_xbox_vm_epoch, 100, WINDOW, 0x50000, 0) == 0);
++        assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x50000, 0) == 0x80000);   /* the old epoch still matches itself */
++    }
++
++    /* the same region stored again refreshes in place and may lose its write right */
++    bspan_store(&c, epoch, 200, 0x40000, 0x80000, 0);
++    assert(bspan_lookup(&c, epoch, 200, WINDOW, 0x50000, 0) == 0x80000);
++    assert(bspan_lookup(&c, epoch, 200, WINDOW, 0x50000, 1) == 0);
++    {
++        unsigned used = 0, i;
++        for (i = 0; i < BSPAN_ENTRIES; ++i) used += c.e[i].end > c.e[i].base;
++        assert(used == 2);                                                   /* two regions, no duplicate */
++    }
++
++    /* more regions than slots: the oldest slots are reused, the newest stay */
++    {
++        unsigned i;
++        BSpanCache d;
++        memset(&d, 0, sizeof d);
++        for (i = 0; i < BSPAN_ENTRIES + 2; ++i)
++            bspan_store(&d, epoch, 300, 0x100000u * (i + 1), 0x100000u * (i + 1) + 0x1000, 1);
++        assert(bspan_lookup(&d, epoch, 300, WINDOW, 0x100000u * (BSPAN_ENTRIES + 2), 1) != 0);
++        assert(bspan_lookup(&d, epoch, 300, WINDOW, 0x100000u * (BSPAN_ENTRIES + 1), 1) != 0);
++        assert(bspan_lookup(&d, epoch, 300, WINDOW, 0x100000u * 1, 1) == 0);   /* the first was replaced */
++    }
++
++    /* an empty or inverted region is never stored */
++    {
++        BSpanCache e;
++        memset(&e, 0, sizeof e);
++        bspan_store(&e, epoch, 1, 0x5000, 0x5000, 1);
++        bspan_store(&e, epoch, 1, 0x6000, 0x5000, 1);
++        assert(bspan_lookup(&e, epoch, 1, WINDOW, 0x5000, 0) == 0 && bspan_lookup(&e, epoch, 1, WINDOW, 0x5800, 0) == 0);
++    }
++
++    printf("PASS bridge span cache: exact bounds, write class, time window, epoch, in-place refresh, slot reuse\n");
++    return 0;
++}
 diff --git a/tests/dsp/CMakeLists.txt b/tests/dsp/CMakeLists.txt
 index c60b90ff..c877bdf4 100644
 --- a/tests/dsp/CMakeLists.txt
@@ -49950,339 +50314,3 @@ index 00000000..862ee24f
 +
 +if __name__ == "__main__":
 +    sys.exit(main())
-diff --git a/src/video/spike_sampler.c b/src/video/spike_sampler.c
-index c7a0fb53..e7117943 100644
---- a/src/video/spike_sampler.c
-+++ b/src/video/spike_sampler.c
-@@ -88,7 +88,7 @@ void recomp_sampler_watch_current_thread(void)
-         s_img_lo = (DWORD64)m;
-         s_img_hi = s_img_lo + nt->OptionalHeader.SizeOfImage;
-     }
--    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
-+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
-     s_sym_ok = SymInitialize(GetCurrentProcess(), NULL, TRUE);
-     t = CreateThread(NULL, 0, sampler, NULL, 0, NULL);
-     if (t) { SetThreadPriority(t, THREAD_PRIORITY_HIGHEST); CloseHandle(t); }
-@@ -99,7 +99,8 @@ void recomp_sampler_watch_current_thread(void)
- void recomp_sampler_report(double ms)
- {
-     static struct { char name[400]; int n; } top[64], chains[64];
--    int nc = 0;
-+    static struct { char name[96]; int n; } hot[96];
-+    int nc = 0, nh = 0;
-     LARGE_INTEGER now, f;
-     LONG h = s_head, i;
-     int nt = 0, total = 0, k, best;
-@@ -121,8 +122,8 @@ void recomp_sampler_report(double ms)
-             name = si->Name;
-         if (s_ring[i % RING].caller[0] &&
-             (s_ring[i % RING].ip < s_img_lo || s_ring[i % RING].ip >= s_img_hi)) {  /* outside the exe: say from where */
--            static char both[160];
--            char leafbuf[64], from[96] = "";
-+            static char both[200];
-+            char leafbuf[64], from[96] = "", host[64] = "";
-             int c;
-             snprintf(leafbuf, sizeof leafbuf, "%s", name);
-             for (c = 0; c < 8 && s_ring[i % RING].caller[c]; c++) {
-@@ -131,13 +132,20 @@ void recomp_sampler_report(double ms)
-                 si->MaxNameLen = 127;
-                 if (!SymFromAddr(GetCurrentProcess(), s_ring[i % RING].caller[c], &disp, si))
-                     continue;
-+                /* The first function of the executable above the leaf is the host code that made the
-+                 * call (a kernel bridge, the path translation); keep its name between the two. */
-+                if (!host[0] && strncmp(si->Name, "sub_", 4))
-+                    snprintf(host, sizeof host, "%s", si->Name);
-                 if (!from[0] || !strncmp(si->Name, "sub_", 4))
-                     snprintf(from, sizeof from, "%s", si->Name);
-                 if (!strncmp(si->Name, "sub_", 4))
-                     break;                         /* the guest function */
-             }
-             if (from[0]) {
--                snprintf(both, sizeof both, "%s<-%s", leafbuf, from);
-+                if (host[0] && strcmp(host, from))
-+                    snprintf(both, sizeof both, "%s<-%s<-%s", leafbuf, host, from);
-+                else
-+                    snprintf(both, sizeof both, "%s<-%s", leafbuf, from);
-                 name = both;
-             }
-         }
-@@ -160,6 +168,25 @@ void recomp_sampler_report(double ms)
-                 chains[nc++].n = 1;
-             }
-         }
-+        {   /* the source line of a sample inside the executable (the generated code is one line per
-+             * guest instruction, so a hot loop shows as a few lines of one file) */
-+            IMAGEHLP_LINE64 where;
-+            DWORD line_disp = 0;
-+            memset(&where, 0, sizeof where);
-+            where.SizeOfStruct = sizeof where;
-+            if (s_ring[i % RING].ip >= s_img_lo && s_ring[i % RING].ip < s_img_hi &&
-+                SymGetLineFromAddr64(GetCurrentProcess(), s_ring[i % RING].ip, &line_disp, &where) && where.FileName) {
-+                const char *base = strrchr(where.FileName, '\\');
-+                char key[96];
-+                snprintf(key, sizeof key, "%s(%lu)", base ? base + 1 : where.FileName, (unsigned long)where.LineNumber);
-+                for (k = 0; k < nh; k++)
-+                    if (!strcmp(hot[k].name, key)) { hot[k].n++; break; }
-+                if (k == nh && nh < 96) {
-+                    snprintf(hot[nh].name, sizeof hot[nh].name, "%s", key);
-+                    hot[nh++].n = 1;
-+                }
-+            }
-+        }
-         total++;
-         for (k = 0; k < nt; k++)
-             if (!strcmp(top[k].name, name)) { top[k].n++; break; }
-@@ -171,7 +198,7 @@ void recomp_sampler_report(double ms)
-     if (!total)
-         return;
-     fprintf(stderr, "[SPIKE]   game thread (%d samples):", total);
--    for (k = 0; k < 6; k++) {
-+    for (k = 0; k < 12; k++) {
-         int j;
-         best = -1;
-         for (j = 0; j < nt; j++)
-@@ -181,7 +208,20 @@ void recomp_sampler_report(double ms)
-         top[best].n = 0;
-     }
-     fprintf(stderr, "\n");
--    for (k = 0; k < 2; k++) {
-+    if (nh) {
-+        fprintf(stderr, "[SPIKE]   hot lines:");
-+        for (k = 0; k < 10; k++) {
-+            int j;
-+            best = -1;
-+            for (j = 0; j < nh; j++)
-+                if (hot[j].n && (best < 0 || hot[j].n > hot[best].n)) best = j;
-+            if (best < 0) break;
-+            fprintf(stderr, " %s %d%%", hot[best].name, hot[best].n * 100 / total);
-+            hot[best].n = 0;
-+        }
-+        fprintf(stderr, "\n");
-+    }
-+    for (k = 0; k < 4; k++) {
-         int j;
-         best = -1;
-         for (j = 0; j < nc; j++)
-diff --git a/src/kernel/guest_vmem.c b/src/kernel/guest_vmem.c
-index 413f7e84..2cd70a7b 100644
---- a/src/kernel/guest_vmem.c
-+++ b/src/kernel/guest_vmem.c
-@@ -1,4 +1,5 @@
- #include "guest_vmem.h"
-+#include "bridge_span_cache.h"
- #include "xbox_memory_layout.h"
- #include <stddef.h>
- #include <stdio.h>
-@@ -278,6 +279,7 @@ int guest_vmem_allocate(uint32_t *base, uint32_t *size, uint32_t alloc_type,
-     AcquireSRWLockExclusive(&s_lock);
-     handled = allocate_locked(base, size, alloc_type, protect, status);
-     ReleaseSRWLockExclusive(&s_lock);
-+    xbox_vm_epoch_bump();       /* the kernel bridges' checked regions are stale (bridge_span_cache.h) */
-     return handled;
- }
- 
-@@ -347,6 +349,7 @@ int guest_vmem_free(uint32_t *base, uint32_t *size, uint32_t free_type,
-     AcquireSRWLockExclusive(&s_lock);
-     handled = free_locked(base, size, free_type, status);
-     ReleaseSRWLockExclusive(&s_lock);
-+    xbox_vm_epoch_bump();       /* the kernel bridges' checked regions are stale (bridge_span_cache.h) */
-     return handled;
- }
- 
-diff --git a/src/kernel/bridge_span_cache.h b/src/kernel/bridge_span_cache.h
-new file mode 100644
-index 00000000..5824c73a
---- /dev/null
-+++ b/src/kernel/bridge_span_cache.h
-@@ -0,0 +1,93 @@
-+/* A short memory of the guest regions the kernel bridges have already checked.
-+ *
-+ * Every bridge that hands a guest buffer to the host (NtCreateFile's path and
-+ * attributes, NtReadFile's buffer and status block, ...) first asks Windows
-+ * with VirtualQuery whether the span is committed and accessible. On a loading
-+ * screen that is thousands of calls on the same few regions, and VirtualQuery
-+ * on the 128 MB guest mapping is not cheap (it finds where the protection
-+ * changes): a stall sampler put about a third of every menu or race load
-+ * (0.8 s of 2.6 s) in those queries.
-+ *
-+ * The answer for a region only changes when guest memory is allocated, freed
-+ * or re-protected, so a region verified a moment ago is trusted again:
-+ *   - per thread (no locks);
-+ *   - only for BSPAN_WINDOW_MS (a mutation the epoch below misses is noticed
-+ *     within that time);
-+ *   - only for the epoch it was verified in: xbox_vm_epoch_bump() is called by
-+ *     the allocation, free and protect paths of the guest;
-+ *   - "writable" is remembered separately: only a region that is plain
-+ *     read-write qualifies, never one that was upgraded because the write
-+ *     watch armed it.
-+ * RECOMP_SPAN_CACHE=0 turns it off (every span is queried, as before). */
-+#ifndef XBOXRECOMP_BRIDGE_SPAN_CACHE_H
-+#define XBOXRECOMP_BRIDGE_SPAN_CACHE_H
-+
-+#include <stdint.h>
-+#include <string.h>
-+#if defined(_MSC_VER)
-+#include <intrin.h>
-+#define BSPAN_WEAK __declspec(selectany)
-+#else
-+#define BSPAN_WEAK __attribute__((weak))
-+#endif
-+
-+#define BSPAN_ENTRIES 4
-+#define BSPAN_WINDOW_MS 4
-+
-+typedef struct BSpanEntry {
-+    uintptr_t base, end;       /* [base, end): one region of equal state */
-+    int64_t stamp;             /* when it was verified (clock ticks) */
-+    long epoch;                /* the guest memory generation it was verified in */
-+    int write_ok;              /* plain read-write: a host write is fine */
-+} BSpanEntry;
-+
-+typedef struct BSpanCache {
-+    BSpanEntry e[BSPAN_ENTRIES];
-+    unsigned next;
-+} BSpanCache;
-+
-+/* Bumped whenever guest memory may stop being accessible. */
-+BSPAN_WEAK volatile long g_xbox_vm_epoch = 0;
-+
-+static inline void xbox_vm_epoch_bump(void)
-+{
-+#if defined(_MSC_VER)
-+    _InterlockedIncrement((volatile long *)&g_xbox_vm_epoch);
-+#else
-+    __atomic_fetch_add(&g_xbox_vm_epoch, 1, __ATOMIC_SEQ_CST);
-+#endif
-+}
-+
-+/* The end of the verified region holding `cursor` (verified for writing when
-+ * `write` is set, no longer ago than `window` ticks, in `epoch`), or 0. */
-+static inline uintptr_t bspan_lookup(const BSpanCache *cache, long epoch, int64_t now, int64_t window,
-+                                     uintptr_t cursor, int write)
-+{
-+    unsigned i;
-+    for (i = 0; i < BSPAN_ENTRIES; ++i) {
-+        const BSpanEntry *e = &cache->e[i];
-+        if (e->end > e->base && cursor >= e->base && cursor < e->end && e->epoch == epoch &&
-+            now - e->stamp <= window && (!write || e->write_ok))
-+            return e->end;
-+    }
-+    return 0;
-+}
-+
-+/* Remembers [base, end) as verified now. The same region is refreshed in place. */
-+static inline void bspan_store(BSpanCache *cache, long epoch, int64_t now, uintptr_t base, uintptr_t end,
-+                               int write_ok)
-+{
-+    unsigned i;
-+    BSpanEntry *slot = NULL;
-+    if (end <= base) return;
-+    for (i = 0; i < BSPAN_ENTRIES; ++i)
-+        if (cache->e[i].base == base && cache->e[i].end == end) { slot = &cache->e[i]; break; }
-+    if (!slot) slot = &cache->e[cache->next++ % BSPAN_ENTRIES];
-+    slot->base = base;
-+    slot->end = end;
-+    slot->stamp = now;
-+    slot->epoch = epoch;
-+    slot->write_ok = write_ok;
-+}
-+
-+#endif /* XBOXRECOMP_BRIDGE_SPAN_CACHE_H */
-diff --git a/tests/bridge_span_cache/test_main.c b/tests/bridge_span_cache/test_main.c
-new file mode 100644
-index 00000000..4bc3d2ea
---- /dev/null
-+++ b/tests/bridge_span_cache/test_main.c
-@@ -0,0 +1,79 @@
-+/* The kernel bridges' memory of regions they have already checked (src/kernel/bridge_span_cache.h).
-+ * What must hold: a region is trusted only in the epoch and within the time window it was verified in, a
-+ * write needs a plain read-write region, a span is covered by exact region bounds (no hit one byte
-+ * outside), and storing the same region refreshes it instead of using up another slot. */
-+#include <assert.h>
-+#include <stdio.h>
-+#include "bridge_span_cache.h"
-+
-+#define WINDOW 40            /* ticks */
-+
-+int main(void)
-+{
-+    BSpanCache c;
-+    long epoch = 7;
-+    memset(&c, 0, sizeof c);
-+
-+    /* nothing is known at the start (a zeroed entry is empty) */
-+    assert(bspan_lookup(&c, epoch, 0, WINDOW, 0x1000, 0) == 0);
-+
-+    /* a verified read-only region: reads hit, writes do not, the bounds are exact */
-+    bspan_store(&c, epoch, 100, 0x10000, 0x20000, 0);
-+    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x10000, 0) == 0x20000);
-+    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x1FFFF, 0) == 0x20000);
-+    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x20000, 0) == 0);          /* one past the end */
-+    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x0FFFF, 0) == 0);          /* one before the start */
-+    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x10000, 1) == 0);          /* not writable */
-+
-+    /* a plain read-write region serves both */
-+    bspan_store(&c, epoch, 100, 0x40000, 0x80000, 1);
-+    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x50000, 1) == 0x80000);
-+    assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x50000, 0) == 0x80000);
-+
-+    /* the time window: still trusted at the limit, not after it */
-+    assert(bspan_lookup(&c, epoch, 100 + WINDOW, WINDOW, 0x50000, 1) == 0x80000);
-+    assert(bspan_lookup(&c, epoch, 100 + WINDOW + 1, WINDOW, 0x50000, 1) == 0);
-+
-+    /* a bumped epoch drops everything at once (allocate, free, protect) */
-+    {
-+        long before = g_xbox_vm_epoch;
-+        xbox_vm_epoch_bump();
-+        assert(g_xbox_vm_epoch == before + 1);
-+        assert(bspan_lookup(&c, g_xbox_vm_epoch, 100, WINDOW, 0x50000, 0) == 0);
-+        assert(bspan_lookup(&c, epoch, 100, WINDOW, 0x50000, 0) == 0x80000);   /* the old epoch still matches itself */
-+    }
-+
-+    /* the same region stored again refreshes in place and may lose its write right */
-+    bspan_store(&c, epoch, 200, 0x40000, 0x80000, 0);
-+    assert(bspan_lookup(&c, epoch, 200, WINDOW, 0x50000, 0) == 0x80000);
-+    assert(bspan_lookup(&c, epoch, 200, WINDOW, 0x50000, 1) == 0);
-+    {
-+        unsigned used = 0, i;
-+        for (i = 0; i < BSPAN_ENTRIES; ++i) used += c.e[i].end > c.e[i].base;
-+        assert(used == 2);                                                   /* two regions, no duplicate */
-+    }
-+
-+    /* more regions than slots: the oldest slots are reused, the newest stay */
-+    {
-+        unsigned i;
-+        BSpanCache d;
-+        memset(&d, 0, sizeof d);
-+        for (i = 0; i < BSPAN_ENTRIES + 2; ++i)
-+            bspan_store(&d, epoch, 300, 0x100000u * (i + 1), 0x100000u * (i + 1) + 0x1000, 1);
-+        assert(bspan_lookup(&d, epoch, 300, WINDOW, 0x100000u * (BSPAN_ENTRIES + 2), 1) != 0);
-+        assert(bspan_lookup(&d, epoch, 300, WINDOW, 0x100000u * (BSPAN_ENTRIES + 1), 1) != 0);
-+        assert(bspan_lookup(&d, epoch, 300, WINDOW, 0x100000u * 1, 1) == 0);   /* the first was replaced */
-+    }
-+
-+    /* an empty or inverted region is never stored */
-+    {
-+        BSpanCache e;
-+        memset(&e, 0, sizeof e);
-+        bspan_store(&e, epoch, 1, 0x5000, 0x5000, 1);
-+        bspan_store(&e, epoch, 1, 0x6000, 0x5000, 1);
-+        assert(bspan_lookup(&e, epoch, 1, WINDOW, 0x5000, 0) == 0 && bspan_lookup(&e, epoch, 1, WINDOW, 0x5800, 0) == 0);
-+    }
-+
-+    printf("PASS bridge span cache: exact bounds, write class, time window, epoch, in-place refresh, slot reuse\n");
-+    return 0;
-+}
-diff --git a/tests/bridge_span_cache/CMakeLists.txt b/tests/bridge_span_cache/CMakeLists.txt
-new file mode 100644
-index 00000000..6633d871
---- /dev/null
-+++ b/tests/bridge_span_cache/CMakeLists.txt
-@@ -0,0 +1,7 @@
-+cmake_minimum_required(VERSION 3.20)
-+project(bridge_span_cache_test C)
-+set(CMAKE_C_STANDARD 11)
-+add_executable(bridge_span_cache_test test_main.c)
-+target_include_directories(bridge_span_cache_test PRIVATE ../../src/kernel)
-+enable_testing()
-+add_test(NAME bridge_span_cache COMMAND bridge_span_cache_test)
