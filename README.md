@@ -39,7 +39,8 @@ Launchers can also use `--fullscreen`, `--windowed`, `--window-size 1920x1080` a
 
 **Steam:** *Add a Non-Steam Game*, **Browse** and pick `mm3_recomp.exe` in the install folder. It does what the
 `.cmd` does (settings, log, controller), and Steam's FPS counter, game recording and play time follow it
-directly. If Steam starts `Play Midtown Madness 3.cmd` instead, the game loads Steam's overlay itself, because
+directly. If you play with the Vulkan renderer, pick `mm3_recomp_vulkan.exe` instead: `mm3_recomp.exe` would
+start it as a second program. If Steam starts `Play Midtown Madness 3.cmd` instead, the game loads Steam's overlay itself, because
 Steam may hook only the script (a `[MM3_STEAM]` line in `logs\last-run.log` says what happened;
 `MM3_STEAM_OVERLAY=0` switches it off). Steam's own FPS counter
 is a Steam setting: *Settings > In Game > In-game FPS counter*.

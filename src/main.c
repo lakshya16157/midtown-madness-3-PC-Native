@@ -598,6 +598,9 @@ int main(int argc, char **argv)
 {
     void *xbe_data = NULL;
     size_t xbe_size = 0;
+#ifdef _WIN32
+    mm3_attach_streams();            /* before anything prints, --version and --help included */
+#endif
     const wchar_t *entered_directory = mm3_enter_game_directory();
     int command = mm3_command_line(argc, argv);
     if (command >= 0)
@@ -880,7 +883,10 @@ int main(int argc, char **argv)
         free(xbe_data);
         return 1;
     }
-    if (!xbox_HostGraphicsInit("Midtown Madness 3 on PC improved and modded !!")) {
+    /* MM3 draws only through pushbuffers. The D3D8 device xbox_HostGraphicsInit adds sat on a
+     * hidden window with its own swap chain, made before the game's: an unused extra game
+     * window for Steam's overlay and game recording to pick (issue #47). */
+    if (!xbox_HostGraphicsInitPushbuffer()) {
         xbox_HostHardwareShutdown();
         xbox_kernel_shutdown();
         xbox_MemoryLayoutShutdown();

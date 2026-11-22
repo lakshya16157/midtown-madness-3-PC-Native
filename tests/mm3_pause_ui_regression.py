@@ -51,7 +51,7 @@ def main():
             startup.index("g_xbox_mem_offset = xbox_GetMemoryOffset();") <
             startup.index("    mm3_mods_init();") <
             startup.index("if (!xbox_HostHardwareInit()") <
-            startup.index("if (!xbox_HostGraphicsInit("))
+            startup.index("if (!xbox_HostGraphicsInitPushbuffer("))
     assert "src/mods/widescreen.c" in (ROOT / "CMakeLists.txt").read_text()
     assert "mm3_pause_ui_active()" in (ROOT / "src/mods/widescreen_hud.c").read_text()
     assert "nv2a_d3d_set_overlay_hooks(&mm3_hud_hooks);" in (ROOT / "src/mods/mods.c").read_text()

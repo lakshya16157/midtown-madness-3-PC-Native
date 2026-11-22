@@ -941,6 +941,11 @@ endif()
 
 if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE /bigobj)
+    # A Windows program, not a console one: started by Steam or Explorer it opens no console
+    # window, which Steam's overlay and game recording took for the game's (issue #47).
+    # main() stays the entry point; mm3_attach_streams (src/main.c) uses a parent shell's console.
+    set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_options(${PROJECT_NAME} PRIVATE /ENTRY:mainCRTStartup)
 endif()
 if(MM3_PGO)
     file(TO_NATIVE_PATH "${MM3_PGO_PGD}" pgo_database)

@@ -5940,7 +5940,7 @@ index 1d373fcb..7dee9313 100644
  }
  
 diff --git a/src/host/host.c b/src/host/host.c
-index 8aa992f4..fe7f19ce 100644
+index 8aa992f4..d087c053 100644
 --- a/src/host/host.c
 +++ b/src/host/host.c
 @@ -102,14 +102,27 @@ int xbox_HostHardwareInit(void)
@@ -5974,6 +5974,86 @@ index 8aa992f4..fe7f19ce 100644
      if (s_mmio_veh) {
          RemoveVectoredExceptionHandler(s_mmio_veh);
          s_mmio_veh = NULL;
+@@ -120,13 +133,11 @@ void xbox_HostHardwareShutdown(void)
+     }
+ }
+ 
+-#if defined(XBOXRECOMP_SDL3)
+-/* The SDL3 GPU renderer opens its own window and device with the pushbuffer
+- * executor; there is no D3D8 device to make. */
+-int xbox_HostGraphicsInit(const char *window_title)
++/* The NV2A executor, with PVIDEO trapped so its register writes take effect
++ * (STOP included). Its renderer opens its own window and device. */
++int xbox_HostGraphicsInitPushbuffer(void)
+ {
+     DWORD old_protect;
+-    (void)window_title;
+     nv2a_hook_init(g_xbox_mem_offset);
+     if (!nv2a_get_state()) return 0;
+     if (!VirtualProtect((void *)((uintptr_t)g_xbox_mem_offset + PVIDEO_PAGE),
+@@ -136,6 +147,15 @@ int xbox_HostGraphicsInit(const char *window_title)
+     }
+     return 1;
+ }
++
++#if defined(XBOXRECOMP_SDL3)
++/* The SDL3 GPU renderer opens its own window and device with the pushbuffer
++ * executor; there is no D3D8 device to make. */
++int xbox_HostGraphicsInit(const char *window_title)
++{
++    (void)window_title;
++    return xbox_HostGraphicsInitPushbuffer();
++}
+ #else
+ static LRESULT CALLBACK graphics_wndproc(HWND window, UINT message,
+                                          WPARAM wparam, LPARAM lparam)
+@@ -151,7 +171,6 @@ int xbox_HostGraphicsInit(const char *window_title)
+     D3DPRESENT_PARAMETERS present;
+     HWND window;
+     HRESULT hr;
+-    DWORD old_protect;
+ 
+     memset(&window_class, 0, sizeof(window_class));
+     window_class.lpfnWndProc = graphics_wndproc;
+@@ -191,15 +210,6 @@ int xbox_HostGraphicsInit(const char *window_title)
+         return 0;
+     }
+     fprintf(stderr, "graphics: D3D8/D3D11 device initialized\n");
+-
+-    nv2a_hook_init(g_xbox_mem_offset);
+-    if (!nv2a_get_state()) return 0;
+-    /* PVIDEO accesses must execute register semantics, including STOP. */
+-    if (!VirtualProtect((void *)((uintptr_t)g_xbox_mem_offset + PVIDEO_PAGE),
+-                        0x1000, PAGE_NOACCESS, &old_protect)) {
+-        fprintf(stderr, "[NV2A] could not trap PVIDEO page\n");
+-        return 0;
+-    }
+-    return 1;
++    return xbox_HostGraphicsInitPushbuffer();
+ }
+ #endif
+diff --git a/src/host/xbox_host.h b/src/host/xbox_host.h
+index 23ea22cf..915626a9 100644
+--- a/src/host/xbox_host.h
++++ b/src/host/xbox_host.h
+@@ -8,9 +8,14 @@
+ int  xbox_HostHardwareInit(void);
+ void xbox_HostHardwareShutdown(void);
+ 
+-/* Opens the game window, creates the D3D8 device the NV2A executor draws
+- * through (D3D11 builds; the SDL3 GPU renderer makes its own), and traps
+- * PVIDEO so its register writes take effect. Returns 0 on failure. */
++/* Opens a window with the D3D8 device that HLE Direct3D calls draw through
++ * (D3D11 builds; the SDL3 GPU renderer has none), then does
++ * xbox_HostGraphicsInitPushbuffer. Returns 0 on failure. */
+ int  xbox_HostGraphicsInit(const char *window_title);
+ 
++/* For titles that draw only through pushbuffers: the NV2A renderer opens its
++ * own window and device, so no D3D8 device or extra window is made. Traps
++ * PVIDEO so its register writes take effect. Returns 0 on failure. */
++int  xbox_HostGraphicsInitPushbuffer(void);
++
+ #endif
 diff --git a/src/input/input_bindings.h b/src/input/input_bindings.h
 new file mode 100644
 index 00000000..693c782c

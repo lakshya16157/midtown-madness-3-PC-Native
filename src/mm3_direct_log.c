@@ -31,6 +31,25 @@ static int stderr_redirected(void)
     return type == FILE_TYPE_DISK || type == FILE_TYPE_PIPE;
 }
 
+/* A stream without a handle has no file descriptor (-2) and would lose every line, the
+ * direct log's included: give it the parent shell's console, or NUL. */
+void mm3_attach_streams(void)
+{
+    static const DWORD ids[] = {STD_OUTPUT_HANDLE, STD_ERROR_HANDLE};
+    FILE *streams[2];
+    int console = -1;
+    streams[0] = stdout;
+    streams[1] = stderr;
+    for (int i = 0; i < 2; ++i) {
+        HANDLE handle = GetStdHandle(ids[i]);
+        FILE *reopened;
+        if (handle && handle != INVALID_HANDLE_VALUE && _fileno(streams[i]) >= 0) continue;
+        if (console < 0) console = AttachConsole(ATTACH_PARENT_PROCESS) != 0;
+        if (!freopen_s(&reopened, console ? "CONOUT$" : "NUL", "w", streams[i]))
+            SetStdHandle(ids[i], (HANDLE)_get_osfhandle(_fileno(streams[i])));
+    }
+}
+
 static int compare_names(const void *a, const void *b)
 {
     return wcscmp((const wchar_t *)a, (const wchar_t *)b);
@@ -172,15 +191,6 @@ void mm3_direct_launch_log(void)
     if (_dup2(fd, _fileno(stderr)) != 0) { _close(fd); return; }
     _close(fd);
     SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(_fileno(stderr)));
-    /* The game is a console program, so a Steam launch opens a Windows Terminal window that
-     * hosts its console. Steam then records and overlays that window instead of the game's.
-     * The log is in a file now: when this program is the console's only user (not started
-     * from a shell), let the console go, which closes that window. MM3_KEEP_CONSOLE=1 keeps it. */
-    {
-        DWORD users[2];
-        const char *keep = getenv("MM3_KEEP_CONSOLE");
-        if (!(keep && *keep && strcmp(keep, "0")) && GetConsoleProcessList(users, 2) == 1) FreeConsole();
-    }
 
     if (!GetFullPathNameW(csv_path, MAX_PATH, full, NULL) ||
         !WideCharToMultiByte(CP_UTF8, 0, full, -1, csv, (int)sizeof csv, NULL, NULL))

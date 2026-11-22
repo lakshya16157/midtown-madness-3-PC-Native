@@ -1,5 +1,7 @@
 """Launches without play.ps1 (Steam shortcuts) get a log; captured launches are unchanged."""
 from pathlib import Path
+import _winapi
+import msvcrt
 import os
 import shutil
 import subprocess
@@ -15,6 +17,9 @@ unsigned xbox_HostCpuCount(void) { return 16; }
 static const char *value(const char *key) { const char *v = getenv(key); return v ? v : "-"; }
 int main(void)
 {
+#ifdef WINDOWS_PROGRAM
+    mm3_attach_streams();
+#endif
     mm3_direct_launch_log();
     fprintf(stderr, "contract stderr line\n");
     fflush(stderr);
@@ -36,6 +41,27 @@ def run(exe, cwd, stderr, **env):
     return values, done.stderr
 
 
+def run_without_stderr(exe, cwd):
+    """Start the way Steam starts a Windows program: no stderr handle at all, so the C runtime
+    gives stderr no file descriptor. stdout goes to a file the test reads."""
+    out_path = cwd / "stdout.txt"
+    environment = {k: v for k, v in os.environ.items()
+                   if k not in ("RECOMP_D3D_PROFILE", "RECOMP_HITCH_TRACE", "RECOMP_FRAME_CSV", "MM3_DIRECT_LOG")}
+    with open(out_path, "wb") as out:
+        handle = msvcrt.get_osfhandle(out.fileno())
+        os.set_handle_inheritable(handle, True)
+        info = subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESTDHANDLES,
+                                      hStdInput=0, hStdOutput=handle, hStdError=0)
+        process, thread, _, _ = _winapi.CreateProcess(None, f'"{exe}"', None, None, True, 0,
+                                                      environment, str(cwd), info)
+        _winapi.CloseHandle(thread)
+        assert _winapi.WaitForSingleObject(process, 60000) == 0
+        code = _winapi.GetExitCodeProcess(process)
+        _winapi.CloseHandle(process)
+    assert code == 0, code
+    return dict(line.split("=", 1) for line in out_path.read_text().splitlines())
+
+
 def logs(folder):
     directory = folder / "logs"
     return sorted(p.name for p in directory.iterdir()) if directory.exists() else []
@@ -52,6 +78,23 @@ def main():
                         str(folder / "contract.c"), str(ROOT / "src/mm3_direct_log.c"),
                         "/Fe:" + str(exe), "user32.lib"], cwd=folder, check=True,
                        capture_output=True)
+
+        # The game is a Windows program: a Steam start gives it no console and no stderr handle.
+        gui = folder / "gui"
+        gui.mkdir()
+        gui_exe = gui / "contract_gui.exe"
+        subprocess.run(["cl", "/nologo", "/W4", "/WX", "/O2", "/std:c11", "/DWINDOWS_PROGRAM", "/I" + str(ROOT / "src"),
+                        str(folder / "contract.c"), str(ROOT / "src/mm3_direct_log.c"),
+                        "/Fe:" + str(gui_exe), "user32.lib", "/link", "/SUBSYSTEM:WINDOWS",
+                        "/ENTRY:mainCRTStartup"], cwd=gui, check=True, capture_output=True)
+        game = gui / "steam"
+        game.mkdir()
+        values = run_without_stderr(gui_exe, game)
+        names = logs(game)
+        assert len(names) == 1 and names[0].startswith("direct-") and names[0].endswith(".log"), names
+        text = (game / "logs" / names[0]).read_text(encoding="utf-8")
+        assert "[MM3_DIRECT] launched without play.ps1" in text and "contract stderr line" in text, text
+        assert values["profile"] == "1", values
 
         # play.ps1 and the benchmark harness pipe stderr: nothing changes.
         game = folder / "piped"
@@ -95,7 +138,7 @@ def main():
         assert "direct-20200101-000002-frames.csv" not in names, names
         assert "direct-20200101-000003-frames.csv" in names, names
         assert "play-20200101-000000.log" in names, names
-    print("PASS: piped launches unchanged; console launches log to logs\\direct-*.log with frame "
+    print("PASS: a Windows-program start without a stderr handle still logs; piped launches unchanged; console launches log to logs\\direct-*.log with frame "
           "timing; explicit settings and MM3_DIRECT_LOG=0 respected; newest five sessions kept")
 
 
