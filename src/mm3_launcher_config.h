@@ -53,6 +53,9 @@ enum MM3LauncherOption {
      * game thread sampled (RECOMP_SPIKE_CAPTURE, report only) and the game's gaps with the file reads in
      * them (RECOMP_PRODUCER_TRACE). Off by default; the sampling costs a little speed while on. */
     MM3_LAUNCH_STUTTER_LOG,
+    /* MM3_AI_FULL_DETAIL: computer-driven cars load the full-detail model and its own collision,
+     * as the player's car does, not the Xbox's simpler "_lod1" pair (a gameplay mod, off with Xbox gameplay). */
+    MM3_LAUNCH_AI_DETAIL,
     MM3_LAUNCH_OPTION_COUNT
 };
 

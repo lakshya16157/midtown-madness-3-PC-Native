@@ -143,6 +143,23 @@ static int circuit_extras_allowed(void)
     return mm3_circuit_mode_on() && !(v && !strcmp(v, "0"));
 }
 
+/* "Opponents use full-detail cars" (launcher Gameplay mods, MM3_AI_FULL_DETAIL).
+ * The car init sub_00220761 gives a computer-driven car (type 2 or 3 at +0x488:
+ * opponents, police, mission cars) the "_lod1" model folder, whose collision
+ * file (data.ccol) differs from the full model's. With the mod on, the seam
+ * (scripts/mm3_ai_detail_seam.cmake) skips that rename, so the car loads the
+ * full model with that model's own collision, as the player's car does. */
+int mm3_ai_full_detail(void)
+{
+    static int logged;
+    if (!mm3_mod_ai_full_detail()) return 0;
+    if (!logged) {
+        logged = 1;
+        fprintf(stderr, "[MM3_AI_DETAIL] computer-driven cars use their full-detail models\n");
+    }
+    return 1;
+}
+
 /* "Opponents match your car" (launcher Gameplay mods, MM3_SAME_CAR): every
  * opponent pick returns the player's car. Only Checkpoint races (circuits
  * included) pick opponents' cars; Career jobs name each car, so missions keep

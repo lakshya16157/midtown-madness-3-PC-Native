@@ -65,7 +65,8 @@ const MM3LauncherOptionInfo mm3_launcher_options[MM3_LAUNCH_OPTION_COUNT] = {
     {"MM3_UNLOCK_ALL_PAINTS", "Unlock all paint jobs", 0},
     {"MM3_DIGITAL_SPEEDO", "Digital speedometer (as in split screen)", 0},
     {"MM3_UNLOCK_ALL_RACES", "Unlock all races and jobs", 0},
-    {"MM3_STUTTER_LOG", "Detailed log (for bug reports)", 0}
+    {"MM3_STUTTER_LOG", "Detailed log (for bug reports)", 0},
+    {"MM3_AI_FULL_DETAIL", "Opponents use full-detail cars", 0}
 };
 
 typedef struct { int option; const char *value; } MM3ForcedOption;
@@ -88,7 +89,8 @@ static const MM3ForcedOption xbox_gameplay[] = {
     {MM3_LAUNCH_UNLOCK, "0"}, {MM3_LAUNCH_ROUTE_NAVIGATION, "0"}, {MM3_LAUNCH_RACE_ARROW, "1"},
     {MM3_LAUNCH_DEV_TOOLS, "0"}, {MM3_LAUNCH_DEV_HUD, "0"}, {MM3_LAUNCH_DEBUG_MENU, "0"},
     {MM3_LAUNCH_CAMERAS, "0"}, {MM3_LAUNCH_E3, "0"}, {MM3_LAUNCH_SAME_CAR, "0"},
-    {MM3_LAUNCH_FREE_CAMERA, "0"}, {MM3_LAUNCH_PAINTS, "0"}, {MM3_LAUNCH_RACES, "0"}
+    {MM3_LAUNCH_FREE_CAMERA, "0"}, {MM3_LAUNCH_PAINTS, "0"}, {MM3_LAUNCH_RACES, "0"},
+    {MM3_LAUNCH_AI_DETAIL, "0"}
 };
 
 /* The launcher saves every option, so a changed default would never reach a

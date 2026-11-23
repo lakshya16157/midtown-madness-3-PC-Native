@@ -551,6 +551,7 @@ static void help_show(Launcher *ui, int id)
             "Use the digital speedometer, the speed number the game shows in split screen, in normal play too, for every car including cars added with the Car Workshop. Off keeps the round dial. Needs the Improved look.",
             "Changes the gameplay. Every installed Checkpoint race (including circuits and downloaded races) and every Undercover job is open in the menus, without playing the earlier ones. Your save is not changed: no race is marked won, and untick it to see only what you earned.",
             "A detailed log for bug reports: game stalls with the functions it was busy in, timed file reads, every missing game file and the controller input. Tick it, reproduce the problem, then attach the newest file in the logs folder to your issue. It costs a little speed.",
+            "Changes the gameplay. Opponents, police and other computer cars use the detailed model of the car, as yours does, not the simpler Xbox model. That model has its own collision shape, so crashes with them can differ a little. Off: as on the Xbox.",
         };
         int option = id - ID_OPTION, on = checked(ui, id), master = mm3_launcher_option_master(option);
         title = option_caption(option);
@@ -1654,7 +1655,7 @@ static void gameplay_controls(Launcher *ui)
         {42, 240, "Driving", "Developer tools", {MM3_LAUNCH_DRAFTING, MM3_LAUNCH_ROLL_GUARD, MM3_LAUNCH_TREES, -1,
             MM3_LAUNCH_DEV_TOOLS, MM3_LAUNCH_DEV_HUD, MM3_LAUNCH_DEBUG_MENU, MM3_LAUNCH_CAMERAS, MM3_LAUNCH_E3, 0}},
         {300, 250, "Races and cars", NULL, {MM3_LAUNCH_CIRCUITS, MM3_LAUNCH_EXTRA_CARS, MM3_LAUNCH_AI_ALL_CARS,
-            MM3_LAUNCH_SAME_CAR, MM3_LAUNCH_UNLOCK, MM3_LAUNCH_PAINTS, MM3_LAUNCH_RACES, 0}},
+            MM3_LAUNCH_SAME_CAR, MM3_LAUNCH_AI_DETAIL, MM3_LAUNCH_UNLOCK, MM3_LAUNCH_PAINTS, MM3_LAUNCH_RACES, 0}},
         {560, 260, "Navigation", NULL, {MM3_LAUNCH_ROUTE_NAVIGATION, MM3_LAUNCH_RACE_ARROW, 0}}
     };
     static const int damage[] = {0, 25, 50, 75, 100, 150, 200, 300};
@@ -1663,11 +1664,11 @@ static void gameplay_controls(Launcher *ui)
     check(ui, 3, ID_OPTION + MM3_LAUNCH_GAMEPLAY, mm3_launcher_options[MM3_LAUNCH_GAMEPLAY].label, 300, 92, 250);
     label(ui, 3, "Xbox gameplay plays as the Xbox game did. Modded gameplay uses the mods ticked below.", 42, 122, 774);
     option_columns(ui, 3, columns, (int)(sizeof columns / sizeof columns[0]));
-    fixed = add(ui, 3, "STATIC", "Camera", 0, -1, 300, 432, 250, 26);
+    fixed = add(ui, 3, "STATIC", "Camera", 0, -1, 300, 466, 250, 26);
     SendMessageA(fixed, WM_SETFONT, (WPARAM)ui->section, TRUE);
-    check(ui, 3, ID_OPTION + MM3_LAUNCH_FREE_CAMERA, option_caption(MM3_LAUNCH_FREE_CAMERA), 300, 460, 250);
-    /* Camera sits below the seven Races and cars rows; Photo mode has its own group under Difficulty. */
-    c = combo(ui, 3, ID_CAMERA_KEY, "Free camera key", 300, 490, 250);
+    check(ui, 3, ID_OPTION + MM3_LAUNCH_FREE_CAMERA, option_caption(MM3_LAUNCH_FREE_CAMERA), 300, 494, 250);
+    /* Camera sits below the eight Races and cars rows; Photo mode has its own group under Difficulty. */
+    c = combo(ui, 3, ID_CAMERA_KEY, "Free camera key", 300, 520, 250);
     for (int i = 0; i < MM3_LAUNCHER_CAMERA_KEYS; ++i) {
         char name[32];
         snprintf(name, sizeof name, "%s%s", mm3_launcher_camera_key_names[i],

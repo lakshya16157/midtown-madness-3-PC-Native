@@ -75,6 +75,7 @@ OPTIONS = [
     ("MM3_DIGITAL_SPEEDO", "Digital speedometer (as in split screen)", 0),
     ("MM3_UNLOCK_ALL_RACES", "Unlock all races and jobs", 0),
     ("MM3_STUTTER_LOG", "Detailed log (for bug reports)", 0),
+    ("MM3_AI_FULL_DETAIL", "Opponents use full-detail cars", 0),
 ]
 DEFAULTS = {key: default for key, _label, default in OPTIONS}
 DEFAULTS[SKIP_LAUNCHER] = 0
@@ -91,7 +92,8 @@ ORIGINAL_LOOK = ["MM3_MOD_DRAW_DISTANCE", "MM3_MOD_CAR_LIGHTING", "MM3_MOD_LAMP_
 XBOX_GAMEPLAY = ["MM3_DRAFTING", "MM3_ROLL_GUARD", "MM3_FALLING_TREES", "MM3_EXTRA_CIRCUITS",
                  "MM3_EXTRA_CARS", "MM3_AI_ALL_CARS", "MM3_UNLOCK_ALL_CARS", "MM3_UNLOCK_ALL_PAINTS", "MM3_UNLOCK_ALL_RACES", "MM3_ROUTE_NAVIGATION",
                  "MM3_HUD_RACE_ARROW", "MM3_MOD_DEV_TOOLS", "MM3_DEV_HUD", "MM3_DEBUG_MENU",
-                 "MM3_EXTENDED_CAMERAS", "MM3_E3_PRESET", "MM3_SAME_CAR", "MM3_FREE_CAMERA"]
+                 "MM3_EXTENDED_CAMERAS", "MM3_E3_PRESET", "MM3_SAME_CAR", "MM3_FREE_CAMERA",
+                 "MM3_AI_FULL_DETAIL"]
 
 # key: (label, low, high, default); 0 field-of-view means the retail one.
 NUMBERS = {
