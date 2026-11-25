@@ -64,6 +64,7 @@ SHORTCUT_NAME = "Midtown Madness 3.desktop" if sys.platform.startswith("linux") 
 DISC_FILES = "setup-disc-files.json"   # beside setup-options.json: the disc's files, for checks without the image
 # The car toolkit is in the project repository (it needs Python), not in the install.
 CAR_WORKSHOP_URL = "https://github.com/lakshya16157/midtown-madness-3-PC-Native/tree/main/tools/car-mods"
+DONATE_URL = "https://revolut.me/lakshyasingh"
 CAR_WORKSHOP_TEXT = (
     "Car Workshop is the project's car toolkit. With it you can change the new cars: their physics "
     "(engine, weight, grip, gears, brakes and more), names, menu ratings, speedometers and which body each one uses, "
@@ -2259,6 +2260,9 @@ def run_gui(initial_dest: Path, iso: str = "", cars: bool = False, improvements:
     update_button = ttk.Button(buttons, text="Check for updates")
     if not NATIVE_LINUX:        # the Linux download is a tarball: new versions are fetched from the releases page
         update_button.pack(side="left")
+    import webbrowser
+    donate_button = ttk.Button(buttons, text="Donate", command=lambda: webbrowser.open(DONATE_URL))
+    donate_button.pack(side="left", padx=(0 if NATIVE_LINUX else px(8), 0))   # optional; the project is independent
     uninstall_button = ttk.Button(buttons, text="Uninstall...")
     cancel_button = ttk.Button(buttons, text="Cancel install")
     play = ttk.Button(buttons, text="Play now", style="Accent.TButton")
