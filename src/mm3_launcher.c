@@ -83,7 +83,7 @@ enum {
     ID_CAPTURE, ID_UNBIND, ID_SOURCE, ID_BIND_LABEL, ID_PAD_STATUS, ID_PAD_PORT, ID_PAD_COUNT,
     ID_RESOLUTION, ID_MODE, ID_FPS, ID_VSYNC, ID_SCALE, ID_ASPECT, ID_MSAA,
     ID_ANISO, ID_DRAW, ID_VIEW, ID_SHOW_FPS, ID_MINIMAP, ID_FOV, ID_PORT, ID_PEERS,
-    ID_SCREEN, ID_ORIGINAL, ID_XBOX_GAMEPLAY, ID_DAMAGE, ID_NIGHT, ID_UPDATE, ID_OLDER, ID_DONATE,
+    ID_SCREEN, ID_ORIGINAL, ID_XBOX_GAMEPLAY, ID_DAMAGE, ID_NIGHT, ID_UPDATE, ID_OLDER,
     ID_PRESET, ID_TOOLS, ID_SKIP_LAUNCHER,
     ID_WHEEL_ENABLED, ID_WHEEL_FFB, ID_WHEEL_AXES, ID_WHEEL_DEVICE,
     ID_HELP_TITLE, ID_HELP_VALUE, ID_HELP_BODY, ID_HELP_EFFECT, ID_REQUIRED,
@@ -892,11 +892,6 @@ static void help_show(Launcher *ui, int id)
             title = "Install an older version"; value[0] = 0;
             body = "Ask GitHub for the earlier versions of Midtown Madness 3 PC and pick one. The launcher downloads its Setup, checks it against the release's checksum, closes and opens Setup to install it over this one.";
             effect = "Nothing changes until you pick a version, confirm and install in Setup. Saves, DLC and settings stay. Needs internet.";
-            break;
-        case ID_DONATE:
-            title = "Donate"; value[0] = 0;
-            body = "Midtown Madness 3 PC is an independent project. No website or company pays for it, and the game stays free. If you enjoy it, a donation is very much appreciated.";
-            effect = "Opens the Revolut donation page in your browser. It is optional and changes no setting.";
             break;
         case IDCANCEL:
             title = "Cancel"; value[0] = 0;
@@ -1990,7 +1985,7 @@ static void banner_make(Launcher *ui)
 
 static int is_push_button(int id)
 {
-    return id == ID_DEFAULTS || id == ID_UPDATE || id == ID_OLDER || id == ID_DONATE || id == ID_TOOLS || id == IDOK || id == IDCANCEL ||
+    return id == ID_DEFAULTS || id == ID_UPDATE || id == ID_OLDER || id == ID_TOOLS || id == IDOK || id == IDCANCEL ||
            id == ID_CAPTURE || id == ID_UNBIND || id == ID_ADVANCED;
 }
 
@@ -2360,14 +2355,13 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
         add(ui, -1, "STATIC", "", SS_NOPREFIX, ID_HELP_EFFECT, 880, 521, 295, 100);
         add(ui, -1, "STATIC", "In game, press F10 to open Settings: graphics, night brightness and Freeze opponents. Launcher: Tab moves, Enter activates; controller: D-pad moves, A selects, LB/RB changes tab, Start plays.",
             0, ID_STATUS, 25, 644, 1165, 45);
-        push_button(ui, -1, "Restore defaults", ID_DEFAULTS, 25, 699, 125, 34);
-        push_button(ui, -1, "Check for updates", ID_UPDATE, 157, 699, 145, 34);
-        push_button(ui, -1, "Install an older version", ID_OLDER, 309, 699, 178, 34);
-        push_button(ui, -1, "Folders and logs", ID_TOOLS, 494, 699, 130, 34);
-        push_button(ui, -1, "Donate", ID_DONATE, 631, 699, 80, 34);
-        check(ui, -1, ID_SKIP_LAUNCHER, "Skip the settings window next time", 722, 704, 285);
-        push_button(ui, -1, "Play", IDOK, 1015, 699, 78, 34);
-        push_button(ui, -1, "Cancel", IDCANCEL, 1101, 699, 89, 34);
+        push_button(ui, -1, "Restore defaults", ID_DEFAULTS, 25, 699, 135, 34);
+        push_button(ui, -1, "Check for updates", ID_UPDATE, 170, 699, 150, 34);
+        push_button(ui, -1, "Install an older version", ID_OLDER, 330, 699, 185, 34);
+        push_button(ui, -1, "Folders and logs", ID_TOOLS, 525, 699, 140, 34);
+        check(ui, -1, ID_SKIP_LAUNCHER, "Skip the settings window next time", 677, 704, 240);
+        push_button(ui, -1, "Play", IDOK, 933, 699, 122, 34);
+        push_button(ui, -1, "Cancel", IDCANCEL, 1068, 699, 122, 34);
         populate(ui); scale_labels_refresh(ui); page_show(ui, 0);
         {   /* Say it before Play is pressed, not after a start that cannot work. */
             wchar_t folder[2 * MAX_PATH], text[2 * MAX_PATH + 100];
@@ -2465,9 +2459,6 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
             return 0;
         case ID_UPDATE:
             if (!ui->update_job) update_start(ui, 0);
-            return 0;
-        case ID_DONATE:
-            MM3_LAUNCHER_OPEN_PAGE("https://revolut.me/lakshyasingh");
             return 0;
         case ID_OLDER:
             if (ui->update_job) return 0;
