@@ -1155,7 +1155,8 @@ tools\venv\Scripts\python.exe tools\car-mods\prepare.py --restore
 | `RECOMP_RUMBLE` | `1` | Controller vibration: the game's own rumble goes to the XInput pad (Steam Input passes it on to PlayStation pads). The game's vibration option turns it off in play; `0` keeps the controller still. |
 | `RECOMP_WHEEL` | `0` | `1` opts player 1 into the first SDL racing wheel. A four-digit hex `VID:PID` selects a specific raw joystick. |
 | `RECOMP_WHEEL_AXES` | `1,-2,-3` | One-based raw joystick axes for steering, accelerator and brake. A negative index reverses the axis. The two pedals each use the full signed SDL axis range. |
-| `RECOMP_WHEEL_FFB` | `0` | Wheel haptic gain from 0 to 25 percent. A supported steering motor receives brief sine effects driven by the title's controller vibration output. `RECOMP_RUMBLE=0` disables that output. |
+| `RECOMP_WHEEL_FFB` | `0` | Wheel haptic gain from 0 to 25 percent. A supported steering motor gets a centring spring while the player drives (25 = full coefficient at half torque), plus brief sine effects driven by the title's controller vibration output. `RECOMP_RUMBLE=0` disables the vibration part. |
+| `RECOMP_WHEEL_BUTTONS` | `A:1,B:2,X:3,Y:4,BLACK:5,WHITE:6,START:7,BACK:8,LS:9,RS:10` | Wheel buttons (one-based) for Xbox buttons; listed names override the default, `0` unbinds. The first hat is the d-pad. Steering and pedals are sent through the inverse of MM3's 20% stick/trigger dead zone (`sub_001A61C0`), and a pedal that reads fully pressed at rest is reversed once per connection. |
 | `RECOMP_NET` | saved setting or `0` | `nat` or `1` enables the System Link adapter and UDP peer transport. |
 | `RECOMP_NET_PORT` / `RECOMP_NET_PEERS` | `3075` / empty | Local UDP tunnel port and up to eight comma-separated peer `host:port` entries. |
 | `RECOMP_DSP_PROGRAM_DIR` | `game_files/dsp` | Runtime DSP capture cache. Native compilation uses CMake's `XBOXRECOMP_DSP_PROGRAM_DIR`, with the same default. |

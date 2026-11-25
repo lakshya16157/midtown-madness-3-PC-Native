@@ -1,3 +1,9 @@
+## 2.8.5
+- Racing wheels: the game gives a thumbstick and the triggers a 20% dead zone. The wheel now makes up for it, so small turns and light pedal presses count (issue #53: it only steered near full lock).
+- Racing wheels: a pedal that reads fully pressed with your foot off it is reversed by itself, which should fix a car that stands still and vibrates on throttle. The log says when it does this.
+- Racing wheels: wheel buttons 1 to 10 press A, B, X, Y, Black, White, Start, Back and the stick clicks, and the hat is the d-pad. The log names each button you press. Choose your own with --set RECOMP_WHEEL_BUTTONS=A:3,B:1.
+- Racing wheels: with Feedback above 0, the wheel gets a centring spring while you drive.
+
 ## 2.8.4
 - Fixed: far-away trees floating in the haze after the ground had faded into fog (issue #50). Anything past the far plane is now fogged like the rest of the scene.
 - Fixed: Steam Game Recording said "Recording other game" (issue #47). The game no longer opens a hidden extra window or a console window next to itself. With Vulkan ticked, point the Steam shortcut at mm3_recomp_vulkan.exe.

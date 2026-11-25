@@ -6290,20 +6290,30 @@ index 00000000..693c782c
 +#endif
 diff --git a/src/input/wheel_input.h b/src/input/wheel_input.h
 new file mode 100644
-index 00000000..eca48ce4
+index 00000000..7b30b2f1
 --- /dev/null
 +++ b/src/input/wheel_input.h
-@@ -0,0 +1,304 @@
+@@ -0,0 +1,458 @@
 +/* Raw SDL wheel input and optional rumble-driven wheel effects. Included by
 + * xinput_device.c. Device state and SDL haptic calls share the host pad lock. */
 +#ifndef XBOXRECOMP_WHEEL_INPUT_H
 +#define XBOXRECOMP_WHEEL_INPUT_H
++
++/* Xbox buttons a wheel button can press: the six analog buttons (bit n is
++ * bAnalogButtons[n]) and then the digital ones. */
++static const struct { const char *name; BYTE analog; WORD digital; } k_wheel_targets[] = {
++    {"A", 0x01, 0}, {"B", 0x02, 0}, {"X", 0x04, 0}, {"Y", 0x08, 0}, {"BLACK", 0x10, 0}, {"WHITE", 0x20, 0},
++    {"START", 0, XBOX_GAMEPAD_START}, {"BACK", 0, XBOX_GAMEPAD_BACK},
++    {"LS", 0, XBOX_GAMEPAD_LEFT_THUMB}, {"RS", 0, XBOX_GAMEPAD_RIGHT_THUMB},
++};
++#define WHEEL_TARGETS ((int)(sizeof k_wheel_targets / sizeof k_wheel_targets[0]))
 +
 +typedef struct HostWheelConfig {
 +    int enabled;
 +    Uint16 vendor, product;
 +    int steering, throttle, brake; /* one-based; a negative index inverts it */
 +    int force_percent;
++    int buttons[WHEEL_TARGETS]; /* one-based wheel button per Xbox button, 0 none */
 +} HostWheelConfig;
 +
 +static HostWheelConfig s_wheel_config;
@@ -6312,6 +6322,10 @@ index 00000000..eca48ce4
 +static SDL_Haptic *s_wheel_haptic;
 +static int s_wheel_effect = -1;
 +static int s_wheel_playing;
++static int s_wheel_spring = -1;
++static int s_wheel_spring_on;
++static int s_wheel_pedal_flip[2]; /* accelerator, brake: 0 unknown, 1 as set, -1 reversed */
++static Uint32 s_wheel_buttons_down;
 +static Uint64 s_wheel_next_scan;
 +static int s_wheel_connected;
 +static HostWheelInput s_wheel_last;
@@ -6362,22 +6376,55 @@ index 00000000..eca48ce4
 +    return 1;
 +}
 +
++/* "A:1,B:2,START:0": Xbox button name, then the wheel's one-based button
++ * number (0 unbinds it). Names not listed keep their default. */
++static int wheel_parse_buttons(const char *text, HostWheelConfig *cfg)
++{
++    int buttons[WHEEL_TARGETS];
++    memcpy(buttons, cfg->buttons, sizeof buttons);
++    while (*text) {
++        char name[8];
++        size_t n = strcspn(text, ":");
++        char *end;
++        int target = -1;
++        if (!n || n >= sizeof name || text[n] != ':')
++            return 0;
++        memcpy(name, text, n);
++        name[n] = 0;
++        for (int i = 0; i < WHEEL_TARGETS; ++i)
++            if (!SDL_strcasecmp(name, k_wheel_targets[i].name))
++                target = i;
++        long value = strtol(text + n + 1, &end, 10);
++        if (target < 0 || end == text + n + 1 || value < 0 || value > 128 || (*end && *end != ','))
++            return 0;
++        buttons[target] = (int)value;
++        text = *end ? end + 1 : end;
++    }
++    memcpy(cfg->buttons, buttons, sizeof buttons);
++    return 1;
++}
++
 +static BOOL CALLBACK wheel_load_config(PINIT_ONCE once, PVOID param, PVOID *context)
 +{
 +    const char *selector = getenv("RECOMP_WHEEL");
 +    const char *axes = getenv("RECOMP_WHEEL_AXES");
 +    const char *force = getenv("RECOMP_WHEEL_FFB");
++    const char *buttons = getenv("RECOMP_WHEEL_BUTTONS");
 +    (void)once; (void)param; (void)context;
 +    if (!selector || !*selector || !strcmp(selector, "0"))
 +        return TRUE;
 +    s_wheel_config.steering = 1;
 +    s_wheel_config.throttle = -2;
 +    s_wheel_config.brake = -3;
++    for (int i = 0; i < WHEEL_TARGETS; ++i)
++        s_wheel_config.buttons[i] = i + 1;
 +    if (!wheel_parse_selector(selector, &s_wheel_config) ||
 +        (axes && *axes && !wheel_parse_axes(axes, &s_wheel_config))) {
 +        fprintf(stderr, "[WHEEL] Invalid RECOMP_WHEEL or RECOMP_WHEEL_AXES; wheel disabled\n");
 +        return TRUE;
 +    }
++    if (buttons && *buttons && !wheel_parse_buttons(buttons, &s_wheel_config))
++        fprintf(stderr, "[WHEEL] Invalid RECOMP_WHEEL_BUTTONS (expected A:1,B:2,...); default buttons kept\n");
 +    if (force && *force) {
 +        char *end;
 +        long percent = strtol(force, &end, 10);
@@ -6406,16 +6453,37 @@ index 00000000..eca48ce4
 +    }
 +}
 +
++/* A centring spring while the player drives, so the wheel pushes back when
++ * turned. Off in menus and pauses, where nothing steers. */
++static void wheel_spring(int on)
++{
++    if (s_wheel_spring < 0 || on == s_wheel_spring_on)
++        return;
++    if (on ? SDL_RunHapticEffect(s_wheel_haptic, s_wheel_spring, 1) : SDL_StopHapticEffect(s_wheel_haptic, s_wheel_spring))
++        s_wheel_spring_on = on;
++    else if (on) {
++        fprintf(stderr, "[WHEEL] Centring spring failed: %s\n", SDL_GetError());
++        SDL_DestroyHapticEffect(s_wheel_haptic, s_wheel_spring);
++        s_wheel_spring = -1;
++    }
++}
++
 +static void wheel_close(void)
 +{
 +    wheel_stop();
 +    if (s_wheel_haptic) {
++        wheel_spring(0);
 +        if (s_wheel_effect >= 0)
 +            SDL_DestroyHapticEffect(s_wheel_haptic, s_wheel_effect);
++        if (s_wheel_spring >= 0)
++            SDL_DestroyHapticEffect(s_wheel_haptic, s_wheel_spring);
 +        SDL_CloseHaptic(s_wheel_haptic);
 +        s_wheel_haptic = NULL;
 +        s_wheel_effect = -1;
++        s_wheel_spring = -1;
 +    }
++    s_wheel_pedal_flip[0] = s_wheel_pedal_flip[1] = 0;
++    s_wheel_buttons_down = 0;
 +    if (s_wheel) {
 +        SDL_CloseJoystick(s_wheel);
 +        s_wheel = NULL;
@@ -6448,13 +6516,28 @@ index 00000000..eca48ce4
 +        SDL_HapticEffect effect = wheel_effect(1);
 +        if (SDL_HapticEffectSupported(s_wheel_haptic, &effect))
 +            s_wheel_effect = SDL_CreateHapticEffect(s_wheel_haptic, &effect);
-+        if (s_wheel_effect < 0) {
++        /* 25 percent, the setting's top, is a full-strength spring at half
++         * the motor's torque. */
++        SDL_HapticEffect spring = {0};
++        Uint16 coefficient = (Uint16)(0x7FFF * s_wheel_config.force_percent / 25);
++        Uint16 saturation = (Uint16)(0xFFFF * s_wheel_config.force_percent / 50);
++        spring.type = SDL_HAPTIC_SPRING;
++        spring.condition.direction.type = SDL_HAPTIC_STEERING_AXIS;
++        spring.condition.length = SDL_HAPTIC_INFINITY;
++        spring.condition.right_sat[0] = spring.condition.left_sat[0] = saturation;
++        spring.condition.right_coeff[0] = spring.condition.left_coeff[0] = (Sint16)coefficient;
++        if (SDL_HapticEffectSupported(s_wheel_haptic, &spring))
++            s_wheel_spring = SDL_CreateHapticEffect(s_wheel_haptic, &spring);
++        if (s_wheel_effect < 0 && s_wheel_spring < 0) {
 +            SDL_CloseHaptic(s_wheel_haptic);
 +            s_wheel_haptic = NULL;
 +        }
 +    }
-+    if (s_wheel_effect < 0)
++    if (s_wheel_effect < 0 && s_wheel_spring < 0)
 +        fprintf(stderr, "[WHEEL] Driver did not provide a usable steering haptic effect; steering and pedals are available\n");
++    else
++        fprintf(stderr, "[WHEEL] Feedback %d%%: vibration %s, centring spring %s\n", s_wheel_config.force_percent,
++                s_wheel_effect >= 0 ? "on" : "not supported", s_wheel_spring >= 0 ? "on" : "not supported");
 +}
 +
 +/* Pass 0 takes wheels SDL knows by USB ID. Pass 1 takes any other joystick
@@ -6544,29 +6627,100 @@ index 00000000..eca48ce4
 +    return 1;
 +}
 +
-+static BYTE wheel_read_pedal(int index)
++/* Pedal axes run either way round: a pedal that reads fully pressed at rest
++ * (Fanatec CSW V2 on the default 1,-2,-3, issue #53) held the accelerator and
++ * the brake down together. The first reading, taken in the menus before
++ * anyone drives, decides once per connection whether to reverse it. */
++static BYTE wheel_read_pedal(int which, int index)
 +{
 +    Sint16 value;
 +    if (!wheel_read_axis(index, &value))
 +        return 0;
++    if (!s_wheel_pedal_flip[which]) {
++        s_wheel_pedal_flip[which] = value > 24576 ? -1 : 1;
++        fprintf(stderr, "[WHEEL] %s axis %d at rest reads %d%s\n", which ? "Brake" : "Accelerator", abs(index),
++                (int)value, s_wheel_pedal_flip[which] < 0 ? ", fully pressed: reversed it" : "");
++    }
++    if (s_wheel_pedal_flip[which] < 0)
++        value = (Sint16)(-1 - value);
 +    return (BYTE)(((int)value + 32768) >> 8);
 +}
 +
-+static int wheel_read(int controls, HostWheelInput *state)
++/* Wheel buttons press their Xbox buttons and the first hat is the d-pad.
++ * Each new press is logged with its number, for RECOMP_WHEEL_BUTTONS. */
++static void wheel_read_buttons(HostWheelInput *state)
++{
++    int count = SDL_GetNumJoystickButtons(s_wheel);
++    Uint32 down = 0;
++    for (int i = 0; i < count && i < 32; ++i)
++        if (SDL_GetJoystickButton(s_wheel, i))
++            down |= 1u << i;
++    for (int i = 0; i < count && i < 32; ++i)
++        if ((down & ~s_wheel_buttons_down) & (1u << i))
++            fprintf(stderr, "[WHEEL] Button %d pressed\n", i + 1);
++    s_wheel_buttons_down = down;
++    for (int t = 0; t < WHEEL_TARGETS; ++t) {
++        int button = s_wheel_config.buttons[t] - 1;
++        if (button >= 0 && button < 32 && (down & (1u << button))) {
++            state->analog_buttons |= k_wheel_targets[t].analog;
++            state->buttons |= k_wheel_targets[t].digital;
++        }
++    }
++    if (SDL_GetNumJoystickHats(s_wheel) > 0) {
++        Uint8 hat = SDL_GetJoystickHat(s_wheel, 0);
++        if (hat & SDL_HAT_UP) state->buttons |= XBOX_GAMEPAD_DPAD_UP;
++        if (hat & SDL_HAT_DOWN) state->buttons |= XBOX_GAMEPAD_DPAD_DOWN;
++        if (hat & SDL_HAT_LEFT) state->buttons |= XBOX_GAMEPAD_DPAD_LEFT;
++        if (hat & SDL_HAT_RIGHT) state->buttons |= XBOX_GAMEPAD_DPAD_RIGHT;
++    }
++}
++
++/* MM3 gives every stick axis and analog button a 20 percent dead zone and
++ * rescales the rest (sub_001A61C0: (v - 6553) * 32767 / 26214, and
++ * (v - 51) * 255 / 204), made for a thumbstick. A wheel would lose its first
++ * fifth of turn and pedal travel (issue #53), so the wheel sends the exact
++ * inverse and the game sees its position unchanged. */
++#define WHEEL_STICK_DEAD 6553
++#define WHEEL_BUTTON_DEAD 51
++
++static SHORT wheel_steer_out(SHORT v)
++{
++    int m = v < 0 ? (v == -32768 ? 32767 : -v) : v;
++    if (!m)
++        return 0;
++    m = WHEEL_STICK_DEAD + (m * (32767 - WHEEL_STICK_DEAD) + 32766) / 32767;
++    return (SHORT)(v < 0 ? -m : m);
++}
++
++static BYTE wheel_pedal_out(BYTE v)
++{
++    return v ? (BYTE)(WHEEL_BUTTON_DEAD + (v * (255 - WHEEL_BUTTON_DEAD) + 254) / 255) : 0;
++}
++
++static int wheel_read(int controls, int buttons, HostWheelInput *state)
 +{
 +    int connected = wheel_available();
 +    memset(state, 0, sizeof *state);
-+    if (connected && controls) {
-+        state->active = 1;
-+        wheel_read_axis(s_wheel_config.steering, &state->steer);
-+        state->throttle = wheel_read_pedal(s_wheel_config.throttle);
-+        state->brake = wheel_read_pedal(s_wheel_config.brake);
-+    } else {
-+        wheel_stop();
++    if (connected) {
++        BYTE throttle = wheel_read_pedal(0, s_wheel_config.throttle);
++        BYTE brake = wheel_read_pedal(1, s_wheel_config.brake);
++        if (buttons)
++            wheel_read_buttons(state);
++        if (controls) {
++            state->active = 1;
++            wheel_read_axis(s_wheel_config.steering, &state->steer);
++            state->steer = wheel_steer_out(state->steer);
++            state->throttle = wheel_pedal_out(throttle);
++            state->brake = wheel_pedal_out(brake);
++        }
 +    }
++    if (!connected || !controls)
++        wheel_stop();
++    wheel_spring(connected && controls);
 +    state->packet = s_wheel_last.packet;
 +    if (connected != s_wheel_connected || state->active != s_wheel_last.active || state->steer != s_wheel_last.steer ||
-+        state->throttle != s_wheel_last.throttle || state->brake != s_wheel_last.brake)
++        state->throttle != s_wheel_last.throttle || state->brake != s_wheel_last.brake ||
++        state->buttons != s_wheel_last.buttons || state->analog_buttons != s_wheel_last.analog_buttons)
 +        ++state->packet;
 +    s_wheel_connected = connected;
 +    s_wheel_last = *state;
@@ -6599,10 +6753,10 @@ index 00000000..eca48ce4
 +
 +#endif
 diff --git a/src/input/xinput_device.c b/src/input/xinput_device.c
-index 4bffbb4b..f75b6caa 100644
+index 4bffbb4b..41b2bb50 100644
 --- a/src/input/xinput_device.c
 +++ b/src/input/xinput_device.c
-@@ -26,16 +26,111 @@
+@@ -26,16 +26,113 @@
  #include <string.h>
  
  static XBOX_KEYBOARD_HOOK s_keyboard_hook;
@@ -6708,6 +6862,8 @@ index 4bffbb4b..f75b6caa 100644
 +typedef struct HostWheelInput {
 +    SHORT steer;
 +    BYTE throttle, brake;
++    WORD buttons;        /* XBOX_GAMEPAD_* bits from wheel buttons and hat */
++    BYTE analog_buttons; /* bit n presses bAnalogButtons[n] */
 +    int active;
 +    DWORD packet;
 +} HostWheelInput;
@@ -6715,7 +6871,7 @@ index 4bffbb4b..f75b6caa 100644
  /* A contract test defines XBOX_INPUT_HOST_PAD and supplies host_pad_state itself;
   * everything else is the production SDL3 code. */
  #ifndef XBOX_INPUT_HOST_PAD
-@@ -68,9 +163,10 @@ static void pad_unlock(void)
+@@ -68,9 +165,10 @@ static void pad_unlock(void)
      SDL_UnlockMutex(s_pad_lock);
  }
  
@@ -6728,7 +6884,7 @@ index 4bffbb4b..f75b6caa 100644
  #if defined(_WIN32) && !defined(XBOXRECOMP_SDL3)
      /* The Direct3D 11 window is a Win32 one, so nothing pumps SDL events:
       * refresh the pad state here, at most once a millisecond. */
-@@ -83,6 +179,12 @@ static SDL_Gamepad *sdl_pad(DWORD port)
+@@ -83,6 +181,12 @@ static SDL_Gamepad *sdl_pad(DWORD port)
          }
      }
  #endif
@@ -6741,7 +6897,7 @@ index 4bffbb4b..f75b6caa 100644
      SDL_Gamepad *pad = g_sdl_pads[port];
      if (pad && SDL_GamepadConnected(pad))
          return pad;
-@@ -92,6 +194,11 @@ static SDL_Gamepad *sdl_pad(DWORD port)
+@@ -92,6 +196,11 @@ static SDL_Gamepad *sdl_pad(DWORD port)
      }
      if (SDL_GetTicks() < next_scan[port])
          return NULL;
@@ -6753,7 +6909,7 @@ index 4bffbb4b..f75b6caa 100644
      next_scan[port] = SDL_GetTicks() + 1000; /* hot-plug check, not every poll */
      {
          int count = 0;
-@@ -120,10 +227,17 @@ static DWORD host_pad_state_locked(DWORD port, XINPUT_STATE *state)
+@@ -120,10 +229,17 @@ static DWORD host_pad_state_locked(DWORD port, XINPUT_STATE *state)
          { SDL_GAMEPAD_BUTTON_EAST, XINPUT_GAMEPAD_B },
          { SDL_GAMEPAD_BUTTON_WEST, XINPUT_GAMEPAD_X },
          { SDL_GAMEPAD_BUTTON_NORTH, XINPUT_GAMEPAD_Y } };
@@ -6772,7 +6928,7 @@ index 4bffbb4b..f75b6caa 100644
      if (!pad)
          return ERROR_DEVICE_NOT_CONNECTED;
      memset(state, 0, sizeof *state);
-@@ -159,6 +273,13 @@ static DWORD host_pad_state(DWORD port, XINPUT_STATE *state)
+@@ -159,6 +275,13 @@ static DWORD host_pad_state(DWORD port, XINPUT_STATE *state)
  static int host_pad_present(DWORD port)
  {
      int present;
@@ -6786,7 +6942,7 @@ index 4bffbb4b..f75b6caa 100644
      pad_lock();
      present = sdl_pad(port) != NULL;
      pad_unlock();
-@@ -168,6 +289,17 @@ static int host_pad_present(DWORD port)
+@@ -168,6 +291,17 @@ static int host_pad_present(DWORD port)
  static void host_pad_rumble(DWORD port, WORD left, WORD right)
  {
      SDL_Gamepad *pad;
@@ -6804,7 +6960,7 @@ index 4bffbb4b..f75b6caa 100644
      pad_lock();
      pad = sdl_pad(port);
      /* SDL rumble runs for a duration; titles resend it continuously. */
-@@ -175,6 +307,49 @@ static void host_pad_rumble(DWORD port, WORD left, WORD right)
+@@ -175,6 +309,51 @@ static void host_pad_rumble(DWORD port, WORD left, WORD right)
          SDL_RumbleGamepad(pad, left, right, 1000);
      pad_unlock();
  }
@@ -6831,10 +6987,12 @@ index 4bffbb4b..f75b6caa 100644
 +{
 +    if (!wheel_enabled(port))
 +        return 0;
++    extern volatile LONG fbw_inactive;
++    int buttons = title_input && !InterlockedCompareExchange(&fbw_inactive, 0, 0);
 +    int controls = title_input && wheel_controls_allowed();
 +    pad_lock();
 +    refresh_host_input();
-+    int connected = wheel_read(controls, state);
++    int connected = wheel_read(controls, buttons, state);
 +    pad_unlock();
 +    return connected;
 +}
@@ -6854,7 +7012,7 @@ index 4bffbb4b..f75b6caa 100644
  #else
  static int host_pad_present(DWORD port)
  {
-@@ -186,8 +361,28 @@ static void host_pad_rumble(DWORD port, WORD left, WORD right)
+@@ -186,8 +365,28 @@ static void host_pad_rumble(DWORD port, WORD left, WORD right)
  {
      (void)port; (void)left; (void)right;
  }
@@ -6883,7 +7041,7 @@ index 4bffbb4b..f75b6caa 100644
  static BOOL  g_controller_connected[XBOX_MAX_CONTROLLERS] = { FALSE };
  static DWORD g_last_packet[XBOX_MAX_CONTROLLERS] = { 0 };
  static DWORD g_packet_bias[XBOX_MAX_CONTROLLERS];
-@@ -205,7 +400,88 @@ static DWORD finish_state(DWORD port, XBOX_INPUT_STATE *state)
+@@ -205,7 +404,88 @@ static DWORD finish_state(DWORD port, XBOX_INPUT_STATE *state)
      return ERROR_SUCCESS;
  }
  
@@ -6973,7 +7131,7 @@ index 4bffbb4b..f75b6caa 100644
   *
   * The keys come from keyboard.c (RECOMP_KEYBOARD=1, the map, RECOMP_KEYMAP
   * and RECOMP_MENU_KEYS); the windows record them. Here, beside the pad: a
-@@ -213,7 +489,6 @@ static DWORD finish_state(DWORD port, XBOX_INPUT_STATE *state)
+@@ -213,7 +493,6 @@ static DWORD finish_state(DWORD port, XBOX_INPUT_STATE *state)
   *
   * Declared rather than included so src/input does not depend on the video
   * module's include path. */
@@ -6981,7 +7139,7 @@ index 4bffbb4b..f75b6caa 100644
  extern int xbox_FramebufferMouse(float *x, float *y);
  extern void xbox_FramebufferSetMousePressHandler(int (*handler)(float, float));
  
-@@ -230,6 +505,141 @@ static BOOL keyboard_enabled(void)
+@@ -230,6 +509,141 @@ static BOOL keyboard_enabled(void)
      return on ? TRUE : FALSE;
  }
  
@@ -7123,7 +7281,7 @@ index 4bffbb4b..f75b6caa 100644
  static int menu_press(float x, float y)
  {
      return keyboard_enabled() && xbox_InputKeyboardMenu() &&
-@@ -257,16 +667,33 @@ static BOOL menu_click(void)
+@@ -257,16 +671,33 @@ static BOOL menu_click(void)
      return now < a_until;
  }
  
@@ -7164,7 +7322,7 @@ index 4bffbb4b..f75b6caa 100644
          s_keyboard_hook(s, menu ? TRUE : FALSE);
      return 1;
  }
-@@ -283,12 +710,12 @@ static int keyboard_pad(XBOX_INPUT_STATE *s)
+@@ -283,12 +714,12 @@ static int keyboard_pad(XBOX_INPUT_STATE *s)
   * Merging is also the better rule. A real pad keeps working -- its
   * buttons are already in pState and the keyboard only adds to them --
   * and there is no special case left to get wrong. */
@@ -7179,7 +7337,7 @@ index 4bffbb4b..f75b6caa 100644
          return;
      pState->Gamepad.wButtons |= kb.Gamepad.wButtons;
      for (i = 0; i < 8; i++)
-@@ -308,95 +735,88 @@ static void keyboard_merge(XBOX_INPUT_STATE *pState)
+@@ -308,95 +739,92 @@ static void keyboard_merge(XBOX_INPUT_STATE *pState)
   * names, except that the pad's shoulders are LB/RB and the Xbox's are
   * BLACK/WHITE; unnamed inputs keep their own button. A trigger used as a
   * button counts past a third of its travel. */
@@ -7303,6 +7461,10 @@ index 4bffbb4b..f75b6caa 100644
 +        state->Gamepad.bAnalogButtons[XBOX_BUTTON_RTRIGGER] = wheel->throttle;
 +        state->Gamepad.bAnalogButtons[XBOX_BUTTON_LTRIGGER] = wheel->brake;
      }
++    state->Gamepad.wButtons |= wheel->buttons;
++    for (int i = 0; i < 6; ++i)
++        if (wheel->analog_buttons & (1u << i))
++            state->Gamepad.bAnalogButtons[i] = 255;
 +    state->dwPacketNumber = input_packet(port, state->dwPacketNumber + wheel->packet);
 +    return finish_state(port, state);
  }
@@ -7333,7 +7495,7 @@ index 4bffbb4b..f75b6caa 100644
              return connected;
          memset(pState, 0, sizeof *pState);
          /* Neutralization must be a new packet, even when the physical pad
-@@ -407,25 +827,35 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+@@ -407,25 +835,35 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
          return ERROR_SUCCESS;
      }
  
@@ -7379,7 +7541,7 @@ index 4bffbb4b..f75b6caa 100644
      memset(pState, 0, sizeof(XBOX_INPUT_STATE));
      pState->dwPacketNumber = xi_state.dwPacketNumber;
      pad_buttons(&xi_state.Gamepad, &pState->Gamepad);
-@@ -435,14 +865,45 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+@@ -435,14 +873,45 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
      pState->Gamepad.sThumbRX = xi_state.Gamepad.sThumbRX;
      pState->Gamepad.sThumbRY = xi_state.Gamepad.sThumbRY;
  
@@ -7429,7 +7591,7 @@ index 4bffbb4b..f75b6caa 100644
  }
  
  uint32_t xbox_InputHostPad(uint32_t port, uint16_t *buttons,
-@@ -451,8 +912,10 @@ uint32_t xbox_InputHostPad(uint32_t port, uint16_t *buttons,
+@@ -451,8 +920,10 @@ uint32_t xbox_InputHostPad(uint32_t port, uint16_t *buttons,
  {
      XINPUT_STATE state;
  #ifndef XBOX_INPUT_HOST_PAD
@@ -7441,7 +7603,7 @@ index 4bffbb4b..f75b6caa 100644
  #endif
      if (port >= XBOX_MAX_CONTROLLERS || host_pad_state(port, &state) != ERROR_SUCCESS)
          return ERROR_DEVICE_NOT_CONNECTED;
-@@ -470,9 +933,10 @@ DWORD xbox_InputSetState(DWORD dwPort, const XBOX_VIBRATION *pVibration)
+@@ -470,9 +941,10 @@ DWORD xbox_InputSetState(DWORD dwPort, const XBOX_VIBRATION *pVibration)
  {
      if (dwPort >= XBOX_MAX_CONTROLLERS || !pVibration)
          return ERROR_DEVICE_NOT_CONNECTED;
@@ -7455,7 +7617,7 @@ index 4bffbb4b..f75b6caa 100644
      return ERROR_SUCCESS;
  }
  
-@@ -487,7 +951,8 @@ DWORD xbox_InputGetCapabilities(DWORD dwPort, DWORD dwFlags, XBOX_INPUT_CAPABILI
+@@ -487,7 +959,8 @@ DWORD xbox_InputGetCapabilities(DWORD dwPort, DWORD dwFlags, XBOX_INPUT_CAPABILI
      if (dwPort >= XBOX_MAX_CONTROLLERS || !pCaps)
          return ERROR_DEVICE_NOT_CONNECTED;
      (void)dwFlags;
@@ -14224,10 +14386,50 @@ index 9da018e1..79e189c7 100644
              s_ndp = (unsigned)s_npads;      /* a port for every pad */
      }
 diff --git a/src/usb/usb_gamepad.c b/src/usb/usb_gamepad.c
-index 612b8c17..a64d646c 100644
+index 612b8c17..ae11071c 100644
 --- a/src/usb/usb_gamepad.c
 +++ b/src/usb/usb_gamepad.c
-@@ -559,7 +559,7 @@ int usb_gamepad_report(int pad, uint8_t *out, int max)
+@@ -294,7 +294,8 @@ static uint8_t synthetic_buttons(void)
+  *
+  * Buttons: up down left right start back lthumb rthumb (the digital byte),
+  * a b x y black white lt rt (the analog bytes, reported fully pressed), and
+- * lleft lright lup ldown / rleft rright rup rdown (a stick at full throw).
++ * lleft lright lup ldown / rleft rright rup rdown (a stick at full throw),
++ * and lx=<-32768..32767> (the left stick's X axis held at that value).
+  * Every entry is printed as it fires, so a run log says what was pressed when.
+  *
+  * RECOMP_PAD_LIVE=<file> is the same thing driven while the title runs: each
+@@ -315,6 +316,8 @@ typedef struct {
+     uint8_t pad;             /* which controller: "p2-a" is pad 1 */
+     uint8_t stick;           /* full deflection: 1 L-left 2 L-right 4 L-up
+                                 8 L-down, then the same four for the right */
++    uint8_t set_lx;          /* lx=<value>: left stick X held there */
++    int16_t lx;
+     int announced;
+ } PadStep;
+ 
+@@ -391,7 +394,10 @@ static void pad_script_parse(const char *text)
+         }
+         for (;;) {
+             size_t n = strcspn(b, "+:,\r\n ");
+-            if (!pad_button_bits(b, n, &st.digital, &st.analog, &st.stick))
++            if (n > 3 && same_word(b, "lx=", 3)) {
++                st.lx = (int16_t)strtol(b + 3, NULL, 10);
++                st.set_lx = 1;
++            } else if (!pad_button_bits(b, n, &st.digital, &st.analog, &st.stick))
+                 fprintf(stderr, "  PAD: unknown button \"%.*s\"\n", (int)n, b);
+             b += n;
+             if (*b != '+')
+@@ -552,6 +558,8 @@ static void pad_script_apply(int pad, uint8_t *out)
+             if (st->stick & 0x80) ax[3] = (int16_t)-full;
+             memcpy(&out[12], ax, sizeof ax);
+         }
++        if (st->set_lx)
++            memcpy(&out[12], &st->lx, sizeof st->lx);
+     }
+ }
+ 
+@@ -559,7 +567,7 @@ int usb_gamepad_report(int pad, uint8_t *out, int max)
  {
      XBOX_INPUT_STATE state;
      const XBOX_GAMEPAD *g;
@@ -14236,7 +14438,7 @@ index 612b8c17..a64d646c 100644
      int i;
  
      if (max < 20)
-@@ -567,6 +567,8 @@ int usb_gamepad_report(int pad, uint8_t *out, int max)
+@@ -567,6 +575,8 @@ int usb_gamepad_report(int pad, uint8_t *out, int max)
      memset(out, 0, 20);
      out[0] = 0;
      out[1] = 20;
@@ -14245,7 +14447,7 @@ index 612b8c17..a64d646c 100644
  
      /* A disconnected host pad is not an error here: the device is present on
       * the bus either way, it just reports nothing pressed. */
-@@ -643,3 +645,57 @@ int usb_gamepad_report(int pad, uint8_t *out, int max)
+@@ -643,3 +653,57 @@ int usb_gamepad_report(int pad, uint8_t *out, int max)
      pad_script_apply(pad, out);
      return 20;
  }
@@ -32804,7 +33006,7 @@ index 651ac4ce..8f591a74 100644
 +    add_test(NAME input_sdl_wheel_disabled COMMAND input_sdl_pad --wheel-disabled)
  endif()
 diff --git a/tests/input_sdl_pad/test_main.c b/tests/input_sdl_pad/test_main.c
-index 84b63982..017de7bf 100644
+index 84b63982..0a1b19ee 100644
 --- a/tests/input_sdl_pad/test_main.c
 +++ b/tests/input_sdl_pad/test_main.c
 @@ -1,5 +1,5 @@
@@ -32823,11 +33025,17 @@ index 84b63982..017de7bf 100644
  int xbox_FramebufferHostInputCaptured(void) { return 0; }
  int xbox_FramebufferMouse(float *x, float *y) { *x = *y = 0; return 0; }
  void xbox_FramebufferSetMousePressHandler(int (*handler)(float, float)) { (void)handler; }
-@@ -41,7 +42,118 @@ static int wait_present(int want)
+@@ -41,7 +42,139 @@ static int wait_present(int want)
      return 0;
  }
  
 -int main(void)
++/* The wheel sends the inverse of MM3's 20 percent stick and trigger dead
++ * zone (wheel_input.h), so the game sees the wheel's own position. */
++#define STEER_16000 19354
++#define STEER_12000 16154
++#define PEDAL_128 154
++
 +static int wait_wheel(int want, XBOX_INPUT_STATE *state)
 +{
 +    for (int i = 0; i < 40; ++i) {
@@ -32864,7 +33072,7 @@ index 84b63982..017de7bf 100644
 +    SDL_UpdateJoysticks();
 +    CHECK(wait_wheel(1, &state));
 +    CHECK(xbox_InputWheelConnected(0) && !xbox_InputWheelConnected(1));
-+    CHECK(state.Gamepad.sThumbLX == 16000);
++    CHECK(state.Gamepad.sThumbLX == STEER_16000);
 +    CHECK(state.Gamepad.bAnalogButtons[XBOX_BUTTON_RTRIGGER] == 0);
 +    CHECK(state.Gamepad.bAnalogButtons[XBOX_BUTTON_LTRIGGER] == 0);
 +    DWORD packet = state.dwPacketNumber;
@@ -32874,8 +33082,8 @@ index 84b63982..017de7bf 100644
 +    SDL_UpdateJoysticks();
 +    CHECK(xbox_InputGetState(0, &state) == ERROR_SUCCESS);
 +    CHECK(state.dwPacketNumber != packet);
-+    CHECK(state.Gamepad.bAnalogButtons[XBOX_BUTTON_RTRIGGER] == 128);
-+    CHECK(state.Gamepad.bAnalogButtons[XBOX_BUTTON_LTRIGGER] == 128);
++    CHECK(state.Gamepad.bAnalogButtons[XBOX_BUTTON_RTRIGGER] == PEDAL_128);
++    CHECK(state.Gamepad.bAnalogButtons[XBOX_BUTTON_LTRIGGER] == PEDAL_128);
 +    packet = state.dwPacketNumber;
 +
 +    SDL_SetJoystickVirtualAxis(js, 0, -32768);
@@ -32895,7 +33103,7 @@ index 84b63982..017de7bf 100644
 +        SDL_UpdateJoysticks();
 +        CHECK(wait_present(1));
 +        CHECK(xbox_InputGetState(0, &state) == ERROR_SUCCESS);
-+        CHECK(state.Gamepad.bAnalogButtons[XBOX_BUTTON_A] == 255 && state.Gamepad.sThumbLX == 16000);
++        CHECK(state.Gamepad.bAnalogButtons[XBOX_BUTTON_A] == 255 && state.Gamepad.sThumbLX == STEER_16000);
 +        SDL_CloseJoystick(pad);
 +        SDL_DetachVirtualJoystick(pad_id);
 +        CHECK(wait_present(0));
@@ -32910,7 +33118,7 @@ index 84b63982..017de7bf 100644
 +    CHECK(xbox_InputGetState(0, &state) == ERROR_SUCCESS);
 +    CHECK(state.Gamepad.sThumbLX == 0 && state.Gamepad.bAnalogButtons[XBOX_BUTTON_LTRIGGER] == 0);
 +    xbox_InputSetBlocked(0);
-+    CHECK(xbox_InputGetState(0, &state) == ERROR_SUCCESS && state.Gamepad.sThumbLX == 16000);
++    CHECK(xbox_InputGetState(0, &state) == ERROR_SUCCESS && state.Gamepad.sThumbLX == STEER_16000);
 +
 +    XBOX_INPUT_CAPABILITIES caps;
 +    XBOX_VIBRATION vibration = { 0x8000, 0x4000 };
@@ -32923,17 +33131,32 @@ index 84b63982..017de7bf 100644
 +    CHECK(!xbox_InputWheelConnected(0));
 +    CHECK(xbox_InputSetState(0, &vibration) == ERROR_DEVICE_NOT_CONNECTED);
 +
-+    /* A DirectInput wheel missing from SDL's USB ID list has no type (issue #53). */
++    /* A DirectInput wheel missing from SDL's USB ID list has no type (issue #53).
++     * Its brake rests at the top of its axis, so it is reversed; its buttons
++     * press A and B and its hat is the d-pad. */
 +    desc.type = SDL_JOYSTICK_TYPE_UNKNOWN;
++    desc.nbuttons = 2;
++    desc.nhats = 1;
 +    id = SDL_AttachVirtualJoystick(&desc);
 +    js = id ? SDL_OpenJoystick(id) : NULL;
 +    CHECK(js != NULL);
 +    if (!js)
 +        return;
++    SDL_SetJoystickVirtualAxis(js, 0, 32767);
 +    SDL_SetJoystickVirtualAxis(js, 1, -12000);
++    SDL_SetJoystickVirtualAxis(js, 2, 32767);
 +    SDL_UpdateJoysticks();
 +    CHECK(wait_wheel(1, &state));
-+    CHECK(state.Gamepad.sThumbLX == -12000);
++    CHECK(state.Gamepad.sThumbLX == -STEER_12000);
++    CHECK(state.Gamepad.bAnalogButtons[XBOX_BUTTON_LTRIGGER] == 0);
++    SDL_SetJoystickVirtualAxis(js, 2, -32768);
++    SDL_SetJoystickVirtualButton(js, 1, true);
++    SDL_SetJoystickVirtualHat(js, 0, SDL_HAT_UP);
++    SDL_UpdateJoysticks();
++    CHECK(xbox_InputGetState(0, &state) == ERROR_SUCCESS);
++    CHECK(state.Gamepad.bAnalogButtons[XBOX_BUTTON_LTRIGGER] == 255);
++    CHECK(state.Gamepad.bAnalogButtons[XBOX_BUTTON_B] == 255 && !state.Gamepad.bAnalogButtons[XBOX_BUTTON_A]);
++    CHECK(state.Gamepad.wButtons & XBOX_GAMEPAD_DPAD_UP);
 +    SDL_CloseJoystick(js);
 +    SDL_DetachVirtualJoystick(id);
 +    CHECK(wait_wheel(0, &state));
@@ -32943,7 +33166,7 @@ index 84b63982..017de7bf 100644
  {
      SDL_JoystickID id;
      SDL_Joystick *js;
-@@ -50,13 +162,23 @@ int main(void)
+@@ -50,13 +183,23 @@ int main(void)
      int16_t lx, ly, rx, ry;
      XBOX_VIBRATION vib = { 0x8000, 0x4000 };
  
@@ -32968,7 +33191,7 @@ index 84b63982..017de7bf 100644
  
      /* Buttons: SDL's positional south/east/west/north are XInput A/B/X/Y, shoulders and start map across. */
      SDL_SetJoystickVirtualButton(js, SDL_GAMEPAD_BUTTON_SOUTH, true);
-@@ -112,6 +234,8 @@ int main(void)
+@@ -112,6 +255,8 @@ int main(void)
  
      SDL_CloseJoystick(js);
      SDL_DetachVirtualJoystick(id);

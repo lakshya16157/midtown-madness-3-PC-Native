@@ -722,7 +722,7 @@ static void help_show(Launcher *ui, int id)
             break;
         case ID_WHEEL_FFB:
             title = "Wheel feedback strength";
-            body = "Set steering feedback from 0 to 25 percent. The game's vibration option drives short effects on compatible wheels.";
+            body = "Set steering feedback from 0 to 25 percent: a centring spring while you drive, plus the game's vibration effects on compatible wheels.";
             effect = "Set this to 0 to keep the wheel motor idle.";
             break;
         case ID_WHEEL_AXES:

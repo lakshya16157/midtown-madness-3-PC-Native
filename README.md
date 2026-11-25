@@ -222,7 +222,15 @@ The full guide is in [tools/car-mods/README.md](tools/car-mods/README.md).
 
 In the launcher's **Controls → Racing wheel** section, enable the wheel for Player 1 and
 set the **Force feedback strength**. The wheel handles steering and separate accelerator and brake
-pedals. Use a controller or keyboard for menus and buttons.
+pedals. The game gives a thumbstick and the triggers a 20% dead zone. The wheel makes up for it, so
+small turns and light pedal presses register.
+
+Wheel buttons 1 to 10 press A, B, X, Y, Black, White, Start, Back and the left and right stick
+clicks, in that order. The wheel's hat is the d-pad. The log (`logs\last-run.log`) lists each
+button you press by number. To choose your own buttons, start the game with
+`--set RECOMP_WHEEL_BUTTONS=A:3,B:1,LS:5` (the Xbox button, then the wheel button number; `0`
+turns one off). If an accelerator or brake pedal reads fully pressed with your foot off it, the
+game reverses that pedal by itself and says so in the log.
 
 When the game sets up driving controls with a detected wheel, it automatically uses the original
 Xbox **Configuration C** for Player 1. **Options → Controller Setup** continues to show your
@@ -233,8 +241,8 @@ If the defaults don't match your wheel, adjust the three axis numbers. Add a min
 an axis. Leave the USB ID empty for automatic detection or enter your wheel's `VID:PID`.
 
 **F10 → Next launch** also lets you enable the wheel and adjust feedback for the next session.
-Feedback defaults to 0% and uses the game's vibration signal on drivers that expose the steering
-motor. Use the wheel's native device mode so the game can detect its axes and motor.
+Feedback defaults to 0%. Above 0 it adds a centring spring while you drive and plays the game's
+vibration signal, on drivers that expose the steering motor. Use the wheel's native device mode so the game can detect its axes and motor.
 
 ## Multiplayer (System Link)
 
