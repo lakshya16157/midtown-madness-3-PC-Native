@@ -6290,10 +6290,10 @@ index 00000000..693c782c
 +#endif
 diff --git a/src/input/wheel_input.h b/src/input/wheel_input.h
 new file mode 100644
-index 00000000..da8cc508
+index 00000000..eca48ce4
 --- /dev/null
 +++ b/src/input/wheel_input.h
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,304 @@
 +/* Raw SDL wheel input and optional rumble-driven wheel effects. Included by
 + * xinput_device.c. Device state and SDL haptic calls share the host pad lock. */
 +#ifndef XBOXRECOMP_WHEEL_INPUT_H
@@ -6457,12 +6457,33 @@ index 00000000..da8cc508
 +        fprintf(stderr, "[WHEEL] Driver did not provide a usable steering haptic effect; steering and pedals are available\n");
 +}
 +
-+static int wheel_matches(SDL_JoystickID id)
++/* Pass 0 takes wheels SDL knows by USB ID. Pass 1 takes any other joystick
++ * that is not a gamepad, flight stick or the like: SDL's list misses many
++ * DirectInput wheels (Saitek R660 GT, issue #53). */
++static int wheel_matches(SDL_JoystickID id, int pass)
 +{
 +    if (s_wheel_config.vendor)
 +        return SDL_GetJoystickVendorForID(id) == s_wheel_config.vendor &&
 +               SDL_GetJoystickProductForID(id) == s_wheel_config.product;
-+    return SDL_GetJoystickTypeForID(id) == SDL_JOYSTICK_TYPE_WHEEL;
++    SDL_JoystickType type = SDL_GetJoystickTypeForID(id);
++    if (!pass)
++        return type == SDL_JOYSTICK_TYPE_WHEEL;
++    return type == SDL_JOYSTICK_TYPE_UNKNOWN && !SDL_IsGamepad(id);
++}
++
++/* One line per joystick whenever the set changes without a wheel found, so a
++ * log shows what SDL saw and which VID:PID to enter in the launcher. */
++static void wheel_log_devices(const SDL_JoystickID *ids, int count)
++{
++    static int logged_count = -1;
++    if (count == logged_count)
++        return;
++    logged_count = count;
++    fprintf(stderr, "[WHEEL] No racing wheel found among %d joystick(s)\n", count);
++    for (int i = 0; ids && i < count; ++i)
++        fprintf(stderr, "[WHEEL]   %s (%04x:%04x, type %d%s)\n", SDL_GetJoystickNameForID(ids[i]),
++                (unsigned)SDL_GetJoystickVendorForID(ids[i]), (unsigned)SDL_GetJoystickProductForID(ids[i]),
++                (int)SDL_GetJoystickTypeForID(ids[i]), SDL_IsGamepad(ids[i]) ? ", gamepad" : "");
 +}
 +
 +static int wheel_available(void)
@@ -6484,9 +6505,9 @@ index 00000000..da8cc508
 +
 +    int count = 0;
 +    SDL_JoystickID *ids = SDL_GetJoysticks(&count);
-+    for (int i = 0; ids && i < count && !s_wheel; ++i) {
-+        SDL_JoystickID id = ids[i];
-+        if (!wheel_matches(id))
++    for (int n = 0; ids && n < 2 * count && !s_wheel; ++n) {
++        SDL_JoystickID id = ids[n % count];
++        if (!wheel_matches(id, n >= count))
 +            continue;
 +        SDL_Joystick *device = SDL_OpenJoystick(id);
 +        if (!device)
@@ -6494,7 +6515,8 @@ index 00000000..da8cc508
 +        int axes = SDL_GetNumJoystickAxes(device);
 +        if (axes < abs(s_wheel_config.steering) || axes < abs(s_wheel_config.throttle) ||
 +            axes < abs(s_wheel_config.brake)) {
-+            fprintf(stderr, "[WHEEL] %s exposes %d axes; check RECOMP_WHEEL_AXES\n", SDL_GetJoystickName(device), axes);
++            if (n < count) /* a guessed device is skipped quietly */
++                fprintf(stderr, "[WHEEL] %s exposes %d axes; check RECOMP_WHEEL_AXES\n", SDL_GetJoystickName(device), axes);
 +            SDL_CloseJoystick(device);
 +            continue;
 +        }
@@ -6503,6 +6525,8 @@ index 00000000..da8cc508
 +                (unsigned)SDL_GetJoystickVendor(device), (unsigned)SDL_GetJoystickProduct(device), axes);
 +        wheel_open_feedback();
 +    }
++    if (!s_wheel)
++        wheel_log_devices(ids, count);
 +    SDL_free(ids);
 +    return s_wheel != NULL;
 +}
@@ -27340,7 +27364,7 @@ index 00000000..22e65bd3
 +    s_world_tris_pending.valid = 0;
 +}
 diff --git a/src/video/shaders/nv2a_combiner.hlsl b/src/video/shaders/nv2a_combiner.hlsl
-index e1924013..800e6940 100644
+index e1924013..03b43905 100644
 --- a/src/video/shaders/nv2a_combiner.hlsl
 +++ b/src/video/shaders/nv2a_combiner.hlsl
 @@ -32,6 +32,10 @@ cbuffer PSC : CBUF(1) {
@@ -27428,10 +27452,16 @@ index e1924013..800e6940 100644
    cov = 0xFFFFFFFFu;
  /* Alpha test. On a multisampled target an inequality test becomes sample
   * coverage across the one-pixel band around its threshold (e = signed
-@@ -329,5 +376,17 @@ void ps_wdepth(PSIn i, out float4 c : SV_Target, out float dep : SV_Depth, out u
+@@ -328,6 +375,22 @@ void ps_wdepth(PSIn i, out float4 c : SV_Target, out float dep : SV_Depth, out u
+   c = shade(i, cov);
    float z = i.fog.y;
    z += zp0.y + zp0.x * max(abs(ddx(z)) * zp0.z, abs(ddy(z)) * zp0.w);
-   z = clamp(z, 0.0, zp1.y);
+-  z = clamp(z, 0.0, zp1.y);
++  /* Depth clip is off, so geometry past the far plane (street props at the
++   * longer draw distances) clamps here. At the full value the native fog pass
++   * takes it for sky and gives it only the sky's light haze: far trees then
++   * float in the fog over fully fogged ground (#50). Keep it just under that. */
++  z = z > zp1.y ? zp1.y * 0.99998 : max(z, 0.0);
 +  if (zp1.z > 1.0) {
 +    float x = z * zp1.x * zp1.z, k = zp1.w;
 +    if (x > k && x < 0.98 * zp1.z) {
@@ -32774,7 +32804,7 @@ index 651ac4ce..8f591a74 100644
 +    add_test(NAME input_sdl_wheel_disabled COMMAND input_sdl_pad --wheel-disabled)
  endif()
 diff --git a/tests/input_sdl_pad/test_main.c b/tests/input_sdl_pad/test_main.c
-index 84b63982..1be855ec 100644
+index 84b63982..017de7bf 100644
 --- a/tests/input_sdl_pad/test_main.c
 +++ b/tests/input_sdl_pad/test_main.c
 @@ -1,5 +1,5 @@
@@ -32793,7 +32823,7 @@ index 84b63982..1be855ec 100644
  int xbox_FramebufferHostInputCaptured(void) { return 0; }
  int xbox_FramebufferMouse(float *x, float *y) { *x = *y = 0; return 0; }
  void xbox_FramebufferSetMousePressHandler(int (*handler)(float, float)) { (void)handler; }
-@@ -41,7 +42,103 @@ static int wait_present(int want)
+@@ -41,7 +42,118 @@ static int wait_present(int want)
      return 0;
  }
  
@@ -32892,13 +32922,28 @@ index 84b63982..1be855ec 100644
 +    CHECK(wait_wheel(0, &state));
 +    CHECK(!xbox_InputWheelConnected(0));
 +    CHECK(xbox_InputSetState(0, &vibration) == ERROR_DEVICE_NOT_CONNECTED);
++
++    /* A DirectInput wheel missing from SDL's USB ID list has no type (issue #53). */
++    desc.type = SDL_JOYSTICK_TYPE_UNKNOWN;
++    id = SDL_AttachVirtualJoystick(&desc);
++    js = id ? SDL_OpenJoystick(id) : NULL;
++    CHECK(js != NULL);
++    if (!js)
++        return;
++    SDL_SetJoystickVirtualAxis(js, 1, -12000);
++    SDL_UpdateJoysticks();
++    CHECK(wait_wheel(1, &state));
++    CHECK(state.Gamepad.sThumbLX == -12000);
++    SDL_CloseJoystick(js);
++    SDL_DetachVirtualJoystick(id);
++    CHECK(wait_wheel(0, &state));
 +}
 +
 +int main(int argc, char **argv)
  {
      SDL_JoystickID id;
      SDL_Joystick *js;
-@@ -50,13 +147,23 @@ int main(void)
+@@ -50,13 +162,23 @@ int main(void)
      int16_t lx, ly, rx, ry;
      XBOX_VIBRATION vib = { 0x8000, 0x4000 };
  
@@ -32923,7 +32968,7 @@ index 84b63982..1be855ec 100644
  
      /* Buttons: SDL's positional south/east/west/north are XInput A/B/X/Y, shoulders and start map across. */
      SDL_SetJoystickVirtualButton(js, SDL_GAMEPAD_BUTTON_SOUTH, true);
-@@ -112,6 +219,8 @@ int main(void)
+@@ -112,6 +234,8 @@ int main(void)
  
      SDL_CloseJoystick(js);
      SDL_DetachVirtualJoystick(id);

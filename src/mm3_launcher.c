@@ -1903,6 +1903,10 @@ static void poll_pads(Launcher *ui)
         if (ui->dualsense_count) {
             snprintf(summary, sizeof summary, "DualSense connected. XInput needed for play (see Controls).");
             snprintf(hint, sizeof hint, "DualSense found. Enable Steam Input\r\nfor this game (see Play_game.txt).");
+        } else if (checked(ui, ID_WHEEL_ENABLED)) {
+            /* DirectInput wheels are not XInput: only the game looks for them (#53). */
+            snprintf(summary, sizeof summary, "No XInput controller. The game looks for the racing wheel at start.");
+            snprintf(hint, sizeof hint, "No XInput pad. Wheels are not listed here:\r\nthe game finds the wheel when it starts.");
         } else {
             snprintf(summary, sizeof summary, "No controller detected (XInput). Check Controls.");
             snprintf(hint, sizeof hint, "No XInput controller detected.\r\nConnect/pair it or use XInput mode.");

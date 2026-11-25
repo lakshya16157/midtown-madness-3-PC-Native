@@ -1,3 +1,9 @@
+## 2.8.4
+- Fixed: far-away trees floating in the haze after the ground had faded into fog (issue #50). Anything past the far plane is now fogged like the rest of the scene.
+- Fixed: Steam Game Recording said "Recording other game" (issue #47). The game no longer opens a hidden extra window or a console window next to itself. With Vulkan ticked, point the Steam shortcut at mm3_recomp_vulkan.exe.
+- Racing wheels that Windows lists as a plain DirectInput device (Saitek, some Thrustmaster and Logitech models) are now found too (issue #53). The log lists every joystick it looked at: tick "Detailed log" if your wheel is still missed.
+- New Gameplay mod: Opponents use full-detail cars (issue #51), off by default.
+
 ## 2.8.3
 - Fixed: menus skipped entries with a controller in the DirectX 11 renderer. A controller on a later XInput slot (Steam Input, a re-plugged pad) was also read as player 1, so every press counted twice.
 - New in the launcher: "Install an older version" lists the earlier releases, downloads the one you pick and opens its Setup.
