@@ -10,8 +10,9 @@ program: it runs as a real Windows and Linux game, not in an emulator.
   System Link, and optional mods.
 - You need your own copy of the Xbox game.
 
-**Support the project:** if you enjoy it, you can [donate with Revolut](https://revolut.me/lakshyasingh). It is
-optional, and the game stays free.
+**Support the project:** this is an independent project. No website or company pays me for it, so donations are very much
+appreciated. If you enjoy it, you can [donate with Revolut](https://revolut.me/lakshyasingh). It is optional, and the game
+stays free.
 
 | Your system | Download |
 |---|---|
@@ -338,7 +339,7 @@ does on the Xbox.
 
 ## Support me
 
-If you enjoy this project, you can support me on Revolut:
+I am an independent developer and no website pays me for this project, so donations are very much appreciated. If you enjoy it, you can support me on Revolut:
 **[revolut.me/lakshyasingh](https://revolut.me/lakshyasingh)**
 
 ## Extra car credits
